@@ -1,3 +1,5 @@
+mod account_appearance;
+mod account_commands;
 mod accounts;
 mod config;
 mod downloads;
@@ -150,6 +152,9 @@ fn begin_launcher_close(state: &Shared) -> CloseDecision {
     let _operation = state.operations.lock().unwrap();
     let first_request = !state.closing.load(Ordering::SeqCst);
     let event = set_launcher_closing(state, true);
+    // Network login can be retired immediately; a keyring publication already
+    // admitted must finish before the process loses its public account update.
+    state.accounts.cancel();
     // Capture queued workers too: they may own prepared file descriptors and
     // must release those resources before the native window is destroyed.
     let active_task_ids: Vec<_> = state
@@ -158,7 +163,8 @@ fn begin_launcher_close(state: &Shared) -> CloseDecision {
         .into_iter()
         .map(|task| task.id)
         .collect();
-    let wait_for_workers = !active_task_ids.is_empty() || state.launcher_updates.busy();
+    let wait_for_workers =
+        !active_task_ids.is_empty() || state.launcher_updates.busy() || state.accounts.busy();
     CloseDecision {
         active_task_ids,
         wait_for_workers,
@@ -1496,10 +1502,7 @@ fn with_account_write<T>(
     }
     let run = s.status.lock().unwrap();
     require_account_edit(&run)?;
-    if matches!(
-        s.accounts.snapshot().stage.as_str(),
-        "preparing" | "waiting"
-    ) {
+    if s.accounts.busy() {
         return Err("请先完成或取消当前微软登录".into());
     }
     action()
@@ -1527,9 +1530,12 @@ fn auth_select(id: Option<String>, state: State<'_, Arc<Shared>>) -> Result<(), 
 #[tauri::command]
 async fn auth_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
     let s = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || with_account_write(&s, || s.accounts.remove(id)))
-        .await
-        .map_err(|_| "账号操作任务失败")?
+    tauri::async_runtime::spawn_blocking(move || {
+        let remembered = with_account_write(&s, || s.accounts.begin_remove(&id))?;
+        s.accounts.remove_account(id, remembered)
+    })
+    .await
+    .map_err(|_| "账号操作任务失败")?
 }
 fn open_official(url: &str) -> Result<(), String> {
     Command::new("xdg-open")
@@ -1985,6 +1991,7 @@ fn main() {
                         std::thread::spawn(move || {
                             while !shared.tasks.active_all().is_empty()
                                 || shared.launcher_updates.busy()
+                                || shared.accounts.busy()
                                 || !experiments.is_stopped()
                             {
                                 std::thread::sleep(Duration::from_millis(100));
@@ -2110,6 +2117,10 @@ fn main() {
             auth_select,
             auth_remove,
             auth_open_browser,
+            account_commands::auth_save_login,
+            account_commands::auth_device_assist,
+            account_commands::auth_copy_code,
+            account_commands::auth_appearance,
             auth_open_help,
             download_catalog,
             download_status,

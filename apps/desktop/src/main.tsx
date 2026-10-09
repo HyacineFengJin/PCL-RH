@@ -72,6 +72,13 @@ import {
   type DownloadStatus,
 } from "./DownloadPanel";
 import defaultSkin from "./assets/game-icons/steve.png";
+import {
+  AccountDialog,
+  AccountAppearanceDialog,
+  AccountAvatar,
+} from "./AccountDialog";
+import type { AuthState } from "./accountTypes";
+import { useAccountPresentation } from "./useAccountPresentation";
 import { ExperimentalCards } from "./ExperimentalExtensions";
 import type { ExperimentalNavigate, ToolsPage } from "./experimentalTypes";
 import { ExperimentalTools, type ExperimentalDraft } from "./ExperimentalTools";
@@ -144,22 +151,6 @@ type Status = {
   exit_code: number | null;
   root_id?: string | null;
   root_path?: string | null;
-};
-type AuthState = {
-  client_id: string;
-  selected: string | null;
-  accounts: {
-    profile: { id: string; uuid: string; name: string; expires_at: number };
-    remembered: boolean;
-  }[];
-  stage: string;
-  message: string;
-  challenge: {
-    user_code: string;
-    verification_uri: string;
-    expires_in: number;
-  } | null;
-  warning: string | null;
 };
 const emptyAuth: AuthState = {
   client_id: "",
@@ -858,7 +849,12 @@ function App() {
     [tab, setTab] = useState("launch"),
     [toolsPage, setToolsPage] = useState<ToolsPage>("toolbox"),
     [dialog, setDialog] = useState<
-      "versions" | "instance" | "accounts" | "account-type" | null
+      | "versions"
+      | "instance"
+      | "accounts"
+      | "account-type"
+      | "account-appearance"
+      | null
     >(null),
     [query, setQuery] = useState(""),
     [toast, setToast] = useState(""),
@@ -931,6 +927,10 @@ function App() {
     });
   }
   const [accountType, setAccountType] = useState("");
+  const [appearanceId, setAppearanceId] = useState<string | null>(null);
+  const [appearanceOrigin, setAppearanceOrigin] = useState<"accounts" | null>(
+    null,
+  );
   const [profileList, setProfileList] = useState(false);
   const [rootWorking, setRootWorking] = useState(false);
   const rootWorkingRef = React.useRef(false);
@@ -1270,9 +1270,13 @@ function App() {
     contentRef.current?.scrollTo({ top: 0 });
   }, [screen, tab, settingsPage, downloadPage, instancePage, !!data]);
   const [remember, setRemember] = useState(true);
-  const [clientId, setClientId] = useState("");
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState("");
+  const accountPresentation = useAccountPresentation(
+    api,
+    native,
+    data?.auth || emptyAuth,
+  );
   const notify = (text: string) => {
     setToast(text);
     window.setTimeout(() => setToast(""), 4500);
@@ -1458,7 +1462,6 @@ function App() {
         current === "instance" ? "versions" : current,
       );
     }
-    setClientId(next.auth.client_id);
     setData(next);
     setDraft(next.settings);
     setError("");
@@ -1573,7 +1576,9 @@ function App() {
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setDialog(null);
+        if (dialog === "accounts") closeAccountDialog();
+        else if (dialog === "account-appearance") setDialog(appearanceOrigin);
+        else setDialog(null);
         setRootMenu(null);
         if (!rootWorkingRef.current) setRootDialog(null);
       }
@@ -1601,7 +1606,7 @@ function App() {
     };
     window.addEventListener("keydown", fn);
     return () => window.removeEventListener("keydown", fn);
-  }, []);
+  }, [dialog, native, appearanceOrigin]);
   useEffect(() => {
     if (!dialog && !rootDialog) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -1632,21 +1637,40 @@ function App() {
       setAuthWorking(false);
     }
   }
+  function openAccountDialog() {
+    setAccountType(data?.auth.selected ? "premium" : "offline");
+    setAuthError("");
+    setDialog("accounts");
+  }
+  function openAccountAppearance(id: string) {
+    setAppearanceId(id);
+    setAppearanceOrigin(dialog === "accounts" ? "accounts" : null);
+    setDialog("account-appearance");
+  }
+  function closeAccountDialog() {
+    // Cancel during code acquisition too, before a late challenge can open a browser.
+    if (native) void api("auth_cancel").catch(() => {});
+    setDialog(null);
+  }
+  async function saveOfflineAccount(name: string) {
+    if (!data) return;
+    setAuthWorking(true);
+    setAuthError("");
+    try {
+      await save({ ...data.settings, player: name });
+      await api("auth_select", { id: null });
+      const auth = await api<AuthState>("auth_status");
+      setData((current) => (current ? { ...current, auth } : current));
+      setDialog(null);
+    } catch (error) {
+      setAuthError(String(error));
+    } finally {
+      setAuthWorking(false);
+    }
+  }
   const activeAccount = data?.auth.accounts.find(
     (a) => a.profile.id === data.auth.selected,
   );
-  const authenticating =
-    !!data?.auth.challenge ||
-    [
-      "preparing",
-      "waiting",
-      "starting",
-      "requesting_code",
-      "polling",
-      "authenticating",
-      "exchanging",
-      "refreshing",
-    ].includes(data?.auth.stage || "");
   const selected = data?.instances.find((i) => i.id === data.settings.selected),
     busy =
       data?.status.stage === "preparing" || data?.status.stage === "running";
@@ -1784,9 +1808,6 @@ function App() {
     );
     setInstancePage("overview");
     setScreen("instance");
-  }
-  function setPlayer(player: string) {
-    setData((d) => (d ? { ...d, settings: { ...d.settings, player } } : d));
   }
   function rootOptions(id: string, x: number, y: number) {
     if (rootWorking) return;
@@ -2287,11 +2308,11 @@ function App() {
                               setProfileList(false);
                             }}
                           >
-                            <span
-                              className="ce-profile-list-avatar"
-                              style={{
-                                backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
-                              }}
+                            <AccountAvatar
+                              image={
+                                accountPresentation.images[account.profile.id]
+                                  ?.avatar_png
+                              }
                             />
                             <span>
                               <strong>{account.profile.name}</strong>
@@ -2315,15 +2336,18 @@ function App() {
                       <div className="ce-profile-current">
                         <button
                           className="account-panel"
-                          onClick={() => setDialog("accounts")}
+                          onClick={openAccountDialog}
                           aria-label={t("accounts.manage")}
                         >
-                          <span
-                            className="avatar"
-                            aria-hidden="true"
-                            style={{
-                              backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
-                            }}
+                          <AccountAvatar
+                            className="sidebar"
+                            image={
+                              activeAccount
+                                ? accountPresentation.images[
+                                    activeAccount.profile.id
+                                  ]?.avatar_png
+                                : null
+                            }
                           />
                           <span className="account-heading">
                             {activeAccount?.profile.name ||
@@ -2338,9 +2362,13 @@ function App() {
                         <div className="ce-profile-actions">
                           <button
                             className="icon-button"
-                            title={t("accounts.skinUnavailable")}
-                            aria-label={t("accounts.skin")}
-                            disabled
+                            title={t("accounts.appearance")}
+                            aria-label={t("accounts.appearance")}
+                            disabled={!activeAccount}
+                            onClick={() =>
+                              activeAccount &&
+                              openAccountAppearance(activeAccount.profile.id)
+                            }
                           >
                             <Shirt size={17} />
                           </button>
@@ -2348,7 +2376,7 @@ function App() {
                             className="icon-button"
                             title={t("accounts.edit")}
                             aria-label={t("accounts.edit")}
-                            onClick={() => setDialog("accounts")}
+                            onClick={openAccountDialog}
                           >
                             <Pencil size={17} />
                           </button>
@@ -3273,299 +3301,41 @@ function App() {
             </div>
           )}
           {dialog === "accounts" && data && (
-            <div
-              className="modal-shade"
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget) setDialog(null);
+            <AccountDialog
+              mode={accountType === "offline" ? "offline" : "premium"}
+              player={data.settings.player}
+              auth={data.auth}
+              native={native}
+              busy={!!busy}
+              working={authWorking}
+              error={authError}
+              images={accountPresentation.images}
+              assist={accountPresentation.assist}
+              remember={remember}
+              onRemember={setRemember}
+              onAction={authAction}
+              onOfflineSave={saveOfflineAccount}
+              onAppearance={openAccountAppearance}
+              onBack={() => {
+                setAuthError("");
+                setDialog("account-type");
               }}
-            >
-              <section
-                className="modal"
-                role="dialog"
-                aria-modal="true"
-                aria-label={t("accounts.manage")}
-              >
-                <div className="modal-heading">
-                  <h2>{t("accounts.manage")}</h2>
-                  <button
-                    aria-label={t("main.closeDialog")}
-                    className="icon-button"
-                    onClick={() => setDialog(null)}
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-                {dialog === "accounts" ? (
-                  <div className="account-dialog">
-                    <p className="muted">{t("accounts.chooseIdentity")}</p>
-                    <label className="ce-row">
-                      <span>{t("accounts.offlineName")}</span>
-                      <input
-                        className="ce-field"
-                        value={data.settings.player}
-                        disabled={!!busy}
-                        onChange={(e) => setPlayer(e.target.value)}
-                        onBlur={() =>
-                          save(data.settings).catch((e) => notify(String(e)))
-                        }
-                      />
-                    </label>
-                    {busy && (
-                      <div className="auth-notice" role="status">
-                        {t("accounts.busy")}
-                      </div>
-                    )}
-                    <button
-                      className={
-                        "version-row " + (!data.auth.selected ? "chosen" : "")
-                      }
-                      disabled={
-                        !native || authWorking || authenticating || busy
-                      }
-                      onClick={() => authAction("auth_select", { id: null })}
-                    >
-                      <UserRound size={23} />
-                      <div>
-                        <strong>
-                          {t("accounts.offlinePrefix")}
-                          {data.settings.player}
-                        </strong>
-                        <small>{t("accounts.offlineServers")}</small>
-                      </div>
-                      {!data.auth.selected && <Check size={18} />}
-                    </button>
-                    {data.auth.accounts.map((a) => (
-                      <div className="saved-account" key={a.profile.id}>
-                        <button
-                          className={
-                            "version-row " +
-                            (a.profile.id === data.auth.selected
-                              ? "chosen"
-                              : "")
-                          }
-                          disabled={
-                            !native || authWorking || authenticating || busy
-                          }
-                          onClick={() =>
-                            authAction("auth_select", { id: a.profile.id })
-                          }
-                        >
-                          <UserRound size={23} />
-                          <div>
-                            <strong>
-                              {a.profile.name}{" "}
-                              <span className="small-badge premium-badge">
-                                {t("accounts.premium")}
-                              </span>
-                            </strong>
-                            <small>
-                              Microsoft ·{" "}
-                              {a.remembered
-                                ? t("accounts.remembered")
-                                : t("accounts.session")}
-                            </small>
-                          </div>
-                          {a.profile.id === data.auth.selected && (
-                            <Check size={18} />
-                          )}
-                        </button>
-                        <button
-                          className="icon-button"
-                          title={t("accounts.remove")}
-                          aria-label={
-                            t("accounts.remove") + " " + a.profile.name
-                          }
-                          disabled={
-                            !native || authWorking || authenticating || busy
-                          }
-                          onClick={() =>
-                            authAction("auth_remove", { id: a.profile.id })
-                          }
-                        >
-                          <X size={17} />
-                        </button>
-                      </div>
-                    ))}
-                    <div className="auth-section">
-                      <h3>{t("accounts.addMicrosoft")}</h3>
-                      <p className="muted">{t("accounts.microsoftHelp")}</p>
-                      {!data.auth.client_id && (
-                        <div className="auth-notice">
-                          {t("accounts.unconfigured")}
-                        </div>
-                      )}
-                      <label className="remember-login">
-                        <input
-                          type="checkbox"
-                          checked={remember}
-                          onChange={(e) => setRemember(e.target.checked)}
-                          disabled={authWorking || authenticating}
-                        />
-                        {t("accounts.remember")}
-                      </label>
-                      {data.auth.challenge ? (
-                        <div className="device-login">
-                          <span>{t("accounts.deviceCode")}</span>
-                          <strong className="device-code">
-                            {data.auth.challenge.user_code}
-                          </strong>
-                          <p>
-                            {t("accounts.codeExpiry", {
-                              minutes: formatNumber(
-                                Math.ceil(data.auth.challenge.expires_in / 60),
-                              ),
-                            })}
-                          </p>
-                          <div className="toolbar">
-                            <button
-                              className="btn primary"
-                              disabled={!native || authWorking}
-                              onClick={() => authAction("auth_open_browser")}
-                            >
-                              <ExternalLink size={15} />
-                              {t("accounts.browser")}
-                            </button>
-                            <button
-                              className="btn"
-                              disabled={!native || authWorking}
-                              onClick={() => authAction("auth_cancel")}
-                            >
-                              {t("accounts.cancel")}
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="toolbar">
-                          <button
-                            className="btn primary"
-                            disabled={
-                              !native ||
-                              !data.auth.client_id ||
-                              authWorking ||
-                              authenticating ||
-                              busy
-                            }
-                            onClick={() =>
-                              authAction("auth_start", { remember })
-                            }
-                          >
-                            {authenticating || authWorking ? (
-                              <LoaderCircle size={15} className="spin" />
-                            ) : (
-                              <UserRound size={15} />
-                            )}
-                            {t("accounts.signIn")}
-                          </button>
-                          {authenticating && (
-                            <button
-                              className="btn"
-                              disabled={!native || authWorking}
-                              onClick={() => authAction("auth_cancel")}
-                            >
-                              {t("accounts.cancel")}
-                            </button>
-                          )}
-                        </div>
-                      )}
-                      {data.auth.message && (
-                        <div
-                          role="status"
-                          className={
-                            "auth-progress " +
-                            (data.auth.stage === "error" ? "auth-error" : "")
-                          }
-                        >
-                          {authenticating && (
-                            <LoaderCircle size={15} className="spin" />
-                          )}
-                          {data.auth.message}
-                        </div>
-                      )}
-                      {data.auth.warning && (
-                        <div className="auth-notice" role="status">
-                          {data.auth.warning}
-                        </div>
-                      )}
-                      {authError && (
-                        <p className="auth-error" role="alert">
-                          {authError}
-                        </p>
-                      )}
-                      {!native && (
-                        <p className="muted">{t("accounts.preview")}</p>
-                      )}
-                    </div>
-                    <details className="auth-settings">
-                      <summary>{t("accounts.appRegistration")}</summary>
-                      <p className="muted">{t("accounts.clientHelp")}</p>
-                      <label className="field-label" htmlFor="auth-client-id">
-                        {t("accounts.clientId")}
-                      </label>
-                      <input
-                        id="auth-client-id"
-                        className="field"
-                        value={clientId}
-                        onChange={(e) => setClientId(e.target.value)}
-                        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                        spellCheck={false}
-                        disabled={authWorking || authenticating}
-                      />
-                      <div className="toolbar">
-                        <button
-                          className="btn compact primary"
-                          disabled={
-                            !native ||
-                            authWorking ||
-                            authenticating ||
-                            busy ||
-                            !clientId.trim()
-                          }
-                          onClick={() =>
-                            authAction("auth_configure", {
-                              clientId: clientId.trim(),
-                            })
-                          }
-                        >
-                          <Check size={14} />
-                          {t("accounts.saveClient")}
-                        </button>
-                        <button
-                          className="btn compact"
-                          disabled={!native}
-                          onClick={() =>
-                            authAction("auth_open_help", { kind: "register" })
-                          }
-                        >
-                          <ExternalLink size={14} />
-                          {t("accounts.register")}
-                        </button>
-                        <button
-                          className="btn compact"
-                          disabled={!native}
-                          onClick={() =>
-                            authAction("auth_open_help", { kind: "tenant" })
-                          }
-                        >
-                          <ExternalLink size={14} />
-                          {t("accounts.azure")}
-                        </button>
-                        <button
-                          className="btn compact"
-                          disabled={!native}
-                          onClick={() =>
-                            authAction("auth_open_help", { kind: "review" })
-                          }
-                        >
-                          <ExternalLink size={14} />
-                          {t("accounts.review")}
-                        </button>
-                      </div>
-                    </details>
-                  </div>
-                ) : null}
-              </section>
-            </div>
+              onClose={closeAccountDialog}
+            />
           )}
+          {dialog === "account-appearance" &&
+            appearanceId &&
+            data?.auth.accounts.some((a) => a.profile.id === appearanceId) && (
+              <AccountAppearanceDialog
+                name={
+                  data.auth.accounts.find((a) => a.profile.id === appearanceId)!
+                    .profile.name
+                }
+                image={accountPresentation.images[appearanceId]}
+                onRefresh={() => void accountPresentation.refresh(appearanceId)}
+                onClose={() => setDialog(appearanceOrigin)}
+              />
+            )}
           {launcher.confirmationUi}
           {launcherLocal.ui}
           {toast && (

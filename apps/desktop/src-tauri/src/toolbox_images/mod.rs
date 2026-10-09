@@ -153,3 +153,32 @@ pub fn sanitize_canvas_png(encoded: &str) -> Result<Vec<u8>, String> {
     }
     pixels::encode(&pixels::decode(&bytes)?)
 }
+
+/// Official account textures share the toolbox's bounded PNG decoder and head
+/// compositing; renderer previews receive sanitized pixels, never remote URLs.
+pub fn account_skin(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let image = pixels::decode(bytes)?;
+    if image.width != 64 || !matches!(image.height, 32 | 64) {
+        return Err("官方皮肤尺寸无效".into());
+    }
+    Ok((
+        pixels::encode(&image)?,
+        pixels::encode(&pixels::head(&image, 64)?)?,
+    ))
+}
+pub fn account_cape(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let image = pixels::decode(bytes)?;
+    if image.width != 64 || image.height != 32 {
+        return Err("官方披风尺寸无效".into());
+    }
+    let mut rgba = Vec::with_capacity(10 * 16 * 4);
+    for y in 1..17 {
+        let start = (y * 64 + 1) * 4;
+        rgba.extend_from_slice(&image.rgba[start..start + 10 * 4]);
+    }
+    pixels::encode(&Pixels {
+        width: 10,
+        height: 16,
+        rgba,
+    })
+}

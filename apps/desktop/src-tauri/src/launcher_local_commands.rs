@@ -94,10 +94,7 @@ fn admission(s: &Shared, withdrawing: bool) -> Result<(), String> {
                 s.status.lock().unwrap().stage.as_str(),
                 "preparing" | "running"
             )
-            || matches!(
-                s.accounts.snapshot().stage.as_str(),
-                "preparing" | "waiting"
-            ))
+            || s.accounts.busy())
     {
         return Err("请先结束文件任务、游戏和微软登录，再移除启动器入口".into());
     }

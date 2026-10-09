@@ -6,6 +6,8 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+mod textures;
+pub use textures::{official_texture_url, ProfileTextures, TextureReference};
 const SCOPE: &str = "XboxLive.signin offline_access";
 fn now() -> u64 {
     SystemTime::now()
@@ -19,6 +21,8 @@ pub struct AccountSummary {
     pub uuid: String,
     pub name: String,
     pub expires_at: u64,
+    #[serde(default)]
+    pub textures: ProfileTextures,
 }
 #[derive(Clone, Serialize)]
 pub struct DeviceChallenge {
@@ -195,8 +199,16 @@ impl MicrosoftClient {
             .ok_or("认证服务器返回无效登录码有效期")?;
         // Always use a fixed Microsoft URL; never expose a server-supplied navigation target.
         cancelled(c)?;
+        let user_code = field(&v, "user_code")?;
+        if user_code.len() > 32
+            || !user_code
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err("认证服务器返回无效设备代码".into());
+        }
         on_challenge(DeviceChallenge {
-            user_code: field(&v, "user_code")?,
+            user_code,
             verification_uri: "https://www.microsoft.com/link".into(),
             expires_in: expiry,
         });
@@ -333,6 +345,7 @@ impl MicrosoftClient {
                 uuid,
                 name: field(&p, "name")?,
                 expires_at: now().saturating_add(expiry),
+                textures: textures::from_profile(&p),
             },
             access_token: access,
             refresh_token: refresh,
@@ -366,9 +379,22 @@ pub fn save_session(project: &str, s: &Session) -> Result<(), String> {
         client_id: s.client_id.clone(),
     };
     let bytes = serde_json::to_vec(&data).map_err(|_| "无法编码安全账户凭据")?;
-    entry(project, &s.account.id)?
+    let entry = entry(project, &s.account.id)?;
+    store_and_verify(&entry, &bytes)
+}
+fn store_and_verify(entry: &keyring::Entry, bytes: &[u8]) -> Result<(), String> {
+    entry
         .set_secret(&bytes)
-        .map_err(|_| "系统 Secret Service 无法保存凭据；账户仅在本次会话有效".into())
+        .map_err(|_| "无法保存登录，请解锁系统密钥环后重试保存".to_string())?;
+    // Mark an account remembered only after the OS store confirms the same data.
+    // No token is ever returned through IPC or copied to launcher JSON files.
+    let stored = entry
+        .get_secret()
+        .map_err(|_| "登录已写入密钥环，但读取验证失败，请重试保存".to_string())?;
+    if stored.as_slice() != bytes {
+        return Err("系统密钥环未保留完整登录凭据，请重试保存".into());
+    }
+    Ok(())
 }
 pub fn load_session(project: &str, id: &str) -> Result<Option<Session>, String> {
     let bytes = match entry(project, id)?.get_secret() {
@@ -404,6 +430,24 @@ mod tests {
         net::TcpListener,
     };
     const ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
+    #[test]
+    fn credential_readback_is_verified_without_using_the_system_keyring() {
+        let credential = keyring::mock::MockCredential::default();
+        let entry = keyring::Entry::new_with_credential(Box::new(credential));
+        store_and_verify(&entry, b"synthetic-credential").unwrap();
+        assert_eq!(entry.get_secret().unwrap(), b"synthetic-credential");
+    }
+    #[test]
+    fn credential_store_failure_is_actionable_and_does_not_echo_backend_details() {
+        let credential = keyring::mock::MockCredential::default();
+        credential.set_error(keyring::Error::PlatformFailure(Box::new(
+            std::io::Error::other("private-backend-detail"),
+        )));
+        let entry = keyring::Entry::new_with_credential(Box::new(credential));
+        let error = store_and_verify(&entry, b"synthetic-credential").unwrap_err();
+        assert!(error.contains("解锁"));
+        assert!(!error.contains("private-backend-detail"));
+    }
     fn server(replies: Vec<(&'static str, u16, Value)>) -> (String, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -518,6 +562,7 @@ mod tests {
                 uuid: "1234567890abcdef1234567890abcdef".into(),
                 name: "Old".into(),
                 expires_at: 0,
+                textures: ProfileTextures::default(),
             },
             access_token: "old".into(),
             refresh_token: "refresh-secret".into(),

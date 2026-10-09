@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url),
   ts = require("typescript");
 const source = fileURLToPath(new URL("../src/", import.meta.url));
-export function harness(name, props = {}) {
+export function harness(name, props = {}, options = {}) {
   const modules = new Map(),
     hooks = [],
     timers = new Map();
@@ -93,6 +93,7 @@ export function harness(name, props = {}) {
           InstanceOperationDialog: function InstanceOperationDialog() {},
         };
       if (id.endsWith(".css")) return {};
+      if (id.endsWith(".png")) return id;
       if (id.startsWith(".")) {
         const base = path.resolve(path.dirname(file), id);
         return load(
@@ -109,7 +110,7 @@ export function harness(name, props = {}) {
     );
     return module.exports;
   }
-  const component = load(path.join(source, `${name}.tsx`)),
+  const component = load(path.join(source, options.module || `${name}.tsx`)),
     i18n = load(path.join(source, "i18n.ts"));
   const state = load(path.join(source, "makerWorkspaceState.ts"));
   if (name === "ExperimentalProjects" && !props.draft)
@@ -118,7 +119,9 @@ export function harness(name, props = {}) {
     cursor = 0;
     dirty = false;
     pending = [];
-    tree = component[name](props);
+    tree = options.render
+      ? options.render(component, props)
+      : component[name](props);
     for (const effect of pending) effect();
   }
   async function flush() {

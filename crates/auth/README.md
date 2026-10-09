@@ -6,9 +6,9 @@ Rust library used by the desktop launcher for Microsoft device authorization and
 
 - `MicrosoftClient::login_device`: starts device authorization, reports the user code and progress, and accepts a cancellation flag.
 - `MicrosoftClient::refresh`: renews credentials and checks that the account identity remains unchanged.
-- `Session::public`: returns the account's display information.
+- `Session::public`: returns the account's display information and active skin/cape references.
 - `Session::launch_identity`: provides the authenticated identity for the launch core.
-- `save_session`, `load_session`, `delete_session`: store credentials through Linux Secret Service.
+- `save_session`, `load_session`, `delete_session`: store credentials through the operating system keyring (Linux Secret Service, Windows Credential Manager or macOS Keychain). Saving verifies that the stored bytes can be read back.
 
 The application supplies its client ID when constructing `MicrosoftClient`. Application registration and service access are managed by the launcher maintainer.
 

@@ -63,6 +63,23 @@ fn head_and_alpha_overlay_are_cropped_and_nearest_resized() {
     );
 }
 #[test]
+fn official_account_previews_crop_actual_head_and_cape_front_pixels() {
+    let mut image = skin(64);
+    paint(&mut image, 8, 8, 8, 8, [30, 60, 90, 255]);
+    paint(&mut image, 40, 8, 8, 8, [0, 0, 0, 0]);
+    let (_, avatar) = account_skin(&pixels::encode(&image).unwrap()).unwrap();
+    let avatar = pixels::decode(&avatar).unwrap();
+    assert_eq!((avatar.width, avatar.height), (64, 64));
+    assert_eq!(&avatar.rgba[..4], &[30, 60, 90, 255]);
+    let mut cape = skin(32);
+    paint(&mut cape, 1, 1, 10, 16, [10, 20, 30, 255]);
+    let cape = pixels::decode(&account_cape(&pixels::encode(&cape).unwrap()).unwrap()).unwrap();
+    assert_eq!((cape.width, cape.height), (10, 16));
+    assert!(cape.rgba.chunks_exact(4).all(|p| p == [10, 20, 30, 255]));
+    assert!(account_cape(&pixels::encode(&image).unwrap()).is_err());
+    assert!(account_skin(b"not png").is_err());
+}
+#[test]
 fn legacy_opaque_padding_is_not_a_modern_opaque_hat() {
     let mut legacy = skin(32);
     paint(&mut legacy, 8, 8, 8, 8, [90, 20, 10, 255]);

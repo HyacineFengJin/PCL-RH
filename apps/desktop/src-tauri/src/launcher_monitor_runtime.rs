@@ -186,10 +186,7 @@ pub fn begin_preparation(shared: &Shared, next: RunStatus) -> Result<Generation,
     if matches!(run.stage.as_str(), "preparing" | "running") {
         return Err("已有启动任务或游戏正在运行".into());
     }
-    if matches!(
-        shared.accounts.snapshot().stage.as_str(),
-        "preparing" | "waiting"
-    ) {
+    if shared.accounts.busy() {
         return Err("请先完成或取消微软登录".into());
     }
     session.generation = session

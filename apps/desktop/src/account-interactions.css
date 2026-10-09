@@ -16,7 +16,7 @@
   width: 400px;
   max-width: calc(100vw - 40px);
   padding: 22px;
-  background: #fff;
+  background: var(--ce-surface, #fff);
   border-radius: 7px;
   box-shadow: 0 4px 18px #1a243666;
   color: var(--ce-text, #343e4b);
@@ -27,7 +27,7 @@
   color: var(--ce-link, #156acd);
   margin: 0 0 14px;
   padding: 0 6px 9px;
-  border-bottom: 2px solid #156acd;
+  border-bottom: 2px solid var(--ce-link, #156acd);
   white-space: nowrap;
 }
 .ce-account-types {

@@ -135,10 +135,7 @@ async fn installation(
                 shared.status.lock().unwrap().stage.as_str(),
                 "preparing" | "running"
             )
-            || matches!(
-                shared.accounts.snapshot().stage.as_str(),
-                "preparing" | "waiting"
-            )
+            || shared.accounts.busy()
         {
             return Err("请在文件任务、游戏和微软登录结束后操作启动器安装文件".into());
         }
