@@ -920,6 +920,8 @@
   color: var(--ma-orange);
 }
 .ma-library {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -927,6 +929,9 @@
   border-radius: 12px;
   border: 1px solid var(--ma-line);
   background: var(--ma-paper);
+}
+.ma-library > * {
+  flex-shrink: 0;
 }
 .ma-library-header {
   display: flex;
@@ -996,8 +1001,10 @@
 .ma-library-empty {
   display: flex;
   flex-direction: column;
+  flex: 1 0 auto;
   align-items: center;
-  padding: 70px 20px;
+  justify-content: center;
+  padding: 40px 20px;
   gap: 15px;
   color: var(--ma-purple);
   text-align: center;
@@ -1494,8 +1501,27 @@
   border-top: 1px solid var(--ce-border, #dbe3ec);
 }
 .body-layout.maker-space > .content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   padding: 12px;
   overflow: hidden;
+}
+/* Main wraps every page in a transition container. Carry the remaining height
+   through that wrapper, after any recovery banners; a percentage on Maker alone
+   resolves to content height and leaves empty space in tall launcher windows. */
+.body-layout.maker-space > .content > .ce-main-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.body-layout.maker-space > .content > .ce-main-page > .maker-agent {
+  flex: 1;
+  height: auto;
+}
+.body-layout.maker-space > .content > .error-banner {
+  flex-shrink: 0;
 }
 :root:lang(en) .body-layout.maker-space > .section-sidebar {
   width: 48px;
