@@ -102,6 +102,7 @@ export type JobView = {
   summary: JobSummary;
   mode: string;
   result: unknown;
+  activity?: import("./MakerAgentState").MakerActivity[];
   error?: { message: string };
   artifacts: Artifact[];
   reviews: string[];
@@ -189,6 +190,11 @@ export type MakerSpec = {
   }[];
 };
 export type ExperimentalOperation =
+  | "maker_thread_read"
+  | "maker_threads"
+  | "maker_thread_run"
+  | "maker_thread_apply"
+  | "maker_thread_archive"
   | "status"
   | "projects_list"
   | "project_create"
@@ -196,6 +202,7 @@ export type ExperimentalOperation =
   | "project_units"
   | "project_unit_read"
   | "project_unit_save"
+  | "project_protection"
   | "project_files"
   | "project_file_read"
   | "project_search"

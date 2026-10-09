@@ -391,16 +391,24 @@ test("task view distinguishes source, compile and game states without executing 
       artifacts: [{ operationId: "generate-1", files: ["A.java"] }],
     };
   };
-  const ui = harness("MakerJob", {
+  const ui = harness("MakerRoundView", {
     api,
     native: true,
-    jobId: "job-1",
+    threadId: "thread-1",
+    round: { jobId: "job-1", request: "Maintain this mod", mode: "execute" },
+    units: [],
+    recordedSources: [],
+    onDiff() {},
+    onFollowup() {},
+    onCommitted: async () => {},
+    onPending() {},
+    onActivity() {},
     onSource() {},
   });
   await ui.flush();
-  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.sourceAvailable")));
-  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.buildNotRun")));
-  assert.ok(content(ui.tree).includes(ui.i18n.t("maker.gameNotRun")));
+  assert.ok(content(ui.tree).includes(ui.i18n.t("agent.sourceProduced")));
+  assert.ok(content(ui.tree).includes(ui.i18n.t("agent.buildLabel")));
+  assert.ok(content(ui.tree).includes(ui.i18n.t("agent.gameLabel")));
   assert.deepEqual(calls, ["job_read"]);
   ui.close();
 });

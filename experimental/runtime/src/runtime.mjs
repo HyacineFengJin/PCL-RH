@@ -73,6 +73,13 @@ export class AgentRuntime {
       check(profile && provider, 'PROVIDER_UNAVAILABLE', 'Persisted profile/provider is unavailable');
       job.status = 'running'; job.attempt++; job.error = null;
       await this.store.save(job); await this.store.event(id, 'job.started', { attempt: job.attempt });
+      // Permission modes are captured by the trusted host, not by model text.
+      // Other workflows and older Maker jobs keep their original tool contract.
+      const intent = job.profile === 'maker' ? job.input.makerThread?.mode : null;
+      check(!intent || ['ask', 'plan', 'execute'].includes(intent), 'INVALID_MODE', 'Unsupported Maker mode');
+      const allowedTools = intent && intent !== 'execute'
+        ? profile.tools.filter(name => ['workspace.read', 'maker.plan', 'maker.report_plan'].includes(name))
+        : profile.tools.filter(name => !(intent && job.input.sourceOperationId && name === 'maker.generate'));
       const signal = run.controller.signal;
       const workspace = await this.store.workspace(id);
       // Serial host-tool execution avoids same-workspace mutations racing each other.
@@ -82,7 +89,7 @@ export class AgentRuntime {
       };
       const ctx = {
         job: cloneJson(job), profile, signal, workspaceRoot: workspace.root,
-        toolDescriptions: this.tools.describe(profile.tools),
+        toolDescriptions: this.tools.describe(allowedTools),
         checkpoint: state => serial(async () => {
           throwIfAborted(signal);
           const nextState = cloneJson(state, { maxBytes: 64_000, code: 'CHECKPOINT_TOO_LARGE' });
@@ -93,8 +100,14 @@ export class AgentRuntime {
           const toolSignal = callSignal ? AbortSignal.any([signal, callSignal]) : signal;
           throwIfAborted(toolSignal);
           check(typeof operationId === 'string' && /^[a-zA-Z0-9_-]{1,120}(?![\s\S])/.test(operationId), 'INVALID_OPERATION', 'Tool operation needs a stable ID');
-          const tool = this.tools.get(name, profile.tools);
+          const tool = this.tools.get(name, allowedTools);
           const args = cloneJson(input); tool.validate(args);
+          if (intent && name === 'maker.preview_source_edit') {
+            const protectedPaths = job.input.makerThread.protectedPaths ?? [];
+            check(!args.request.edits.some(edit=>protectedPaths.includes(edit.path)), 'HANDWRITTEN_PROTECTED', 'Agent cannot edit handwritten protected files; choose an unprotected implementation path');
+          }
+          if (intent === 'execute' && ['maker.generate', 'maker.preview_revision', 'maker.preview_source_edit'].includes(name))
+            check(job.operations.some(o => o.name === 'maker.report_plan' && o.status === 'completed'), 'PLAN_REQUIRED', 'Record a plan before source changes');
           const fingerprint = createHash('sha256').update(canonical({ name, args })).digest('hex');
           let operation = job.operations.find(o => o.id === operationId);
           if (operation) {
@@ -103,7 +116,7 @@ export class AgentRuntime {
             check(tool.replaySafety !== 'manual', 'RECONCILIATION_REQUIRED', 'An incomplete non-idempotent tool needs manual reconciliation');
           } else {
             check(job.operations.length < 200, 'TOOL_LIMIT', 'Job exceeded its tool operation budget');
-            operation = { id: operationId, name, fingerprint, status: 'running' };
+            operation = { id: operationId, name, fingerprint, status: 'running', ...(intent && name === 'workspace.read' ? { path: args.path } : {}) };
             cloneJson([...job.operations, operation], { maxBytes: 128_000, code: 'RECEIPT_BUDGET' });
             job.operations.push(operation);
           }

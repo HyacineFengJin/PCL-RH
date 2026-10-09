@@ -33,6 +33,7 @@ export function MakerSource({
   draft,
   onContext,
   readOnly = false,
+  initialPath,
 }: {
   api: Api;
   native: boolean;
@@ -42,11 +43,12 @@ export function MakerSource({
   draft: MakerDraft;
   onContext?: (path: string) => void;
   readOnly?: boolean;
+  initialPath?: string;
 }) {
   const key = `${project?.id ?? ""}:${project?.revision ?? ""}:${point?.id ?? ""}:${source.jobId}:${source.operationId}`;
   const scope = useMakerScope(api, native, key);
   const [index, setIndex] = useState<ProjectIndexPage | null>(null),
-    [filter, setFilter] = useState("");
+    [filter, setFilter] = useState(initialPath ?? "");
   const [names, setNames] = useState<string[]>([]),
     [tabs, setTabs] = useState<string[]>([]),
     [path, setPath] = useState("");
@@ -87,6 +89,14 @@ export function MakerSource({
         knownFiles.current.set(file.path, file.sha256);
       setIndex(value);
       setNames(value.files.map((value) => value.path));
+      if (
+        initialPath &&
+        !path &&
+        value.files.some((file) => file.path === initialPath)
+      ) {
+        setPath(initialPath);
+        setTabs([initialPath]);
+      }
     } else {
       const value = await call<JobView>(api, "job_read", {
         jobId: source.jobId,
@@ -100,6 +110,10 @@ export function MakerSource({
       setSourceWorkflow(value.summary.workflow);
       const filtered = selected.files.filter((name) => name.includes(filter));
       setNames(filtered.slice(offset, offset + 50));
+      if (initialPath && !path && filtered.includes(initialPath)) {
+        setPath(initialPath);
+        setTabs([initialPath]);
+      }
       setIndex({
         fingerprint: "",
         fileCount: selected.files.length,
@@ -162,7 +176,7 @@ export function MakerSource({
         });
         if (!current()) return;
         if (value.path !== path) throw new Error(t("maker.responseMismatch"));
-        const saved = draft.buffers.get(bufferKey);
+        const saved = readOnly ? undefined : draft.buffers.get(bufferKey);
         if (saved && saved.sha256 !== value.sha256)
           throw new Error(t("maker.bufferSourceChanged"));
         setFile(value);

@@ -20,6 +20,11 @@ use tauri::State;
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
+    MakerThreadRead,
+    MakerThreads,
+    MakerThreadRun,
+    MakerThreadApply,
+    MakerThreadArchive,
     Status,
     Catalog,
     ProjectsList,
@@ -28,6 +33,7 @@ pub enum Operation {
     ProjectUnits,
     ProjectUnitRead,
     ProjectUnitSave,
+    ProjectProtection,
     ProjectFiles,
     ProjectFileRead,
     ProjectSearch,

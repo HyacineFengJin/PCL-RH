@@ -2,7 +2,7 @@
   "schema_version": 1,
   "components": {
     "extensions": "0.6.2",
-    "maker": "1.0-preview",
+    "maker": "1.1-preview",
     "porter": "0.6.0",
     "runtime": "v7",
     "pi": "1.0.4"
@@ -11,10 +11,12 @@
     "vendor/maker/LICENSE": "2c57b3d0eca4f585a92b09359308cf329a4cac4f80148a34fe6dc06f653b2484",
     "vendor/maker/mod_creator.py": "8dcfbf7cf5971cb925aabfcebbfea5df9c872db7eac49a722a775c14f546ecb3",
     "vendor/maker/projects.mjs": "6368a4cfd8a3e2644a79e68a82ae2ab5abf82e9a6cd2ecdc860539eba9f830c7",
+    "vendor/maker/protection.mjs": "83aeebaad4a0ba6696e6011f4451d314cf2cf8bc0864fae7a27f44bda6ed35cb",
     "vendor/maker/source-compare.mjs": "1d9e0554d97a270be83c9b45029d30ff24d442dfd0187f529e2ffdcac8dadad3",
     "vendor/maker/source-index.mjs": "a3c464449d7b2e03a56eed0ce785c7d11157ecd58a60029ff52a614c3bbb4da1",
     "vendor/maker/source_editor.py": "c5c38f7b011b2321a6c2ac28f63d50a11549fc5736027827821afe65c45ce470",
-    "vendor/maker/workspace.mjs": "1aa7ed111db3b2ea2e9c260cca2c961a4adc515f3fed22aa660ada29d3ad84a5",
+    "vendor/maker/threads.mjs": "4d54075d630bfec0ccfa8037f4533883426c7bf08adefa41af8fd06a7d6de9c2",
+    "vendor/maker/workspace.mjs": "d2ee52dac062ff992283552790e4ba6fd3c3224343a6410fa518738ac03d0421",
     "vendor/porter/LICENSE": "40e2ace1590a52ed85ac4e53b34558d8c65411b16771a17a38afe5f6e28ba418",
     "vendor/porter/__init__.py": "3526599c93ca8918114bf8e7769c7a76dd5364664ace125e9f3f80a1b8b51d9e",
     "vendor/porter/__main__.py": "4fda53a2cd5858a283821ee072296c0803ce53b6bdd71c8fb49762f029710360",

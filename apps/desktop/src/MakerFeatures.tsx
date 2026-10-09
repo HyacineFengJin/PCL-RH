@@ -24,6 +24,7 @@ export function MakerFeatures({
   draft,
   onRoute,
   onContext,
+  onSaved,
 }: {
   api: Api;
   native: boolean;
@@ -32,6 +33,7 @@ export function MakerFeatures({
   draft: MakerDraft;
   onRoute: (route: MakerRoute) => void;
   onContext: (unit: MakerUnit | undefined) => void;
+  onSaved?: (unit: MakerUnit) => void;
 }) {
   const key = `${project.id}:${project.revision}:${route.kind ?? "all"}:${route.unitId ?? ""}`;
   const scope = useMakerScope(api, native, key);
@@ -144,6 +146,7 @@ export function MakerFeatures({
     setAuthoritativeRevision(result.workspaceRevision);
     setUnit(result.unit);
     onContext(result.unit);
+    onSaved?.(result.unit);
     if (!unit.id)
       onRoute({ ...route, unitId: result.unit.id, kind: result.unit.kind });
   }

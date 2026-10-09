@@ -69,6 +69,17 @@ export function harness(name, props = {}, options = {}) {
       timers.set(id, fn);
       return id;
     },
+    setTimeout(fn) {
+      const id = {};
+      timers.set(id, () => {
+        timers.delete(id);
+        fn();
+      });
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
     clearInterval(id) {
       timers.delete(id);
     },
@@ -102,15 +113,33 @@ export function harness(name, props = {}, options = {}) {
       }
       return require(id);
     }
-    new Function("require", "module", "exports", "window", code)(
+    new Function(
+      "require",
+      "module",
+      "exports",
+      "window",
+      "setTimeout",
+      "clearTimeout",
+      "document",
+      code,
+    )(
       localRequire,
       module,
       module.exports,
       browser,
+      browser.setTimeout,
+      browser.clearTimeout,
+      { activeElement: null },
     );
     return module.exports;
   }
-  const component = load(path.join(source, options.module || `${name}.tsx`)),
+  const component = load(
+      path.join(
+        source,
+        options.module ||
+          `${name === "MakerRoundView" ? "MakerThreadView" : name === "MakerCharter" ? "MakerProjectPanels" : name}.tsx`,
+      ),
+    ),
     i18n = load(path.join(source, "i18n.ts"));
   const state = load(path.join(source, "makerWorkspaceState.ts"));
   if (name === "ExperimentalProjects" && !props.draft)

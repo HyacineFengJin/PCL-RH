@@ -11,6 +11,8 @@ import { recordDigest } from "../../src/artifact-snapshot.mjs";
 export const UNIT_KINDS = Object.freeze([
   "items",
   "blocks",
+  "entities",
+  "structures",
   "rules",
   "systems",
   "assets",

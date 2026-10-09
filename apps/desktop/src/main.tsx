@@ -2160,7 +2160,9 @@ function App() {
               {t("main.loading")}
             </div>
           ) : (
-            <div className="body-layout">
+            <div
+              className={`body-layout ${screen === "home" && tab === "tools" && (toolsPage === "maker" || toolsPage === "projects") ? "maker-space" : ""}`}
+            >
               <aside
                 className={
                   screen === "home" && tab === "launch"

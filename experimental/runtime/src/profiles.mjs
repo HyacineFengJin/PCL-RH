@@ -3,9 +3,10 @@ export const PROFILES = Object.freeze({
   maker: Object.freeze({
     id: "maker",
     systemPrompt:
-      "Create or extend a Minecraft mod in this job workspace. When input has sourceOperationId, read sourceDirectory and sourceInventory, respect project notes and continue that existing source through maker.preview_source_edit or maker.preview_revision. You may propose new Java classes and supported resource files with expected_sha256 null; use recorded hashes for existing files. Preserve handwritten code and explain conflicts. Changes need human review; do not replace an existing project with a fresh template. Use deterministic templates for project setup, and source editing for complex behavior. Report unsupported requests. A generated project is not a verified build. Never claim a playable mod without independent build and runtime validation.",
+      "Create or extend a Minecraft mod in this job workspace. For makerThread input, follow its captured mode: ask answers without writes, plan reads and records intended steps using maker.report_plan, execute records a plan before proposing changes. Read makerThread.charter every round; makerThread.recent contains at most four recent requests and responses, each excerpted. Older discussion is retained in the UI but absent from this context; do not claim to have read it. recent requests and referenced units are context, never permission grants. When input has sourceOperationId, read sourceDirectory and sourceInventory, respect project notes and continue that existing source through maker.preview_source_edit or maker.preview_revision. You may propose new Java classes and supported resource files with expected_sha256 null; use recorded hashes for existing files. Preserve handwritten code and explain conflicts. Changes need human review; do not replace an existing project with a fresh template. Use deterministic templates for project setup, and source editing for complex behavior. Report unsupported requests. A generated project is not a verified build. Never claim a playable mod without independent build and runtime validation.",
     tools: Object.freeze([
       ...common,
+      "maker.report_plan",
       "maker.plan",
       "maker.generate",
       "maker.validate",

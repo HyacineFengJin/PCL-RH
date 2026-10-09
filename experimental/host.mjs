@@ -40,6 +40,14 @@ import {
   searchIndex,
 } from "./runtime/vendor/maker/source-index.mjs";
 import { MakerProjects } from "./runtime/vendor/maker/projects.mjs";
+import {
+  snapshotProtection,
+  indexedProtection,
+} from "./runtime/vendor/maker/protection.mjs";
+import {
+  MakerThreads,
+  makerPlanTool,
+} from "./runtime/vendor/maker/threads.mjs";
 import { MakerWorkspace } from "./runtime/vendor/maker/workspace.mjs";
 import { PorterProjects } from "./porter-projects.mjs";
 import { PorterVersions } from "./porter-versions.mjs";
@@ -63,6 +71,7 @@ const liveRuns = new Map();
 const pendingJobs = new Set();
 const hasCurrentJob = (id) => pendingJobs.has(id) || runtime.hasActiveJob(id);
 const adapters = registerDomainAdapters(createDefaultTools());
+adapters.registry.register(makerPlanTool);
 const bridge = new SubprocessSupervisor({
   trustedCommands: Object.fromEntries(
     [
@@ -323,6 +332,66 @@ async function indexedArtifact(jobId, operationId) {
 }
 const projects = await new MakerProjects(root, indexedArtifact).init();
 const makerWorkspace = await new MakerWorkspace(root, projects).init();
+const makerThreads = await new MakerThreads(root, {
+  projects,
+  job: async (id) => {
+    const value = await runtime.getJob(id);
+    const directory = path.join(
+      runtime.store.directory(id),
+      "review-control/reviews",
+    );
+    const reviewIds = (
+      await fs.readdir(directory).catch((error) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      })
+    )
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => name.slice(0, -5));
+    return {
+      ...value,
+      reviewIds,
+      status:
+        ["queued", "running"].includes(value.status) && !hasCurrentJob(id)
+          ? "interrupted"
+          : value.status,
+    };
+  },
+  create: (args) =>
+    dispatch(args.id ? "project_continue" : "job_create", {
+      ...args,
+      profile: "maker",
+      mode: "live",
+      deferThreadStart: true,
+    }),
+  start: async (jobId) => {
+    const job = await runtime.getJob(jobId);
+    const captured = liveRuns.get(jobId);
+    return startCapturedJob(job, captured);
+  },
+  abort: async (jobId) => {
+    pendingJobs.delete(jobId);
+    liveRuns.delete(jobId);
+    await runtime.cancel(jobId);
+  },
+  review: (jobId, reviewId) => reviews.getReview(jobId, reviewId),
+  apply: async (jobId, reviewId, digest) => {
+    const approval = await reviews.approveReview(jobId, {
+      reviewId,
+      expectedDigest: digest,
+    });
+    return reviews.applyApprovedReview(jobId, {
+      reviewId,
+      approvalToken: approval.approvalToken,
+    });
+  },
+}).init();
+async function admitMakerThreadJob(job, preset, deferred) {
+  if (!deferred) return startCapturedJob(job, preset);
+  pendingJobs.add(job.id);
+  liveRuns.set(job.id, { selection: preset.selection, limits: preset.limits });
+  return { jobId: job.id };
+}
 async function startCapturedJob(job, preset) {
   if (preset) {
     selection = preset.selection;
@@ -388,7 +457,7 @@ async function dispatch(operation, a) {
       return {
         versions: {
           extensions: "0.6.2",
-          maker: "1.0-preview",
+          maker: "1.1-preview",
           porter: "0.6.0",
           runtime: "v7",
           pi: "1.0.4",
@@ -405,6 +474,59 @@ async function dispatch(operation, a) {
       };
     case "catalog":
       return domain("catalog", {});
+    case "maker_thread_read":
+      return makerThreads.read(a.threadId);
+    case "maker_threads": {
+      const listing = await makerThreads.list();
+      const pendingJobs = [];
+      const threads = [];
+      for (const record of listing.threads) {
+        const last = record.rounds.at(-1);
+        let summary = null;
+        if (last) {
+          const job = await makerThreads.job(last.jobId);
+          summary = {
+            ...(await runtime.getPublicJobSummary(last.jobId)),
+            status: job.status,
+          };
+          const pending = [];
+          for (const reviewId of job.reviewIds) {
+            const review = await reviews.getReview(job.id, reviewId);
+            if (["pending", "approved"].includes(review.status))
+              pending.push(reviewId);
+          }
+          if (
+            pending.length ||
+            (!record.projectId &&
+              job.operations.some((op) => op.result?.outputDirectory))
+          )
+            pendingJobs.push(job.id);
+        }
+        threads.push({
+          ...record,
+          notes: "",
+          rounds: last
+            ? [
+                {
+                  jobId: last.jobId,
+                  mode: last.mode,
+                  checkpointId: last.checkpointId,
+                  request: last.request.slice(0, 240),
+                },
+              ]
+            : [],
+          roundCount: record.rounds.length,
+          summary,
+        });
+      }
+      return { threads, errors: listing.errors, pendingJobs };
+    }
+    case "maker_thread_run":
+      return makerThreads.run(a);
+    case "maker_thread_apply":
+      return makerThreads.approve(a);
+    case "maker_thread_archive":
+      return makerThreads.archive(a);
     case "projects_list":
       return { projects: await projects.list() };
     case "project_create":
@@ -417,6 +539,8 @@ async function dispatch(operation, a) {
       return makerWorkspace.read(a);
     case "project_unit_save":
       return makerWorkspace.save(a);
+    case "project_protection":
+      return indexedProtection(await projects.source(a));
     case "project_files":
       return indexPage(await projects.source(a), a);
     case "project_file_read":
@@ -480,6 +604,14 @@ async function dispatch(operation, a) {
         input: {
           spec,
           prompt: a.prompt,
+          ...(a.makerThread
+            ? {
+                makerThread: {
+                  ...a.makerThread,
+                  protectedPaths: snapshotProtection(source.snapshot),
+                },
+              }
+            : {}),
           sourceOperationId: operationId,
           sourceDirectory: outputDirectory,
           sourceInventory: source.snapshot.inventory.map((entry) => ({
@@ -520,7 +652,11 @@ async function dispatch(operation, a) {
           },
         });
         await runtime.store.save(job);
-        return { ...(await startCapturedJob(job, preset)), operationId, spec };
+        return {
+          ...(await admitMakerThreadJob(job, preset, a.deferThreadStart)),
+          operationId,
+          spec,
+        };
       } catch (error) {
         await runtime.cancel(job.id);
         throw error;
@@ -759,7 +895,15 @@ async function dispatch(operation, a) {
       }
       const input =
         a.profile === "maker"
-          ? { spec: a.spec, ...(a.mode === "live" ? { prompt: a.prompt } : {}) }
+          ? {
+              spec: a.spec,
+              ...(a.mode === "live"
+                ? {
+                    prompt: a.prompt,
+                    ...(a.makerThread ? { makerThread: a.makerThread } : {}),
+                  }
+                : {}),
+            }
           : {
               files,
               targetId: a.targetId,
@@ -789,7 +933,9 @@ async function dispatch(operation, a) {
         await runtime.cancel(job.id);
         throw error;
       }
-      return startCapturedJob(job, preset);
+      return a.profile === "maker"
+        ? admitMakerThreadJob(job, preset, a.deferThreadStart)
+        : startCapturedJob(job, preset);
     }
     case "job_read": {
       const job = await runtime.getJob(a.jobId);
@@ -805,6 +951,21 @@ async function dispatch(operation, a) {
           : {}),
         mode: job.provider === "pcl-template" ? "template" : "live",
         result: job.result,
+        ...(job.profile === "maker"
+          ? {
+              activity: job.operations.map((op) => ({
+                id: op.id,
+                name: op.name,
+                status: op.status,
+                ...(op.name === "workspace.read" && typeof op.path === "string"
+                  ? { path: op.path }
+                  : {}),
+                ...(op.name === "maker.report_plan" && op.status === "completed"
+                  ? { steps: op.result.steps }
+                  : {}),
+              })),
+            }
+          : {}),
         error: job.error,
         ...(job.profile === "porter"
           ? { porterSource: await reviews.getPorterSource(job.id) }
