@@ -1,5 +1,5 @@
 /** Editable work budgets are separate from transport/receipt size safeguards.
- * Keep tool calls within AgentRuntime's 200-operation durable receipt budget. */
+ * Zero removes a work budget; the ranges describe supported positive values. */
 export const PI_WORK_LIMITS = Object.freeze({
   modelTurns: 32,
   toolCalls: 128,
@@ -32,7 +32,7 @@ export function normalizeWorkLimits(input = {}) {
     const [min, max] = PI_LIMIT_RANGES[key];
     if (
       !Number.isFinite(value) ||
-      value < min ||
+      (value !== 0 && value < min) ||
       value > max ||
       (key !== "estimatedBudgetUsd" && !Number.isInteger(value))
     )

@@ -28,7 +28,7 @@ function runLimits(overrides) {
   for (const [key, value] of Object.entries(limits)) {
     check(
       Number.isFinite(value) &&
-        value > 0 &&
+        (value > 0 || (value === 0 && Object.hasOwn(PI_WORK_LIMITS, key))) &&
         value <= (PI_LIMIT_RANGES[key]?.[1] ?? PI_TRANSPORT_LIMITS[key]) &&
         (key === "estimatedBudgetUsd" || Number.isInteger(value)),
       "INVALID_LIVE_CONFIG",
@@ -95,6 +95,13 @@ export class LivePiProvider {
     this.#fetch =
       dependencies.fetch ?? ((...args) => globalThis.fetch(...args));
   }
+  // The durable runtime must use the same host-owned count budget. Otherwise
+  // its legacy 200-operation cap would defeat an unlimited preset.
+  getToolOperationLimit(job) {
+    return this.#getLimits
+      ? runLimits(this.#getLimits(job)).toolCalls
+      : this.#limits.toolCalls;
+  }
   async run(ctx) {
     check(
       this.#enabled,
@@ -147,10 +154,13 @@ export class LivePiProvider {
       controller.abort();
       return failure;
     };
-    const timer = setTimeout(
-      () => stop("MODEL_TIMEOUT", "The live job reached its time limit"),
-      limits.wallTimeMs,
-    );
+    const timer =
+      limits.wallTimeMs > 0
+        ? setTimeout(
+            () => stop("MODEL_TIMEOUT", "The live job reached its time limit"),
+            limits.wallTimeMs,
+          )
+        : undefined;
     const onAbort = () => {
       if (session)
         abortPromise ??= Promise.resolve()
@@ -186,10 +196,12 @@ export class LivePiProvider {
         signal,
       );
       const selectedModel = installPiModel(modelRuntime, selection);
-      const outputLimit = Math.min(
-        limits.maximumOutputTokens,
-        selectedModel.maxTokens,
-      );
+      // Providers require a positive maxTokens. Zero removes our ceiling and
+      // uses the selected model's capacity; it must never be sent as maxTokens: 0.
+      const outputLimit =
+        limits.maximumOutputTokens === 0
+          ? selectedModel.maxTokens
+          : Math.min(limits.maximumOutputTokens, selectedModel.maxTokens);
       // Pi can add a thinking budget to maxTokens for Anthropic. Clamp the
       // per-job model ceiling as well, so that addition stays under our cap.
       const model = { ...selectedModel, maxTokens: outputLimit };
@@ -206,7 +218,7 @@ export class LivePiProvider {
             "The model request exceeded its size limit",
           );
         validatePiRequest(model, url, options, outputLimit);
-        if (counts.requests >= limits.modelTurns)
+        if (limits.modelTurns > 0 && counts.requests >= limits.modelTurns)
           throw stop("MODEL_TURN_LIMIT", "The job reached its request limit");
         if (selection.costKnown) {
           // Cache-miss estimate with input overhead, not a provider billing quote.
@@ -215,8 +227,8 @@ export class LivePiProvider {
               outputLimit * selection.cost.output) /
             1_000_000;
           if (
-            counts.reservedEstimatedUsd + estimate >
-            limits.estimatedBudgetUsd
+            limits.estimatedBudgetUsd > 0 &&
+            counts.reservedEstimatedUsd + estimate > limits.estimatedBudgetUsd
           )
             throw stop(
               "MODEL_SPEND_LIMIT",
@@ -271,7 +283,8 @@ export class LivePiProvider {
         signal,
         invoke: async (...args) => {
           throwIfAborted(signal);
-          if (++counts.toolCalls > limits.toolCalls)
+          counts.toolCalls++;
+          if (limits.toolCalls > 0 && counts.toolCalls > limits.toolCalls)
             throw stop(
               "MODEL_TOOL_LIMIT",
               "The job reached its tool-call limit",
@@ -314,7 +327,8 @@ export class LivePiProvider {
         requestOptions = {},
       ) => {
         throwIfAborted(signal);
-        if (++counts.modelTurns > limits.modelTurns)
+        counts.modelTurns++;
+        if (limits.modelTurns > 0 && counts.modelTurns > limits.modelTurns)
           throw stop(
             "MODEL_TURN_LIMIT",
             "The job reached its model-turn limit",
@@ -332,7 +346,7 @@ export class LivePiProvider {
           maxTokens: outputLimit,
           maxRetries: 0,
           maxRetryDelayMs: 0,
-          timeoutMs: limits.wallTimeMs,
+          timeoutMs: limits.wallTimeMs || undefined,
           cacheRetention: "none",
           fetch: guardFetch,
           env: {},

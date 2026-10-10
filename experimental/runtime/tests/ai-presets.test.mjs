@@ -82,6 +82,35 @@ test("blank edits retain keys on the same route; a new endpoint cannot inherit t
   });
   assert.equal(presets.selected().selection.key, "");
 });
+test("zero budgets survive save, restart and later preset edits", async (t) => {
+  const { presets, root } = await fixture(t);
+  const unlimited = Object.fromEntries(
+    Object.keys(PI_WORK_LIMITS).map((key) => [key, 0]),
+  );
+  await presets.save({ name: "Unlimited", config, limits: unlimited });
+  const restored = await new AiPresets(root).init();
+  assert.equal(restored.view().warning, null);
+  assert.deepEqual(restored.selected().limits, unlimited);
+  const captured = restored.selected();
+  await restored.save({
+    id: captured.id,
+    name: "Limited",
+    config,
+    limits: PI_WORK_LIMITS,
+  });
+  assert.deepEqual(captured.limits, unlimited);
+  assert.deepEqual(restored.selected().limits, PI_WORK_LIMITS);
+  assert.doesNotThrow(() => new LivePiProvider({ limits: unlimited }));
+  for (const key of Object.keys(unlimited)) {
+    assert.throws(() => normalizeWorkLimits({ [key]: -1 }));
+    assert.throws(() => normalizeWorkLimits({ [key]: NaN }));
+    assert.throws(() => normalizeWorkLimits({ [key]: Infinity }));
+  }
+  // Zero is a work-budget sentinel, never a way to remove transport bounds.
+  for (const key of ["requestBytes", "responseBytes", "resultBytes"]) {
+    assert.throws(() => new LivePiProvider({ limits: { [key]: 0 } }));
+  }
+});
 test("job snapshots survive subsequent edits, selection and deletion", async (t) => {
   const { presets, root } = await fixture(t);
   await presets.save({ name: "First", config });

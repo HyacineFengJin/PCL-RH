@@ -223,19 +223,6 @@
 .experimental-porter-message .ce-button {
   margin-top: 8px;
 }
-.experimental-engine-credit > p {
-  margin: 0;
-}
-.experimental-pi-link {
-  margin-left: 12px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--ce-link, #2078da);
-}
-.experimental-pi-link:hover {
-  text-decoration: underline;
-}
 .experimental-porter-comparison summary {
   overflow-wrap: anywhere;
 }

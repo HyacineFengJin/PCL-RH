@@ -82,6 +82,10 @@ export class AgentRuntime {
         : profile.tools.filter(name => !(intent && job.input.sourceOperationId && name === 'maker.generate'));
       const signal = run.controller.signal;
       const workspace = await this.store.workspace(id);
+      // Providers may supply a captured host budget; persisted job input has
+      // no authority to remove a count limit. Receipt byte limits remain separate.
+      const toolOperationLimit = provider.getToolOperationLimit?.(job) ?? 200;
+      check(Number.isSafeInteger(toolOperationLimit) && toolOperationLimit >= 0, 'INVALID_LIMIT', 'Invalid provider tool operation limit');
       // Serial host-tool execution avoids same-workspace mutations racing each other.
       let queue = Promise.resolve();
       const serial = operation => {
@@ -115,7 +119,7 @@ export class AgentRuntime {
             if (operation.status === 'completed') return cloneJson(operation.result);
             check(tool.replaySafety !== 'manual', 'RECONCILIATION_REQUIRED', 'An incomplete non-idempotent tool needs manual reconciliation');
           } else {
-            check(job.operations.length < 200, 'TOOL_LIMIT', 'Job exceeded its tool operation budget');
+            check(toolOperationLimit === 0 || job.operations.length < toolOperationLimit, 'TOOL_LIMIT', 'Job exceeded its tool operation budget');
             operation = { id: operationId, name, fingerprint, status: 'running', ...(intent && name === 'workspace.read' ? { path: args.path } : {}) };
             cloneJson([...job.operations, operation], { maxBytes: 128_000, code: 'RECEIPT_BUDGET' });
             job.operations.push(operation);

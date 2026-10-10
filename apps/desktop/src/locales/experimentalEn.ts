@@ -422,7 +422,7 @@ const messages = {
   "experimental.providerBusy":
     "Wait for live AI jobs to finish, or cancel them, before changing providers.",
   "experimental.limitHelp":
-    "Budgets are saved with each preset and apply to new jobs. Running jobs keep their original configuration. Output is also capped by the model. Cost is a local estimate, not a bill.",
+    "0 means no limit for that budget. Presets apply to new jobs; running jobs keep their original configuration. Model output ceilings still apply. Cost is a local estimate.",
   "experimental.unknownPrice":
     "No model prices supplied: the estimated spend limit is unavailable. Request, output and time limits still apply.",
 

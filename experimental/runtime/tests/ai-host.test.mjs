@@ -101,9 +101,16 @@ test(
     const saved = await rpc("provider_preset_save", {
       name: "Offline",
       config,
-      limits: { maximumOutputTokens: 16384 },
+      limits: {
+        modelTurns: 0,
+        toolCalls: 0,
+        maximumOutputTokens: 0,
+        wallTimeMs: 0,
+        estimatedBudgetUsd: 0,
+      },
     });
     assert.equal(JSON.stringify(saved).includes(firstKey), false);
+    assert.equal(saved.presets[0].limits.wallTimeMs, 0);
     const before = await rpc("status");
     assert.equal(before.liveAvailable, true);
     assert.equal(before.liveConfigured, false);
@@ -132,7 +139,11 @@ test(
       return view.summary.status === "completed" && view;
     });
     assert.equal(finished.result.text, "Offline preset response.");
-    assert.equal(requests[0].body.max_tokens, 16384);
+    // The SDK also reserves room for input in the model's context window.
+    assert.ok(
+      requests[0].body.max_tokens > 16384 &&
+        requests[0].body.max_tokens <= 32768,
+    );
     assert.equal(requests[0].authorization, "Bearer " + firstKey);
     assert.equal(requests[1].body.max_tokens, 8192);
     assert.equal(requests[1].authorization, "Bearer " + secondKey);

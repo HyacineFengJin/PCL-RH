@@ -1,4 +1,3 @@
-import { ExperimentalVersion } from "./ExperimentalVersion";
 /** The form holds only a newly typed key. Saved credentials remain host-owned;
  * loading a preset returns routing/budget metadata and a key-present flag. */
 import { useEffect, useRef, useState } from "react";
@@ -244,7 +243,7 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
     ];
     return (
       Number.isFinite(value) &&
-      value >= min &&
+      (value === 0 || value >= min) &&
       value <= max &&
       (key === "estimatedBudgetUsd" || Number.isInteger(value))
     );
@@ -469,15 +468,16 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
               <input
                 className="ce-field"
                 type="number"
-                min={(store?.ranges[key][0] ?? 1) / scale}
+                min={0}
                 max={store ? store.ranges[key][1] / scale : undefined}
                 step={key === "estimatedBudgetUsd" ? "any" : 1}
-                value={limits[key] / scale || ""}
+                value={Number.isFinite(limits[key]) ? limits[key] / scale : ""}
                 disabled={disabled}
                 onChange={(e) =>
                   setLimits((v) => ({
                     ...v,
-                    [key]: Number(e.target.value) * scale,
+                    // Empty is invalid; only an explicitly entered 0 removes a limit.
+                    [key]: e.target.valueAsNumber * scale,
                   }))
                 }
               />
@@ -605,22 +605,6 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
             {error}
           </p>
         )}
-      </section>
-      <section className="ce-card experimental-engine-credit">
-        <p>
-          {t("experimental.engine")}
-          <button
-            className="experimental-pi-link"
-            onClick={() =>
-              void api("ui_open_link", { url: "https://pi.dev" }).catch((e) =>
-                setError(serviceError(e)),
-              )
-            }
-          >
-            pi.dev ↗
-          </button>
-        </p>
-        <ExperimentalVersion version="Pi 1.0.4 · v7" />
       </section>
     </div>
   );

@@ -376,8 +376,7 @@ const messages = {
   "experimental.autoStart": "工具调用时自动启动",
   "experimental.stopHelp": "取消 AI 任务，保留预设",
   "experimental.ai": "AI 管理",
-  "experimental.aiHelp":
-    "保存模型连接预设，供项目 AI 对话使用。",
+  "experimental.aiHelp": "保存模型连接预设，供项目 AI 对话使用。",
   "experimental.provider": "提供商",
   "experimental.customProvider": "自定义提供商",
   "experimental.model": "模型",
@@ -396,7 +395,7 @@ const messages = {
   "experimental.providerBusy":
     "真实 AI 任务运行期间，请等待完成或先取消任务，再更换提供商。",
   "experimental.limitHelp":
-    "限制随预设保存，修改后用于新任务；已运行任务保留原配置。输出还受模型支持的上限约束。费用为本地估算，不是实际账单。",
+    "0 表示不设该项限制。限制随预设保存，修改后用于新任务；已运行任务保留原配置。输出仍受模型上限约束，费用为本地估算。",
   "experimental.unknownPrice":
     "未提供模型价格：不执行费用估算限制，调用次数、输出量与时间限制仍然生效。",
 
