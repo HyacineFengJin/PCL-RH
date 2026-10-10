@@ -25,7 +25,7 @@ const messages = {
   "nav.launch": "启动",
   "nav.download": "下载",
   "nav.settings": "设置",
-  "nav.tools": "工具",
+  "nav.tools": "RH Code",
   "nav.java": "Java",
   "nav.manage": "管理",
   "nav.network": "联机",

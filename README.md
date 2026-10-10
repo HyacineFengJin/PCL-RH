@@ -2,7 +2,7 @@
 
 <img src="assets/pcl-rh.png" alt="PCL RH" width="128" />
 
-基于 Rust 的 Minecraft: Java Edition 启动器，当前提供 Linux 原生实现，采用 **Rust + Tauri 2 + React / TypeScript**，参考 PCL CE 的界面布局与交互理念。无需 .NET。启动器核心使用 Rust，实验功能使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
+基于 Rust 的 Minecraft: Java Edition 启动器与 RH Code 模组项目工作区，当前提供 Linux 原生实现，采用 **Rust + Tauri 2 + React / TypeScript**，界面理念源自 PCL 家族。无需 .NET。启动器与项目服务使用 Rust，Agent 适配器使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
 
 RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎曼猜想（Riemann Hypothesis）。
 
@@ -29,7 +29,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 - Microsoft 正版登录、系统密钥环保存登录、自动获取头像和当前披风。[账号说明](docs/AUTHENTICATION.md)。
 - 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
-- **实验性功能**：数据型插件、Fabric 模组制作器与有限的模组迁移工具，统一使用启动器界面。[使用与限制](docs/EXPERIMENTAL.md)。
+- **RH Code**：可拆分与调整的工作区、项目内多对话、文件目录树和源码编辑、版本与加载器目标、改动审阅及任务输出。内置模块采用 Cordis 插件生命周期，社区插件使用声明与权限管理。[使用与范围](docs/RH_CODE.md)。
 - 共享下载并发与速度限制、代理与 DoH、日志导出清理及应用入口恢复。
 - 项目发行检查、校验下载、便携更新与回退，以及独立游戏监控。
 - 可分别开启 Minecraft 正式版与快照更新提醒，按官方发布时间判断新版本并保存已读记录。
@@ -66,6 +66,7 @@ cd PCL-RH
 - `crates/auth/`：Microsoft 认证和系统密钥环。
 - `crates/network/`：代理、DoH 与共享下载策略。
 - `crates/cli/`：命令行入口。
+- `code/`：RH Code 内置插件清单、Agent 上下文与执行适配器。
 
 ```sh
 cargo test --workspace --locked --features pcl-desktop/custom-protocol
@@ -93,12 +94,14 @@ Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Pris
 
 Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Modrinth modpacks can also be downloaded directly from version details, reviewed with a custom instance name and optional-file choices, and installed as new instances. Some legacy layouts and OptiFine/LabyMod installation are not yet available.
 
-Microsoft sign-in is not yet available. The project maintainers are responsible for completing the service integration.
+Microsoft sign-in supports remembered accounts through the system credential service, with automatic avatar and current cape retrieval. See [account setup](docs/AUTHENTICATION.md).
 
-Experimental tools are available from Tools: declarative extensions, a Fabric source-project maker and limited mod migration patches. They share a local Pi engine. Live AI uses saved provider presets with editable budgets and has not been tested online; generated source is not automatically built. See [experimental features](docs/EXPERIMENTAL.md).
+RH Code is the project workspace: configurable split areas, multiple AI conversations per project, source editing, loader/version targets, review and task output. Trusted built-in modules use Cordis; community extensions remain declarative and permission-controlled. The current Pi adapter generates Fabric 1.21.1 Maker projects; generic multi-loader generation, project builds and game tests are not connected yet. See [RH Code](docs/RH_CODE.md).
 
 ## 致谢
 
 项目图标及主要美术由 GPT 制作。Project icons and primary artwork are created with GPT.
 
 界面理念参考 [PCL CE](https://github.com/PCL-Community/PCL-CE)，认证流程参考 [HMCL](https://github.com/HMCL-dev/HMCL)。Linux 平台与服务分层参考 [PCL N Edition](https://github.com/PCL-N-Edition/PCL-N)。界面和 Rust 认证代码独立编写。
+
+RH Code 使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 所采用的 Cordis，并参考其插件生命周期与 Agent 上下文组织。相关许可见 [Cordis MIT License](LICENSES/CORDIS.txt)。

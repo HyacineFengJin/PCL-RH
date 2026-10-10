@@ -20,6 +20,8 @@ use tauri::State;
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Operation {
+    RhCodeRun,
+    RhCodeStart,
     MakerThreadRead,
     MakerThreads,
     MakerThreadRun,
@@ -94,8 +96,15 @@ impl Session {
     fn call(&mut self, operation: &str, args: Value) -> Result<Value, String> {
         let text = serde_json::to_vec(&json!({"operation":operation,"args":args}))
             .map_err(|e| e.to_string())?;
-        if text.len() > 128_000 {
-            return Err("实验功能请求超过 128 KB".into());
+        // RH snapshots are captured by Rust, include bounded base64 bytes, and
+        // need more room than renderer-authored legacy requests.
+        let limit = if operation == "rh_code_run" {
+            1_000_000
+        } else {
+            128_000
+        };
+        if text.len() > limit {
+            return Err(format!("引擎请求超过 {} KB", limit / 1000));
         }
         self.broken = true;
         self.input
@@ -268,6 +277,7 @@ fn extension_context(shared: &Shared) -> Value {
 pub async fn experimental_call(
     host: State<'_, Arc<Host>>,
     shared: State<'_, Arc<Shared>>,
+    code: State<'_, Arc<crate::rh_code::Store>>,
     operation: Operation,
     mut args: Value,
 ) -> Result<Value, String> {
@@ -276,6 +286,12 @@ pub async fn experimental_call(
     }
     if !args.is_object() {
         return Err("实验功能参数必须为对象".into());
+    }
+    if matches!(operation, Operation::RhCodeStart) {
+        args = code.call("agent_bound", args)?;
+    }
+    if matches!(operation, Operation::RhCodeRun) {
+        args = code.call("agent_context", args)?;
     }
     if matches!(
         operation,
@@ -353,6 +369,29 @@ pub async fn experimental_open(
             .spawn()
             .map_err(|e| e.to_string())?;
         Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Adopting a generated project is explicit and scoped to its native conversation.
+/// The host verifies the artifact receipt; Rust publishes only into an empty folder.
+#[tauri::command]
+pub async fn rh_code_adopt(
+    host: State<'_, Arc<Host>>,
+    code: State<'_, Arc<crate::rh_code::Store>>,
+    shared: State<'_, Arc<Shared>>,
+    args: Value,
+) -> Result<Value, String> {
+    if shared.closing.load(Ordering::SeqCst) {
+        return Err("Launcher is closing".into());
+    }
+    let host = host.inner().clone();
+    let code = code.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        code.call("artifact_owner", args.clone())?;
+        let source = host.call("rh_code_artifact", args.clone())?;
+        code.adopt(args, source)
     })
     .await
     .map_err(|e| e.to_string())?

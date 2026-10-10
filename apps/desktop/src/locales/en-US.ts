@@ -27,7 +27,7 @@ const messages = {
   "nav.launch": "Launch",
   "nav.download": "Download",
   "nav.settings": "Settings",
-  "nav.tools": "Tools",
+  "nav.tools": "RH Code",
   "nav.java": "Java",
   "nav.manage": "Management",
   "nav.network": "Multiplayer",

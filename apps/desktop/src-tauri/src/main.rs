@@ -52,6 +52,7 @@ mod resource_ops;
 mod resource_save;
 mod resource_save_commands;
 mod resource_update_commands;
+mod rh_code;
 mod tasks;
 mod toolbox_download;
 mod toolbox_download_commands;
@@ -1946,6 +1947,7 @@ fn main() {
         )
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(experimental::Host::new(state.project.clone())))
+        .manage(Arc::new(rh_code::Store::new(&state.project)))
         .manage(state)
         .setup(|app| {
             let shared = app.state::<Arc<Shared>>().inner().clone();
@@ -2005,6 +2007,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             experimental::experimental_call,
+            rh_code::rh_code_call,
+            rh_code::rh_code_choose,
+            experimental::rh_code_adopt,
             experimental::experimental_choose,
             experimental::experimental_open,
             instance_metadata_update,

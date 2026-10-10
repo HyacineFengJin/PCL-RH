@@ -403,7 +403,7 @@ const messages = {
   "experimental.stopHelp": "Cancel AI jobs; keep presets",
   "experimental.ai": "AI Management",
   "experimental.aiHelp":
-    "Save providers, models and API keys as presets. Maker and Porter automatically start the selected preset when you choose live AI.",
+    "Save model connection presets for project AI conversations.",
   "experimental.provider": "Provider",
   "experimental.customProvider": "Custom provider",
   "experimental.model": "Model",

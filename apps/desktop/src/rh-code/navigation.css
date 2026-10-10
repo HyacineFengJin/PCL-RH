@@ -1,0 +1,46 @@
+/* Launcher navigation is eager; opening RH Code loads the workspace separately. */
+.titlebar nav .rh-code-nav {
+  margin-left: 16px;
+  padding: 0;
+  display: flex;
+  gap: 1px;
+  background: #67508e;
+  border-radius: 12px 4px 12px 4px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px #ffffff35;
+}
+.titlebar nav .rh-code-nav button {
+  height: 30px;
+  border-radius: 0;
+  padding: 0 12px;
+  margin: 0;
+  background: #8060ad;
+}
+.titlebar nav .rh-code-nav button.active {
+  background: #eee6fa;
+  color: #715197;
+}
+.titlebar nav .rh-code-nav .rh-plugin-nav {
+  padding: 0 9px;
+  background: #b56436;
+}
+.titlebar nav .rh-code-nav .rh-plugin-nav.active {
+  color: #9c542b;
+  background: #ffe8d9;
+}
+.rh-code-nav img {
+  width: 24px;
+  height: 17px;
+}
+.rh-code-nav button.active img {
+  filter: brightness(0) saturate(100%) invert(35%) sepia(20%) saturate(1400%)
+    hue-rotate(225deg);
+}
+@media (max-width: 850px) {
+  .titlebar nav .rh-code-nav {
+    margin-left: 4px;
+  }
+  .titlebar nav .rh-code-nav button {
+    padding: 0 8px;
+  }
+}

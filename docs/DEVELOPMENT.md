@@ -7,6 +7,7 @@
 | 职责 | 入口 | 主要内容 |
 | --- | --- | --- |
 | 前端状态与桌面调用 | `apps/desktop/src/main.tsx` | 页面、当前目录、bootstrap、作用域 API 与响应接纳 |
+| RH Code 模块与项目 | `rh-code/`、`rh_code.rs`、`code/` | Cordis 内置插件、可拆分区域、原生项目服务、对话任务绑定；详见 [RH Code 模块结构](RH_CODE_ARCHITECTURE.md) |
 | 实例管理界面 | `InstancesPanel.tsx`、`InstanceOperations.tsx`、`InstanceImport.tsx`、`InstanceTrash.tsx` | 实例资料、改名、修改、导出、ZIP 导入与删除恢复 |
 | 下载与任务界面 | `useDownloadTasks.ts`、`DownloadPanel.tsx`、`TaskManager.tsx` | 集合轮询、逐项取消、完成刷新与页面所有权 |
 | 在线资源界面 | `ResourceDetails.tsx`、`ResourceInstall.tsx`、`resourceInstallPlan.ts`、`LocalResources.tsx`、`ResourceUpdates.tsx` | 版本与文件选择、作用域确认、必要依赖计划和安装提交 |

@@ -7,6 +7,7 @@ import path from "node:path";
 import http from "node:http";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 const host = fileURLToPath(new URL("../../host.mjs", import.meta.url)),
   scratch = fileURLToPath(
@@ -124,6 +125,65 @@ test(
     }
     assert.ok(
       JSON.stringify(requests[1].messages).includes("Offline thread reply"),
+    );
+    // RH Code must prepare without contacting even the loopback provider. The
+    // native store binds this ID before the separate start route is admitted.
+    const code = await rpc("rh_code_run", {
+      project: { id: "fixture-project", name: "RH fixture" },
+      conversation: {
+        id: "fixture-conversation",
+        messages: [{ role: "assistant", content: "Prior RH context" }],
+      },
+      request: "Explain this project",
+      mode: "ask",
+      target: { minecraft: "1.21.1", loaders: ["Fabric", "NeoForge"] },
+      sourceFiles: [
+        {
+          path: "notes.txt",
+          data: Buffer.alloc(160000, 65).toString("base64"),
+          sha256: createHash("sha256")
+            .update(Buffer.alloc(160000, 65))
+            .digest("hex"),
+        },
+      ],
+      source: {},
+    });
+    assert.equal(
+      (await rpc("job_read", { jobId: code.jobId })).summary.status,
+      "queued",
+    );
+    assert.equal(requests.length, 2);
+    await assert.rejects(
+      rpc("rh_code_start", {
+        jobId: code.jobId,
+        projectId: "another-project",
+        conversationId: "fixture-conversation",
+      }),
+      /belongs to another/,
+    );
+    await assert.rejects(
+      rpc("rh_code_artifact", {
+        jobId: code.jobId,
+        projectId: "another-project",
+      }),
+      /belongs to another/,
+    );
+    await rpc("rh_code_start", {
+      jobId: code.jobId,
+      projectId: "fixture-project",
+      conversationId: "fixture-conversation",
+    });
+    await until(
+      async () =>
+        (await rpc("job_read", { jobId: code.jobId })).summary.status ===
+        "completed",
+    );
+    assert.match(JSON.stringify(requests[2].messages), /RH fixture/);
+    assert.match(JSON.stringify(requests[2].messages), /Prior RH context/);
+    assert.ok(
+      !requests[2].tools.some(
+        (tool) => tool.function.name === "maker__generate",
+      ),
     );
     const listing = await rpc("maker_threads");
     assert.equal(listing.threads.length, 1);

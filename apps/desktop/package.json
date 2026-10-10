@@ -11,6 +11,7 @@
     "format": "prettier --write src vite.config.ts scripts src-tauri/*.json src-tauri/capabilities/*.json"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
     "@tauri-apps/api": "^2.0.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",

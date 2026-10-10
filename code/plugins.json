@@ -1,0 +1,110 @@
+[
+  {
+    "id": "rh.project",
+    "name": "Projects",
+    "version": "1.0.0",
+    "required": true,
+    "dependencies": [],
+    "capabilities": ["project.metadata"],
+    "views": []
+  },
+  {
+    "id": "rh.conversation",
+    "name": "Conversations",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["conversation.history"],
+    "views": ["chat", "threads"]
+  },
+  {
+    "id": "rh.agent",
+    "name": "Agent runtime",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.conversation", "rh.files"],
+    "capabilities": ["agent.run", "agent.cancel"],
+    "views": []
+  },
+  {
+    "id": "rh.files",
+    "name": "Project files",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["project.files.read"],
+    "views": ["files"]
+  },
+  {
+    "id": "rh.graph",
+    "name": "Content graph",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.files"],
+    "capabilities": ["project.graph.read"],
+    "views": ["graph"]
+  },
+  {
+    "id": "rh.source",
+    "name": "Source editor",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.files"],
+    "capabilities": ["project.files.write"],
+    "views": ["source"]
+  },
+  {
+    "id": "rh.targets",
+    "name": "Build targets",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["project.targets"],
+    "views": ["targets"]
+  },
+  {
+    "id": "rh.changes",
+    "name": "Changes and review",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["project.review"],
+    "views": ["changes"]
+  },
+  {
+    "id": "rh.tasks",
+    "name": "Tasks and output",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["task.read"],
+    "views": ["logs"]
+  },
+  {
+    "id": "rh.porting",
+    "name": "Version migration",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.agent", "rh.targets", "rh.files"],
+    "capabilities": ["agent.migrate"],
+    "views": ["porting"]
+  },
+  {
+    "id": "rh.compatibility",
+    "name": "Previous projects",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["legacy.projects"],
+    "views": ["legacy"]
+  },
+  {
+    "id": "rh.settings",
+    "name": "Workspace settings",
+    "version": "1.0.0",
+    "required": true,
+    "dependencies": [],
+    "capabilities": ["plugin.manage", "agent.presets"],
+    "views": []
+  }
+]

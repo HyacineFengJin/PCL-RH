@@ -1,4 +1,5 @@
 import "./style.css";
+import "./rh-code/navigation.css";
 import rhMark from "../../../assets/branding/rh-mark.svg";
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -81,14 +82,7 @@ import type { AuthState } from "./accountTypes";
 import { useAccountPresentation } from "./useAccountPresentation";
 import { ExperimentalCards } from "./ExperimentalExtensions";
 import type { ExperimentalNavigate, ToolsPage } from "./experimentalTypes";
-import { ExperimentalTools, type ExperimentalDraft } from "./ExperimentalTools";
 import type { PorterIntake } from "./experimentalPorterTypes";
-import { ExperimentalAi } from "./ExperimentalAi";
-import {
-  ExperimentalProjects,
-  createProjectManagerDraft,
-} from "./ExperimentalProjects";
-import type { ProjectSourceSelection } from "./experimentalProjectTypes";
 import { Toolbox } from "./Toolbox";
 import { SettingsPanel } from "./SettingsPanel";
 import {
@@ -836,18 +830,15 @@ function Cube({ forge = false }: { forge?: boolean }) {
     </span>
   );
 }
+const RHCode = React.lazy(() =>
+  import("./rh-code/RHCode").then((m) => ({ default: m.RHCode })),
+);
 function App() {
-  const projectDraft = React.useRef(createProjectManagerDraft());
-  const [experimentalSource, setExperimentalSource] =
-    useState<ProjectSourceSelection>();
   const [porterIntake, setPorterIntake] = useState<PorterIntake | null>(null);
-  const experimentalDrafts = React.useRef<
-    Partial<Record<"extensions" | "maker" | "porter", ExperimentalDraft>>
-  >({});
   const [data, setData] = useState<State | null>(null),
     [error, setError] = useState(""),
     [tab, setTab] = useState("launch"),
-    [toolsPage, setToolsPage] = useState<ToolsPage>("toolbox"),
+    [toolsPage, setToolsPage] = useState<ToolsPage>("projects"),
     [dialog, setDialog] = useState<
       | "versions"
       | "instance"
@@ -1401,22 +1392,6 @@ function App() {
     ) {
       setSettingsPage("launch");
       if (launcher.isHidden("settings.launch")) setTab("launch");
-    } else if (
-      tab === "tools" &&
-      launcher.isHidden(`tools.${toolsPage}` as LauncherMenuId)
-    ) {
-      const visible = (
-        [
-          "toolbox",
-          "extensions",
-          "marketplace",
-          "maker",
-          "porter",
-          "ai",
-        ] as const
-      ).find((page) => !launcher.isHidden(`tools.${page}` as LauncherMenuId));
-      if (visible) setToolsPage(visible);
-      else setTab("launch");
     }
     const instanceId =
       instancePage === "litematics" ? "schematics" : instancePage;
@@ -1886,6 +1861,7 @@ function App() {
     },
     { id: "language", label: t("nav.language"), icon: Earth },
     { id: "misc", label: t("nav.misc"), icon: MonitorCog },
+    { id: "toolbox", label: t("nav.toolbox"), icon: Gift },
     {
       id: "about",
       label: t("nav.about"),
@@ -1958,9 +1934,9 @@ function App() {
         setTab("download");
         break;
       case "tools":
-        setToolsPage("toolbox");
+        setSettingsPage("toolbox");
         setScreen("home");
-        setTab("tools");
+        setTab("settings");
         break;
       case "settings":
         setScreen("home");
@@ -2074,7 +2050,6 @@ function App() {
                       text: t("nav.settings"),
                       icon: SettingsIcon,
                     },
-                    { id: "tools", text: t("nav.tools"), icon: Wrench },
                   ]
                     .filter(
                       (n) =>
@@ -2095,6 +2070,43 @@ function App() {
                         {n.text}
                       </button>
                     ))}
+                  {!launcher.isHidden("main.tools") && (
+                    <div className="rh-code-nav">
+                      <button
+                        className={
+                          tab === "tools" &&
+                          toolsPage !== "extensions" &&
+                          toolsPage !== "marketplace"
+                            ? "active"
+                            : ""
+                        }
+                        onClick={() => {
+                          setTab("tools");
+                          setToolsPage("projects");
+                        }}
+                      >
+                        <img src={rhMark} alt="RH" />
+                        Code
+                      </button>
+                      <button
+                        className={
+                          "rh-plugin-nav " +
+                          (tab === "tools" &&
+                          (toolsPage === "extensions" ||
+                            toolsPage === "marketplace")
+                            ? "active"
+                            : "")
+                        }
+                        aria-label={t("experimental.extensions")}
+                        onClick={() => {
+                          setTab("tools");
+                          setToolsPage("extensions");
+                        }}
+                      >
+                        <Puzzle size={16} />
+                      </button>
+                    </div>
+                  )}
                 </nav>
               </>
             ) : (
@@ -2161,7 +2173,7 @@ function App() {
             </div>
           ) : (
             <div
-              className={`body-layout ${screen === "home" && tab === "tools" && (toolsPage === "maker" || toolsPage === "projects") ? "maker-space" : ""}`}
+              className={`body-layout ${screen === "home" && tab === "tools" ? "rh-code-space" : ""}`}
             >
               <aside
                 className={
@@ -2482,53 +2494,7 @@ function App() {
                     },
                     "settings",
                   )
-                ) : (
-                  <>
-                    {menu(
-                      [
-                        {
-                          id: "toolbox",
-                          label: t("nav.toolbox"),
-                          group: t("main.smallTools"),
-                          icon: Gift,
-                        },
-                        {
-                          id: "extensions",
-                          label: t("experimental.extensions"),
-                          group: t("experimental.pluginGroup"),
-                          icon: Puzzle,
-                        },
-                        {
-                          id: "marketplace",
-                          label: t("experimental.marketplace"),
-                          icon: Puzzle,
-                        },
-                        {
-                          id: "maker",
-                          group: t("experimental.betaGroup"),
-                          label: t("experimental.maker"),
-                          icon: WandSparkles,
-                        },
-                        {
-                          id: "porter",
-                          label: t("experimental.porter"),
-                          icon: ArrowRightLeft,
-                        },
-                        {
-                          id: "ai",
-                          label: t("experimental.ai"),
-                          icon: Sparkles,
-                        },
-                      ],
-                      toolsPage,
-                      (id) => {
-                        setExperimentalSource(undefined);
-                        setToolsPage(id as ToolsPage);
-                      },
-                      "tools",
-                    )}
-                  </>
-                )}
+                ) : null}
               </aside>
               <main className="content" ref={contentRef}>
                 {data.import_recovery_error && screen !== "tasks" && (
@@ -2701,7 +2667,6 @@ function App() {
                         launcher.isHidden("tools.porter")
                           ? undefined
                           : (intake) => {
-                              setExperimentalSource(undefined);
                               setPorterIntake({
                                 ...intake,
                                 id: crypto.randomUUID(),
@@ -2884,6 +2849,7 @@ function App() {
                       {tab === "launch" && launcherMedia.homeUi}
                       {tab === "launch" && launcherDiscovery.announcementUi}
                       {tab === "settings" &&
+                        settingsPage !== "toolbox" &&
                         (["launch", "java"].includes(settingsPage) ? (
                           <SettingsPanel
                             section={settingsPage}
@@ -2956,87 +2922,28 @@ function App() {
                             native={native}
                           />
                         ))}
-                      {tab === "tools" && toolsPage === "marketplace" && (
-                        <section className="ce-card">
-                          <h2 className="ce-card-title">
-                            {t("experimental.marketplace")}
-                          </h2>
-                          <p className="experimental-origin">
-                            {t("experimental.marketplaceEmpty")}
-                          </p>
-                        </section>
-                      )}
-                      {tab === "tools" &&
-                        (toolsPage === "maker" || toolsPage === "projects") && (
-                          <ExperimentalProjects
+                      {tab === "tools" && (
+                        <React.Suspense
+                          fallback={
+                            <div className="loading">{t("main.loading")}</div>
+                          }
+                        >
+                          <RHCode
                             api={api}
                             native={native && !tasks.closing}
-                            draft={projectDraft}
-                            onConfigureAi={
-                              launcher.isHidden("tools.ai")
-                                ? undefined
-                                : () => setToolsPage("ai")
+                            section={
+                              toolsPage === "extensions" ||
+                              toolsPage === "marketplace"
+                                ? "plugins"
+                                : "code"
                             }
-                          />
-                        )}
-                      {tab === "tools" && toolsPage === "ai" && (
-                        <ExperimentalAi
-                          api={api}
-                          native={native && !tasks.closing}
-                        />
-                      )}
-                      {tab === "tools" &&
-                        toolsPage !== "toolbox" &&
-                        toolsPage !== "ai" &&
-                        toolsPage !== "marketplace" &&
-                        toolsPage !== "maker" &&
-                        toolsPage !== "projects" && (
-                          <ExperimentalTools
-                            key={`${toolsPage}:${experimentalSource?.jobId ?? ""}:${experimentalSource?.operationId ?? ""}`}
-                            page={toolsPage}
-                            drafts={experimentalDrafts}
-                            initialSource={
-                              experimentalSource?.workflow === toolsPage
-                                ? experimentalSource
-                                : undefined
-                            }
-                            api={api}
-                            native={native && !tasks.closing}
                             onNavigate={navigateExperimental}
                             porterIntake={porterIntake}
                             onPorterIntakeConsumed={() => setPorterIntake(null)}
-                            onPorterBrowseMods={
-                              launcher.isHidden("main.download")
-                                ? undefined
-                                : (origin) => {
-                                    setDownloadPage("mods");
-                                    setTab("download");
-                                    if (
-                                      origin?.provider === "modrinth" &&
-                                      /^[A-Za-z0-9]{8}$/.test(origin.projectId)
-                                    ) {
-                                      showResource({
-                                        project_id: origin.projectId,
-                                        title: origin.title || origin.projectId,
-                                        description: "",
-                                        icon_url: null,
-                                        categories: [],
-                                        display_categories: [],
-                                        versions: [],
-                                        project_type: "mod",
-                                        source: "Modrinth",
-                                      });
-                                    } else setScreen("home");
-                                  }
-                            }
-                            onConfigureAi={
-                              launcher.isHidden("tools.ai")
-                                ? undefined
-                                : () => setToolsPage("ai")
-                            }
                           />
-                        )}
-                      {tab === "tools" && toolsPage === "toolbox" && (
+                        </React.Suspense>
+                      )}
+                      {tab === "settings" && settingsPage === "toolbox" && (
                         <Toolbox
                           onOpen={open}
                           onExperimentalNavigate={navigateExperimental}

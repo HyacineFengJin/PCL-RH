@@ -377,7 +377,7 @@ const messages = {
   "experimental.stopHelp": "取消 AI 任务，保留预设",
   "experimental.ai": "AI 管理",
   "experimental.aiHelp":
-    "保存提供商、模型和 API Key 为预设。制作器或搬运器选择真实 AI 时会自动启动所选预设。",
+    "保存模型连接预设，供项目 AI 对话使用。",
   "experimental.provider": "提供商",
   "experimental.customProvider": "自定义提供商",
   "experimental.model": "模型",

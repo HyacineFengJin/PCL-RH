@@ -190,6 +190,8 @@ export type MakerSpec = {
   }[];
 };
 export type ExperimentalOperation =
+  | "rh_code_run"
+  | "rh_code_start"
   | "maker_thread_read"
   | "maker_threads"
   | "maker_thread_run"

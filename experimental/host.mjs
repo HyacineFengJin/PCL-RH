@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { prepareCodeJob } from "../code/agent-adapter.mjs";
 import { fileURLToPath } from "node:url";
 import {
   AgentRuntime,
@@ -449,10 +450,37 @@ async function createPorterRound(input, permittedPaths, mode) {
     throw error;
   }
 }
+// Native project membership alone cannot authenticate a renderer-supplied job
+// reference. Match it against provenance captured when Rust prepared the task.
+function checkRhOwner(job, args, conversation = false) {
+  if (
+    !args.projectId ||
+    job.input?.rhCode?.projectId !== args.projectId ||
+    (conversation &&
+      (!args.conversationId ||
+        job.input.rhCode.conversationId !== args.conversationId))
+  )
+    throw new Error("RH Code task belongs to another project or conversation");
+}
 async function dispatch(operation, a) {
   if (closing && operation !== "shutdown")
     throw new Error("Experimental host is closing");
   switch (operation) {
+    case "rh_code_run":
+      return prepareCodeJob(a, {
+        runtime,
+        preset: presets.selected(),
+        provider: live.id,
+        jobs: await listJobs(),
+        admit: admitMakerThreadJob,
+      });
+    case "rh_code_start": {
+      if (!pendingJobs.has(a.jobId))
+        throw new Error("RH Code task is not waiting for admission");
+      const job = await runtime.getJob(a.jobId);
+      checkRhOwner(job, a, true);
+      return startCapturedJob(job, liveRuns.get(a.jobId));
+    }
     case "status":
       return {
         versions: {
@@ -1008,6 +1036,17 @@ async function dispatch(operation, a) {
         binary: a.path.endsWith(".png"),
       };
     }
+    case "rh_code_artifact": {
+      checkRhOwner(await runtime.getJob(a.jobId), a);
+      const { snapshot } = await artifact(a.jobId, a.operationId);
+      return {
+        files: Object.entries(snapshot.files).map(([name, bytes]) => ({
+          path: name,
+          sha256: sha256(bytes),
+          data: bytes.toString("base64"),
+        })),
+      };
+    }
     case "artifact_directory":
       return { directory: (await artifact(a.jobId, a.operationId)).directory };
     case "maker_review": {
@@ -1098,9 +1137,11 @@ const input = readline.createInterface({
 for await (const line of input) {
   let reply;
   try {
-    if (Buffer.byteLength(line) > 128000)
-      throw new Error("Request exceeds 128 KB");
+    if (Buffer.byteLength(line) > 1000000)
+      throw new Error("Request exceeds 1 MB");
     const request = JSON.parse(line);
+    if (request.operation !== "rh_code_run" && Buffer.byteLength(line) > 128000)
+      throw new Error("Request exceeds 128 KB");
     reply = {
       ok: true,
       result: await dispatch(request.operation, request.args ?? {}),
