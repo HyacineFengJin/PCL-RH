@@ -78,6 +78,8 @@ export type ViewContribution = {
   owner: string;
   label: string;
   icon: ComponentType<{ size?: number }>;
+  /** Semantic color follows a component when users move it between areas. */
+  tone?: "neutral" | "blue" | "purple" | "orange";
   render: ComponentType<ViewProps>;
   settings?: ComponentType<ViewProps>;
 };

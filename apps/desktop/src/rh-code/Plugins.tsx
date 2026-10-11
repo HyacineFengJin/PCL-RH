@@ -62,6 +62,7 @@ export function Plugins({
             const enabled = !c.snapshot!.disabledPlugins.includes(p.id);
             const status = kernel.statuses.get(p.id),
               plugin = kernel.plugins.find((q) => q.manifest.id === p.id);
+            const Icon = plugin?.views?.[0]?.icon ?? Blocks;
             const stateLabel =
               status?.state === "active"
                 ? label("已启用", "Active")
@@ -87,14 +88,13 @@ export function Plugins({
             return (
               <article className="rc-plugin" key={p.id}>
                 <div className="rc-plugin-icon">
-                  <Blocks size={22} />
+                  <Icon size={22} />
                 </div>
                 <div>
                   <h2>
                     {label(...(names[p.id] ?? [p.name, p.name]))}
                     <small>{p.version}</small>
                   </h2>
-                  <code>{p.id}</code>
                   <span
                     className={
                       "rc-plugin-status " + (status?.state ?? "loading")
@@ -102,20 +102,19 @@ export function Plugins({
                   >
                     {stateLabel}
                   </span>
-                  {p.dependencies.length > 0 && (
-                    <p>
-                      {label("依赖：", "Depends on: ")}
-                      {p.dependencies
-                        .map((id) => label(...(names[id] ?? [id, id])))
-                        .join(" · ")}
-                    </p>
-                  )}
                   <details>
-                    <summary>
-                      {label("组件与能力", "Components and capabilities")}
-                      {" · "}
-                      {p.views.length}
-                    </summary>
+                    <summary>{label("模块详情", "Module details")}</summary>
+                    <p>
+                      <code>{p.id}</code>
+                    </p>
+                    {p.dependencies.length > 0 && (
+                      <p>
+                        {label("依赖：", "Depends on: ")}
+                        {p.dependencies
+                          .map((id) => label(...(names[id] ?? [id, id])))
+                          .join(" · ")}
+                      </p>
+                    )}
                     <ul className="rc-plugin-contributions">
                       {plugin?.views?.map((v) => (
                         <li key={v.id}>

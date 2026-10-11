@@ -1,28 +1,47 @@
 /* Launcher navigation is eager; opening RH Code loads the workspace separately. */
+.titlebar nav {
+  align-items: center;
+}
+.titlebar nav > button {
+  font-weight: 500;
+}
+.titlebar nav button:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
 .titlebar nav .rh-code-nav {
-  margin-left: 16px;
-  padding: 0;
+  margin-left: 20px;
+  padding: 2px;
   display: flex;
   gap: 1px;
-  background: #67508e;
-  border-radius: 12px 4px 12px 4px;
+  background: #ffffff30;
+  border-radius: 14px 5px 14px 5px;
   overflow: hidden;
-  box-shadow: inset 0 0 0 1px #ffffff35;
+  box-shadow:
+    inset 0 0 0 1px #ffffff20,
+    0 2px 5px #17255713;
 }
 .titlebar nav .rh-code-nav button {
-  height: 30px;
-  border-radius: 0;
-  padding: 0 12px;
+  height: 29px;
+  border-radius: 11px 3px 3px 3px;
+  padding: 0 13px;
   margin: 0;
-  background: #8060ad;
+  background: #7854a5;
 }
 .titlebar nav .rh-code-nav button.active {
-  background: #eee6fa;
-  color: #715197;
+  background: #f4edff;
+  color: #6f479b;
 }
 .titlebar nav .rh-code-nav .rh-plugin-nav {
   padding: 0 9px;
-  background: #b56436;
+  background: #aa5c32;
+  border-radius: 3px 3px 11px 3px;
+}
+.titlebar nav .rh-code-nav button:hover:not(.active) {
+  filter: brightness(1.13);
+}
+.titlebar nav .rh-code-nav button:focus-visible {
+  outline-offset: -3px;
 }
 .titlebar nav .rh-code-nav .rh-plugin-nav.active {
   color: #9c542b;

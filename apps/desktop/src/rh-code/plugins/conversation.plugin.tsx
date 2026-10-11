@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("AI 对话", "AI conversation"),
         icon: MessageSquare,
+        tone: "purple",
         render: Chat,
       },
       {
@@ -19,6 +20,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("项目对话", "Project conversations"),
         icon: MessagesSquare,
+        tone: "purple",
         render: Conversations,
       },
     ],

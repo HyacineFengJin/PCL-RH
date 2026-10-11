@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("改动审阅", "Changes and review"),
         icon: GitPullRequest,
+        tone: "orange",
         render: Changes,
       },
     ],

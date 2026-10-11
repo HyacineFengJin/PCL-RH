@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type ButtonHTMLAttributes,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -65,7 +66,7 @@ function optionsFrom(children: ReactNode): Option[] {
   });
 }
 type Menu = { owner: symbol; active: number };
-type Position = {
+type Position = CSSProperties & {
   left: number;
   top: number;
   width: number;
@@ -245,6 +246,24 @@ export function CeSelect({
       );
       const style = getComputedStyle(button);
       setPosition({
+        // The menu lives outside the caller's subtree. Copy only its visual
+        // tokens so a workspace dropdown keeps the owning surface's theme.
+        ...Object.fromEntries(
+          [
+            "surface",
+            "border",
+            "active",
+            "active-border",
+            "text",
+            "accent",
+            "radius",
+          ]
+            .map((name) => {
+              const key = `--ce-menu-${name}`;
+              return [key, style.getPropertyValue(key).trim()];
+            })
+            .filter(([, value]) => value),
+        ),
         left: Math.max(
           margin,
           Math.min(rect.left, window.innerWidth - width - margin),

@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { Plus, FolderOpen, ArrowUpRight, Search } from "lucide-react";
+import {
+  Plus,
+  FolderOpen,
+  ArrowUpRight,
+  Search,
+  MessageSquare,
+  Layers3,
+} from "lucide-react";
 import rhMark from "../../../../assets/branding/rh-mark.svg";
 import { useCode } from "./controller";
 import { label } from "./locale";
@@ -10,6 +17,12 @@ export function Projects({ onArchive }: { onArchive: () => void }) {
     [name, setName] = useState(""),
     [folder, setFolder] = useState(""),
     [query, setQuery] = useState("");
+  const projects = c.snapshot?.projects ?? [];
+  const visible = projects.filter((p) =>
+    (p.name + " " + p.folder)
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
+  );
   async function create() {
     const snapshot = await c.write("project_create", { name, folder });
     c.choose(snapshot.projects.at(-1)!);
@@ -37,10 +50,13 @@ export function Projects({ onArchive }: { onArchive: () => void }) {
         </div>
       </header>
       <div className="rc-project-heading">
-        <h1>{label("你的创作空间", "Your creative workspace")}</h1>
+        <h1>
+          {label("项目库", "Projects")} <span>{projects.length}</span>
+        </h1>
         <label className="rc-search">
           <Search size={16} />
           <input
+            aria-label={label("搜索项目", "Search projects")}
             placeholder={label("搜索项目", "Search projects")}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -48,34 +64,49 @@ export function Projects({ onArchive }: { onArchive: () => void }) {
         </label>
       </div>
       <div className="rc-project-list">
-        {c.snapshot?.projects
-          .filter((p) =>
-            (p.name + " " + p.folder)
-              .toLowerCase()
-              .includes(query.toLowerCase()),
-          )
-          .map((p) => (
-            <button
-              className="rc-project-card"
-              key={p.id}
-              onClick={() => c.choose(p)}
-            >
-              <div className="rc-project-art">
-                <FolderOpen size={29} />
-                <span>{p.targets.length}</span>
-              </div>
-              <div>
-                <h2>{p.name}</h2>
-                <p title={p.folder}>{p.folder}</p>
-                <small>
-                  {p.conversations.length} {label("个对话", "conversations")} ·{" "}
+        {visible.map((p) => (
+          <button
+            className="rc-project-card"
+            key={p.id}
+            onClick={() => c.choose(p)}
+          >
+            <div className="rc-project-art">
+              <FolderOpen size={24} />
+            </div>
+            <div>
+              <h2>{p.name}</h2>
+              <p title={p.folder}>{p.folder}</p>
+              <div className="rc-project-meta">
+                <span>
+                  <MessageSquare size={13} />
+                  {p.conversations.length} {label("个对话", "conversations")}
+                </span>
+                <span>
+                  <Layers3 size={13} />
                   {p.targets.map((t) => t.minecraft).join(" / ")}
-                </small>
+                </span>
               </div>
-              <ArrowUpRight size={18} />
-            </button>
-          ))}
+              <div className="rc-project-loaders">
+                {[...new Set(p.targets.flatMap((t) => t.loaders))].map(
+                  (loader) => (
+                    <span key={loader}>{loader}</span>
+                  ),
+                )}
+              </div>
+            </div>
+            <ArrowUpRight size={18} />
+          </button>
+        ))}
       </div>
+      {projects.length > 0 && visible.length === 0 && (
+        <div className="rc-project-empty" role="status">
+          <Search size={28} />
+          <h2>{label("没有找到项目", "No matching projects")}</h2>
+          <button className="rc-button" onClick={() => setQuery("")}>
+            {label("清除搜索", "Clear search")}
+          </button>
+        </div>
+      )}
       {!c.snapshot?.projects.length && (
         <div className="rc-project-empty">
           <div className="rc-zeta">ζ</div>
@@ -120,6 +151,7 @@ export function Projects({ onArchive }: { onArchive: () => void }) {
                 <button
                   type="button"
                   className="rc-button"
+                  aria-label={label("选择项目文件夹", "Choose project folder")}
                   onClick={() =>
                     void c
                       .api<string | null>("rh_code_choose", {})

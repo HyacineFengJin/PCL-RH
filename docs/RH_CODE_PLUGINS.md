@@ -42,6 +42,7 @@ const entry: BundledPluginEntry = {
       owner: manifest.id,
       label: "项目摘要",
       icon: Blocks,
+      tone: "blue",
       render: Summary,
     }],
   }),
@@ -55,11 +56,13 @@ export default entry;
 
 | 贡献 | 清单字段 | 实现 |
 | --- | --- | --- |
-| 区域组件 | `views` | `{ id, owner, label, icon, render, settings? }` |
+| 区域组件 | `views` | `{ id, owner, label, icon, tone?, render, settings? }` |
 | 命令 | `commands` | `{ id, owner, handler }` |
 | 布局 | `layouts` | `{ id, owner, label, create(project) }` |
 
 贡献 ID 必须在自己的清单中声明，不能占用另一插件的 ID。标识符以 ASCII 字母或数字开头，可使用字母、数字、点、下划线与连字符，最长 120 字符。清单由装配器复制冻结；工厂返回收到的同一个 `manifest`。
+
+`tone` 是组件的可选语义色：`blue` 用于文件与图谱，`purple` 用于 AI 对话，`orange` 用于构建、迁移与审阅，省略时为 `neutral`。宿主负责深浅主题、标题栏与焦点样式，组件移动后仍保留自己的色彩身份。
 
 `render` 与可选 `settings` 都接收 `{ area, api }`：
 

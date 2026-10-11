@@ -1,7 +1,7 @@
 /** Product shell: native project service and the Cordis registry outlive every
  * split area. The launcher shell neither knows nor mounts individual views. */
 import { useEffect, useMemo, useState, useRef } from "react";
-import { ArrowLeft, Settings2, LayoutDashboard, X, Puzzle } from "lucide-react";
+import { ArrowLeft, Settings2, LayoutDashboard, X } from "lucide-react";
 import { CeSelect } from "../CeSelect";
 import { ExperimentalAi } from "../ExperimentalAi";
 import type { PorterIntake } from "../experimentalPorterTypes";
@@ -85,6 +85,9 @@ export function RHCode({
       }}
     >
       <div
+        data-surface={
+          section === "plugins" ? "plugins" : p ? "workspace" : "projects"
+        }
         className={
           "rh-code " + (section === "plugins" ? "rc-plugin-space" : "")
         }
@@ -198,13 +201,7 @@ export function RHCode({
             <div className="rc-settings-scroll">
               <ExperimentalAi api={api} native={native} />
               <section className="rc-settings-info">
-                <h3>{label("工作区", "Workspace")}</h3>
-                <p>
-                  {label(
-                    "区域布局按项目保存；关闭区域保留对话与源码。",
-                    "Area layouts are saved per project. Closing an area retains conversations and source.",
-                  )}
-                </p>
+                <span>RH Code</span>
                 <a
                   href="https://github.com/deepseek-ai/deepseek-harness"
                   target="_blank"

@@ -1,11 +1,4 @@
-import {
-  FileCode2,
-  FolderTree,
-  Folder,
-  Save,
-  RefreshCw,
-  Layers,
-} from "lucide-react";
+import { FileCode2, Folder, Save, Layers } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useCode } from "../controller";
 import { label } from "../locale";
@@ -82,10 +75,6 @@ export function Files() {
   const tree = useMemo(() => fileTree(files), [files]);
   return (
     <div className="rc-panel-pad">
-      <header className="rc-section-title">
-        <FolderTree size={15} />
-        {label("项目文件", "Project files")}
-      </header>
       {error && (
         <p role="alert" className="rc-error-text">
           {error}
@@ -118,9 +107,6 @@ export function Graph() {
   }
   return (
     <div className="rc-panel-pad">
-      <header className="rc-section-title">
-        {label("内容图谱", "Content graph")}
-      </header>
       {error && <p className="rc-error-text">{error}</p>}
       {[...groups].map(([name, items]) => (
         <details className="rc-graph-group" key={name} open>

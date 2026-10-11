@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("内容图谱", "Content graph"),
         icon: Network,
+        tone: "blue",
         render: Graph,
       },
     ],

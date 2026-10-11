@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("文件图谱", "Project files"),
         icon: FolderTree,
+        tone: "blue",
         render: Files,
       },
     ],

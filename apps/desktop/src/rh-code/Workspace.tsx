@@ -43,7 +43,12 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
       View = view?.render;
     const siblings = panes.filter((p) => p.id !== n.id);
     return (
-      <section className="rc-area" key={n.id} data-area={n.id}>
+      <section
+        className="rc-area"
+        key={n.id}
+        data-area={n.id}
+        data-tone={view?.tone ?? "neutral"}
+      >
         <header className="rc-area-header">
           {view && <view.icon size={15} />}
           <CeSelect

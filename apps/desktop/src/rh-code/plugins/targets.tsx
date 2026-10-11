@@ -101,33 +101,28 @@ export function Targets() {
           {label("保存", "Save")}
         </button>
       </div>
-      <hr />
-      <header className="rc-section-title">
-        {label("构建与产物", "Build and artifacts")}
-      </header>
-      <div className="rc-row">
-        <button className="rc-button orange" disabled>
-          <Hammer size={15} />
-          {label("构建", "Build")}
-        </button>
+      <section className="rc-build-actions">
+        <header className="rc-section-title">
+          {label("构建与产物", "Build and artifacts")}
+        </header>
+        <div className="rc-row">
+          <button className="rc-button orange" disabled>
+            <Hammer size={15} />
+            {label("构建", "Build")}
+          </button>
+          <button className="rc-button" disabled>
+            <Package size={15} />
+            {label("打包", "Package")}
+          </button>
+        </div>
         <button className="rc-button" disabled>
-          <Package size={15} />
-          {label("打包", "Package")}
+          <Play size={15} />
+          {label("启动测试", "Launch test")}
         </button>
-      </div>
-      <p className="rc-muted">
-        {label(
-          "项目构建适配器尚未接入",
-          "Project build adapter is not connected yet",
-        )}
-      </p>
-      <header className="rc-section-title">
-        {label("游戏测试", "Game test")}
-      </header>
-      <button className="rc-button" disabled>
-        <Play size={15} />
-        {label("启动测试", "Launch test")}
-      </button>
+        <p className="rc-muted">
+          {label("构建与测试尚未接入", "Build and test are not connected yet")}
+        </p>
+      </section>
     </div>
   );
 }

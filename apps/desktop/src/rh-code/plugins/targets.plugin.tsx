@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("构建与测试", "Build and test"),
         icon: Hammer,
+        tone: "orange",
         render: Targets,
       },
     ],

@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("版本迁移", "Version migration"),
         icon: ArrowRightLeft,
+        tone: "orange",
         render: Porting,
       },
     ],

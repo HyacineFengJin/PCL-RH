@@ -12,6 +12,7 @@ const entry: BundledPluginEntry = {
         owner: manifest.id,
         label: label("源码编辑", "Source editor"),
         icon: FileCode2,
+        tone: "blue",
         render: Source,
       },
     ],
