@@ -10,27 +10,34 @@ import {
   MoreHorizontal,
   ArrowLeftRight,
   Puzzle,
+  Settings2,
 } from "lucide-react";
 import { Popover } from "./Popover";
 import { CeSelect } from "../CeSelect";
+import { Dialog } from "./Dialog";
+import { ViewBoundary } from "./ViewBoundary";
 import { useCode } from "./controller";
-import {
-  area,
-  exchange,
-  leaves,
-  remove,
-  replace,
-  resize,
-  split,
-} from "./layout";
-import { label, viewNames } from "./locale";
+import { exchange, leaves, remove, replace, resize, split } from "./layout";
+import { label } from "./locale";
 import type { Kernel } from "./kernel";
-import type { Area, Layout, ViewId } from "./types";
+import type { Area, Layout, ViewHost } from "./types";
 export function Workspace({ kernel }: { kernel: Kernel }) {
   const c = useCode(),
-    [maximized, setMaximized] = useState<string | null>(null);
+    [maximized, setMaximized] = useState<string | null>(null),
+    [settingsArea, setSettingsArea] = useState<string | null>(null);
   const panes = leaves(c.layout),
     focused = panes.find((p) => p.id === maximized);
+  const contributions = kernel.plugins.flatMap((p) => p.views ?? []);
+  const nameOf = (id: string) =>
+    contributions.find((v) => v.id === id)?.label ?? id;
+  const host = (n: Area): ViewHost => ({
+    project: c.project,
+    state: n.state?.[n.view] ?? {},
+    updateState: (next) => c.updateAreaState(n.id, n.view, next),
+    invoke: (id, ...args) => kernel.invoke(id, ...args),
+  });
+  const settingsNode = panes.find((n) => n.id === settingsArea),
+    Settings = settingsNode && kernel.views.get(settingsNode.view)?.settings;
   function pane(n: Area) {
     const view = kernel.views.get(n.view),
       View = view?.render;
@@ -42,17 +49,33 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
           <CeSelect
             aria-label={label("区域内容", "Area content")}
             value={n.view}
-            onChange={(e) =>
-              c.patchArea(n.id, { view: e.target.value as ViewId })
-            }
+            onChange={(e) => c.patchArea(n.id, { view: e.target.value })}
           >
-            {Object.keys(viewNames).map((id) => (
-              <option key={id} value={id} disabled={!kernel.views.has(id)}>
-                {label(...viewNames[id as ViewId])}
+            {!contributions.some((v) => v.id === n.view) && (
+              <option value={n.view} disabled>
+                {n.view}
+              </option>
+            )}
+            {contributions.map((v) => (
+              <option
+                key={v.id}
+                value={v.id}
+                disabled={!kernel.views.has(v.id)}
+              >
+                {v.label}
               </option>
             ))}
           </CeSelect>
           <span className="rc-spacer" />
+          {view?.settings && (
+            <button
+              className="rc-icon"
+              aria-label={label("组件设置", "Component settings")}
+              onClick={() => setSettingsArea(n.id)}
+            >
+              <Settings2 size={14} />
+            </button>
+          )}
           <button
             className="rc-icon"
             aria-label={
@@ -72,7 +95,14 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
               disabled={panes.length >= 12}
               onClick={() => {
                 c.mutateLayout(
-                  replace(c.layout, n.id, split("row", n, area("chat"))),
+                  replace(
+                    c.layout,
+                    n.id,
+                    split("row", n, {
+                      ...structuredClone(n),
+                      id: crypto.randomUUID(),
+                    }),
+                  ),
                 );
                 setMaximized(null);
               }}
@@ -84,7 +114,14 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
               disabled={panes.length >= 12}
               onClick={() => {
                 c.mutateLayout(
-                  replace(c.layout, n.id, split("column", n, area("chat"))),
+                  replace(
+                    c.layout,
+                    n.id,
+                    split("column", n, {
+                      ...structuredClone(n),
+                      id: crypto.randomUUID(),
+                    }),
+                  ),
                 );
                 setMaximized(null);
               }}
@@ -101,7 +138,7 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
               >
                 <ArrowLeftRight size={15} />
                 {label("交换：", "Swap: ")}
-                {label(...viewNames[other.view])}
+                {nameOf(other.view)}
               </button>
             ))}
             <button
@@ -119,13 +156,19 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
         </header>
         <div className="rc-area-body">
           {View ? (
-            <View area={n} />
+            <ViewBoundary key={n.view} name={view.label}>
+              <View area={n} api={host(n)} />
+            </ViewBoundary>
           ) : (
             <div className="rc-chat-empty">
               <Puzzle size={25} />
               <p>
-                {label("此区域的插件已停用", "This area's plugin is disabled")}
+                {label(
+                  "此组件暂不可用，布局已保留",
+                  "This component is unavailable. Its layout is retained.",
+                )}
               </p>
+              <small>{nameOf(n.view)}</small>
             </div>
           )}
         </div>
@@ -146,9 +189,24 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
     );
   }
   return (
-    <div className="rc-workspace">
-      {focused ? pane(focused) : tree(c.layout)}
-    </div>
+    <>
+      <div className="rc-workspace">
+        {focused ? pane(focused) : tree(c.layout)}
+      </div>
+      {settingsNode && Settings && (
+        <Dialog
+          title={nameOf(settingsNode.view)}
+          onClose={() => setSettingsArea(null)}
+        >
+          <ViewBoundary
+            key={settingsNode.view + settingsNode.id}
+            name={nameOf(settingsNode.view)}
+          >
+            <Settings area={settingsNode} api={host(settingsNode)} />
+          </ViewBoundary>
+        </Dialog>
+      )}
+    </>
   );
 }
 function SplitNode({

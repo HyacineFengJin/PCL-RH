@@ -11,6 +11,7 @@ import type {
   Project,
   Snapshot,
   Mode,
+  JsonValue,
 } from "./types";
 import { area, depth, leaves, map, preset, replace, split } from "./layout";
 import { label } from "./locale";
@@ -34,7 +35,23 @@ export function useController(api: Api, native: boolean) {
     draftTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const selection = useRef(projectId);
   const layoutChange = useRef(0);
+  const pendingLayouts = useRef(
+    new Map<string, { ticket: number; layout: Layout }>(),
+  );
+  const currentLayout = useRef(layout);
+  currentLayout.current = layout;
   selection.current = projectId;
+  const showLayout = (next: Layout) => {
+    currentLayout.current = next;
+    setLayout(next);
+  };
+  const projectLayout = (p: Project) =>
+    pendingLayouts.current.get(p.id)?.layout ??
+    p.layout ??
+    preset(
+      "conversation",
+      p.conversations.map((c) => c.id),
+    );
   const setData = (data: Snapshot) => {
     for (const p of data.projects)
       for (const c of p.conversations) {
@@ -54,14 +71,7 @@ export function useController(api: Api, native: boolean) {
     if (alive.current && ticket === loadSequence.current) {
       setData(data);
       const owned = data.projects.find((p) => p.id === selection.current);
-      if (owned)
-        setLayout(
-          owned.layout ??
-            preset(
-              "conversation",
-              owned.conversations.map((c) => c.id),
-            ),
-        );
+      if (owned) showLayout(projectLayout(owned));
     }
     return data;
   };
@@ -78,19 +88,11 @@ export function useController(api: Api, native: boolean) {
     selection.current = p.id;
     setProjectId(p.id);
     lastProject.set("selected", p.id);
-    setLayout(
-      p.layout ??
-        preset(
-          "conversation",
-          p.conversations.map((c) => c.id),
-        ),
+    showLayout(
+      projectLayout(latest.current?.projects.find((q) => q.id === p.id) ?? p),
     );
     setError("");
   };
-  useEffect(() => {
-    const current = snapshot?.projects.find((p) => p.id === projectId);
-    if (current && current.layout) setLayout(current.layout);
-  }, [projectId]);
   function write(operation: string, args: Record<string, unknown> = {}) {
     const task = serial.current
       .catch(() => {})
@@ -120,6 +122,10 @@ export function useController(api: Api, native: boolean) {
     return task;
   }
   const mutateLayout = (next: Layout) => {
+    const owner = project;
+    // View callbacks may finish after navigation. Their captured project cannot
+    // write the newly selected project's presentation back to the old project.
+    if (!owner || selection.current !== owner.id || !alive.current) return;
     if (depth(next) > 7 || leaves(next).length > 12) {
       setError(
         label(
@@ -130,30 +136,41 @@ export function useController(api: Api, native: boolean) {
       return;
     }
     const ticket = ++layoutChange.current;
-    const owner = project;
-    setLayout(next);
-    if (owner)
-      void write("layout_save", { projectId: owner.id, layout: next }).catch(
-        () => {
-          // Only roll back this attempt. A newer resize or another project must
-          // not be replaced by an earlier rejected disk write.
-          if (
-            alive.current &&
-            selection.current === owner.id &&
-            ticket === layoutChange.current
-          )
-            setLayout(
-              latest.current?.projects.find((p) => p.id === owner.id)?.layout ??
-                preset(
-                  "conversation",
-                  owner.conversations.map((c) => c.id),
-                ),
-            );
-        },
-      );
+    pendingLayouts.current.set(owner.id, { ticket, layout: next });
+    showLayout(next);
+    const settle = () => {
+      if (pendingLayouts.current.get(owner.id)?.ticket !== ticket) return;
+      pendingLayouts.current.delete(owner.id);
+      // Pending geometry survives A -> B -> A while native persistence is in
+      // flight. Only the newest acknowledgement (or failure) settles that draft.
+      if (alive.current && selection.current === owner.id)
+        showLayout(
+          projectLayout(
+            latest.current?.projects.find((p) => p.id === owner.id) ?? owner,
+          ),
+        );
+    };
+    void write("layout_save", { projectId: owner.id, layout: next }).then(
+      settle,
+      settle,
+    );
   };
-  const patchArea = (id: string, patch: Partial<Area>) =>
-    mutateLayout(map(layout, (n) => (n.id === id ? { ...n, ...patch } : n)));
+  const patchArea = (id: string, patch: Partial<Area>) => {
+    if (!leaves(currentLayout.current).some((n) => n.id === id)) return;
+    mutateLayout(
+      map(currentLayout.current, (n) => (n.id === id ? { ...n, ...patch } : n)),
+    );
+  };
+  const updateAreaState = (
+    id: string,
+    view: string,
+    state: Record<string, JsonValue>,
+  ) => {
+    // A late callback from an unloaded view cannot update the replacement view.
+    const current = leaves(currentLayout.current).find((n) => n.id === id);
+    if (!current || current.view !== view) return;
+    patchArea(id, { state: { ...current.state, [view]: state } });
+  };
   async function newConversation(areaId?: string) {
     if (!project) return;
     const data = await write("conversation_create", {
@@ -166,7 +183,7 @@ export function useController(api: Api, native: boolean) {
     const conversation = data.projects
       .find((p) => p.id === project.id)!
       .conversations.at(-1)!;
-    if (areaId)
+    if (areaId && selection.current === project.id)
       patchArea(areaId, { view: "chat", conversation: conversation.id });
     return conversation.id;
   }
@@ -219,6 +236,10 @@ export function useController(api: Api, native: boolean) {
       "rh_code_call",
       { operation: "file_read", args: { projectId: project.id, path: file } },
     );
+    // Multiple areas may request the same file before its first read resolves.
+    // A late read must never replace a buffer that is already open for editing.
+    const existing = buffers.get(id);
+    if (existing) return existing;
     const value = { ...result, original: result.content };
     buffers.set(id, value);
     update((v) => v + 1);
@@ -426,6 +447,7 @@ export function useController(api: Api, native: boolean) {
     },
     mutateLayout,
     patchArea,
+    updateAreaState,
     newConversation,
     openConversation,
     openFile,

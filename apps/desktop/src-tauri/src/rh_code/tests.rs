@@ -304,3 +304,276 @@ fn rh_code_source_adoption_retains_folder_on_invalid_snapshot() {
         assert!(fs::read_dir(&f.folder).unwrap().next().is_none());
     }
 }
+
+fn area(view: &str) -> Value {
+    json!({"type":"area","id":"a","view":view})
+}
+
+#[test]
+fn rh_code_old_schema_defaults_presets_and_all_snapshot_responses_include_them() {
+    let f = Fixture::new();
+    fs::create_dir_all(&f.store.root).unwrap();
+    fs::write(
+        f.store.root.join("workspace.json"),
+        br#"{"schemaVersion":1,"projects":[],"disabledPlugins":[]}"#,
+    )
+    .unwrap();
+    assert_eq!(f.snapshot()["layoutPresets"], json!([]));
+    let project = f.project();
+    let preset = f.write(
+        "layout_preset_save",
+        json!({"name":"My layout","layout":area("chat")}),
+    );
+    let expected = preset["layoutPresets"].clone();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"A"}),
+    );
+    assert_eq!(state["layoutPresets"], expected);
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    f.write("conversation_append",json!({"projectId":project,"conversationId":conversation,"role":"user","content":"request","jobId":"a","activeJob":"a"}));
+    for _ in 0..2 {
+        let state = f.write("conversation_complete",json!({"projectId":project,"conversationId":conversation,"jobId":"a","content":"done","role":"assistant"}));
+        assert_eq!(state["layoutPresets"], expected);
+    }
+    assert_eq!(
+        f.store
+            .call("artifact_owner", json!({"projectId":project,"jobId":"a"}))
+            .unwrap()["layoutPresets"],
+        expected
+    );
+}
+
+#[test]
+fn rh_code_presets_roundtrip_update_delete_and_cas() {
+    let f = Fixture::new();
+    let state = f.write(
+        "layout_preset_save",
+        json!({"name":"  First  ","layout":area("vendor.component")}),
+    );
+    let key = state["layoutPresets"][0]["id"].clone();
+    assert_eq!(key.as_str().unwrap().len(), 24);
+    assert_eq!(state["layoutPresets"][0]["name"], "First");
+    let stale = state["revision"].clone();
+    let state = f.write(
+        "layout_preset_save",
+        json!({"id":key,"name":"Renamed","layout":area("other.missing")}),
+    );
+    assert_eq!(state["layoutPresets"].as_array().unwrap().len(), 1);
+    assert_eq!(state["layoutPresets"][0]["id"], key);
+    let reopened = Store::new(&f.root).call("bootstrap", json!({})).unwrap();
+    assert_eq!(reopened["layoutPresets"], state["layoutPresets"]);
+    let bytes = fs::read(f.store.root.join("workspace.json")).unwrap();
+    for args in [
+        json!({"id":key,"expectedRevision":stale}),
+        json!({"id":"missing","expectedRevision":state["revision"]}),
+    ] {
+        assert!(f.store.call("layout_preset_delete", args).is_err());
+        assert_eq!(
+            fs::read(f.store.root.join("workspace.json")).unwrap(),
+            bytes
+        );
+    }
+    assert!(f.store.call("layout_preset_save",json!({"id":"missing","name":"No","layout":area("chat"),"expectedRevision":state["revision"]})).is_err());
+    assert_eq!(
+        f.write("layout_preset_delete", json!({"id":key}))["layoutPresets"],
+        json!([])
+    );
+}
+
+#[test]
+fn rh_code_portable_presets_strip_bindings_but_project_state_survives_disabled_views() {
+    let f = Fixture::new();
+    let project = f.project();
+    let layout = json!({"type":"split","id":"root","axis":"row","ratio":0.15,"children":[
+        {"type":"area","id":"left","view":"targets","conversation":"old-conversation","file":"src/Main.java",
+         "state":{"targets":{"selection":[1,2]},"vendor.missing":{"draft":"preserved"}}},
+        {"type":"area","id":"right","view":"vendor.missing"}]});
+    f.write("layout_save", json!({"projectId":project,"layout":layout}));
+    f.write("plugin_set", json!({"id":"rh.porting","enabled":false}));
+    f.write("plugin_set", json!({"id":"rh.targets","enabled":false}));
+    assert_eq!(
+        Store::new(&f.root).call("bootstrap", json!({})).unwrap()["projects"][0]["layout"],
+        layout
+    );
+    assert!(f.store.call("targets_save",json!({"projectId":project,"targets":[{"minecraft":"1.21.1","loaders":["Fabric"]}],"expectedRevision":f.snapshot()["revision"]})).is_err());
+    let saved = f.write(
+        "layout_preset_save",
+        json!({"name":"Portable","layout":layout}),
+    );
+    assert_eq!(
+        saved["layoutPresets"][0]["layout"],
+        json!({"type":"split","id":"root","axis":"row","ratio":0.15,"children":[
+        {"type":"area","id":"left","view":"targets"},
+        {"type":"area","id":"right","view":"vendor.missing"}]})
+    );
+    assert_eq!(saved["projects"][0]["layout"], layout);
+}
+
+fn balanced_layout(count: usize, next: &mut usize) -> Value {
+    *next += 1;
+    let key = format!("node-{next}");
+    if count == 1 {
+        json!({"type":"area","id":key,"view":"chat"})
+    } else {
+        json!({"type":"split","id":key,"axis":"column","ratio":0.85,"children":[
+            balanced_layout(count / 2,next),balanced_layout(count - count / 2,next)]})
+    }
+}
+
+#[test]
+fn rh_code_tree_limits_types_and_binding_bounds_are_authoritative() {
+    assert!(checked_layout(&Value::Null).is_ok());
+    assert!(portable_layout(&Value::Null).is_err());
+    assert!(checked_layout(&balanced_layout(12, &mut 0)).is_ok());
+    assert!(checked_layout(&balanced_layout(13, &mut 0)).is_err());
+    let mut deep = area("chat");
+    for index in 0..8 {
+        deep = json!({"type":"split","id":format!("split-{index}"),"axis":"row","ratio":0.5,
+            "children":[deep,{"type":"area","id":format!("leaf-{index}"),"view":"chat"}]});
+        assert_eq!(checked_layout(&deep).is_ok(), index < 7);
+    }
+    for (field, value) in [
+        ("view", json!("../plugin")),
+        ("view", json!("x".repeat(121))),
+        ("id", json!("bad id")),
+        ("conversation", json!(12)),
+        ("conversation", json!("x".repeat(101))),
+        ("file", json!(null)),
+        ("file", json!("   ")),
+        ("file", json!("../private")),
+        ("file", json!(".hidden/file")),
+        ("file", json!("C:/outside")),
+        ("file", json!("src\\file")),
+        ("file", json!("a".repeat(4097))),
+        ("extra", json!("untrusted")),
+        ("children", json!([])),
+    ] {
+        let mut tree = area("chat");
+        tree[field] = value;
+        assert!(checked_layout(&tree).is_err(), "accepted invalid {field}");
+    }
+    for ratio in [0.149, 0.851] {
+        let mut tree = balanced_layout(2, &mut 0);
+        tree["ratio"] = json!(ratio);
+        assert!(checked_layout(&tree).is_err());
+    }
+    let mut tree = balanced_layout(2, &mut 0);
+    tree["children"][0] = Value::Null;
+    assert!(checked_layout(&tree).is_err());
+}
+
+#[test]
+fn rh_code_state_validation_runs_before_portable_stripping_and_preserves_previous_bytes() {
+    let f = Fixture::new();
+    let project = f.project();
+    let original = fs::read(f.store.root.join("workspace.json")).unwrap();
+    let mut deep = json!({});
+    for _ in 0..9 {
+        deep = json!({"nested":deep});
+    }
+    for state in [
+        json!([]),
+        json!({"chat":[]}),
+        json!({"chat":null}),
+        json!({"../bad":{}}),
+        json!({"chat":{"__proto__":{}}}),
+        json!({"chat":{"constructor":{}}}),
+        json!({"chat":{"prototype":{}}}),
+        json!({"chat":{"bad key":1}}),
+        json!({"chat":{"text":"x".repeat(65536)}}),
+        json!({"chat":deep}),
+    ] {
+        let mut tree = area("chat");
+        tree["state"] = state;
+        for operation in ["layout_save", "layout_preset_save"] {
+            assert!(f.store.call(operation,json!({"projectId":project,"name":"Unsafe","layout":tree,"expectedRevision":f.snapshot()["revision"]})).is_err());
+            assert_eq!(
+                fs::read(f.store.root.join("workspace.json")).unwrap(),
+                original
+            );
+        }
+    }
+    assert!(f
+        .store
+        .call(
+            "layout_save",
+            json!({"projectId":project,"expectedRevision":f.snapshot()["revision"]})
+        )
+        .is_err());
+    let mut tree = balanced_layout(12, &mut 0);
+    fn add_state(node: &mut Value) {
+        if node["type"] == "area" {
+            node["state"] = json!({"chat":{"text":"x".repeat(24000)}});
+        } else {
+            for child in node["children"].as_array_mut().unwrap() {
+                add_state(child);
+            }
+        }
+    }
+    add_state(&mut tree);
+    assert!(checked_layout(&tree).is_err());
+}
+
+#[test]
+fn rh_code_preset_count_names_and_corrupt_portable_state_are_bounded() {
+    let f = Fixture::new();
+    for index in 0..32 {
+        f.write(
+            "layout_preset_save",
+            json!({"name":format!("Preset{index}"),"layout":area("chat")}),
+        );
+    }
+    let state = f.snapshot();
+    for name in [
+        "More".to_owned(),
+        " ".into(),
+        "x".repeat(81),
+        "line\nbreak".into(),
+    ] {
+        assert!(f
+            .store
+            .call(
+                "layout_preset_save",
+                json!({"name":name,"layout":area("chat"),"expectedRevision":state["revision"]})
+            )
+            .is_err());
+    }
+    // Updating an existing preset remains possible at the count limit.
+    let key = state["layoutPresets"][0]["id"].clone();
+    for name in [" ".to_owned(), "x".repeat(81), "line\nbreak".into()] {
+        assert!(f.store.call("layout_preset_save",json!({"id":key,"name":name,"layout":area("chat"),"expectedRevision":state["revision"]})).is_err());
+    }
+    f.write(
+        "layout_preset_save",
+        json!({"id":key,"name":"星".repeat(80),"layout":area("chat")}),
+    );
+    let path = f.store.root.join("workspace.json");
+    let mut stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    stored["layoutPresets"][0]["layout"]["conversation"] = json!("project-private");
+    let bytes = serde_json::to_vec(&stored).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    assert!(f.store.call("bootstrap", json!({})).is_err());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn rh_code_state_exact_byte_and_depth_boundaries_accept_safe_data() {
+    let mut tree = area("chat");
+    let overhead = serde_json::to_vec(&json!({"chat":{"text":""}}))
+        .unwrap()
+        .len();
+    tree["state"] = json!({"chat":{"text":"x".repeat(65536 - overhead)}});
+    assert_eq!(serde_json::to_vec(&tree["state"]).unwrap().len(), 65536);
+    assert!(checked_layout(&tree).is_ok());
+    tree["state"]["chat"]["text"] = json!("x".repeat(65537 - overhead));
+    assert!(checked_layout(&tree).is_err());
+    let mut state = json!({});
+    for _ in 0..7 {
+        state = json!({"nested":state});
+    }
+    tree["state"] = json!({"chat":state});
+    assert!(checked_layout(&tree).is_ok());
+    tree["state"]["chat"] = json!({"nested":tree["state"]["chat"]});
+    assert!(checked_layout(&tree).is_err());
+}

@@ -1,14 +1,7 @@
 /** Product shell: native project service and the Cordis registry outlive every
  * split area. The launcher shell neither knows nor mounts individual views. */
 import { useEffect, useMemo, useState, useRef } from "react";
-import {
-  ArrowLeft,
-  Settings2,
-  LayoutDashboard,
-  X,
-  Puzzle,
-  ChevronDown,
-} from "lucide-react";
+import { ArrowLeft, Settings2, LayoutDashboard, X, Puzzle } from "lucide-react";
 import { CeSelect } from "../CeSelect";
 import { ExperimentalAi } from "../ExperimentalAi";
 import type { PorterIntake } from "../experimentalPorterTypes";
@@ -22,7 +15,7 @@ import { Projects } from "./Projects";
 import { Dialog } from "./Dialog";
 import { Plugins } from "./Plugins";
 import { Workspace } from "./Workspace";
-import { preset } from "./layout";
+import { Layouts } from "./Layouts";
 import { label } from "./locale";
 import "./rh-code.css";
 export function RHCode({
@@ -43,6 +36,9 @@ export function RHCode({
   const c = useController(api, native),
     live = useRef(c);
   live.current = c;
+  const pluginConfiguration = c.snapshot
+    ? JSON.stringify([...c.snapshot.disabledPlugins].sort())
+    : null;
   const kernel = useMemo(() => {
       const k: Kernel = new Kernel(
         productPlugins(
@@ -65,11 +61,11 @@ export function RHCode({
   }, [porterIntake]);
   useEffect(() => kernel.subscribe(() => refresh((n) => n + 1)), [kernel]);
   useEffect(() => {
-    if (c.snapshot)
+    if (pluginConfiguration !== null)
       void kernel
-        .configure(c.snapshot.disabledPlugins)
+        .configure(JSON.parse(pluginConfiguration) as string[])
         .catch((e) => c.setError(String(e)));
-  }, [kernel, c.snapshot?.disabledPlugins]);
+  }, [kernel, pluginConfiguration]);
   useEffect(
     () => () => {
       void kernel.dispose();
@@ -112,7 +108,7 @@ export function RHCode({
           </div>
         )}
         {section === "plugins" ? (
-          <Plugins onNavigate={onNavigate} />
+          <Plugins kernel={kernel} onNavigate={onNavigate} />
         ) : p ? (
           <>
             <header className="rc-workbar">
@@ -147,40 +143,18 @@ export function RHCode({
               <div className="rc-layout-menu">
                 <button
                   className="rc-button"
-                  onClick={() => setLayoutMenu((v) => !v)}
+                  onClick={() => setLayoutMenu(true)}
                   aria-expanded={layoutMenu}
                 >
                   <LayoutDashboard size={15} />
                   {label("布局", "Layout")}
-                  <ChevronDown size={12} />
                 </button>
-                {layoutMenu && (
-                  <div className="rc-menu">
-                    {[
-                      ["conversation", label("创作", "Create")],
-                      ["parallel", label("并行对话", "Parallel conversations")],
-                      ["source", label("源码", "Source")],
-                    ].map(([id, text]) => (
-                      <button
-                        key={id}
-                        onClick={() => {
-                          c.mutateLayout(
-                            preset(
-                              id,
-                              p.conversations.map((t) => t.id),
-                            ),
-                          );
-                          setLayoutMenu(false);
-                        }}
-                      >
-                        {text}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             </header>
             <Workspace kernel={kernel} />
+            {layoutMenu && (
+              <Layouts kernel={kernel} onClose={() => setLayoutMenu(false)} />
+            )}
             <footer className="rc-status">
               <span className="rc-status-project">
                 {p.targets.map((t) => t.minecraft).join(" / ")} <b>·</b>{" "}

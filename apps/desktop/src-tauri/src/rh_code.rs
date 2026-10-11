@@ -2,8 +2,10 @@
 //! panel lifetimes. The native store is authoritative; renderer plugin state
 //! cannot grant filesystem access or overwrite a newer project revision.
 mod files;
+mod layout;
 use crate::Shared;
 use files::{atomic, atomic_with_permissions, inventory, read, safe_file};
+use layout::{checked_layout, portable_layout};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -56,10 +58,20 @@ pub struct Project {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LayoutPreset {
+    id: String,
+    name: String,
+    layout: Value,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Document {
     schema_version: u32,
     projects: Vec<Project>,
     disabled_plugins: Vec<String>,
+    // Schema 1 documents written before DIY presets remain readable.
+    #[serde(default)]
+    layout_presets: Vec<LayoutPreset>,
 }
 impl Default for Document {
     fn default() -> Self {
@@ -67,6 +79,7 @@ impl Default for Document {
             schema_version: 1,
             projects: vec![],
             disabled_plugins: vec![],
+            layout_presets: vec![],
         }
     }
 }
@@ -118,46 +131,15 @@ fn ensure_plugin(d: &Document, plugin: &str) -> Result<(), String> {
         Ok(())
     }
 }
-fn checked_layout(node: &Value, seen: &mut HashSet<String>, depth: usize) -> Result<(), String> {
-    if node.is_null() {
-        if depth > 0 {
-            return Err("A split area cannot be empty".into());
-        }
-        return Ok(());
+fn snapshot(d: &Document, revision: &str) -> Value {
+    json!({"revision":revision,"projects":d.projects,"disabledPlugins":d.disabled_plugins,"plugins":manifests(),"layoutPresets":d.layout_presets})
+}
+fn preset_name(value: &Value) -> Result<String, String> {
+    let name = value.as_str().ok_or("Choose a layout preset name")?.trim();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err("Invalid layout preset name".into());
     }
-    let identifier = text(node, "id", 100)?;
-    if depth > 7 || seen.len() >= 31 || !seen.insert(identifier) {
-        return Err("Invalid workspace layout".into());
-    }
-    match node["type"].as_str() {
-        Some("area")
-            if node["view"].as_str().is_some_and(|v| {
-                [
-                    "chat", "threads", "graph", "files", "source", "targets", "changes", "logs",
-                    "porting", "legacy",
-                ]
-                .contains(&v)
-            }) =>
-        {
-            Ok(())
-        }
-        Some("split")
-            if [Some("row"), Some("column")].contains(&node["axis"].as_str())
-                && node["ratio"]
-                    .as_f64()
-                    .is_some_and(|v| (0.15..=0.85).contains(&v)) =>
-        {
-            let children = node["children"]
-                .as_array()
-                .filter(|v| v.len() == 2)
-                .ok_or("Invalid split children")?;
-            for child in children {
-                checked_layout(child, seen, depth + 1)?;
-            }
-            Ok(())
-        }
-        _ => Err("Invalid workspace area".into()),
-    }
+    Ok(name.to_owned())
 }
 impl Store {
     pub fn new(project: &Path) -> Self {
@@ -180,8 +162,19 @@ impl Store {
         };
         let d: Document = serde_json::from_slice(&bytes)
             .map_err(|_| "RH Code state is unreadable; retained for recovery")?;
-        if d.schema_version != 1 || d.projects.len() > 128 {
+        if d.schema_version != 1 || d.projects.len() > 128 || d.layout_presets.len() > 32 {
             return Err("Unsupported RH Code state; retained for recovery".into());
+        }
+        let mut presets = HashSet::new();
+        for preset in &d.layout_presets {
+            if preset.id.len() != 24
+                || !preset.id.bytes().all(|v| v.is_ascii_hexdigit())
+                || !presets.insert(&preset.id)
+                || preset_name(&Value::String(preset.name.clone()))? != preset.name
+                || portable_layout(&preset.layout)? != preset.layout
+            {
+                return Err("Invalid stored layout preset; retained for recovery".into());
+            }
         }
         let list = manifests();
         let list = list.as_array().unwrap();
@@ -255,7 +248,7 @@ impl Store {
                     }
                 }
             }
-            checked_layout(&p.layout, &mut HashSet::new(), 0)?;
+            checked_layout(&p.layout)?;
         }
         Ok((d, hash(&bytes)))
     }
@@ -331,9 +324,7 @@ impl Store {
         }
         let (mut d, revision) = self.load()?;
         if operation == "bootstrap" {
-            return Ok(
-                json!({"revision":revision,"projects":d.projects,"disabledPlugins":d.disabled_plugins,"plugins":manifests()}),
-            );
+            return Ok(snapshot(&d, &revision));
         }
         if operation == "artifact_owner" || operation == "source_adopt" {
             ensure_plugin(&d, "rh.changes")?;
@@ -358,9 +349,7 @@ impl Store {
                     &source.ok_or("Source adoption requires the native artifact bridge")?,
                 )?;
             }
-            return Ok(
-                json!({"revision":revision,"projects":d.projects,"disabledPlugins":d.disabled_plugins,"plugins":manifests()}),
-            );
+            return Ok(snapshot(&d, &revision));
         }
         if operation == "agent_bound" {
             ensure_plugin(&d, "rh.agent")?;
@@ -533,8 +522,41 @@ impl Store {
                 }
             }
             "layout_save" => {
-                checked_layout(&a["layout"], &mut HashSet::new(), 0)?;
-                Self::project_mut(&mut d, &a)?.layout = a["layout"].clone();
+                let layout = a.get("layout").ok_or("Choose a workspace layout")?;
+                checked_layout(layout)?;
+                Self::project_mut(&mut d, &a)?.layout = layout.clone();
+            }
+            "layout_preset_save" => {
+                let name = preset_name(&a["name"])?;
+                let layout = portable_layout(&a["layout"])?;
+                if a.get("id").is_some() {
+                    let key = text(&a, "id", 100)?;
+                    let preset = d
+                        .layout_presets
+                        .iter_mut()
+                        .find(|preset| preset.id == key)
+                        .ok_or("Choose an existing layout preset")?;
+                    preset.name = name;
+                    preset.layout = layout;
+                } else {
+                    if d.layout_presets.len() >= 32 {
+                        return Err("Layout preset limit reached".into());
+                    }
+                    d.layout_presets.push(LayoutPreset {
+                        id: id(),
+                        name,
+                        layout,
+                    });
+                }
+            }
+            "layout_preset_delete" => {
+                let key = text(&a, "id", 100)?;
+                let index = d
+                    .layout_presets
+                    .iter()
+                    .position(|preset| preset.id == key)
+                    .ok_or("Choose an existing layout preset")?;
+                d.layout_presets.remove(index);
             }
             "targets_save" => {
                 ensure_plugin(&d, "rh.targets")?;
@@ -608,9 +630,7 @@ impl Store {
                         .iter()
                         .any(|m| m.role == "assistant" && m.job_id.as_deref() == Some(&job))
                     {
-                        return Ok(
-                            json!({"revision":revision,"projects":d.projects,"disabledPlugins":d.disabled_plugins,"plugins":manifests()}),
-                        );
+                        return Ok(snapshot(&d, &revision));
                     }
                     if c.active_job.as_deref() != Some(&job) || role != "assistant" {
                         return Err("Task completion does not match the active conversation".into());
@@ -673,9 +693,7 @@ impl Store {
             return Err("RH Code state exceeds 8 MiB; retained previous state".into());
         }
         atomic(&self.root.join("workspace.json"), &bytes)?;
-        Ok(
-            json!({"revision":hash(&bytes),"projects":d.projects,"disabledPlugins":d.disabled_plugins,"plugins":manifests()}),
-        )
+        Ok(snapshot(&d, &hash(&bytes)))
     }
 }
 #[tauri::command]

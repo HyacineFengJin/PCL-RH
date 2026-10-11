@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Puzzle, Blocks, ShieldCheck, Store } from "lucide-react";
+import { Puzzle, Blocks, ShieldCheck, Store, RotateCcw } from "lucide-react";
 import { useCode } from "./controller";
 import { label } from "./locale";
 import { ExperimentalExtensions } from "../ExperimentalExtensions";
 import type { ExperimentalNavigate } from "../experimentalTypes";
+import type { Kernel } from "./kernel";
 const names: Record<string, [string, string]> = {
   "rh.compatibility": ["旧版项目兼容", "Previous project compatibility"],
   "rh.project": ["项目服务", "Project service"],
@@ -17,8 +18,15 @@ const names: Record<string, [string, string]> = {
   "rh.tasks": ["任务与输出", "Tasks and output"],
   "rh.porting": ["版本迁移", "Version migration"],
   "rh.settings": ["工作区设置", "Workspace settings"],
+  "rh.overview": ["项目概览", "Project overview"],
 };
-export function Plugins({ onNavigate }: { onNavigate: ExperimentalNavigate }) {
+export function Plugins({
+  kernel,
+  onNavigate,
+}: {
+  kernel: Kernel;
+  onNavigate: ExperimentalNavigate;
+}) {
   const c = useCode(),
     [page, setPage] = useState("builtin");
   return (
@@ -52,6 +60,18 @@ export function Plugins({ onNavigate }: { onNavigate: ExperimentalNavigate }) {
         <div className="rc-plugin-list">
           {c.snapshot?.plugins.map((p) => {
             const enabled = !c.snapshot!.disabledPlugins.includes(p.id);
+            const status = kernel.statuses.get(p.id),
+              plugin = kernel.plugins.find((q) => q.manifest.id === p.id);
+            const stateLabel =
+              status?.state === "active"
+                ? label("已启用", "Active")
+                : status?.state === "failed"
+                  ? label("加载失败", "Failed")
+                  : status?.state === "blocked"
+                    ? label("依赖未就绪", "Dependency unavailable")
+                    : !enabled
+                      ? label("已停用", "Disabled")
+                      : label("正在加载", "Loading");
             const dependents = c.snapshot!.plugins.filter(
               (q) =>
                 q.dependencies.includes(p.id) &&
@@ -75,6 +95,13 @@ export function Plugins({ onNavigate }: { onNavigate: ExperimentalNavigate }) {
                     <small>{p.version}</small>
                   </h2>
                   <code>{p.id}</code>
+                  <span
+                    className={
+                      "rc-plugin-status " + (status?.state ?? "loading")
+                    }
+                  >
+                    {stateLabel}
+                  </span>
                   {p.dependencies.length > 0 && (
                     <p>
                       {label("依赖：", "Depends on: ")}
@@ -85,10 +112,49 @@ export function Plugins({ onNavigate }: { onNavigate: ExperimentalNavigate }) {
                   )}
                   <details>
                     <summary>
-                      {label("模块能力", "Module capabilities")}
+                      {label("组件与能力", "Components and capabilities")}
+                      {" · "}
+                      {p.views.length}
                     </summary>
+                    <ul className="rc-plugin-contributions">
+                      {plugin?.views?.map((v) => (
+                        <li key={v.id}>
+                          <v.icon size={14} />
+                          <span>{v.label}</span>
+                          <code>{v.id}</code>
+                        </li>
+                      ))}
+                    </ul>
+                    {(p.commands?.length ?? 0) > 0 && (
+                      <p>
+                        {label("命令：", "Commands: ")}
+                        {p.commands!.join(" · ")}
+                      </p>
+                    )}
+                    {(p.layouts?.length ?? 0) > 0 && (
+                      <p>
+                        {label("布局：", "Layouts: ")}
+                        {plugin?.layouts?.map((l) => l.label).join(" · ")}
+                      </p>
+                    )}
                     <p>{p.capabilities.join(" · ")}</p>
                   </details>
+                  {status?.state === "failed" && (
+                    <div className="rc-plugin-failure">
+                      <p className="rc-error-text">{status.error}</p>
+                      <button
+                        className="rc-button"
+                        onClick={() =>
+                          void kernel
+                            .retry(p.id)
+                            .catch((e) => c.setError(String(e)))
+                        }
+                      >
+                        <RotateCcw size={14} />
+                        {label("重新加载", "Reload")}
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <button
                   className="rc-toggle"

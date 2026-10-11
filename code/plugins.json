@@ -24,7 +24,8 @@
     "required": false,
     "dependencies": ["rh.conversation", "rh.files"],
     "capabilities": ["agent.run", "agent.cancel"],
-    "views": []
+    "views": [],
+    "commands": ["agent.run", "agent.stop"]
   },
   {
     "id": "rh.files",
@@ -105,6 +106,20 @@
     "required": true,
     "dependencies": [],
     "capabilities": ["plugin.manage", "agent.presets"],
-    "views": []
+    "views": [],
+    "layouts": [
+      "rh.settings.conversation",
+      "rh.settings.parallel",
+      "rh.settings.source"
+    ]
+  },
+  {
+    "id": "rh.overview",
+    "name": "Project overview",
+    "version": "1.0.0",
+    "required": false,
+    "dependencies": ["rh.project"],
+    "capabilities": ["project.metadata"],
+    "views": ["rh.overview.summary"]
   }
 ]

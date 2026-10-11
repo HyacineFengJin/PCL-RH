@@ -275,6 +275,210 @@
   overflow: auto;
   min-width: 0;
 }
+.rc-view-mount {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.rc-view-failure {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px 14px;
+  color: var(--rc-muted);
+  text-align: center;
+}
+.rc-view-failure p {
+  margin: 0;
+}
+.rc-view-failure details {
+  max-width: 100%;
+}
+.rc-view-failure pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.rh-code .rc-layouts-dialog {
+  width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rc-layouts-scroll {
+  overflow: auto;
+  min-height: 0;
+  padding: 0 2px 3px;
+}
+.rc-layouts-dialog > header {
+  padding-bottom: 12px;
+}
+.rc-layouts-dialog h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 16px 0 10px;
+}
+.rc-layout-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.rc-layout-choice {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 9px;
+  color: var(--rc-ink);
+  padding: 12px;
+  border: 1px solid var(--rc-line);
+  border-radius: 12px;
+  background: var(--rc-surface);
+}
+.rc-layout-choice:hover,
+.rc-layout-apply:hover {
+  background: var(--rc-tint);
+}
+.rc-layout-mini {
+  display: flex;
+  width: 70px;
+  height: 42px;
+  flex: none;
+}
+.rc-layout-mini-split {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.rc-layout-mini-area {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  border: 1px solid color-mix(in srgb, var(--rc-purple) 50%, var(--rc-line));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--rc-purple) 15%, var(--rc-surface));
+}
+.rc-layout-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 20px 0 10px;
+}
+.rc-layout-section-heading h3 {
+  margin: 0;
+}
+.rc-layout-section-heading small {
+  color: var(--rc-muted);
+}
+.rc-saved-layouts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rc-saved-layout {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--rc-line);
+  border-radius: 10px;
+  padding-right: 7px;
+  overflow: hidden;
+}
+.rc-layout-apply {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  padding: 9px 12px;
+  color: var(--rc-ink);
+  background: var(--rc-surface);
+  border: none;
+}
+.rc-layout-apply > span:last-child {
+  overflow-wrap: anywhere;
+}
+.rc-layout-apply .rc-layout-mini {
+  width: 45px;
+  height: 28px;
+}
+.rc-layout-save {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 14px 0 6px;
+}
+.rc-layout-save > input {
+  flex: 1;
+}
+.rc-dialog .rc-loader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+.rc-layout-transfer {
+  border-top: 1px solid var(--rc-line);
+  margin-top: 18px;
+  padding-bottom: 6px;
+}
+.rc-layout-transfer textarea {
+  width: 100%;
+  height: 155px;
+  font: 12px/1.5 monospace;
+  margin-bottom: 10px;
+}
+.rc-plugin-status {
+  display: inline-block;
+  margin-left: 9px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--rc-soft);
+  color: var(--rc-muted);
+  font-size: 11px;
+}
+.rc-plugin-status.active {
+  color: var(--rc-purple);
+  background: var(--rc-tint);
+}
+.rc-plugin-status.failed,
+.rc-plugin-status.blocked {
+  color: var(--rc-orange);
+}
+.rc-plugin-contributions {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+.rc-plugin-contributions li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.rc-plugin-contributions code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .rc-layout-save {
+    flex-wrap: wrap;
+  }
+  .rc-layout-save > input {
+    flex-basis: 100%;
+  }
+  .rc-layout-section-heading .rc-spacer {
+    display: none;
+  }
+}
 .rc-area-menu summary {
   list-style: none;
   cursor: pointer;
