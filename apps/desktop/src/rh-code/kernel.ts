@@ -1,8 +1,12 @@
 /** Bundled plugins are trusted code. The registry enforces contribution ownership
  * and Cordis effect lifetimes; it does not provide a JavaScript sandbox. A failed
- * owner retires its contributions and transitive dependents before retry. */
+ * owner retires its contributions and transitive dependents before retry.
+ * Metadata/import thunks persist; factory instances belong to active scopes.
+ * Reconciliation is serialized, and request versions cancel late imports/apply
+ * results when a newer surface configuration or host disposal supersedes them. */
 import { Context, type Fiber } from "@deepseek-ai/cordis";
 import type {
+  ActivePluginScope,
   CommandContribution,
   LayoutContribution,
   Manifest,
@@ -19,6 +23,9 @@ export type ProductPlugin = {
   loadError?: string;
 };
 export type PluginRuntime = {
+  /** Hold an RH Code controller lease for background work. The plugin owns its
+   * release and must register it with ctx.effect so retirement releases it. */
+  keepAwake?: () => () => void;
   commands?: {
     run: (...args: any[]) => unknown;
     stop: (...args: any[]) => unknown;
@@ -30,6 +37,14 @@ export type BundledPluginEntry = {
   id: string;
   create(manifest: Manifest, runtime: PluginRuntime): ProductPlugin;
 };
+/** Metadata and an import thunk survive retirement; the created instance does not. */
+export type LazyProductPlugin = {
+  manifest: Manifest;
+  load: () => Promise<BundledPluginEntry>;
+  runtime?: PluginRuntime;
+};
+export type PluginDefinition = ProductPlugin | LazyProductPlugin;
+export const pluginScope = (manifest: Manifest) => manifest.scope ?? "rh-code";
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 const validId = (id: unknown): id is string =>
@@ -44,7 +59,7 @@ function ids(value: unknown, name: string): asserts value is string[] {
   )
     throw new Error(`Invalid or duplicate ${name}`);
 }
-const dependencies = (plugin: ProductPlugin): string[] =>
+const dependencies = (plugin: { manifest: Manifest }): string[] =>
   Array.isArray(plugin.manifest.dependencies)
     ? plugin.manifest.dependencies
     : [];
@@ -59,6 +74,8 @@ function validate(plugin: ProductPlugin) {
     typeof m.required !== "boolean"
   )
     throw new Error("Invalid plugin manifest");
+  if (!["launcher", "rh-code", "both"].includes(pluginScope(m)))
+    throw new Error("Invalid plugin scope");
   ids(m.dependencies, "dependencies");
   ids(m.views, "view IDs");
   ids(m.commands ?? [], "command IDs");
@@ -112,6 +129,9 @@ export class Kernel {
   readonly layouts = new Map<string, LayoutContribution>();
   readonly statuses = new Map<string, PluginStatus>();
   readonly plugins: ProductPlugin[];
+  private definitions: PluginDefinition[];
+  private version = 0;
+  private scopes: readonly ActivePluginScope[] = ["rh-code"];
   private fibers = new Map<string, Fiber>();
   private owners = new WeakMap<Context, ProductPlugin>();
   private commandOwners = new Map<string, string>();
@@ -119,14 +139,15 @@ export class Kernel {
   private sequence: Promise<void> = Promise.resolve();
   private stopped = false;
   private disabled: readonly string[] = [];
-  constructor(plugins: ProductPlugin[]) {
+  constructor(plugins: PluginDefinition[]) {
     if (new Set(plugins.map((p) => p.manifest.id)).size !== plugins.length)
       throw new Error("Duplicate product plugin");
+    this.definitions = [...plugins];
     this.plugins = [...plugins];
     for (const p of plugins)
       this.statuses.set(p.manifest.id, {
         id: p.manifest.id,
-        state: "blocked",
+        state: "dormant",
         dependencies: [...dependencies(p)],
       });
   }
@@ -237,6 +258,10 @@ export class Kernel {
         this.status(id, "failed", { error: errorText(error) });
       }
       this.owners.delete(fiber.ctx);
+      // Release created contribution/component closures. ES module caching
+      // belongs to the browser and cannot be cleared by the application.
+      const index = this.definitions.findIndex((p) => p.manifest.id === id);
+      this.plugins[index] = this.definitions[index];
     }
   }
   /** A host render boundary may report a plugin crash. Saved area data survives
@@ -260,53 +285,108 @@ export class Kernel {
   /** Reconcile failed owners and their dependency chains using the current
    * enabled configuration. Existing active plugin instances remain intact. */
   retry(_id?: string) {
-    return this.configure(this.disabled);
+    return this.configure(this.disabled, this.scopes);
   }
-  configure(disabled: readonly string[]) {
+  configure(
+    disabled: readonly string[],
+    activeScopes: readonly ActivePluginScope[] = this.scopes,
+  ) {
     const requested = [...disabled];
+    const scopes = [...activeScopes];
+    if (scopes.some((scope) => scope !== "launcher" && scope !== "rh-code"))
+      throw new Error("Invalid active plugin scope");
+    const version = ++this.version;
+    this.disabled = requested;
+    this.scopes = scopes;
+    const current = () => !this.stopped && version === this.version;
+    const eligible = (p: { manifest: Manifest }) => {
+      const scope = pluginScope(p.manifest);
+      return scope === "both" ? scopes.length > 0 : scopes.includes(scope);
+    };
     return this.enqueue(async () => {
-      if (this.stopped) return;
-      this.disabled = requested;
+      if (!current()) return;
       const off = new Set(
-        this.plugins
+        this.definitions
           .filter(
             (p) => !p.manifest.required && requested.includes(p.manifest.id),
           )
           .map((p) => p.manifest.id),
       );
       const retire = new Set<string>();
-      for (const id of off)
-        for (const child of this.dependents(id)) retire.add(child);
+      for (const p of this.definitions)
+        if (off.has(p.manifest.id) || !eligible(p))
+          for (const child of this.dependents(p.manifest.id)) retire.add(child);
       await this.unload(retire);
+      if (!current()) return;
       const pending = new Map(
-        this.plugins
+        this.definitions
           .filter((p) => !this.fibers.has(p.manifest.id))
           .map((p) => [p.manifest.id, p]),
       );
-      for (const [id, plugin] of pending) {
+      for (const [id, definition] of pending) {
         if (off.has(id)) {
           this.status(id, "disabled");
           pending.delete(id);
           continue;
         }
         try {
-          validate(plugin);
+          // Validate authority before importing executable modules. Launcher
+          // lifetimes cannot require an owner that retires with RH Code.
+          validate({ manifest: definition.manifest });
+          if (pluginScope(definition.manifest) !== "rh-code")
+            for (const dependency of dependencies(definition)) {
+              const target = this.definitions.find(
+                (p) => p.manifest.id === dependency,
+              );
+              if (target && pluginScope(target.manifest) === "rh-code")
+                throw new Error(
+                  `Plugin scope cannot depend on RH Code only plugin: ${dependency}`,
+                );
+            }
+          if (!eligible(definition)) {
+            this.status(id, "dormant");
+            pending.delete(id);
+          }
         } catch (error) {
           this.status(id, "failed", { error: errorText(error) });
           pending.delete(id);
         }
       }
-      // Startup is isolated per owner. One invalid, unavailable or failed module
-      // cannot stop independent plugins from loading in the same configuration.
+      // Import after dependencies are active. Failed owners leave unrelated
+      // modules available and their descendants blocked for a later retry.
       let progressed = true;
-      while (progressed) {
+      while (progressed && current()) {
         progressed = false;
-        for (const [id, plugin] of pending) {
-          if (dependencies(plugin).some((d) => !this.fibers.has(d))) continue;
+        for (const [id, definition] of pending) {
+          if (!current()) return;
+          if (dependencies(definition).some((d) => !this.fibers.has(d)))
+            continue;
           pending.delete(id);
           progressed = true;
           let fiber: Fiber | undefined;
           try {
+            let plugin: ProductPlugin;
+            if ("load" in definition) {
+              const entry = await definition.load();
+              // A dispose or surface change during import prevents the factory
+              // from acquiring resources after its requested lifetime.
+              if (!current()) return;
+              if (entry.id !== id)
+                throw new Error("Bundled entry identity mismatch");
+              plugin = entry.create(
+                definition.manifest,
+                definition.runtime ?? {},
+              );
+              if (plugin.manifest !== definition.manifest)
+                throw new Error(
+                  "Bundled entry replaced its authoritative manifest",
+                );
+            } else plugin = definition;
+            validate(plugin);
+            const index = this.definitions.findIndex(
+              (p) => p.manifest.id === id,
+            );
+            this.plugins[index] = plugin;
             fiber = this.context.plugin({
               name: id,
               apply: async (ctx: Context) => {
@@ -338,6 +418,10 @@ export class Kernel {
             });
             this.fibers.set(id, fiber);
             await fiber;
+            if (!current()) {
+              await this.unload(new Set([id]));
+              return;
+            }
             for (const viewId of plugin.manifest.views)
               if (this.views.get(viewId)?.owner !== id)
                 throw new Error(`Declared view missing: ${viewId}`);
@@ -353,6 +437,11 @@ export class Kernel {
             this.status(id, "active");
           } catch (error) {
             if (fiber) await this.unload(new Set([id]));
+            const index = this.definitions.findIndex(
+              (p) => p.manifest.id === id,
+            );
+            this.plugins[index] = this.definitions[index];
+            if (!current()) return;
             this.status(id, "failed", { error: errorText(error) });
           }
           this.changed();
@@ -367,6 +456,7 @@ export class Kernel {
   }
   async dispose() {
     this.stopped = true;
+    ++this.version;
     await this.sequence.catch(() => {});
     await this.unload(new Set(this.fibers.keys()));
     for (const p of this.plugins) this.status(p.manifest.id, "stopped");

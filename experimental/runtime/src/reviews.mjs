@@ -108,6 +108,9 @@ export class HostReviewService {
   async shutdown() {
     await this.#supervisor.shutdown();
   }
+  hasActiveWork() {
+    return this.#supervisor.hasActiveWork();
+  }
   async #control(jobId) {
     await this.#store.files(jobId);
     return new Workspace(

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   ArrowRightLeft,
   Hammer,
@@ -9,15 +9,37 @@ import {
   Save,
 } from "lucide-react";
 import { useCode } from "../controller";
+import { useRetainedWork } from "../retention";
 import { label } from "../locale";
 import type { Area, Target } from "../types";
 export function Targets() {
   const c = useCode(),
-    [targets, setTargets] = useState<Target[]>([]);
-  useEffect(
-    () => setTargets(c.project?.targets ?? []),
-    [c.projectId, c.project?.targets],
-  );
+    [drafts, setDrafts] = useState<Record<string, Target[]>>({}),
+    targets = drafts[c.projectId] ?? c.project?.targets ?? [];
+  // Unrelated conversation/layout writes replace the snapshot. Keep local
+  // forms by project, so those replies and project switches cannot erase them.
+  useRetainedWork(Object.keys(drafts).length > 0);
+  const setTargets = (update: (previous: Target[]) => Target[]) => {
+    setDrafts((all) => {
+      const next = update(all[c.projectId] ?? c.project?.targets ?? []),
+        result = { ...all };
+      if (JSON.stringify(next) === JSON.stringify(c.project?.targets ?? []))
+        delete result[c.projectId];
+      else result[c.projectId] = next;
+      return result;
+    });
+  };
+  async function save() {
+    const id = c.projectId,
+      saved = JSON.stringify(targets);
+    await c.write("targets_save", { projectId: id, targets });
+    setDrafts((all) => {
+      if (JSON.stringify(all[id]) !== saved) return all;
+      const result = { ...all };
+      delete result[id];
+      return result;
+    });
+  }
   return (
     <div className="rc-panel-pad">
       <header className="rc-section-title">
@@ -91,11 +113,7 @@ export function Targets() {
         <button
           className="rc-button orange"
           disabled={!c.native || !!c.busy || !targets.length}
-          onClick={() =>
-            void c
-              .write("targets_save", { projectId: c.projectId, targets })
-              .catch(() => {})
-          }
+          onClick={() => void save().catch(() => {})}
         >
           <Save size={15} />
           {label("保存", "Save")}
@@ -129,6 +147,7 @@ export function Targets() {
 export function Porting({ area }: { area: Area }) {
   const c = useCode(),
     [version, setVersion] = useState("");
+  useRetainedWork(!!version.trim());
   async function discuss() {
     if (!c.project) return;
     let conversation: string | undefined = c.project.conversations[0]?.id;

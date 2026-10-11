@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -174,6 +174,21 @@ pub struct Host {
     session: Mutex<Option<Session>>,
     closing: AtomicBool,
     stopped: AtomicBool,
+    callers: AtomicUsize,
+    resume_preset: Mutex<Option<String>>,
+}
+// Admission begins before the session lock, so idle retirement also sees calls
+// queued behind a snapshot or a child operation. Drop covers all error paths.
+struct CallAdmission<'a>(&'a AtomicUsize);
+impl Drop for CallAdmission<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+#[derive(Debug, Serialize, PartialEq)]
+pub struct SuspendResult {
+    released: bool,
+    busy: bool,
 }
 impl Host {
     pub fn new(project: PathBuf) -> Self {
@@ -182,6 +197,8 @@ impl Host {
             session: Mutex::new(None),
             closing: AtomicBool::new(false),
             stopped: AtomicBool::new(true),
+            callers: AtomicUsize::new(0),
+            resume_preset: Mutex::new(None),
         }
     }
     fn start(&self) -> Result<Session, String> {
@@ -216,27 +233,103 @@ impl Host {
         let input = child.stdin.take().ok_or("无法打开实验功能通道")?;
         let output = BufReader::new(child.stdout.take().ok_or("无法读取实验功能通道")?);
         self.stopped.store(false, Ordering::SeqCst);
-        Ok(Session {
+        let mut session = Session {
             child,
             input,
             output,
             _lease: lease,
             broken: false,
-        })
+        };
+        let mut resume_preset = self
+            .resume_preset
+            .lock()
+            .map_err(|_| "实验功能引擎状态不可用")?;
+        if let Some(id) = resume_preset.as_ref() {
+            session.call("idle_resume", json!({"presetId": id}))?;
+        }
+        // The resumed process now owns provider state. A later crash must not
+        // replay a stale pre-sleep choice after provider_stop or a preset edit.
+        *resume_preset = None;
+        Ok(session)
     }
     fn call(&self, operation: &str, args: Value) -> Result<Value, String> {
+        self.callers.fetch_add(1, Ordering::SeqCst);
+        let _admission = CallAdmission(&self.callers);
         let mut owner = self.session.lock().map_err(|_| "实验功能引擎状态不可用")?;
         if self.closing.load(Ordering::SeqCst) {
             return Err("启动器正在关闭".into());
         }
+        // A failed idle probe leaves ownership intact until an ordinary call or
+        // app exit requests recovery. Its unread stdio reply cannot be consumed
+        // as the next operation's result.
+        if owner.as_ref().is_some_and(|session| session.broken) {
+            drop(owner.take());
+        }
         if owner.is_none() {
-            *owner = Some(self.start()?);
+            match self.start() {
+                Ok(session) => *owner = Some(session),
+                Err(error) => {
+                    self.stopped.store(true, Ordering::SeqCst);
+                    return Err(error);
+                }
+            }
         }
         let result = owner.as_mut().unwrap().call(operation, args);
         if owner.as_ref().is_some_and(|session| session.broken) {
             drop(owner.take());
+            self.stopped.store(true, Ordering::SeqCst);
         }
         result
+    }
+    fn suspend(&self) -> Result<SuspendResult, String> {
+        // This lock is also the start/call/exit ownership boundary. No operation
+        // can enter the retiring process; later calls may lazily start a new one.
+        let mut owner = match self.session.try_lock() {
+            Ok(owner) => owner,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Ok(SuspendResult {
+                    released: false,
+                    busy: true,
+                });
+            }
+            Err(_) => return Err("实验功能引擎状态不可用".into()),
+        };
+        if self.closing.load(Ordering::SeqCst) || self.callers.load(Ordering::SeqCst) != 0 {
+            return Ok(SuspendResult {
+                released: false,
+                busy: true,
+            });
+        }
+        let Some(session) = owner.as_mut() else {
+            return Ok(SuspendResult {
+                released: false,
+                busy: false,
+            });
+        };
+        if session.broken {
+            return Err("实验功能引擎已断开".into());
+        }
+        let prepared = session.call("idle_prepare", json!({}));
+        // An uncertain or failed idle check cannot authorize cancellation. Keep
+        // the session for the ordinary call/exit recovery path.
+        let prepared = prepared?;
+        if prepared["busy"] != false || self.callers.load(Ordering::SeqCst) != 0 {
+            return Ok(SuspendResult {
+                released: false,
+                busy: true,
+            });
+        }
+        *self
+            .resume_preset
+            .lock()
+            .map_err(|_| "实验功能引擎状态不可用")? =
+            prepared["resumePresetId"].as_str().map(str::to_owned);
+        drop(owner.take());
+        self.stopped.store(true, Ordering::SeqCst);
+        Ok(SuspendResult {
+            released: true,
+            busy: false,
+        })
     }
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
@@ -255,6 +348,13 @@ impl Host {
             host.stopped.store(true, Ordering::SeqCst);
         });
     }
+}
+#[tauri::command]
+pub async fn experimental_suspend(host: State<'_, Arc<Host>>) -> Result<SuspendResult, String> {
+    let host = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || host.suspend())
+        .await
+        .map_err(|e| e.to_string())?
 }
 // This is the only instance data entering the extension host. An extension gets
 // the four summary fields, never the opaque context or the complete bootstrap.
@@ -396,3 +496,6 @@ pub async fn rh_code_adopt(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod tests;

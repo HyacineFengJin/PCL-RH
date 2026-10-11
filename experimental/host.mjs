@@ -34,6 +34,7 @@ import {
   inspectForeignPackageFile,
 } from "./extensions/src/foreign-package.mjs";
 import { AiPresets } from "./ai-presets.mjs";
+import { prepareIdle } from "./idle-state.mjs";
 import {
   captureIndexedSource,
   indexPage,
@@ -466,6 +467,25 @@ async function dispatch(operation, a) {
   if (closing && operation !== "shutdown")
     throw new Error("Experimental host is closing");
   switch (operation) {
+    case "idle_prepare":
+      return prepareIdle({
+        runtime,
+        reviews,
+        children: [reviews, adapters, bridge],
+        pendingJobs,
+        liveRuns,
+        pendingExtensions,
+        sourceImports,
+        safeMode,
+        selection,
+        preset: presets.selected(),
+      });
+    case "idle_resume": {
+      const preset = presets.selected();
+      // An external edit/deletion must not resurrect another provider choice.
+      if (preset?.id === a.presetId) selection = preset.selection;
+      return true;
+    }
     case "rh_code_run":
       return prepareCodeJob(a, {
         runtime,
@@ -1023,8 +1043,14 @@ async function dispatch(operation, a) {
           .map((v) => v.slice(0, -5)),
       };
     }
-    case "job_cancel":
-      return runtime.cancel(a.jobId);
+    case "job_cancel": {
+      const cancelled = await runtime.cancel(a.jobId);
+      if (!runtime.hasActiveJob(a.jobId)) {
+        pendingJobs.delete(a.jobId);
+        liveRuns.delete(a.jobId);
+      }
+      return cancelled;
+    }
     case "artifact_read": {
       const { snapshot } = await artifact(a.jobId, a.operationId);
       const bytes = snapshot.files[a.path];

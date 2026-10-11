@@ -1640,3 +1640,57 @@
     transform: none;
   }
 }
+
+/* Scope classification uses manifest metadata, including dormant modules. */
+.rc-plugin-scope-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+  color: var(--rc-muted);
+  font-size: 12px;
+}
+.rc-plugin-scope-filter .rc-segments {
+  padding: 3px;
+  border-radius: 9px;
+}
+.rc-plugin-scope-filter .rc-segments button {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+.rc-plugin-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 7px 0;
+}
+.rc-plugin-tags .rc-plugin-status {
+  margin-left: 0;
+}
+.rc-plugin-scope {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid var(--rc-line);
+  border-radius: 20px;
+  color: var(--rc-muted);
+  font-size: 11px;
+}
+.rc-plugin-scope[data-scope="rh-code"] {
+  color: var(--rc-purple);
+}
+.rc-plugin-scope[data-scope="launcher"] {
+  color: var(--rc-blue);
+}
+.rc-plugin-status.dormant {
+  background: var(--rc-soft);
+  color: var(--rc-muted);
+}
+.rc-plugin-scope-empty,
+.rc-plugin-community-note {
+  color: var(--rc-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 12px 0 18px;
+}

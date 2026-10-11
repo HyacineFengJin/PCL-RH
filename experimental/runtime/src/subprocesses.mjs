@@ -6,6 +6,7 @@ import { check, throwIfAborted } from './errors.mjs';
 export class SubprocessSupervisor {
   #commands;
   #active = new Set();
+  hasActiveWork() { return this.#active.size !== 0; }
   constructor({ trustedCommands = {} } = {}) {
     this.#commands = new Map(Object.entries(trustedCommands).map(([name, spec]) => {
       check(typeof spec.executable === 'string' && Array.isArray(spec.args) && spec.args.every(a => typeof a === 'string'),

@@ -64,5 +64,5 @@ export function registerDomainAdapters(registry, { pythonExecutable = '/usr/bin/
       },
     });
   }
-  return { registry, shutdown: () => supervisor.shutdown() };
+  return { registry, hasActiveWork: () => supervisor.hasActiveWork(), shutdown: () => supervisor.shutdown() };
 }

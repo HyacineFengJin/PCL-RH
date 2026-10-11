@@ -6,7 +6,8 @@
     "required": true,
     "dependencies": [],
     "capabilities": ["project.metadata"],
-    "views": []
+    "views": [],
+    "scope": "rh-code"
   },
   {
     "id": "rh.conversation",
@@ -15,7 +16,8 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["conversation.history"],
-    "views": ["chat", "threads"]
+    "views": ["chat", "threads"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.agent",
@@ -25,7 +27,8 @@
     "dependencies": ["rh.conversation", "rh.files"],
     "capabilities": ["agent.run", "agent.cancel"],
     "views": [],
-    "commands": ["agent.run", "agent.stop"]
+    "commands": ["agent.run", "agent.stop"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.files",
@@ -34,7 +37,8 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["project.files.read"],
-    "views": ["files"]
+    "views": ["files"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.graph",
@@ -43,7 +47,8 @@
     "required": false,
     "dependencies": ["rh.files"],
     "capabilities": ["project.graph.read"],
-    "views": ["graph"]
+    "views": ["graph"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.source",
@@ -52,7 +57,8 @@
     "required": false,
     "dependencies": ["rh.files"],
     "capabilities": ["project.files.write"],
-    "views": ["source"]
+    "views": ["source"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.targets",
@@ -61,7 +67,8 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["project.targets"],
-    "views": ["targets"]
+    "views": ["targets"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.changes",
@@ -70,7 +77,8 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["project.review"],
-    "views": ["changes"]
+    "views": ["changes"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.tasks",
@@ -79,7 +87,8 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["task.read"],
-    "views": ["logs"]
+    "views": ["logs"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.porting",
@@ -88,7 +97,8 @@
     "required": false,
     "dependencies": ["rh.agent", "rh.targets", "rh.files"],
     "capabilities": ["agent.migrate"],
-    "views": ["porting"]
+    "views": ["porting"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.compatibility",
@@ -97,7 +107,8 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["legacy.projects"],
-    "views": ["legacy"]
+    "views": ["legacy"],
+    "scope": "rh-code"
   },
   {
     "id": "rh.settings",
@@ -111,7 +122,8 @@
       "rh.settings.conversation",
       "rh.settings.parallel",
       "rh.settings.source"
-    ]
+    ],
+    "scope": "rh-code"
   },
   {
     "id": "rh.overview",
@@ -120,6 +132,7 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["project.metadata"],
-    "views": ["rh.overview.summary"]
+    "views": ["rh.overview.summary"],
+    "scope": "rh-code"
   }
 ]

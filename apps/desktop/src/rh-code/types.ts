@@ -45,11 +45,16 @@ export type Project = {
   conversations: Conversation[];
   layout: Layout | null;
 };
+export type PluginScope = "launcher" | "rh-code" | "both";
+/** Host surfaces that are currently alive; `both` is a manifest lifetime. */
+export type ActivePluginScope = Exclude<PluginScope, "both">;
 export type Manifest = {
   id: string;
   name: string;
   version: string;
   required: boolean;
+  /** Omitted in older manifests: RH Code only. */
+  scope?: PluginScope;
   dependencies: string[];
   capabilities: string[];
   views: ViewId[];
@@ -70,6 +75,10 @@ export type ViewHost = {
   project: Project | null;
   state: Record<string, JsonValue>;
   updateState(next: Record<string, JsonValue>): void;
+  /** Keep the RH Code controller alive for unsaved local state or background
+   * work. Release when finished; the view host releases remaining mount leases
+   * when this view unmounts. */
+  keepAwake(): () => void;
   invoke<T>(command: string, ...args: unknown[]): T;
 };
 export type ViewProps = { area: Area; api: ViewHost };
@@ -96,7 +105,7 @@ export type CommandContribution = {
 };
 export type PluginStatus = {
   id: string;
-  state: "active" | "disabled" | "blocked" | "failed" | "stopped";
+  state: "active" | "dormant" | "disabled" | "blocked" | "failed" | "stopped";
   error?: string;
   dependencies?: string[];
 };

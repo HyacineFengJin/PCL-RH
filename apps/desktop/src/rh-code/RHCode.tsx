@@ -1,15 +1,14 @@
 /** Product shell: native project service and the Cordis registry outlive every
  * split area. The launcher shell neither knows nor mounts individual views. */
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, Settings2, LayoutDashboard, X } from "lucide-react";
 import { CeSelect } from "../CeSelect";
 import { ExperimentalAi } from "../ExperimentalAi";
 import type { PorterIntake } from "../experimentalPorterTypes";
 import type { Api } from "../types";
 import type { ExperimentalNavigate } from "../experimentalTypes";
-import { CodeContext, useController } from "./controller";
-import { Kernel } from "./kernel";
-import { productPlugins } from "./plugins";
+import { CodeContext, useController, type Controller } from "./controller";
+import type { Kernel } from "./kernel";
 import { LegacyArchive } from "./LegacyArchive";
 import { Projects } from "./Projects";
 import { Dialog } from "./Dialog";
@@ -25,6 +24,9 @@ export function RHCode({
   onNavigate,
   porterIntake,
   onPorterIntakeConsumed,
+  kernel,
+  onController,
+  onConfiguration,
 }: {
   api: Api;
   native: boolean;
@@ -32,27 +34,19 @@ export function RHCode({
   onNavigate: ExperimentalNavigate;
   porterIntake?: PorterIntake | null;
   onPorterIntakeConsumed?: () => void;
+  kernel: Kernel;
+  onController: (controller: Controller | null) => void;
+  onConfiguration: (disabled: string[]) => void;
 }) {
-  const c = useController(api, native),
-    live = useRef(c);
-  live.current = c;
+  const c = useController(api, native);
+  useEffect(() => {
+    onController(c);
+  });
+  useEffect(() => () => onController(null), [onController]);
   const pluginConfiguration = c.snapshot
     ? JSON.stringify([...c.snapshot.disabledPlugins].sort())
     : null;
-  const kernel = useMemo(() => {
-      const k: Kernel = new Kernel(
-        productPlugins(
-          {
-            run: (...args: Parameters<typeof c.run>) =>
-              live.current.run(...args),
-            stop: (id: string) => live.current.stop(id),
-          },
-          () => k,
-        ),
-      );
-      return k;
-    }, []),
-    [version, refresh] = useState(0),
+  const [version, refresh] = useState(0),
     [settings, setSettings] = useState(false),
     [layoutMenu, setLayoutMenu] = useState(false),
     [archive, setArchive] = useState(false);
@@ -62,16 +56,8 @@ export function RHCode({
   useEffect(() => kernel.subscribe(() => refresh((n) => n + 1)), [kernel]);
   useEffect(() => {
     if (pluginConfiguration !== null)
-      void kernel
-        .configure(JSON.parse(pluginConfiguration) as string[])
-        .catch((e) => c.setError(String(e)));
-  }, [kernel, pluginConfiguration]);
-  useEffect(
-    () => () => {
-      void kernel.dispose();
-    },
-    [kernel],
-  );
+      onConfiguration(JSON.parse(pluginConfiguration) as string[]);
+  }, [onConfiguration, pluginConfiguration]);
   const p = c.project;
   void version;
   return (

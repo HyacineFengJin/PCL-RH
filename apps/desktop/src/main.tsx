@@ -1,3 +1,4 @@
+import { RHCodeHost } from "./RHCodeHost";
 import "./style.css";
 import "./rh-code/navigation.css";
 import rhMark from "../../../assets/branding/rh-mark.svg";
@@ -830,9 +831,7 @@ function Cube({ forge = false }: { forge?: boolean }) {
     </span>
   );
 }
-const RHCode = React.lazy(() =>
-  import("./rh-code/RHCode").then((m) => ({ default: m.RHCode })),
-);
+
 function App() {
   const [porterIntake, setPorterIntake] = useState<PorterIntake | null>(null);
   const [data, setData] = useState<State | null>(null),
@@ -2626,8 +2625,22 @@ function App() {
                     onTaskStart={showInstanceTask}
                   />
                 </div>
+                <RHCodeHost
+                  visible={screen === "home" && tab === "tools"}
+                  api={api}
+                  native={native && !tasks.closing}
+                  section={
+                    toolsPage === "extensions" || toolsPage === "marketplace"
+                      ? "plugins"
+                      : "code"
+                  }
+                  onNavigate={navigateExperimental}
+                  porterIntake={porterIntake}
+                  onPorterIntakeConsumed={() => setPorterIntake(null)}
+                />
                 <div
                   key={`${rootKey}:${screen}:${tab}:${instancePage}:${settingsPage}`}
+                  hidden={screen === "home" && tab === "tools"}
                   className="ce-page-enter ce-main-page"
                 >
                   {screen === "resource" && resource ? (
@@ -2922,27 +2935,6 @@ function App() {
                             native={native}
                           />
                         ))}
-                      {tab === "tools" && (
-                        <React.Suspense
-                          fallback={
-                            <div className="loading">{t("main.loading")}</div>
-                          }
-                        >
-                          <RHCode
-                            api={api}
-                            native={native && !tasks.closing}
-                            section={
-                              toolsPage === "extensions" ||
-                              toolsPage === "marketplace"
-                                ? "plugins"
-                                : "code"
-                            }
-                            onNavigate={navigateExperimental}
-                            porterIntake={porterIntake}
-                            onPorterIntakeConsumed={() => setPorterIntake(null)}
-                          />
-                        </React.Suspense>
-                      )}
                       {tab === "settings" && settingsPage === "toolbox" && (
                         <Toolbox
                           onOpen={open}

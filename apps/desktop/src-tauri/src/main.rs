@@ -2007,6 +2007,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             experimental::experimental_call,
+            experimental::experimental_suspend,
             rh_code::rh_code_call,
             rh_code::rh_code_choose,
             experimental::rh_code_adopt,

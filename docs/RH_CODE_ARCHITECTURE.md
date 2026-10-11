@@ -29,6 +29,12 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 
 ## 状态与写入顺序
 
+`RHCodeHost.tsx` 位于启动器的页面切换节点之外，持有稳定的插件内核与工作区生命周期。初始启动只读取插件清单；所有当前模块都声明为 RH Code 范围，所以首次进入前无需导入工作区或启动其数据服务。内核按作用范围导入入口，工作区休眠时仅释放 RH Code 实例，启动器和通用实例继续存活。
+
+可见性变更与休眠通过同一串行队列协调。离开 10 分钟且活动结束 5 分钟后，宿主先检查后台引擎，再由控制器保存草稿、布局及所有项目的源码缓冲。`prepareSuspend` 在每次异步保存后复核编辑代次和可见性；只有最后同步检查仍成立才封闭旧控制器并释放缓存。活动任务不受静默时长影响。
+
+组件的临时表单可使用 `ViewHost.keepAwake()`，完成或保存后释放；视图卸载会回收其剩余租约。插件自身的异步工作使用 `PluginRuntime.keepAwake`，并将释放函数注册到 Cordis effect。前端实例释放不等于清除浏览器模块缓存。后台 `experimental_suspend` 通过原有会话锁检查准入请求和 Node 工作拥有者，空闲时回收子进程，后续调用重新启动。
+
 项目元数据保存在启动器状态目录的 `rh-code/workspace.json`，使用版本化 schema。Rust 在读取和写入期间持有进程锁与文件锁，写入比较调用方的内容修订号，再进行原子替换。损坏或更新版本的文件会保留，不能以空项目列表覆盖它。
 
 WebUI 控制器串行提交元数据，始终使用最近成功的原生修订。待保存布局按项目保留，快速切换项目不会恢复旧的几何状态。异步区域回调绑定其原项目；同一文件的较晚读取不能覆盖已有编辑缓冲区。
@@ -45,7 +51,7 @@ Agent 准入分三步：Rust 捕获当前对话和源码；宿主创建未启动
 
 新增内置插件先在共用清单声明依赖与贡献 ID，再添加独立的 `*.plugin.tsx` 入口。Vite 在编译时发现这些入口；区域选择器和布局菜单从贡献注册表生成。新的组件不需要修改工作区外壳或 Rust 的视图名称列表。可释放的订阅使用 Cordis effect，项目数据保存在项目服务中。不要通过组件卸载隐式删除项目或取消任务。
 
-工厂和初始化失败只停用该插件及受影响依赖，状态可查询与重试。组件渲染错误由区域边界处理，其他区域继续工作。模块顶层代码仍属于应用启动过程，应把可失败的初始化放进工厂或 `apply`。
+工厂和初始化失败只停用该插件及受影响依赖，状态可查询与重试。组件渲染错误由区域边界处理，其他区域继续工作。模块顶层代码在对应作用范围首次加载时运行，并由浏览器缓存；可释放的资源应放进工厂或 `apply`，使用 effect 归还。
 
 社区插件继续经过独立的声明与原生授权服务；内置插件代码属于可信发布内容。Cordis 提供依赖和生命周期，不提供第三方代码隔离。
 
@@ -57,6 +63,9 @@ Agent 准入分三步：Rust 捕获当前对话和源码；宿主创建未启动
 node apps/desktop/scripts/check-rh-code.mjs
 node apps/desktop/scripts/check-rh-code-presets.mjs
 node apps/desktop/scripts/check-rh-code-controller.mjs
+node apps/desktop/scripts/check-rh-code-host.mjs
+node apps/desktop/scripts/check-rh-code-scopes.mjs
+node --test experimental/runtime/tests/idle-host.test.mjs
 node --test code/tests/*.test.mjs
 cargo test --locked -p pcl-desktop --features custom-protocol rh_code
 ```

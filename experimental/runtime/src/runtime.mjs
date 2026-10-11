@@ -30,6 +30,7 @@ export class AgentRuntime {
   }
   getJob(id) { return this.store.load(id); }
   hasActiveJob(id) { return this.#active.has(id); }
+  hasActiveWork() { return this.#active.size !== 0; }
   async getPublicJobSummary(id) { return projectPublicJobSummary(await this.getJob(id)); }
   start(id, { resume = false } = {}) {
     check(!this.#active.has(id), 'JOB_BUSY', 'Job is already active');

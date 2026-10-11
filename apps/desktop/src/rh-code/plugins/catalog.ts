@@ -1,19 +1,21 @@
-/** Assembly is separate from Vite discovery so tests can supply independent
- * entry modules. Unlisted code never gains executable manifest authority. */
+/** Discovery supplies loaders keyed by authoritative manifest ID. Merely listing
+ * metadata never evaluates entry modules or creates their runtime instances. */
 import type {
   BundledPluginEntry,
+  LazyProductPlugin,
   PluginRuntime,
-  ProductPlugin,
 } from "../kernel";
 import type { Manifest } from "../types";
+export type PluginEntryLoaders = Readonly<
+  Record<string, readonly (() => Promise<BundledPluginEntry>)[]>
+>;
 export function assemblePlugins(
   manifests: readonly Manifest[],
-  entries: readonly BundledPluginEntry[],
+  entries: PluginEntryLoaders | readonly BundledPluginEntry[],
   runtime: PluginRuntime = {},
-): ProductPlugin[] {
+): LazyProductPlugin[] {
   return manifests.map((source) => {
-    // Runtime entries cannot mutate the shared JSON arrays to authorize new
-    // IDs. Freeze a private copy so no plugin changes another owner's inputs.
+    // Runtime entries cannot mutate shared JSON arrays to authorize new IDs.
     const manifest: Manifest = { ...source };
     for (const key of [
       "dependencies",
@@ -28,25 +30,25 @@ export function assemblePlugins(
         manifest[key] = values;
       }
     Object.freeze(manifest);
-    const matches = entries.filter((entry) => entry.id === manifest.id);
-    try {
-      if (matches.length !== 1)
-        throw new Error(
-          matches.length
-            ? "Duplicate bundled plugin entry"
-            : "Bundled plugin entry missing",
-        );
-      const plugin = matches[0].create(manifest, runtime);
-      // Entries receive the authoritative object and may not replace it with
-      // their own declarations to expand their permitted contributions.
-      if (plugin.manifest !== manifest)
-        throw new Error("Bundled entry replaced its authoritative manifest");
-      return plugin;
-    } catch (error) {
-      return {
-        manifest,
-        loadError: error instanceof Error ? error.message : String(error),
-      };
-    }
+    // The array form supports already imported entries supplied by tests/hosts.
+    // Production always supplies lazy module loaders.
+    const matches = Array.isArray(entries)
+      ? entries
+          .filter((entry) => entry.id === manifest.id)
+          .map((entry) => async () => entry)
+      : ((entries as PluginEntryLoaders)[manifest.id] ?? []);
+    return {
+      manifest,
+      runtime,
+      load: async () => {
+        if (matches.length !== 1)
+          throw new Error(
+            matches.length
+              ? "Duplicate bundled plugin entry"
+              : "Bundled plugin entry missing",
+          );
+        return matches[0]();
+      },
+    };
   });
 }

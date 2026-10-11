@@ -1,6 +1,7 @@
 /** Areas own presentation only. Resizing and replacing the view preserve the
  * project service, file buffers and conversations held outside this tree. */
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentType } from "react";
+import { useMountRetention } from "./retention";
 import {
   Columns2,
   Rows2,
@@ -20,7 +21,31 @@ import { useCode } from "./controller";
 import { exchange, leaves, remove, replace, resize, split } from "./layout";
 import { label } from "./locale";
 import type { Kernel } from "./kernel";
-import type { Area, Layout, ViewHost } from "./types";
+import type { Area, Layout, ViewProps } from "./types";
+function MountedView({
+  area,
+  kernel,
+  View,
+}: {
+  area: Area;
+  kernel: Kernel;
+  View: ComponentType<ViewProps>;
+}) {
+  const c = useCode(),
+    keepAwake = useMountRetention();
+  return (
+    <View
+      area={area}
+      api={{
+        project: c.project,
+        state: area.state?.[area.view] ?? {},
+        keepAwake,
+        updateState: (next) => c.updateAreaState(area.id, area.view, next),
+        invoke: (id, ...args) => kernel.invoke(id, ...args),
+      }}
+    />
+  );
+}
 export function Workspace({ kernel }: { kernel: Kernel }) {
   const c = useCode(),
     [maximized, setMaximized] = useState<string | null>(null),
@@ -30,12 +55,6 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
   const contributions = kernel.plugins.flatMap((p) => p.views ?? []);
   const nameOf = (id: string) =>
     contributions.find((v) => v.id === id)?.label ?? id;
-  const host = (n: Area): ViewHost => ({
-    project: c.project,
-    state: n.state?.[n.view] ?? {},
-    updateState: (next) => c.updateAreaState(n.id, n.view, next),
-    invoke: (id, ...args) => kernel.invoke(id, ...args),
-  });
   const settingsNode = panes.find((n) => n.id === settingsArea),
     Settings = settingsNode && kernel.views.get(settingsNode.view)?.settings;
   function pane(n: Area) {
@@ -162,7 +181,7 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
         <div className="rc-area-body">
           {View ? (
             <ViewBoundary key={n.view} name={view.label}>
-              <View area={n} api={host(n)} />
+              <MountedView area={n} kernel={kernel} View={View} />
             </ViewBoundary>
           ) : (
             <div className="rc-chat-empty">
@@ -207,7 +226,7 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
             key={settingsNode.view + settingsNode.id}
             name={nameOf(settingsNode.view)}
           >
-            <Settings area={settingsNode} api={host(settingsNode)} />
+            <MountedView area={settingsNode} kernel={kernel} View={Settings} />
           </ViewBoundary>
         </Dialog>
       )}

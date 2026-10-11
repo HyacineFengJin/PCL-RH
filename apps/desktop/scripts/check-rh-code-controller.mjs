@@ -22,8 +22,8 @@ function deferred() {
 /** Each driver loads fresh source modules, including module-owned buffers and
  * selections. Only React scheduling and unused external host seams are mocked. */
 function controllerDriver(api) {
-  const hooks = [],
-    modules = new Map();
+  let hooks = [];
+  const modules = new Map();
   let cursor = 0,
     dirty = false,
     pending = [],
@@ -36,13 +36,15 @@ function controllerDriver(api) {
       const index = cursor++;
       if (!(index in hooks))
         hooks[index] = typeof initial === "function" ? initial() : initial;
+      const ownedHooks = hooks;
       return [
         hooks[index],
         (next) => {
-          const result = typeof next === "function" ? next(hooks[index]) : next;
-          if (!Object.is(result, hooks[index])) {
-            hooks[index] = result;
-            dirty = true;
+          const result =
+            typeof next === "function" ? next(ownedHooks[index]) : next;
+          if (!Object.is(result, ownedHooks[index])) {
+            ownedHooks[index] = result;
+            if (ownedHooks === hooks) dirty = true;
           }
         },
       ];
@@ -82,8 +84,8 @@ function controllerDriver(api) {
       if (id === "./locale") return { label: (_, english) => english };
       if (id === "../experimentalTypes")
         return {
-          experimentalCall() {
-            throw new Error("Unexpected agent invocation");
+          experimentalCall(api, operation, args = {}) {
+            return api("experimental_call", { operation, args });
           },
         };
       if (id.startsWith("."))
@@ -121,6 +123,12 @@ function controllerDriver(api) {
     close() {
       closed = true;
       for (const hook of hooks) hook?.cleanup?.();
+    },
+    remount() {
+      assert.equal(closed, true);
+      hooks = [];
+      closed = false;
+      render();
     },
   };
 }
@@ -170,18 +178,35 @@ function hostFixture() {
     layoutPresets: [],
   };
   const calls = [],
-    handlers = new Map();
+    handlers = new Map(),
+    files = new Map(
+      ["A", "B"].map((id) => [
+        id + ":src/Main.java",
+        { content: id + " source", sha256: id + "-hash" },
+      ]),
+    );
   let revision = 0;
   return {
     data,
     calls,
     handlers,
+    files,
+    commit() {
+      data.revision = `revision-${++revision}`;
+      return structuredClone(data);
+    },
     snapshot: () => structuredClone(data),
     async api(command, { operation, args }) {
-      assert.equal(command, "rh_code_call");
+      assert.ok(
+        ["rh_code_call", "experimental_call", "rh_code_adopt"].includes(
+          command,
+        ),
+      );
       calls.push({ operation, args: structuredClone(args) });
       if (operation === "bootstrap") return structuredClone(data);
       if (handlers.has(operation)) return handlers.get(operation)(args);
+      if (operation === "file_read")
+        return structuredClone(files.get(args.projectId + ":" + args.path));
       assert.equal(args.expectedRevision, data.revision);
       const owner = data.projects.find(
         (project) => project.id === args.projectId,
@@ -190,7 +215,36 @@ function hostFixture() {
         owner.layout = structuredClone(args.layout);
       else if (operation === "conversation_create")
         owner.conversations.push(conversation("created-thread"));
-      else throw new Error(`Unexpected operation: ${operation}`);
+      else if (operation === "conversation_draft") {
+        const target = owner.conversations.find(
+          (c) => c.id === args.conversationId,
+        );
+        target.draft = args.draft;
+        if (args.mode) target.mode = args.mode;
+      } else if (
+        operation === "conversation_append" ||
+        operation === "conversation_complete"
+      ) {
+        const target = owner.conversations.find(
+          (c) => c.id === args.conversationId,
+        );
+        target.messages.push({
+          id: "message",
+          role: args.role,
+          content: args.content,
+          jobId: args.jobId,
+        });
+        target.activeJob = args.activeJob;
+      } else if (operation === "file_save") {
+        const file = files.get(args.projectId + ":" + args.path);
+        assert.equal(
+          args.sha256,
+          file.sha256,
+          "Source changed on disk; refresh and compare before saving",
+        );
+        file.content = args.content;
+        file.sha256 = "saved-" + ++revision;
+      } else throw new Error(`Unexpected operation: ${operation}`);
       data.revision = `revision-${++revision}`;
       return structuredClone(data);
     },
@@ -295,4 +349,410 @@ test("a second delayed source read retains edits made after the first source are
     original: "disk baseline",
     sha256: "first-hash",
   });
+});
+
+async function openSource(ui, content) {
+  await ui.value.loadFile("src/Main.java");
+  await ui.flush();
+  ui.value.edit("src/Main.java", content);
+  await ui.flush();
+}
+
+test("suspension flushes drafts and source edits owned by every project, then releases caches", async (t) => {
+  const { host, ui } = await fixture(t);
+  const prepare = ui.value.prepareSuspend,
+    state = ui.value.getLifecycleState;
+  await openSource(ui, "saved A");
+  ui.value.setDraft("A-thread", "draft A");
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  await openSource(ui, "saved B");
+  ui.value.setDraft("B-thread", "draft B");
+  await ui.flush();
+  assert.equal(
+    ui.value.prepareSuspend,
+    prepare,
+    "Lifecycle methods retain identity across renders",
+  );
+  assert.equal(ui.value.getLifecycleState, state);
+  assert.equal(state().dirty, true);
+  assert.equal(await prepare(), true);
+  assert.equal(state().suspended, true);
+  assert.equal(state().dirty, false);
+  assert.equal(state().busy, 0);
+  assert.equal(host.files.get("A:src/Main.java").content, "saved A");
+  assert.equal(host.files.get("B:src/Main.java").content, "saved B");
+  assert.equal(host.data.projects[0].conversations[0].draft, "draft A");
+  assert.equal(host.data.projects[1].conversations[0].draft, "draft B");
+  await ui.flush();
+  assert.equal(ui.value.snapshot, null);
+  assert.equal(ui.value.buffer("src/Main.java"), undefined);
+  assert.equal(ui.value.draft("B-thread"), "");
+  assert.deepEqual(
+    host.calls
+      .filter((c) => c.operation === "file_save")
+      .map((c) => c.args.sha256),
+    ["A-hash", "B-hash"],
+  );
+  await assert.rejects(
+    ui.value.api("rh_code_call", { operation: "files", args: {} }),
+    /suspended/,
+  );
+});
+
+test("source reads pin immediately and late replies after unmount cannot enter the next service", async (t) => {
+  const { host, ui } = await fixture(t),
+    read = deferred();
+  host.handlers.set("file_read", () => read.promise);
+  const previous = ui.value,
+    request = previous.loadFile("src/Main.java");
+  assert.equal(previous.getLifecycleState().busy, 1);
+  assert.equal(await previous.prepareSuspend(), false);
+  ui.close();
+  ui.remount();
+  await ui.flush();
+  read.resolve({ content: "old late content", sha256: "late-hash" });
+  assert.equal(await request, undefined);
+  await ui.flush();
+  assert.equal(
+    ui.value.projectId,
+    "A",
+    "Small selection locator survives remount",
+  );
+  assert.equal(ui.value.buffer("src/Main.java"), undefined);
+  assert.equal(previous.getLifecycleState().busy, 0);
+  host.handlers.delete("file_read");
+  await ui.value.loadFile("src/Main.java");
+  assert.equal(ui.value.buffer("src/Main.java").content, "A source");
+});
+
+test("source edits typed during autosave remain dirty and refuse suspension", async (t) => {
+  const { host, ui } = await fixture(t),
+    save = deferred();
+  await openSource(ui, "submitted content");
+  host.handlers.set("file_save", async (args) => {
+    await save.promise;
+    assert.equal(args.sha256, "A-hash");
+    host.files.set("A:src/Main.java", {
+      content: args.content,
+      sha256: "new-hash",
+    });
+    return host.commit();
+  });
+  const preparation = ui.value.prepareSuspend();
+  await ui.flush();
+  ui.value.edit("src/Main.java", "newer content");
+  await ui.flush();
+  save.resolve();
+  assert.equal(await preparation, false);
+  await ui.flush();
+  assert.deepEqual(ui.value.buffer("src/Main.java"), {
+    content: "newer content",
+    original: "submitted content",
+    sha256: "new-hash",
+  });
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+  assert.equal(ui.value.getLifecycleState().suspended, false);
+  host.handlers.delete("file_save");
+  assert.equal(await ui.value.prepareSuspend(), true);
+  assert.equal(host.files.get("A:src/Main.java").content, "newer content");
+});
+
+test("the return-to-UI predicate cancels suspension after delayed native save", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  await openSource(ui, "save while hidden");
+  host.handlers.set("file_save", async (args) => {
+    await saved.promise;
+    host.files.set("A:src/Main.java", {
+      content: args.content,
+      sha256: "saved",
+    });
+    return host.commit();
+  });
+  let hidden = true;
+  const preparing = ui.value.prepareSuspend(() => hidden);
+  await ui.flush();
+  hidden = false;
+  saved.resolve();
+  assert.equal(await preparing, false);
+  assert.equal(ui.value.getLifecycleState().suspended, false);
+  assert.equal(ui.value.buffer("src/Main.java").content, "save while hidden");
+  assert.equal(await ui.value.prepareSuspend(() => false), false);
+  assert.equal(await ui.value.prepareSuspend(() => true), true);
+});
+
+test("source conflict retains content and its original SHA guard", async (t) => {
+  const { host, ui } = await fixture(t);
+  await openSource(ui, "user edit");
+  host.files.set("A:src/Main.java", {
+    content: "external edit",
+    sha256: "external-hash",
+  });
+  assert.equal(await ui.value.prepareSuspend(), false);
+  await ui.flush();
+  assert.equal(ui.value.buffer("src/Main.java").content, "user edit");
+  assert.equal(ui.value.buffer("src/Main.java").sha256, "A-hash");
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+  assert.equal(ui.value.getLifecycleState().suspended, false);
+  assert.equal(host.files.get("A:src/Main.java").content, "external edit");
+  assert.equal(await ui.value.prepareSuspend(), false);
+});
+
+test("failed debounced drafts retain their text and can be retried by suspension", async (t) => {
+  const { host, ui } = await fixture(t);
+  host.handlers.set("conversation_draft", async () => {
+    throw new Error("draft save failed");
+  });
+  ui.value.setDraft("A-thread", "retain failed text");
+  assert.equal(await ui.value.prepareSuspend(), false);
+  await ui.flush();
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  ui.value.choose(ui.value.snapshot.projects[0]);
+  await ui.flush();
+  assert.equal(ui.value.draft("A-thread"), "retain failed text");
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+  host.handlers.delete("conversation_draft");
+  assert.equal(await ui.value.prepareSuspend(), true);
+  assert.equal(
+    host.data.projects[0].conversations[0].draft,
+    "retain failed text",
+  );
+});
+
+test("failed layout persistence retains geometry and suspension retries it", async (t) => {
+  const { host, ui } = await fixture(t);
+  host.handlers.set("layout_save", async () => {
+    throw new Error("layout save failed");
+  });
+  const layout = structuredClone(ui.value.layout);
+  layout.ratio = 0.8;
+  ui.value.mutateLayout(layout);
+  await ui.flush();
+  assert.deepEqual(ui.value.layout, layout);
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+  assert.equal(await ui.value.prepareSuspend(), false);
+  host.handlers.delete("layout_save");
+  assert.equal(await ui.value.prepareSuspend(), true);
+  assert.deepEqual(host.data.projects[0].layout, layout);
+});
+
+test("queued mutation is counted before first await and suspension drains its acknowledgement", async (t) => {
+  const { host, ui } = await fixture(t),
+    written = deferred();
+  host.handlers.set("layout_save", async (args) => {
+    await written.promise;
+    host.data.projects[0].layout = structuredClone(args.layout);
+    return host.commit();
+  });
+  const request = ui.value.write("layout_save", {
+    projectId: "A",
+    layout: ui.value.layout,
+  });
+  assert.equal(ui.value.getLifecycleState().busy, 1);
+  const preparing = ui.value.prepareSuspend();
+  await ui.flush();
+  assert.equal(ui.value.getLifecycleState().suspended, false);
+  written.resolve();
+  await request;
+  assert.equal(await preparing, true);
+});
+
+test("unknown view requests pin the service before first await", async (t) => {
+  const { host, ui } = await fixture(t),
+    read = deferred();
+  host.handlers.set("files", () => read.promise);
+  const request = ui.value.api("rh_code_call", {
+    operation: "files",
+    args: { projectId: "A" },
+  });
+  assert.equal(ui.value.getLifecycleState().busy, 1);
+  assert.equal(await ui.value.prepareSuspend(), false);
+  read.resolve({ files: [] });
+  await request;
+  assert.equal(await ui.value.prepareSuspend(), true);
+});
+
+test("queued AI admission and persisted active jobs refuse suspension", async (t) => {
+  const { host, ui } = await fixture(t),
+    created = deferred();
+  host.handlers.set("rh_code_run", () => created.promise);
+  host.handlers.set("rh_code_start", async () => ({}));
+  host.handlers.set("job_read", async () => ({
+    summary: { jobId: "job", revision: 1, status: "queued" },
+    result: null,
+  }));
+  const request = ui.value.run("A-chat", "A-thread", "plan", "start work");
+  assert.ok(
+    ui.value.getLifecycleState().activeJobs > 0,
+    "AI reservation is synchronous",
+  );
+  assert.equal(await ui.value.prepareSuspend(), false);
+  await ui.flush();
+  created.resolve({ jobId: "job" });
+  await request;
+  await ui.flush();
+  assert.equal(ui.value.snapshot.projects[0].conversations[0].activeJob, "job");
+  assert.ok(ui.value.getLifecycleState().activeJobs > 0);
+  assert.equal(await ui.value.prepareSuspend(), false);
+});
+
+test("completion persistence pins suspension until assistant output is saved", async (t) => {
+  const { host, ui } = await fixture(t),
+    completed = deferred();
+  host.handlers.set("job_read", async () => ({
+    summary: { jobId: "job", revision: 2, status: "completed" },
+    result: { text: "assistant result" },
+  }));
+  host.handlers.set("conversation_complete", async (args) => {
+    await completed.promise;
+    const conversation = host.data.projects[0].conversations[0];
+    conversation.messages.push({ role: args.role, content: args.content });
+    conversation.activeJob = null;
+    return host.commit();
+  });
+  host.data.projects[0].conversations[0].activeJob = "job";
+  await ui.value.read();
+  await ui.flush();
+  assert.equal(await ui.value.prepareSuspend(), false);
+  completed.resolve();
+  await ui.flush();
+  assert.equal(ui.value.getLifecycleState().activeJobs, 0);
+  assert.equal(
+    host.data.projects[0].conversations[0].messages[0].content,
+    "assistant result",
+  );
+  assert.equal(await ui.value.prepareSuspend(), true);
+});
+
+test("old launch completion cannot clear a newer draft in another selected project", async (t) => {
+  const { host, ui } = await fixture(t),
+    start = deferred();
+  host.handlers.set("rh_code_run", async () => ({ jobId: "job" }));
+  host.handlers.set("rh_code_start", () => start.promise);
+  host.handlers.set("job_read", async () => ({
+    summary: { jobId: "job", revision: 1, status: "running" },
+    result: null,
+  }));
+  ui.value.setDraft("A-thread", "submitted draft");
+  const run = ui.value.run("A-chat", "A-thread", "plan");
+  await ui.flush();
+  ui.value.setDraft("A-thread", "newer A draft");
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  ui.value.setDraft("B-thread", "B draft");
+  start.resolve({});
+  await run;
+  await ui.flush();
+  assert.equal(ui.value.draft("B-thread"), "B draft");
+  ui.value.choose(ui.value.snapshot.projects[0]);
+  await ui.flush();
+  assert.equal(ui.value.draft("A-thread"), "newer A draft");
+});
+
+test("accepted multi-project drafts finish their revisioned queue after unmount without restoring caches", async (t) => {
+  const { host, ui } = await fixture(t);
+  ui.value.setDraft("A-thread", "A before unmount");
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  ui.value.setDraft("B-thread", "B before unmount");
+  const old = ui.value;
+  ui.close();
+  await new Promise((done) => setImmediate(done));
+  assert.equal(
+    host.data.projects[0].conversations[0].draft,
+    "A before unmount",
+  );
+  assert.equal(
+    host.data.projects[1].conversations[0].draft,
+    "B before unmount",
+  );
+  assert.equal(old.draft("B-thread"), "");
+  assert.equal(old.getLifecycleState().busy, 0);
+});
+
+test("a newer draft typed during draft persistence survives its older acknowledgement", async (t) => {
+  const { host, ui } = await fixture(t),
+    written = deferred();
+  host.handlers.set("conversation_draft", async (args) => {
+    await written.promise;
+    host.data.projects[0].conversations[0].draft = args.draft;
+    return host.commit();
+  });
+  ui.value.setDraft("A-thread", "older draft");
+  const preparing = ui.value.prepareSuspend();
+  await ui.flush();
+  ui.value.setDraft("A-thread", "newer draft");
+  written.resolve();
+  assert.equal(await preparing, false);
+  assert.equal(ui.value.draft("A-thread"), "newer draft");
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+  host.handlers.delete("conversation_draft");
+  assert.equal(await ui.value.prepareSuspend(), true);
+  assert.equal(host.data.projects[0].conversations[0].draft, "newer draft");
+});
+
+test("failed source verification retains a clean buffer's error and refuses release", async (t) => {
+  const { host, ui } = await fixture(t);
+  await ui.value.loadFile("src/Main.java");
+  await ui.flush();
+  host.handlers.set("file_read", async () => {
+    throw new Error("verification unavailable");
+  });
+  await assert.rejects(
+    ui.value.saveFile("src/Main.java"),
+    /verification unavailable/,
+  );
+  assert.equal(
+    ui.value.getLifecycleState().dirty,
+    true,
+    "A failed verification is unresolved work even if content matched the old baseline",
+  );
+  assert.equal(await ui.value.prepareSuspend(), false);
+  assert.ok(ui.value.buffer("src/Main.java"));
+  assert.equal(ui.value.getLifecycleState().suspended, false);
+});
+
+test("new public mutations during autosave invalidate its generation fence", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  await openSource(ui, "source edit");
+  host.handlers.set("file_save", async (args) => {
+    await saved.promise;
+    host.files.set("A:src/Main.java", {
+      content: args.content,
+      sha256: "saved-hash",
+    });
+    return host.commit();
+  });
+  const preparing = ui.value.prepareSuspend();
+  await ui.flush();
+  const mutation = ui.value.write("layout_save", {
+    projectId: "B",
+    layout: host.data.projects[1].layout,
+  });
+  saved.resolve();
+  await mutation;
+  assert.equal(await preparing, false);
+  assert.equal(ui.value.getLifecycleState().suspended, false);
+  assert.equal(await ui.value.prepareSuspend(), true);
+});
+
+test("concurrent suspension requests cannot bypass a caller's visibility fence", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  await openSource(ui, "source edit");
+  host.handlers.set("file_save", async (args) => {
+    await saved.promise;
+    host.files.set("A:src/Main.java", {
+      content: args.content,
+      sha256: "saved-hash",
+    });
+    return host.commit();
+  });
+  const preparing = ui.value.prepareSuspend();
+  assert.equal(await ui.value.prepareSuspend(() => false), false);
+  saved.resolve();
+  assert.equal(await preparing, true);
 });
