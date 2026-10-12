@@ -190,6 +190,27 @@ export function Plugins({
                           {p.commands!.join(" · ")}
                         </p>
                       )}
+                      {(p.tools?.length ?? 0) > 0 && (
+                        <ul className="rc-plugin-contributions">
+                          {p.tools!.map((tool) => (
+                            <li key={tool.name}>
+                              <ShieldCheck size={14} />
+                              <code title={tool.capability}>{tool.name}</code>
+                              <span>
+                                {tool.modes
+                                  .map((mode) =>
+                                    mode === "ask"
+                                      ? label("询问", "Ask")
+                                      : mode === "plan"
+                                        ? label("规划", "Plan")
+                                        : label("执行", "Execute"),
+                                  )
+                                  .join(" · ")}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
                       {(p.layouts?.length ?? 0) > 0 && (
                         <p>
                           {label("布局：", "Layouts: ")}

@@ -2000,3 +2000,249 @@
   color: var(--rc-muted);
   font-style: italic;
 }
+
+/* Conversation metadata stays within the chat budget; disclosures scroll in
+   their own bounded panel instead of pushing the transcript out of view. */
+.rh-code .rc-conversation-name {
+  display: flex;
+  align-items: center;
+  position: relative;
+  flex: none;
+}
+.rh-code .rc-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: transparent;
+  border: 0;
+  color: var(--rc-purple);
+  border-radius: 5px;
+}
+.rh-code .rc-name-editor {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: min(260px, 55vw);
+}
+.rh-code .rc-name-editor input {
+  width: 100%;
+  min-width: 60px;
+  padding: 4px 7px;
+  border: 1px solid var(--rc-line);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.rh-code .rc-conversation-context {
+  min-width: 0;
+  margin: 3px 0;
+  font-size: 11px;
+}
+.rh-code .rc-context-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 25px;
+}
+.rh-code .rc-context-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 3px 5px;
+  border-radius: 5px;
+  color: var(--rc-purple);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.rh-code .rc-context-toggle.blue {
+  color: var(--rc-blue);
+}
+.rh-code .rc-context-toggle[aria-expanded="true"] {
+  background: var(--rc-tint);
+}
+.rh-code .rc-context-toggle small {
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rh-code .rc-context-dirty,
+.rh-code .rc-context-present {
+  color: var(--rc-purple);
+  font-size: 10px;
+}
+.rh-code .rc-context-toolbar .rc-context-save {
+  margin-left: auto;
+  background: var(--rc-tint);
+}
+.rh-code .rc-context-chips {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding: 2px 0 4px;
+  max-width: 100%;
+}
+.rh-code .rc-context-chips > span {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+  max-width: 200px;
+  color: var(--rc-blue);
+  background: color-mix(in srgb, var(--rc-blue) 7%, var(--rc-surface));
+  border: 1px solid color-mix(in srgb, var(--rc-blue) 20%, var(--rc-line));
+  border-radius: 5px;
+  padding: 2px 4px;
+}
+.rh-code .rc-context-chips code {
+  font-size: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rh-code .rc-context-chips button {
+  display: flex;
+  padding: 1px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  flex: none;
+}
+.rh-code .rc-context-editor,
+.rh-code .rc-context-picker {
+  padding: 7px;
+  border: 1px solid var(--rc-line);
+  border-radius: 7px;
+  background: var(--rc-soft);
+  max-height: 150px;
+  overflow: auto;
+  margin: 4px 0;
+  overscroll-behavior: contain;
+}
+.rh-code .rc-context-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.rh-code .rc-context-editor label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+  color: var(--rc-purple);
+}
+.rh-code .rc-context-editor label > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.rh-code .rc-context-editor small,
+.rh-code .rc-context-picker > small {
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rh-code .rc-context-editor textarea {
+  padding: 5px 7px;
+  border: 1px solid var(--rc-line);
+  min-height: 65px;
+  height: 65px;
+  max-height: 90px;
+  font-size: 12px;
+  line-height: 1.4;
+  resize: vertical;
+}
+.rh-code .rc-context-picker > input {
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--rc-line);
+  border-radius: 5px;
+  font-size: 12px;
+}
+.rh-code .rc-context-matches {
+  overflow: auto;
+  max-height: 85px;
+  min-height: 22px;
+  margin: 4px 0;
+}
+.rh-code .rc-context-matches button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 4px;
+  background: transparent;
+  color: var(--rc-blue);
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+}
+.rh-code .rc-context-matches code {
+  flex: 1;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rh-code .rc-context-matches button[aria-pressed="true"] {
+  background: var(--rc-tint);
+}
+.rh-code .rc-context-matches > span {
+  color: var(--rc-muted);
+}
+.rh-code .rc-context-error {
+  margin: 3px 0;
+  color: var(--ce-error, #ce5365);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  max-height: 40px;
+  overflow: auto;
+}
+@media (max-width: 600px) {
+  .rh-code .rc-context-editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-height: 600px) {
+  .rh-code .rc-context-editor,
+  .rh-code .rc-context-picker {
+    max-height: 125px;
+  }
+}
+@media (max-height: 600px) {
+  .rh-code .rc-composer:has(.rc-context-editor) > .rc-composer-context,
+  .rh-code .rc-composer:has(.rc-context-picker) > .rc-composer-context {
+    display: none;
+  }
+  .rh-code .rc-context-toolbar {
+    min-height: 22px;
+  }
+  .rh-code .rc-context-chips {
+    height: 31px;
+    padding: 1px 0 3px;
+    align-items: center;
+    scrollbar-width: thin;
+  }
+  .rh-code .rc-context-chips > span {
+    height: 20px;
+  }
+  .rh-code .rc-context-editor {
+    max-height: 92px;
+    padding: 5px;
+    gap: 6px;
+  }
+  .rh-code .rc-context-editor textarea {
+    min-height: 44px;
+    height: 44px;
+    max-height: 65px;
+  }
+  .rh-code .rc-context-picker {
+    max-height: 90px;
+    padding: 5px;
+  }
+  .rh-code .rc-context-matches {
+    max-height: 34px;
+  }
+}

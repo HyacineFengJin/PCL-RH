@@ -17,6 +17,7 @@ import type {
   Snapshot,
   Mode,
   JsonValue,
+  ConversationContext,
 } from "./types";
 import { area, depth, leaves, map, preset, replace, split } from "./layout";
 import { label } from "./locale";
@@ -32,6 +33,12 @@ type DirtyDraft = {
   mode?: Mode;
 };
 type SourceBuffer = { projectId: string; path: string; value: FileBuffer };
+type MetadataDraft<T> = {
+  projectId: string;
+  conversationId?: string;
+  value: T;
+  ticket: number;
+};
 // Only the tiny selection locator survives a controller lifetime. Large state
 // belongs to the mounted service and is released after successful suspension.
 const lastProject = new Map<string, string>();
@@ -55,6 +62,11 @@ export function useController(hostApi: Api, native: boolean) {
   const draftsRef = useRef(new Map<string, string>()),
     buffersRef = useRef(new Map<string, SourceBuffer>()),
     dirtyDrafts = useRef(new Map<string, DirtyDraft>()),
+    contextDrafts = useRef(
+      new Map<string, MetadataDraft<ConversationContext>>(),
+    ),
+    titleDrafts = useRef(new Map<string, MetadataDraft<string>>()),
+    instructionDrafts = useRef(new Map<string, MetadataDraft<string>>()),
     draftChange = useRef(0),
     lifecycleRef = useRef(createControllerLifecycle()),
     failures = useRef(new Set<string>()),
@@ -83,6 +95,9 @@ export function useController(hostApi: Api, native: boolean) {
     drafts.clear();
     buffers.clear();
     dirtyDrafts.current.clear();
+    contextDrafts.current.clear();
+    titleDrafts.current.clear();
+    instructionDrafts.current.clear();
     pendingLayouts.current.clear();
     failures.current.clear();
     latest.current = null;
@@ -189,6 +204,24 @@ export function useController(hostApi: Api, native: boolean) {
       // may finish persistence but cannot refill caches or update a new service.
       for (const id of draftTimers.current.keys())
         void persistDraft(id).catch(() => {});
+      for (const id of contextDrafts.current.keys())
+        void persistMetadata(
+          "conversation_context",
+          contextDrafts.current,
+          id,
+        ).catch(() => {});
+      for (const id of titleDrafts.current.keys())
+        void persistMetadata(
+          "conversation_rename",
+          titleDrafts.current,
+          id,
+        ).catch(() => {});
+      for (const id of instructionDrafts.current.keys())
+        void persistMetadata(
+          "project_instructions",
+          instructionDrafts.current,
+          id,
+        ).catch(() => {});
       alive.current = false;
       loadSequence.current++;
       releaseAfterUnmount();
@@ -233,12 +266,17 @@ export function useController(hostApi: Api, native: boolean) {
           revision.current = data.revision;
           setData(data);
           failures.current.delete(failure);
-          if (usable()) setError("");
+          if (
+            usable() &&
+            (!args.projectId || args.projectId === selection.current)
+          )
+            setError("");
           return data;
         } catch (e) {
           if (usable()) {
             failures.current.add(failure);
-            setError(String(e));
+            if (!args.projectId || args.projectId === selection.current)
+              setError(String(e));
           }
           throw e;
         } finally {
@@ -381,6 +419,101 @@ export function useController(hostApi: Api, native: boolean) {
   }
   const setDraft = (id: string, value: string) =>
     setOwnedDraft(projectId, id, value);
+  const ownedConversation = (owner: string, id: string) =>
+    latest.current?.projects
+      .find((p) => p.id === owner)
+      ?.conversations.find((c) => c.id === id);
+  const conversationContext = (id: string): ConversationContext => {
+    const saved = ownedConversation(projectId, id);
+    return (
+      contextDrafts.current.get(key(id))?.value ?? {
+        contextNote: saved?.contextNote ?? "",
+        contextPaths: saved?.contextPaths ?? [],
+      }
+    );
+  };
+  const conversationTitle = (id: string) =>
+    titleDrafts.current.get(key(id))?.value ??
+    ownedConversation(projectId, id)?.title ??
+    "";
+  const projectInstructions = () =>
+    instructionDrafts.current.get(projectId)?.value ??
+    latest.current?.projects.find((p) => p.id === projectId)?.instructions ??
+    "";
+  function stageMetadata<T>(
+    entries: Map<string, MetadataDraft<T>>,
+    id: string,
+    value: T,
+    conversationId?: string,
+  ) {
+    if (!usable() || !projectId) return;
+    entries.set(id, {
+      projectId,
+      conversationId,
+      value,
+      ticket: ++draftChange.current,
+    });
+    lifecycle.edited();
+    update((v) => v + 1);
+  }
+  /** Drafts belong to the controller, so closing a pane or switching projects
+   * cannot discard context. A reply only settles the exact submitted edit. */
+  async function persistMetadata<T>(
+    operation:
+      "conversation_context" | "conversation_rename" | "project_instructions",
+    entries: Map<string, MetadataDraft<T>>,
+    id: string,
+  ) {
+    const pending = entries.get(id);
+    if (!pending) return;
+    const value =
+      operation === "conversation_context"
+        ? (pending.value as ConversationContext)
+        : operation === "conversation_rename"
+          ? { title: pending.value as string }
+          : { instructions: pending.value as string };
+    try {
+      await write(operation, {
+        projectId: pending.projectId,
+        ...(pending.conversationId
+          ? { conversationId: pending.conversationId }
+          : {}),
+        ...value,
+      });
+    } catch (error) {
+      // A concurrent native writer can reject our CAS. Refresh the revision for
+      // an explicit retry while retaining every local field and its owner.
+      if (usable()) await read().catch(() => {});
+      throw error;
+    }
+    if (entries.get(id)?.ticket === pending.ticket) entries.delete(id);
+    if (usable()) update((v) => v + 1);
+  }
+  const contextDirty = (id: string) => contextDrafts.current.has(key(id));
+  const titleDirty = (id: string) => titleDrafts.current.has(key(id));
+  const instructionsDirty = () => instructionDrafts.current.has(projectId);
+  async function flushConversationMetadata(owner: string, id: string) {
+    const ownedKey = owner + ":" + id;
+    await persistMetadata(
+      "conversation_context",
+      contextDrafts.current,
+      ownedKey,
+    );
+    await persistMetadata("conversation_rename", titleDrafts.current, ownedKey);
+    await persistMetadata(
+      "project_instructions",
+      instructionDrafts.current,
+      owner,
+    );
+    if (
+      contextDrafts.current.has(ownedKey) ||
+      titleDrafts.current.has(ownedKey) ||
+      instructionDrafts.current.has(owner)
+    )
+      throw new Error(
+        "Context changed while saving; save the newer edits before starting a task",
+      );
+  }
   async function loadFile(file: string) {
     if (!project || !usable()) return;
     const id = key(file),
@@ -590,6 +723,7 @@ export function useController(hostApi: Api, native: boolean) {
     let jobId: string | undefined;
     try {
       const ownedKey = p.id + ":" + conversationId;
+      await flushConversationMetadata(p.id, conversationId);
       if (dirtyDrafts.current.has(ownedKey)) {
         const pending = dirtyDrafts.current.get(ownedKey)!;
         dirtyDrafts.current.set(ownedKey, { ...pending, mode });
@@ -599,6 +733,14 @@ export function useController(hostApi: Api, native: boolean) {
       await flushProjectFiles(p.id);
       await refreshEngine();
       assertUsable();
+      if (
+        contextDrafts.current.has(ownedKey) ||
+        titleDrafts.current.has(ownedKey) ||
+        instructionDrafts.current.has(p.id)
+      )
+        throw new Error(
+          "Context changed while preparing the task; save the newer edits before starting",
+        );
       const created = await experimentalCall<{ jobId: string }>(
         api,
         "rh_code_run",
@@ -635,7 +777,7 @@ export function useController(hostApi: Api, native: boolean) {
     } catch (e) {
       if (jobId)
         await experimentalCall(api, "job_cancel", { jobId }).catch(() => {});
-      if (alive.current) setError(String(e));
+      if (usable() && selection.current === p.id) setError(String(e));
     } finally {
       settling.current.delete(conversationId);
       end();
@@ -772,6 +914,9 @@ export function useController(hostApi: Api, native: boolean) {
   };
   const dirty = () =>
     !!dirtyDrafts.current.size ||
+    !!contextDrafts.current.size ||
+    !!titleDrafts.current.size ||
+    !!instructionDrafts.current.size ||
     !!pendingLayouts.current.size ||
     !!failures.current.size ||
     [...buffers.values()].some((b) => b.value.content !== b.value.original);
@@ -792,6 +937,20 @@ export function useController(hostApi: Api, native: boolean) {
     const generation = lifecycle.generation;
     try {
       for (const id of dirtyDrafts.current.keys()) await persistDraft(id);
+      for (const id of contextDrafts.current.keys())
+        await persistMetadata(
+          "conversation_context",
+          contextDrafts.current,
+          id,
+        );
+      for (const id of titleDrafts.current.keys())
+        await persistMetadata("conversation_rename", titleDrafts.current, id);
+      for (const id of instructionDrafts.current.keys())
+        await persistMetadata(
+          "project_instructions",
+          instructionDrafts.current,
+          id,
+        );
       for (const [projectId, pendingLayout] of pendingLayouts.current) {
         await write("layout_save", { projectId, layout: pendingLayout.layout });
         if (
@@ -903,6 +1062,37 @@ export function useController(hostApi: Api, native: boolean) {
     openFile,
     draft,
     setDraft,
+    conversationContext,
+    conversationTitle,
+    projectInstructions,
+    contextDirty,
+    titleDirty,
+    instructionsDirty,
+    setConversationContext: (id: string, value: ConversationContext) =>
+      stageMetadata(
+        contextDrafts.current,
+        key(id),
+        { ...value, contextPaths: [...value.contextPaths] },
+        id,
+      ),
+    setConversationTitle: (id: string, value: string) =>
+      stageMetadata(titleDrafts.current, key(id), value, id),
+    setProjectInstructions: (value: string) =>
+      stageMetadata(instructionDrafts.current, projectId, value),
+    saveConversationContext: (owner: string, id: string) =>
+      persistMetadata(
+        "conversation_context",
+        contextDrafts.current,
+        owner + ":" + id,
+      ),
+    saveConversationTitle: (owner: string, id: string) =>
+      persistMetadata(
+        "conversation_rename",
+        titleDrafts.current,
+        owner + ":" + id,
+      ),
+    saveProjectInstructions: (owner: string) =>
+      persistMetadata("project_instructions", instructionDrafts.current, owner),
     loadFile,
     buffer,
     edit,

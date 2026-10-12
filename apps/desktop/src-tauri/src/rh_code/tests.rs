@@ -259,6 +259,25 @@ fn rh_code_harness_store_bridge_binds_native_source_and_gates_reviewed_applicati
         .unwrap_err()
         .contains("does not belong"));
     f.write("conversation_append", json!({"projectId":project,"conversationId":conversation,"role":"user","content":"Change Main.java","jobId":job,"activeJob":job,"mode":"execute"}));
+    // Metadata edits while running keep the native job/history identity and
+    // immutable source binding. Their new values belong to the next capture.
+    let active_messages = f.snapshot()["projects"][0]["conversations"][0]["messages"].clone();
+    f.write("conversation_rename", json!({"projectId":project,"conversationId":conversation,"title":"Renamed active conversation"}));
+    f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"Future task note","contextPaths":["Main.java"]}));
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":"Future project guidance"}),
+    );
+    assert_eq!(
+        f.snapshot()["projects"][0]["conversations"][0]["messages"],
+        active_messages
+    );
+    assert_eq!(
+        f.snapshot()["projects"][0]["conversations"][0]["activeJob"],
+        job
+    );
+    assert_eq!(captured["project"]["instructions"], "");
+    assert_eq!(captured["conversation"]["contextNote"], "");
     assert!(f
         .store
         .bind_harness(captured, "other-job")
@@ -484,6 +503,7 @@ fn rh_code_source_adoption_retains_folder_on_invalid_snapshot() {
     use base64::Engine;
     let f = Fixture::new();
     let p = Project {
+        instructions: String::new(),
         id: id(),
         name: "A".into(),
         folder: f.folder.to_string_lossy().into_owned(),
@@ -770,4 +790,527 @@ fn rh_code_state_exact_byte_and_depth_boundaries_accept_safe_data() {
     assert!(checked_layout(&tree).is_ok());
     tree["state"]["chat"] = json!({"nested":tree["state"]["chat"]});
     assert!(checked_layout(&tree).is_err());
+}
+
+#[test]
+fn rh_code_context_migrates_old_schema_without_rewriting_and_reopens_durable_edits() {
+    let f = Fixture::new();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Original"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let path = f.store.root.join("workspace.json");
+    let mut old: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    old["projects"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("instructions");
+    let c = old["projects"][0]["conversations"][0]
+        .as_object_mut()
+        .unwrap();
+    c.remove("contextNote");
+    c.remove("contextPaths");
+    let bytes = serde_json::to_vec(&old).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let migrated = Store::new(&f.root).call("bootstrap", json!({})).unwrap();
+    assert_eq!(migrated["projects"][0]["instructions"], "");
+    assert_eq!(
+        migrated["projects"][0]["conversations"][0]["contextNote"],
+        ""
+    );
+    assert_eq!(
+        migrated["projects"][0]["conversations"][0]["contextPaths"],
+        json!([])
+    );
+    assert_eq!(fs::read(path).unwrap(), bytes);
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":"Project\n规则"}),
+    );
+    f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"Thread\t重点","contextPaths":["missing.rs"]}));
+    f.write(
+        "conversation_rename",
+        json!({"projectId":project,"conversationId":conversation,"title":"新标题"}),
+    );
+    let reopened = Store::new(&f.root).call("bootstrap", json!({})).unwrap();
+    assert_eq!(reopened["projects"][0]["instructions"], "Project\n规则");
+    let c = &reopened["projects"][0]["conversations"][0];
+    assert_eq!(c["contextNote"], "Thread\t重点");
+    assert_eq!(c["contextPaths"], json!(["missing.rs"]));
+    assert_eq!(c["title"], "新标题");
+    assert_eq!(c["id"], conversation);
+}
+
+#[test]
+fn rh_code_context_commands_use_native_cas_project_membership_and_module_authority() {
+    let f = Fixture::new();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Owner"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let other_folder = f.root.join("other");
+    fs::create_dir(&other_folder).unwrap();
+    let state = f.write(
+        "project_create",
+        json!({"name":"Other","folder":other_folder}),
+    );
+    let other = state["projects"][1]["id"].clone();
+    let stale = state["revision"].clone();
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":"Keep newest"}),
+    );
+    for (operation, mut args) in [
+        (
+            "project_instructions",
+            json!({"projectId":project,"instructions":"stale"}),
+        ),
+        (
+            "conversation_context",
+            json!({"projectId":project,"conversationId":conversation,"contextNote":"stale","contextPaths":[]}),
+        ),
+        (
+            "conversation_rename",
+            json!({"projectId":project,"conversationId":conversation,"title":"Stale"}),
+        ),
+    ] {
+        args["expectedRevision"] = stale.clone();
+        assert!(Store::new(&f.root)
+            .call(operation, args)
+            .unwrap_err()
+            .contains("refresh"));
+    }
+    for operation in ["conversation_context", "conversation_rename"] {
+        let args = json!({"projectId":other,"conversationId":conversation,"contextNote":"foreign","contextPaths":[],"title":"Foreign","expectedRevision":f.snapshot()["revision"]});
+        assert!(f
+            .store
+            .call(operation, args)
+            .unwrap_err()
+            .contains("Choose a project conversation"));
+    }
+    for plugin in ["rh.porting", "rh.agent", "rh.conversation"] {
+        f.write("plugin_set", json!({"id":plugin,"enabled":false}));
+    }
+    for operation in ["conversation_context", "conversation_rename"] {
+        assert!(f.store.call(operation, json!({"projectId":project,"conversationId":conversation,"contextNote":"blocked","contextPaths":[],"title":"Blocked","expectedRevision":f.snapshot()["revision"]})).unwrap_err().contains("Plugin disabled"));
+    }
+    assert_eq!(f.snapshot()["projects"][0]["instructions"], "Keep newest");
+    assert_eq!(
+        f.snapshot()["projects"][0]["conversations"][0]["title"],
+        "Owner"
+    );
+}
+
+#[test]
+fn rh_code_context_text_and_visible_canonical_path_limits_preserve_previous_state() {
+    let f = Fixture::new();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Limits"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let valid_paths = (0..20).map(|i| format!("src/{i}.rs")).collect::<Vec<_>>();
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":"喵".repeat(8000)}),
+    );
+    f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"喵".repeat(8000),"contextPaths":valid_paths}));
+    let original = fs::read(f.store.root.join("workspace.json")).unwrap();
+    for invalid in [
+        "x".repeat(8001),
+        "😀".repeat(6001),
+        "bad\0note".into(),
+        "bad\rnote".into(),
+    ] {
+        for (operation, args) in [
+            (
+                "project_instructions",
+                json!({"projectId":project,"instructions":invalid,"expectedRevision":f.snapshot()["revision"]}),
+            ),
+            (
+                "conversation_context",
+                json!({"projectId":project,"conversationId":conversation,"contextNote":invalid,"contextPaths":[],"expectedRevision":f.snapshot()["revision"]}),
+            ),
+        ] {
+            assert!(f.store.call(operation, args).is_err());
+        }
+    }
+    let mut invalid_paths = vec![
+        json!(["same.rs", "same.rs"]),
+        json!([1]),
+        json!("file.rs"),
+        json!(null),
+        json!((0..21).map(|i| format!("{i}.rs")).collect::<Vec<_>>()),
+    ];
+    for path in [
+        "",
+        "/absolute.rs",
+        "./file.rs",
+        "../file.rs",
+        "a//file.rs",
+        "a/../file.rs",
+        "src\\file.rs",
+        "C:/file.rs",
+        ".secret",
+        "a/.hidden/file.rs",
+        "node_modules/a.js",
+        "target/a.rs",
+        "build/a.rs",
+        "dist/a.js",
+        "vendor/a.rs",
+        "venv/a.py",
+        "__pycache__/a.py",
+        "bad\nfile.rs",
+    ] {
+        invalid_paths.push(json!([path]));
+    }
+    invalid_paths.push(json!(["喵".repeat(171)]));
+    for paths in invalid_paths {
+        assert!(f.store.call("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"valid","contextPaths":paths,"expectedRevision":f.snapshot()["revision"]})).is_err(), "{paths}");
+    }
+    assert_eq!(
+        fs::read(f.store.root.join("workspace.json")).unwrap(),
+        original
+    );
+    f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"","contextPaths":["x".repeat(512)]}));
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":""}),
+    );
+    f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"","contextPaths":[]}));
+}
+
+#[test]
+fn rh_code_admission_checks_context_references_against_captured_text_and_freezes_metadata() {
+    let f = Fixture::new();
+    fs::write(f.folder.join("focus.rs"), "focus").unwrap();
+    fs::write(f.folder.join("other.rs"), "other visible tool scope").unwrap();
+    fs::write(f.folder.join("binary.dat"), [0xff]).unwrap();
+    fs::write(f.folder.join("large.txt"), vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Context"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    for path in ["missing.rs", "binary.dat", "large.txt"] {
+        let state = f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"Focus","contextPaths":[path]}));
+        let error = f.store.call("agent_context", json!({"projectId":project,"conversationId":conversation,"request":"Read","mode":"ask","expectedRevision":state["revision"]})).unwrap_err();
+        assert!(
+            error.contains("unavailable") && error.contains(path),
+            "{error}"
+        );
+    }
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":"Native project instructions"}),
+    );
+    f.write("plugin_set", json!({"id":"rh.tasks","enabled":false}));
+    let state = f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"Native conversation note","contextPaths":["focus.rs"]}));
+    let captured = f.store.call("agent_context", json!({"projectId":project,"conversationId":conversation,"request":"Read","mode":"ask","expectedRevision":state["revision"]})).unwrap();
+    assert_eq!(
+        captured["project"]["instructions"],
+        "Native project instructions"
+    );
+    assert_eq!(
+        captured["conversation"]["contextNote"],
+        "Native conversation note"
+    );
+    assert_eq!(
+        captured["conversation"]["contextPaths"],
+        json!(["focus.rs"])
+    );
+    assert_eq!(captured["sourceFiles"].as_array().unwrap().len(), 2);
+    assert!(!captured["enabledPlugins"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("rh.tasks")));
+    assert!(captured["enabledPlugins"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("rh.files")));
+    assert_eq!(
+        captured["conversationHistory"],
+        json!({"schemaVersion":1,"messages":[],"startIndex":0,"totalMessages":0,"truncated":false})
+    );
+    f.write("conversation_context", json!({"projectId":project,"conversationId":conversation,"contextNote":"Next note","contextPaths":[]}));
+    f.write(
+        "project_instructions",
+        json!({"projectId":project,"instructions":"Next instructions"}),
+    );
+    assert_eq!(
+        captured["conversation"]["contextNote"],
+        "Native conversation note"
+    );
+    assert_eq!(
+        captured["project"]["instructions"],
+        "Native project instructions"
+    );
+}
+
+fn history_message(index: usize, content: String) -> Message {
+    Message {
+        id: format!("message-{index}"),
+        role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+        content,
+        job_id: Some(format!("job-{index}")),
+    }
+}
+
+#[test]
+fn rh_code_history_is_a_complete_contiguous_suffix_with_independent_counts_and_utf8_byte_budget() {
+    let many = (0..1500)
+        .map(|i| history_message(i, "small".into()))
+        .collect::<Vec<_>>();
+    let suffix = context::history(&many).unwrap();
+    assert_eq!(suffix["startIndex"], 476);
+    assert_eq!(suffix["totalMessages"], 1500);
+    assert_eq!(suffix["truncated"], true);
+    assert_eq!(suffix["messages"].as_array().unwrap().len(), 1024);
+    assert_eq!(suffix["messages"][0]["id"], "message-476");
+    assert_eq!(suffix["messages"][1023]["id"], "message-1499");
+    let unicode = (0..100)
+        .map(|i| history_message(i, "😀\t\"".repeat(4000)))
+        .collect::<Vec<_>>();
+    let suffix = context::history(&unicode).unwrap();
+    let start = suffix["startIndex"].as_u64().unwrap() as usize;
+    assert!(start > 0);
+    assert_eq!(
+        suffix["messages"],
+        serde_json::to_value(&unicode[start..]).unwrap()
+    );
+    assert!(serde_json::to_vec(&suffix).unwrap().len() <= 1_000_000);
+    let mut one_more = suffix.clone();
+    one_more["startIndex"] = json!(start - 1);
+    one_more["messages"] = serde_json::to_value(&unicode[start - 1..]).unwrap();
+    assert!(serde_json::to_vec(&one_more).unwrap().len() > 1_000_000);
+    let newest = vec![history_message(0, "😀".repeat(128000))];
+    assert_eq!(
+        context::history(&newest).unwrap()["messages"][0]["content"],
+        newest[0].content
+    );
+    let oversized = vec![history_message(0, "x".repeat(1_000_000))];
+    assert!(context::history(&oversized).unwrap_err().contains("Newest"));
+}
+
+#[test]
+fn rh_code_long_dialog_capture_preserves_native_history_and_reports_recent_omissions_separately() {
+    let f = Fixture::new();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Long dialog"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let (mut document, _) = f.store.load().unwrap();
+    document.projects[0].conversations[0].messages = (0..60)
+        .map(|i| history_message(i, format!("{i}:{}", "喵".repeat(10000))))
+        .collect();
+    let bytes = document_bytes(&document).unwrap();
+    fs::write(f.store.root.join("workspace.json"), &bytes).unwrap();
+    let captured = f.store.call("agent_context", json!({"projectId":project,"conversationId":conversation,"request":"Continue","mode":"plan","expectedRevision":hash(&bytes)})).unwrap();
+    assert_eq!(captured["conversation"]["omittedMessages"], 52);
+    assert_eq!(captured["conversationHistory"]["startIndex"], 27);
+    assert_eq!(captured["conversationHistory"]["totalMessages"], 60);
+    assert_eq!(
+        captured["conversationHistory"]["messages"][0]["content"],
+        document.projects[0].conversations[0].messages[27].content
+    );
+    assert_eq!(
+        captured["conversation"]["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        1800
+    );
+    assert_eq!(
+        fs::read(f.store.root.join("workspace.json")).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        Store::new(&f.root).call("bootstrap", json!({})).unwrap()["projects"][0]["conversations"]
+            [0]["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        60
+    );
+}
+
+#[test]
+fn rh_code_harness_apply_checks_final_document_budget_before_any_native_source_publication() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let f = Fixture::new();
+    fs::write(f.folder.join("original.rs"), "original").unwrap();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Budget"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let captured = f.store.call("agent_context", json!({"projectId":project,"conversationId":conversation,"request":"Edit","mode":"execute","expectedRevision":state["revision"]})).unwrap();
+    f.store
+        .bind_harness(captured.clone(), "budget-job")
+        .unwrap();
+    f.write("conversation_append", json!({"projectId":project,"conversationId":conversation,"role":"user","content":"Edit","jobId":"budget-job"}));
+    let (mut document, _) = f.store.load().unwrap();
+    document.projects[0].updated_at = 0;
+    let messages = &mut document.projects[0].conversations[0].messages;
+    messages.extend((0..65).map(|i| history_message(i, "x".repeat(128000))));
+    messages.push(history_message(65, String::new()));
+    let needed = LIMIT - serde_json::to_vec(&document).unwrap().len();
+    assert!(needed <= 128000);
+    document.projects[0].conversations[0]
+        .messages
+        .last_mut()
+        .unwrap()
+        .content = "x".repeat(needed);
+    let bytes = document_bytes(&document).unwrap();
+    assert_eq!(bytes.len(), LIMIT);
+    fs::write(f.store.root.join("workspace.json"), &bytes).unwrap();
+    let proposal_id = "b".repeat(32);
+    let digest = "c".repeat(64);
+    let approval = json!({"projectId":project,"jobId":"budget-job","proposalId":proposal_id,"expectedDigest":digest,"expectedRevision":hash(&bytes)});
+    let export = json!({"jobId":"budget-job","proposalId":proposal_id,"digest":digest,"projectId":project,"conversationId":conversation,"sourceFingerprint":captured["sourceFingerprint"],"files":[{"path":"original.rs","expectedSha256":hash(b"original"),"data":STANDARD.encode(b"replacement"),"delete":false}]});
+    assert!(f
+        .store
+        .apply_harness(approval, export)
+        .unwrap_err()
+        .contains("8 MiB"));
+    assert_eq!(fs::read(f.folder.join("original.rs")).unwrap(), b"original");
+    assert_eq!(
+        fs::read(f.store.root.join("workspace.json")).unwrap(),
+        bytes
+    );
+    assert!(fs::read_dir(f.store.root.join("harness-transactions"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn rh_code_invalid_stored_context_is_retained_for_recovery() {
+    let f = Fixture::new();
+    let project = f.project();
+    f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Stored context"}),
+    );
+    let path = f.store.root.join("workspace.json");
+    let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for (field, invalid) in [
+        ("instructions", json!("😀".repeat(6001))),
+        ("contextNote", json!("bad\0note")),
+        ("contextPaths", json!(["vendor/file.rs"])),
+    ] {
+        let mut corrupted = document.clone();
+        if field == "instructions" {
+            corrupted["projects"][0][field] = invalid;
+        } else {
+            corrupted["projects"][0]["conversations"][0][field] = invalid;
+        }
+        let bytes = serde_json::to_vec(&corrupted).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(Store::new(&f.root).call("bootstrap", json!({})).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn rh_code_full_source_history_and_context_fit_the_native_host_wire_budget() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let mut source_files = vec![];
+    let mut manifest = vec![];
+    let total = 16 * 1024 * 1024;
+    for index in 0..1000 {
+        let path = format!(
+            "{}/{}/{}{:04}",
+            "a".repeat(200),
+            "b".repeat(200),
+            "c".repeat(106),
+            index
+        );
+        let size = total / 1000 + usize::from(index < total % 1000);
+        manifest.push(json!({"path":path,"sha256":"a".repeat(64),"size":size}));
+        source_files.push(json!({"path":path,"sha256":"a".repeat(64),"size":size,"data":STANDARD.encode(vec![b'x';size])}));
+    }
+    let history_messages = (0..8)
+        .map(|i| history_message(i, "x".repeat(124000)))
+        .collect::<Vec<_>>();
+    let history = context::history(&history_messages).unwrap();
+    let recent = (0..8)
+        .map(|_| json!({"role":"assistant","content":"😀".repeat(1800)}))
+        .collect::<Vec<_>>();
+    let mut capture = json!({"project":{"id":id(),"name":"😀".repeat(120),"instructions":"喵".repeat(8000)},"conversation":{"id":id(),"contextNote":"喵".repeat(8000),"contextPaths":[],"messages":recent,"omittedMessages":4090},"conversationHistory":history,"request":"😀".repeat(12000),"mode":"execute","target":{"minecraft":"1.21.1","loaders":["Fabric","NeoForge"]},"sourceFiles":source_files,"sourceManifest":manifest,"sourceFingerprint":"a".repeat(64),"rootIdentity":{"device":u64::MAX,"inode":u64::MAX},"sourceOmissionCount":12000,"sourceOmissions":[],"enabledPlugins":manifests().as_array().unwrap().iter().map(|plugin| plugin["id"].clone()).collect::<Vec<_>>()});
+    assert!(context::check_host_budget(&capture).is_ok());
+    assert!(
+        serde_json::to_vec(&json!({"operation":"rh_code_run","args":capture}))
+            .unwrap()
+            .len()
+            <= 24 * 1024 * 1024
+    );
+    // Quotes are valid filename bytes but need JSON escaping. Optional history
+    // shrinks further so a valid source capture still fits the native protocol.
+    for key in ["sourceFiles", "sourceManifest"] {
+        for (index, entry) in capture[key].as_array_mut().unwrap().iter_mut().enumerate() {
+            entry["path"] = json!(format!(
+                "{}/{}/{}{:04}",
+                "\"".repeat(200),
+                "\"".repeat(200),
+                "\"".repeat(106),
+                index
+            ));
+        }
+    }
+    assert!(context::check_host_budget(&capture)
+        .unwrap_err()
+        .contains("24 MiB"));
+    context::fit_host_budget(&mut capture, &history_messages).unwrap();
+    let start = capture["conversationHistory"]["startIndex"]
+        .as_u64()
+        .unwrap() as usize;
+    assert!(start > 0 && start < history_messages.len());
+    assert_eq!(
+        capture["conversationHistory"]["messages"],
+        serde_json::to_value(&history_messages[start..]).unwrap()
+    );
+    assert_eq!(capture["conversationHistory"]["totalMessages"], 8);
+    assert_eq!(capture["conversationHistory"]["truncated"], true);
+    assert!(context::check_host_budget(&capture).is_ok());
+    capture["project"]["name"] = json!("x".repeat(1_000_000));
+    assert!(context::fit_host_budget(&mut capture, &history_messages)
+        .unwrap_err()
+        .contains("24 MiB"));
+}
+
+#[test]
+fn rh_code_host_budget_can_omit_optional_history_but_rejects_required_metadata_overflow() {
+    let messages = vec![history_message(0, "😀".repeat(128000))];
+    let empty_history =
+        json!({"schemaVersion":1,"messages":[],"startIndex":1,"totalMessages":1,"truncated":true});
+    let mut capture = json!({"required":"","conversationHistory":empty_history});
+    let empty_wire_bytes = serde_json::to_vec(&json!({"operation":"rh_code_run","args":capture}))
+        .unwrap()
+        .len();
+    capture["required"] = json!("x".repeat(24 * 1024 * 1024 - empty_wire_bytes));
+    capture["conversationHistory"] = context::history(&messages).unwrap();
+    context::fit_host_budget(&mut capture, &messages).unwrap();
+    assert_eq!(capture["conversationHistory"], empty_history);
+    assert_eq!(
+        serde_json::to_vec(&json!({"operation":"rh_code_run","args":capture}))
+            .unwrap()
+            .len(),
+        24 * 1024 * 1024
+    );
+    let overflow = format!("{}x", capture["required"].as_str().unwrap());
+    capture["required"] = json!(overflow);
+    assert!(context::fit_host_budget(&mut capture, &messages)
+        .unwrap_err()
+        .contains("24 MiB"));
 }

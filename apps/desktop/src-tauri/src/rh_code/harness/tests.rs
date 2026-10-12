@@ -19,6 +19,7 @@ impl Fixture {
             store: directory.join("store"),
             directory,
             project: Project {
+                instructions: String::new(),
                 id: "a".repeat(24),
                 name: "Fixture".into(),
                 folder: project_folder.to_string_lossy().into(),

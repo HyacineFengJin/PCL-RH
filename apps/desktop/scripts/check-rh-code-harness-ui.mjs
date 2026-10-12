@@ -589,3 +589,413 @@ test("task completion preserves transcript scroll when the user is reading earli
   assert.equal(node.scrollTop, 100);
   view.close();
 });
+
+function metadataController() {
+  const c = controller(),
+    calls = [],
+    contexts = new Map(),
+    titles = new Map(),
+    instructions = new Map(),
+    dirty = new Set();
+  const p = project("first", [conversation("thread")]);
+  p.instructions = "Shared convention";
+  p.conversations[0].contextNote = "Saved goal";
+  p.conversations[0].contextPaths = ["src/Main.java"];
+  c.project = p;
+  c.snapshot = { disabledPlugins: [], projects: [p] };
+  const key = (id) => c.projectId + ":" + id;
+  c.conversationContext = (id) =>
+    contexts.get(key(id)) ?? {
+      contextNote:
+        c.project.conversations.find((value) => value.id === id)?.contextNote ??
+        "",
+      contextPaths:
+        c.project.conversations.find((value) => value.id === id)
+          ?.contextPaths ?? [],
+    };
+  c.conversationTitle = (id) =>
+    titles.get(key(id)) ??
+    c.project.conversations.find((value) => value.id === id)?.title ??
+    "";
+  c.projectInstructions = () =>
+    instructions.get(c.projectId) ?? c.project.instructions ?? "";
+  c.contextDirty = (id) => dirty.has("context:" + key(id));
+  c.titleDirty = (id) => dirty.has("title:" + key(id));
+  c.instructionsDirty = () => dirty.has("instructions:" + c.projectId);
+  c.setConversationContext = (id, value) => {
+    contexts.set(key(id), value);
+    dirty.add("context:" + key(id));
+  };
+  c.setConversationTitle = (id, value) => {
+    titles.set(key(id), value);
+    dirty.add("title:" + key(id));
+  };
+  c.setProjectInstructions = (value) => {
+    instructions.set(c.projectId, value);
+    dirty.add("instructions:" + c.projectId);
+  };
+  c.saveConversationContext = async (owner, id) => {
+    calls.push({
+      operation: "conversation_context",
+      owner,
+      id,
+      value: structuredClone(contexts.get(owner + ":" + id)),
+    });
+    dirty.delete("context:" + owner + ":" + id);
+  };
+  c.saveConversationTitle = async (owner, id) => {
+    calls.push({
+      operation: "conversation_rename",
+      owner,
+      id,
+      value: titles.get(owner + ":" + id),
+    });
+    dirty.delete("title:" + owner + ":" + id);
+  };
+  c.saveProjectInstructions = async (owner) => {
+    calls.push({
+      operation: "project_instructions",
+      owner,
+      value: instructions.get(owner),
+    });
+    dirty.delete("instructions:" + owner);
+  };
+  c.api = async (_command, { operation, args }) => {
+    calls.push({ operation, args });
+    if (operation === "files") return { files: ["src/Main.java", "README.md"] };
+    if (operation === "file_read") return { content: "fixture UTF-8 text" };
+    throw new Error("Unexpected fixture operation");
+  };
+  return { c, calls };
+}
+const buttonNamed = (value, name) =>
+  elements(value).find(
+    (element) =>
+      element.type === "button" &&
+      (element.props["aria-label"] === name || text(element) === name),
+  );
+const inputNamed = (value, name) =>
+  elements(value).find(
+    (element) =>
+      ["input", "textarea"].includes(element.type) &&
+      element.props["aria-label"] === name,
+  );
+
+test("saved references restore as chips and context stays folded with bounded editors in both locales", async () => {
+  for (const language of ["en", "zh"]) {
+    const { c } = metadataController();
+    const view = driver(
+      "plugins/ConversationContext.tsx",
+      "ConversationContext",
+      { conversation: c.project.conversations[0] },
+      c,
+      language,
+    );
+    assert.match(text(view.value), /src\/Main.java/);
+    assert.equal(
+      elements(view.value).filter((element) => element.type === "textarea")
+        .length,
+      0,
+    );
+    buttonNamed(
+      view.value,
+      language === "en" ? "Context·" : "上下文·",
+    ).props.onClick();
+    await view.flush();
+    const editors = elements(view.value).filter(
+      (element) => element.type === "textarea",
+    );
+    assert.deepEqual(
+      editors.map((element) => element.props.value),
+      ["Saved goal", "Shared convention"],
+    );
+    assert.ok(editors.every((element) => element.props.maxLength === 8000));
+    assert.ok(
+      text(view.value).length < 200,
+      "Context controls must keep their copy compact",
+    );
+    view.close();
+  }
+});
+
+test("file references use a bounded searchable inventory and preserve a note typed during text verification", async () => {
+  const { c, calls } = metadataController(),
+    reading = deferred();
+  c.api = async (_command, { operation, args }) => {
+    calls.push({ operation, args });
+    if (operation === "files")
+      return {
+        files: [
+          ...Array.from(
+            { length: 60 },
+            (_, index) => "src/File" + index + ".java",
+          ),
+          "src/Main.java",
+          "vendor/secret.txt",
+          "venv/private.txt",
+          ".secret",
+          "src/.hidden",
+          "../escape",
+          "src/invalid:name",
+          "src/" + "中".repeat(180),
+        ],
+      };
+    if (operation === "file_read") return reading.promise;
+  };
+  const view = driver(
+    "plugins/ConversationContext.tsx",
+    "ConversationContext",
+    { conversation: c.project.conversations[0] },
+    c,
+  );
+  buttonNamed(view.value, "Reference project files").props.onClick();
+  await view.flush();
+  assert.equal(
+    elements(view.value).filter(
+      (element) =>
+        element.type === "button" &&
+        element.props["aria-pressed"] !== undefined,
+    ).length,
+    40,
+  );
+  assert.match(text(view.value), /Type more to narrow/);
+  inputNamed(view.value, "Search project files").props.onChange({
+    target: { value: "File59" },
+  });
+  await view.flush();
+  assert.match(text(view.value), /src\/File59.java/);
+  const candidate = elements(view.value).find(
+    (element) =>
+      element.type === "button" && element.props.title === "src/File59.java",
+  );
+  candidate.props.onClick();
+  await view.flush();
+  c.setConversationContext("thread", {
+    contextNote: "newer goal during verification",
+    contextPaths: ["src/Main.java"],
+  });
+  reading.resolve({ content: "safe text" });
+  await view.flush();
+  assert.deepEqual(
+    calls.find((call) => call.operation === "conversation_context").value,
+    {
+      contextNote: "newer goal during verification",
+      contextPaths: ["src/Main.java", "src/File59.java"],
+    },
+  );
+  const { contextReferencePaths } = view.module(
+    "plugins/ConversationContext.tsx",
+  );
+  assert.deepEqual(
+    contextReferencePaths([
+      "README.md",
+      "README.md",
+      "src/Main.java",
+      "vendor/secret.txt",
+      "venv/a",
+      "__pycache__/a",
+      ".secret",
+      "../escape",
+      "/absolute",
+      "src/invalid:name",
+      "src/" + "中".repeat(180),
+    ]),
+    ["README.md", "src/Main.java"],
+  );
+  view.close();
+});
+
+test("twenty references disable more selections and chip removal saves the same conversation", async () => {
+  const { c, calls } = metadataController();
+  c.project.conversations[0].contextPaths = Array.from(
+    { length: 20 },
+    (_, index) => "src/File" + index + ".java",
+  );
+  const view = driver(
+    "plugins/ConversationContext.tsx",
+    "ConversationContext",
+    { conversation: c.project.conversations[0] },
+    c,
+  );
+  buttonNamed(view.value, "Reference project files").props.onClick();
+  await view.flush();
+  assert.equal(buttonNamed(view.value, "src/Main.java").props.disabled, true);
+  buttonNamed(view.value, "Remove reference · src/File0.java").props.onClick();
+  await view.flush();
+  assert.equal(calls.at(-1).owner, "first");
+  assert.equal(calls.at(-1).id, "thread");
+  assert.equal(calls.at(-1).value.contextPaths.length, 19);
+  assert.equal(calls.at(-1).value.contextNote, "Saved goal");
+  view.close();
+});
+
+test("late inventory and selected-file replies cannot attach files or errors to another project", async () => {
+  for (const delayed of ["inventory", "text"]) {
+    const { c, calls } = metadataController(),
+      late = deferred();
+    c.api = async (_command, { operation }) => {
+      if (operation === "files")
+        return delayed === "inventory" && c.projectId === "first"
+          ? late.promise
+          : {
+              files: [
+                c.projectId === "first" ? "src/Old.java" : "src/New.java",
+              ],
+            };
+      if (operation === "file_read") return late.promise;
+    };
+    const view = driver(
+      "plugins/ConversationContext.tsx",
+      "ConversationContext",
+      { conversation: c.project.conversations[0] },
+      c,
+    );
+    buttonNamed(view.value, "Reference project files").props.onClick();
+    await view.flush();
+    if (delayed === "text") {
+      buttonNamed(view.value, "src/Old.java").props.onClick();
+      await view.flush();
+    }
+    c.projectId = "second";
+    c.project = project("second", [conversation("thread")]);
+    view.render({ conversation: c.project.conversations[0] });
+    await view.flush();
+    buttonNamed(view.value, "Reference project files").props.onClick();
+    await view.flush();
+    late.resolve(
+      delayed === "inventory"
+        ? { files: ["src/Old.java"] }
+        : { content: "late old text" },
+    );
+    await view.flush();
+    assert.doesNotMatch(text(view.value), /src\/Old.java/);
+    assert.match(text(view.value), /src\/New.java/);
+    assert.equal(
+      calls.filter((call) => call.operation === "conversation_context").length,
+      0,
+    );
+    view.close();
+  }
+});
+
+test("non-text reference checks retain saved context and surface the selected file error", async () => {
+  const { c, calls } = metadataController();
+  c.api = async (_command, { operation }) =>
+    operation === "files"
+      ? { files: ["binary.dat"] }
+      : { content: "binary\0bytes" };
+  const view = driver(
+    "plugins/ConversationContext.tsx",
+    "ConversationContext",
+    { conversation: c.project.conversations[0] },
+    c,
+  );
+  buttonNamed(view.value, "Reference project files").props.onClick();
+  await view.flush();
+  buttonNamed(view.value, "binary.dat").props.onClick();
+  await view.flush();
+  assert.match(text(view.value), /Choose a UTF-8 text file/);
+  assert.deepEqual(c.conversationContext("thread").contextPaths, [
+    "src/Main.java",
+  ]);
+  assert.equal(calls.length, 0);
+  view.close();
+});
+
+test("rename saves the existing conversation and retires late feedback after a project switch", async () => {
+  const { c, calls } = metadataController(),
+    renamed = deferred();
+  c.saveConversationTitle = async (owner, id) => {
+    calls.push({
+      operation: "conversation_rename",
+      owner,
+      id,
+      value: c.conversationTitle(id),
+    });
+    return renamed.promise;
+  };
+  const view = driver(
+    "plugins/ConversationContext.tsx",
+    "ConversationName",
+    { conversation: c.project.conversations[0] },
+    c,
+  );
+  buttonNamed(view.value, "Rename conversation").props.onClick();
+  await view.flush();
+  inputNamed(view.value, "Conversation name").props.onChange({
+    target: { value: "Renamed thread" },
+  });
+  view.render();
+  buttonNamed(view.value, "Save name").props.onClick();
+  await view.flush();
+  assert.deepEqual(calls[0], {
+    operation: "conversation_rename",
+    owner: "first",
+    id: "thread",
+    value: "Renamed thread",
+  });
+  c.projectId = "second";
+  c.project = project("second", [conversation("thread")]);
+  view.render({ conversation: c.project.conversations[0] });
+  await view.flush();
+  renamed.reject(new Error("old rename failed"));
+  await view.flush();
+  assert.doesNotMatch(text(view.value), /old rename failed/);
+  buttonNamed(view.value, "Rename conversation").props.onClick();
+  await view.flush();
+  assert.equal(
+    inputNamed(view.value, "Conversation name").props.value,
+    "thread",
+  );
+  view.close();
+});
+
+test("disabled changes never mount/read Harness review and disabled source prevents applying", async () => {
+  const c = controller();
+  c.snapshot = { disabledPlugins: ["rh.changes"] };
+  c.project = project("first", [conversation("thread", null, ["one"])]);
+  c.jobs.one = job("one");
+  let reads = 0,
+    applications = 0;
+  c.readHarnessProposals = async () => {
+    reads++;
+    return { proposals: [proposal()] };
+  };
+  c.applyHarnessProposal = async () => {
+    applications++;
+  };
+  const chat = driver(
+    "plugins/conversations.tsx",
+    "Chat",
+    { area: { id: "area", conversation: "thread" } },
+    c,
+  );
+  await chat.flush();
+  assert.ok(
+    !elements(chat.value).some(
+      (element) => element.type?.name === "HarnessProposalReview",
+    ),
+  );
+  const review = driver(
+    "plugins/HarnessProposalReview.tsx",
+    "HarnessProposalReview",
+    { job: job("one") },
+    c,
+  );
+  await review.flush();
+  assert.equal(reads, 0);
+  assert.equal(review.value, null);
+  c.snapshot.disabledPlugins = ["rh.source"];
+  review.render();
+  await review.flush();
+  const apply = elements(review.value).find(
+    (element) =>
+      element.type === "button" && text(element).includes("Approve and apply"),
+  );
+  assert.equal(apply.props.disabled, true);
+  apply.props.onClick();
+  await review.flush();
+  assert.equal(applications, 0);
+  chat.close();
+  review.close();
+});

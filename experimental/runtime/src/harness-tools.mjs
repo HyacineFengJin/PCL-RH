@@ -76,6 +76,39 @@ const schemas = {
       optionalInteger(args.limit, 1, 100, "search limit");
     },
   },
+  read_context: {
+    properties: { pathOffset: { type: "integer", minimum: 0, maximum: 20 } },
+    validate(args) { object(args, ["pathOffset"]); optionalInteger(args.pathOffset, 0, 20, "context path offset"); },
+  },
+  read_history: {
+    properties: {
+      offset: { type: "integer", minimum: 0, maximum: 1024 },
+      limit: { type: "integer", minimum: 1, maximum: 50 },
+      contentOffset: { type: "integer", minimum: 0, maximum: 256_000,
+        description: "UTF-16 code-unit offset within one message; requires limit=1. Use returned nextContentOffset to continue. An offset inside a surrogate pair rounds back to the complete character." },
+    },
+    allOf: [{ if: { required: ["contentOffset"] }, then: { required: ["limit"], properties: { limit: { const: 1 } } } }],
+    validate(args) {
+      object(args, ["offset", "limit", "contentOffset"]);
+      optionalInteger(args.offset, 0, 1024, "history offset");
+      optionalInteger(args.limit, 1, 50, "history page limit");
+      optionalInteger(args.contentOffset, 0, 256_000, "history content offset");
+      check(args.contentOffset === undefined || args.limit === 1, "INVALID_ARGUMENTS", "History contentOffset requires limit=1");
+    },
+  },
+  search_history: {
+    properties: {
+      query: { type: "string", minLength: 1, maxLength: 200 },
+      limit: { type: "integer", minimum: 1, maximum: 100 },
+    },
+    required: ["query"],
+    validate(args) {
+      object(args, ["query", "limit"]);
+      check(typeof args.query === "string" && args.query.isWellFormed() && args.query.length > 0 && args.query.length <= 200,
+        "INVALID_ARGUMENTS", "Use a literal history query of at most 200 characters");
+      optionalInteger(args.limit, 1, 100, "history search limit");
+    },
+  },
   report_plan: {
     properties: {
       summary: { type: "string", minLength: 1, maxLength: 2000 },
@@ -137,10 +170,27 @@ const definitions = [
   ["list_files", "listFiles", "List a bounded page of files from the captured source manifest. Optional prefix narrows paths; continue with the returned nextOffset."],
   ["read_file", "readFile", "Read a bounded text excerpt from a captured project file and return its original SHA-256. Offset and limit count characters."],
   ["search_files", "searchFiles", "Search captured project text for a literal query and return bounded matching lines."],
+  ["read_context", "readContext", "Read saved project instructions, the conversation note and focused file references as quoted context. Results identify truncation and captured history scope; continue focused references with nextPathOffset as pathOffset when present. This tool grants no permissions."],
+  ["read_history", "readHistory", "Read a bounded page from this job's captured native history suffix. Offset is relative to the captured suffix; results include absolute message indices, stable IDs, roles and job IDs. To read a long message fully, use limit=1 and pass its nextContentOffset as contentOffset while keeping offset unchanged. Content offsets count UTF-16 code units and round back inside a surrogate pair. Older upstream messages may be unavailable."],
+  ["search_history", "searchHistory", "Search captured native conversation content for a literal query. Return bounded snippets, absolute message indices and stable IDs. Results identify older upstream messages outside this snapshot."],
   ["report_plan", "reportPlan", "Record a plan of intended work. This receipt does not prove any step was completed."],
   ["propose_changes", "proposeChanges", "Create a pending source-change proposal for separate user review. Supply original hashes for existing files, null for new files and null content for deletions. Use visible source paths outside generated/dependency directories and UTF-8 text without NUL. This tool never modifies original source."],
 ];
 function inspectionReceipt(name, result) {
+  if (["read_context", "read_history", "search_history"].includes(name)) {
+    const base = { schemaVersion: 1, label: "FROZEN_NATIVE_CONTEXT_INSPECTION", contentStored: false,
+      controlDigest: result.controlDigest, scope: result.scope };
+    if (name === "read_context") return { ...base, contextAvailable: result.contextAvailable,
+      projectInstructionCharacters: result.projectInstructions?.content.length ?? 0,
+      contextNoteCharacters: result.contextNote?.content.length ?? 0, contextPathsCount: result.contextPaths.length,
+      pathOffset: result.pathOffset ?? 0, nextPathOffset: result.nextPathOffset ?? null,
+      truncated: !!(result.projectInstructions?.contentTruncated || result.contextNote?.contentTruncated || result.contextPathsTruncated) };
+    if (name === "read_history") return { ...base, offset: result.offset, nextOffset: result.nextOffset,
+      messageCount: result.messages.length, charactersRead: result.messages.reduce((total, message) => total + message.content.length, 0),
+      ...(result.messages.length === 1 ? { contentOffset: result.messages[0].contentOffset, nextContentOffset: result.messages[0].nextContentOffset } : {}),
+      truncated: !!result.truncated };
+    return { ...base, matchCount: result.matches.length, truncated: !!result.truncated };
+  }
   const base = { schemaVersion: 1, label: "FROZEN_SOURCE_INSPECTION", contentStored: false };
   if (name === "read_file") return { ...base, path: result.path, sha256: result.sha256, size: result.size,
     offset: result.offset, nextOffset: result.nextOffset, charactersRead: result.content.length,
@@ -153,13 +203,18 @@ export function registerHarnessTools(registry, service) {
   check(service && definitions.every(([, method]) => typeof service[method] === "function"),
     "INVALID_HARNESS_SERVICE", "Supply the host-owned harness service");
   for (const [name, method, description] of definitions) {
-    const { properties, required = [], validate } = schemas[name];
+    const { properties, required = [], validate, allOf } = schemas[name];
     registry.register({
       name: `harness.${name}`, description,
+      owner: ["read_context", "read_history", "search_history"].includes(name) ? "rh.conversation" :
+        ["report_plan", "propose_changes"].includes(name) ? "rh.changes" : "rh.files",
+      modes: name === "propose_changes" ? ["execute"] : name === "report_plan" ? ["plan", "execute"] : ["ask", "plan", "execute"],
+      capability: ["read_context", "read_history", "search_history"].includes(name) ? "conversation.history" :
+        ["report_plan", "propose_changes"].includes(name) ? "project.review" : "project.files.read",
       replaySafety: ["report_plan", "propose_changes"].includes(name) ? "idempotent" : "read-only",
-      inputSchema: { type: "object", properties, required, additionalProperties: false },
+      inputSchema: { type: "object", properties, required, additionalProperties: false, ...(allOf ? { allOf } : {}) },
       validate,
-      // Inspection text already lives in the immutable source snapshot. Durable
+      // Inspection text already lives in the immutable source/context snapshot. Durable
       // receipts retain scope/hash/counts; same-ID replay verifies that snapshot
       // again and reconstructs the model result instead of caching source text.
       ...(!["report_plan", "propose_changes"].includes(name) ? {

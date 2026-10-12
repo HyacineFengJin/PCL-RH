@@ -60,8 +60,33 @@ export default entry;
 | 区域组件 | `views` | `{ id, owner, label, icon, tone?, render, settings? }` |
 | 命令 | `commands` | `{ id, owner, handler }` |
 | 布局 | `layouts` | `{ id, owner, label, create(project) }` |
+| AI 工具 | `tools` | Node 宿主实现；声明 `{ name, capability, modes }` |
 
 贡献 ID 必须在自己的清单中声明，不能占用另一插件的 ID。标识符以 ASCII 字母或数字开头，可使用字母、数字、点、下划线与连字符，最长 120 字符。清单由装配器复制冻结；工厂返回收到的同一个 `manifest`。
+
+## 添加一个内置 AI 工具
+
+AI 工具使用单独的 Node 登记边界。工具名为小写命名空间与名称，例如 `example.inspect`，最长 80 字符。所属插件需在 `capabilities` 中声明对应能力，再添加：
+
+```json
+"tools": [
+  {
+    "name": "example.inspect",
+    "capability": "project.metadata",
+    "modes": ["ask", "plan", "execute"]
+  }
+]
+```
+
+在随应用发布的宿主初始化模块中，使用 `HarnessToolCatalog.forPlugin("rh.example")` 登记实现。工具对象包含相同的 `owner`、`capability`、`modes`，以及 `name`、`description`、`inputSchema`、`validate(args)`、`replaySafety` 和 `execute(args, context)`。当前内置工具可参考 `experimental/runtime/src/harness-tools.mjs`；宿主装配入口是 `experimental/host.mjs`。
+
+`replaySafety` 支持只读、幂等或需人工协调。询问模式的工具必须只读。参数校验、文件范围、取消检查和结果边界由实现负责，能力声明本身不执行这些检查。需要紧凑回执的只读工具可提供 `projectReceipt(result)` 和 `replayCompleted: true`；重放必须验证原快照并重建结果。
+
+新任务保存具体工具名、归属、版本、能力和模式。之后增加工具不会扩大旧任务清单；归属或版本发生变化时，旧任务不能悄悄改用新声明继续运行。`retire(owner)` 移除该插件的工具注册，保留的旧函数也会拒绝执行；整个目录用 `dispose()` 释放。停用界面模块会影响后续任务的准入，已运行任务保留捕获清单。
+
+这个接口用于随应用发布、经过维护者审查的内置实现。社区扩展的 JSON、卡片或权限声明不能注册 JavaScript 工具；Cordis 与工具目录都不提供第三方代码沙箱。
+
+## 组件外观与状态
 
 `tone` 是组件的可选语义色：`blue` 用于文件与图谱，`purple` 用于 AI 对话，`orange` 用于构建、迁移与审阅，省略时为 `neutral`。宿主负责深浅主题、标题栏与焦点样式，组件移动后仍保留自己的色彩身份。
 

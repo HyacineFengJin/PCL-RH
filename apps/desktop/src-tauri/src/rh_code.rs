@@ -1,6 +1,7 @@
 //! RH Code owns projects, conversations and workspace layout independently of
 //! panel lifetimes. The native store is authoritative; renderer plugin state
 //! cannot grant filesystem access or overwrite a newer project revision.
+mod context;
 mod files;
 mod harness;
 mod layout;
@@ -39,6 +40,10 @@ pub struct Conversation {
     pub active_job: Option<String>,
     #[serde(default)]
     pub draft: String,
+    #[serde(default)]
+    pub context_note: String,
+    #[serde(default)]
+    pub context_paths: Vec<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,6 +61,8 @@ pub struct Project {
     pub targets: Vec<Target>,
     pub conversations: Vec<Conversation>,
     pub layout: Value,
+    #[serde(default)]
+    pub instructions: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -135,6 +142,13 @@ fn ensure_plugin(d: &Document, plugin: &str) -> Result<(), String> {
 fn snapshot(d: &Document, revision: &str) -> Value {
     json!({"revision":revision,"projects":d.projects,"disabledPlugins":d.disabled_plugins,"plugins":manifests(),"layoutPresets":d.layout_presets})
 }
+fn document_bytes(d: &Document) -> Result<Vec<u8>, String> {
+    let bytes = serde_json::to_vec(d).map_err(|e| e.to_string())?;
+    if bytes.len() > LIMIT {
+        return Err("RH Code state exceeds 8 MiB; retained previous state".into());
+    }
+    Ok(bytes)
+}
 fn preset_name(value: &Value) -> Result<String, String> {
     let name = value.as_str().ok_or("Choose a layout preset name")?.trim();
     if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
@@ -203,6 +217,7 @@ impl Store {
         }
         let mut ids = HashSet::new();
         for p in &d.projects {
+            context::checked_note(&p.instructions, "Stored project instructions")?;
             if p.id.len() != 24
                 || !p.id.bytes().all(|v| v.is_ascii_hexdigit())
                 || !ids.insert(&p.id)
@@ -230,12 +245,19 @@ impl Store {
             }
             let mut conversations = HashSet::new();
             for c in &p.conversations {
+                context::checked_note(&c.context_note, "Stored conversation context note")?;
+                context::checked_paths(&c.context_paths)?;
                 if c.id.len() != 24
                     || !c.id.bytes().all(|v| v.is_ascii_hexdigit())
                     || !conversations.insert(&c.id)
                     || !["ask", "plan", "execute"].contains(&c.mode.as_str())
                     || c.messages.len() > 4096
                     || c.draft.chars().count() > 12000
+                    || c.title.trim().is_empty()
+                    || c.title.chars().count() > 120
+                    || c.title
+                        .chars()
+                        .any(|v| v == '\0' || (v.is_control() && v != '\n' && v != '\t'))
                 {
                     return Err("Invalid stored conversation".into());
                 }
@@ -373,14 +395,14 @@ impl Store {
             }
             let mut approved = a.clone();
             approved["conversationId"] = json!(owner.id);
-            harness::apply(
-                &self.root,
-                p,
-                &approved,
-                &source.ok_or("Harness apply requires the verified private host export")?,
-            )?;
+            let source = source.ok_or("Harness apply requires the verified private host export")?;
+            // Source publication must not outrun the document's byte budget.
+            // Serialize the final metadata (including its timestamp) first and
+            // publish exactly those bytes after the native transaction commits.
             p.updated_at = now();
-            let bytes = serde_json::to_vec(&d).map_err(|e| e.to_string())?;
+            let bytes = document_bytes(&d)?;
+            let p = Self::project_mut(&mut d, &a)?;
+            harness::apply(&self.root, p, &approved, &source)?;
             atomic(&self.root.join("workspace.json"), &bytes)?;
             return Ok(snapshot(&d, &hash(&bytes)));
         }
@@ -459,18 +481,27 @@ impl Store {
                 .iter()
                 .find(|c| Some(c.id.as_str()) == a["conversationId"].as_str())
                 .unwrap();
-            // Project history can grow to megabytes. Transport only the model
-            // projection; the canonical log remains in the native document.
+            context::require_available(&c.context_paths, &captured)?;
+            // The compact recent prompt and the complete captured history have
+            // independent budgets. Both leave the canonical native log intact.
             let start = c.messages.len().saturating_sub(8);
             let messages: Vec<Value> = c.messages[start..].iter().map(|m|
                 json!({"role":m.role,"content":m.content.chars().take(1800).collect::<String>()})).collect();
-            let mut context = json!({"project":{"id":p.id,"name":p.name},"conversation":{"id":c.id,"messages":messages,"omittedMessages":start},"request":request,"mode":mode,"target":p.targets[index]});
+            let mut context = json!({"project":{"id":p.id,"name":p.name,"instructions":p.instructions},"conversation":{"id":c.id,"messages":messages,"omittedMessages":start,"contextNote":c.context_note,"contextPaths":c.context_paths},"conversationHistory":context::history(&c.messages)?,"request":request,"mode":mode,"target":p.targets[index]});
+            context["enabledPlugins"] = json!(manifests()
+                .as_array()
+                .ok_or("Invalid bundled plugins")?
+                .iter()
+                .filter_map(|plugin| plugin["id"].as_str())
+                .filter(|plugin| !d.disabled_plugins.iter().any(|disabled| disabled == plugin))
+                .collect::<Vec<_>>());
             for (key, value) in captured
                 .as_object()
                 .ok_or("Invalid native Harness capture")?
             {
                 context[key] = value.clone();
             }
+            context::fit_host_budget(&mut context, &c.messages)?;
             return Ok(context);
         }
         if operation == "files" || operation == "file_read" {
@@ -514,7 +545,13 @@ impl Store {
                     }],
                     conversations: vec![],
                     layout: Value::Null,
+                    instructions: String::new(),
                 });
+            }
+            "project_instructions" => {
+                ensure_plugin(&d, "rh.project")?;
+                let instructions = context::note(&a, "instructions")?;
+                Self::project_mut(&mut d, &a)?.instructions = instructions;
             }
             "plugin_set" => {
                 let key = text(&a, "id", 120)?;
@@ -633,7 +670,26 @@ impl Store {
                     messages: vec![],
                     active_job: None,
                     draft: String::new(),
+                    context_note: String::new(),
+                    context_paths: vec![],
                 });
+            }
+            "conversation_context" | "conversation_rename" => {
+                ensure_plugin(&d, "rh.conversation")?;
+                let p = Self::project_mut(&mut d, &a)?;
+                let c = p
+                    .conversations
+                    .iter_mut()
+                    .find(|c| Some(c.id.as_str()) == a["conversationId"].as_str())
+                    .ok_or("Choose a project conversation")?;
+                if operation == "conversation_rename" {
+                    c.title = text(&a, "title", 120)?;
+                } else {
+                    let note = context::note(&a, "contextNote")?;
+                    let paths = context::paths(&a)?;
+                    c.context_note = note;
+                    c.context_paths = paths;
+                }
             }
             "conversation_draft" => {
                 ensure_plugin(&d, "rh.conversation")?;
@@ -730,10 +786,7 @@ impl Store {
                 p.updated_at = now();
             }
         }
-        let bytes = serde_json::to_vec(&d).map_err(|e| e.to_string())?;
-        if bytes.len() > LIMIT {
-            return Err("RH Code state exceeds 8 MiB; retained previous state".into());
-        }
+        let bytes = document_bytes(&d)?;
         atomic(&self.root.join("workspace.json"), &bytes)?;
         Ok(snapshot(&d, &hash(&bytes)))
     }

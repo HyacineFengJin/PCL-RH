@@ -10,6 +10,7 @@ import * as sdk from "@earendil-works/pi-coding-agent";
 import { LivePiProvider } from "../src/providers/pi-live.mjs";
 import { normalizePiSelection } from "../src/providers/pi-selection.mjs";
 import { AgentRuntime } from "../src/runtime.mjs";
+import { ToolRegistry } from "../src/tools.mjs";
 
 const unlimited = {
   modelTurns: 0,
@@ -21,24 +22,36 @@ const unlimited = {
 const scratch = fileURLToPath(
   new URL("../../../work/ai-unlimited-2026-10-10/fixtures/", import.meta.url),
 );
-const tools = {
-  describe: () => [
-    {
-      name: "workspace.read",
-      description: "Offline receipt fixture",
-      inputSchema: {
-        type: "object",
-        properties: { path: { type: "string" } },
-        required: ["path"],
-      },
-    },
-  ],
-  get: () => ({
-    validate() {},
-    replaySafety: "read-only",
-    execute: async () => ({ fixture: true }),
-  }),
-};
+// Use the real registry contract, including trusted profile scope resolution.
+// This fixture tool still performs no filesystem access or domain mutation.
+const tools = new ToolRegistry().register({
+  name: "workspace.read",
+  description: "Offline receipt fixture",
+  inputSchema: {
+    type: "object",
+    properties: { path: { type: "string" } },
+    required: ["path"],
+    additionalProperties: false,
+  },
+  validate(args) { assert.equal(args.path, "fixture.txt"); },
+  replaySafety: "read-only",
+  execute: async () => ({ fixture: true }),
+});
+
+async function waitForProviderEntry(started, run, timeoutMs = 5000) {
+  let timer;
+  try {
+    await Promise.race([
+      started,
+      run.then((result) => {
+        throw new Error(`Provider finished before transport entry: ${JSON.stringify(result.error ?? { status: result.status })}`);
+      }),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Provider did not enter the offline transport within the fixture deadline")), timeoutMs);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 
 function response() {
   const base = {
@@ -69,7 +82,7 @@ function response() {
 
 async function fixture(
   t,
-  { limits = unlimited, turns = 1, calls = 0, blocked = false } = {},
+  { limits = unlimited, turns = 1, calls = 0, blocked = false, failBeforeEntry = false } = {},
 ) {
   await fs.mkdir(scratch, { recursive: true });
   const root = await fs.mkdtemp(path.join(scratch, "run-"));
@@ -94,6 +107,7 @@ async function fixture(
         // Keep the pinned ModelRuntime/serializer and host tool wrapper. Replace
         // only the nondeterministic model-driven loop with this explicit driver.
         createAgentSession: async (options) => {
+          if (failBeforeEntry) throw new Error("Offline provider setup failure fixture");
           let notify = () => {};
           const session = {
             agent: {},
@@ -216,7 +230,7 @@ for (const scenario of [
     code: "MODEL_TIMEOUT",
   },
 ])
-  test(`positive ${scenario.name} budgets still stop work`, async (t) => {
+  test(`positive ${scenario.name} budgets still stop work`, { timeout: 10000 }, async (t) => {
     const { runtime, job } = await fixture(t, {
       ...scenario,
       limits: { ...unlimited, ...scenario.limits },
@@ -226,15 +240,23 @@ for (const scenario of [
     assert.equal(result.error.code, scenario.code);
   });
 
-test("unlimited duration remains manually cancellable", async (t) => {
+test("unlimited duration remains manually cancellable", { timeout: 10000 }, async (t) => {
   const { runtime, job, started, requests } = await fixture(t, {
     blocked: true,
   });
   const run = runtime.start(job.id);
-  await started;
+  await waitForProviderEntry(started, run);
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal((await runtime.getJob(job.id)).status, "running");
   assert.equal(await runtime.cancel(job.id), true);
   assert.equal((await run).status, "cancelled");
   assert.equal(requests.length, 1);
+});
+
+test("provider entry wait reports setup failures before a transport callback", { timeout: 10000 }, async (t) => {
+  const { runtime, job, started, requests } = await fixture(t, { failBeforeEntry: true });
+  const run = runtime.start(job.id);
+  await assert.rejects(waitForProviderEntry(started, run), /Provider finished before transport entry/);
+  assert.equal((await run).status, "failed");
+  assert.equal(requests.length, 0);
 });

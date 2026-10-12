@@ -8,6 +8,8 @@ import path from "node:path";
 import readline from "node:readline";
 import { prepareCodeJob } from "../code/agent-adapter.mjs";
 import { HarnessService } from "../code/harness-service.mjs";
+import { HarnessToolCatalog } from "../code/harness-tool-catalog.mjs";
+import { readJobSnapshot } from "./job-snapshot.mjs";
 import { registerHarnessTools } from "./runtime/src/harness-tools.mjs";
 import { fileURLToPath } from "node:url";
 import {
@@ -17,6 +19,7 @@ import {
   HostReviewService,
   registerReviewPreviewTools,
   LivePiProvider,
+  projectPublicJobSummary,
 } from "./runtime/src/index.mjs";
 import {
   getPiCatalog,
@@ -136,7 +139,8 @@ const runtime = await new AgentRuntime({
 }).init();
 const reviews = new HostReviewService({ store: runtime.store });
 const harness = new HarnessService({ store: runtime.store });
-registerHarnessTools(adapters.registry, harness);
+const harnessTools = new HarnessToolCatalog(adapters.registry);
+registerHarnessTools(harnessTools, harness);
 const porterProjects = await new PorterProjects(root, {
   getJob: (id) => runtime.getJob(id),
   hasActiveJob: hasCurrentJob,
@@ -307,7 +311,7 @@ async function listJobs() {
     try {
       const job = await runtime.getJob(id);
       jobs.push({
-        ...(await runtime.getPublicJobSummary(id)),
+        ...projectPublicJobSummary(job),
         ...(["queued", "running"].includes(job.status) && !hasCurrentJob(id)
           ? { status: "interrupted" }
           : {}),
@@ -531,6 +535,7 @@ async function dispatch(operation, a) {
         liveAvailable: !!presets.selected(),
         liveSelection: publicPiSelection(selection),
         aiPresets: presets.view(),
+        harnessTools: harnessTools.view(),
         liveTested: false,
         workspace: root,
         storeWarning,
@@ -1002,17 +1007,9 @@ async function dispatch(operation, a) {
         : startCapturedJob(job, preset);
     }
     case "job_read": {
-      const job = await runtime.getJob(a.jobId);
+      const { job, summary } = await readJobSnapshot(runtime, a.jobId, hasCurrentJob);
       return {
-        summary: await runtime.getPublicJobSummary(a.jobId),
-        ...(["queued", "running"].includes(job.status) && !hasCurrentJob(job.id)
-          ? {
-              summary: {
-                ...(await runtime.getPublicJobSummary(a.jobId)),
-                status: "interrupted",
-              },
-            }
-          : {}),
+        summary,
         mode: job.provider === "pcl-template" ? "template" : "live",
         result: job.result,
         ...(job.profile === "maker" || job.profile === "harness"
@@ -1161,6 +1158,7 @@ async function dispatch(operation, a) {
       closing = true;
       selection = null;
       await runtime.shutdown();
+      harnessTools.dispose();
       await Promise.all([
         reviews.shutdown(),
         adapters.shutdown(),

@@ -83,13 +83,14 @@ export class AgentRuntime {
         'INVALID_MODE', 'Unsupported captured agent mode');
       // The trusted host captures mode before admission. Neither provider text
       // nor a tool argument can widen it. Legacy workflows retain their tools.
-      const allowedTools = isHarness
+      const modeTools = isHarness
         ? profile.tools.filter(name => intent === 'execute' ||
-          ['harness.list_files', 'harness.read_file', 'harness.search_files'].includes(name) ||
+          ['harness.list_files', 'harness.read_file', 'harness.search_files', 'harness.read_context', 'harness.read_history', 'harness.search_history'].includes(name) ||
           (intent === 'plan' && name === 'harness.report_plan'))
         : intent && intent !== 'execute'
           ? profile.tools.filter(name => ['workspace.read', 'maker.plan', 'maker.report_plan'].includes(name))
           : profile.tools.filter(name => !(intent && job.input.sourceOperationId && name === 'maker.generate'));
+      const allowedTools = this.tools.resolveAllowed(job, modeTools);
       const signal = run.controller.signal;
       const workspace = await this.store.workspace(id);
       // Providers may supply a captured host budget; persisted job input has

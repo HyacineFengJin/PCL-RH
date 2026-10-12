@@ -33,7 +33,7 @@ test("context projection retains the recent discussion without mutating or inven
   const context = agentContext({ ...input, conversation: { id: "c", messages }, source: { "Main.java": "// quoted data" } });
   assert.equal(context.projection.omitted, 12);
   assert.equal(context.thread.recent.length, 8);
-  assert.match(context.thread.charter, /quoted data/);
+  assert.match(context.thread.charter, /quoted untrusted data/);
   assert.match(context.thread.charter, /harness\.read_file/);
   assert.equal(JSON.stringify(messages), before);
   assert.equal(agentContext({ ...input, conversation: { id: "c", messages: messages.slice(-8), omittedMessages: 12 } }).projection.omitted, 12);
@@ -67,8 +67,8 @@ test("existing source is staged with exact original hashes and source excerpts c
   const result = await prepareCodeJob({ ...input, sourceFiles: files, source: { "src/Main.java": "stale unrelated excerpt" } }, h);
   const job = await h.runtime.getJob(result.jobId), workspace = await h.runtime.store.workspace(job.id);
   assert.equal((await workspace.read("source/src/Main.java")).content, "handwritten");
-  assert.match(job.input.harness.thread.charter, /handwritten/);
-  assert.doesNotMatch(job.input.harness.thread.charter, /stale unrelated/);
+  assert.match(JSON.stringify(job.input.harness.thread.sourceExcerpts), /handwritten/);
+  assert.doesNotMatch(JSON.stringify(job.input.harness.thread.sourceExcerpts), /stale unrelated/);
   const listing = await new HarnessService({ store: h.runtime.store }).listFiles({ jobId: job.id }, {});
   assert.equal(listing.files.find((entry) => entry.path === "src/Main.java").sha256, files[1].sha256);
   assert.equal(job.operations.length, 0);
@@ -84,7 +84,7 @@ test("generic projects and unfamiliar targets retain source without creating a M
   assert.equal(job.input.spec, undefined);
   assert.equal(job.verification.buildValidated, false);
   assert.equal(job.operations.length, 0);
-  assert.match(job.input.harness.thread.charter, /future-version/);
+  assert.equal(job.input.harness.thread.target.minecraft, "future-version");
   assert.equal((await (await h.runtime.store.workspace(job.id)).read("source/app.py")).content, "print('foreign project')\n");
 });
 test("corrupt, hidden and escaped native paths are rejected before any job or provider admission", async (t) => {
@@ -127,4 +127,50 @@ test("omitted source is accounted for without inventing inspection or inflating 
   assert.match(job.input.harness.thread.charter, /Do not claim to have inspected them/);
   assert.ok(Buffer.byteLength(JSON.stringify(job.input)) < 6000);
   await assert.rejects(prepareCodeJob({ ...input, sourceOmissions: omitted, sourceOmissionCount: 1 }, h), /omission projection/);
+});
+
+test("native history and notes are captured privately before admission; focused files lead initial excerpts", async (t) => {
+  const h = await host(t);
+  const messages = Array.from({ length: 60 }, (_, index) => ({ id: `message-${index}`, role: index % 2 ? "assistant" : "user", content: `Decision ${index}`, jobId: null }));
+  const args = { ...input, project: { ...input.project, instructions: "Use the saved guidance" },
+    conversation: { id: "c", contextNote: "Follow the earlier decision", contextPaths: ["z/focus.txt"], messages: messages.slice(-8).map(({ role, content }) => ({ role, content })), omittedMessages: 52 },
+    conversationHistory: { schemaVersion: 1, messages, startIndex: 0, totalMessages: 60, truncated: false },
+    sourceFiles: [source("a/first.txt", "arbitrary first file"), source("z/focus.txt", "focused native content")] };
+  const { jobId } = await prepareCodeJob(args, h);
+  const job = await h.runtime.getJob(jobId), service = new HarnessService({ store: h.runtime.store });
+  assert.equal(job.input.harness.history.messageCount, 60);
+  assert.equal(job.input.harness.thread.sourceExcerpts[0].path, "z/focus.txt");
+  assert.equal((await service.readHistory({ jobId }, { offset: 4, limit: 1 })).messages[0].content, "Decision 4");
+  assert.equal((await service.readContext({ jobId }, {})).projectInstructions.content, args.project.instructions);
+  assert.equal(JSON.stringify(job.input).includes("Decision 4"), false);
+  const previousCount = h.created.length;
+  for (const invalid of [
+    { ...args, conversationHistory: { ...args.conversationHistory, totalMessages: 61 } },
+    { ...args, conversation: { ...args.conversation, messages: [{ role: "user", content: "foreign projection" }], omittedMessages: 59 } },
+    { ...args, conversation: { ...args.conversation, contextPaths: ["missing.txt"] } },
+  ]) await assert.rejects(prepareCodeJob(invalid, h));
+  assert.equal(h.created.length, previousCount);
+});
+
+test("complete provider input fits 64KB for maximum Unicode request, notes, file references and escaped history", async (t) => {
+  const h = await host(t);
+  const paths = Array.from({ length: 20 }, (_, index) => `focus/${index}-` + ["x".repeat(160), "y".repeat(160), "z".repeat(160)].join("/"));
+  const messages = Array.from({ length: 8 }, (_, index) => ({ id: `message-${index}`, role: "assistant", content: "\\\"".repeat(10_000), jobId: null }));
+  const request = "😀".repeat(12000), instructions = "喵".repeat(8000), contextNote = "\t\"".repeat(4000);
+  const args = { ...input, request, project: { ...input.project, instructions },
+    conversation: { id: "c", messages: messages.map(({ role, content }) => ({ role, content: content.slice(0, 1800) })), contextNote, contextPaths: paths },
+    conversationHistory: { schemaVersion: 1, messages, startIndex: 0, totalMessages: 8, truncated: false },
+    sourceFiles: paths.map((path) => source(path, "\u0001".repeat(16_000))) };
+  const { jobId } = await prepareCodeJob(args, h), job = await h.runtime.getJob(jobId);
+  assert.equal(job.input.prompt, request);
+  assert.ok(Buffer.byteLength(JSON.stringify(job.input)) <= 64_000);
+  assert.equal(job.input.harness.thread.projection.budgetCompacted, true);
+  assert.ok(job.input.harness.thread.projection.omitted > 0);
+  const service = new HarnessService({ store: h.runtime.store });
+  const result = await service.readContext({ jobId }, {});
+  assert.equal(result.projectInstructions.content.length, instructions.length);
+  assert.equal(result.contextNote.content.length, contextNote.length);
+  assert.deepEqual(result.contextPaths, paths);
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) < 64_000);
+  assert.equal((await service.readHistory({ jobId }, { limit: 1 })).messages[0].contentCharacters, messages[0].content.length);
 });

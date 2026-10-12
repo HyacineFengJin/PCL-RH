@@ -140,6 +140,8 @@ const conversation = (id) => ({
   mode: "plan",
   messages: [],
   activeJob: null,
+  contextNote: "",
+  contextPaths: [],
 });
 const project = (id) => ({
   id,
@@ -148,6 +150,7 @@ const project = (id) => ({
   updatedAt: 0,
   targets: [{ minecraft: "fixture", loaders: ["fixture"] }],
   conversations: [conversation(id + "-thread")],
+  instructions: "",
   layout: {
     type: "split",
     id: id + "-split",
@@ -227,7 +230,21 @@ function hostFixture() {
         owner.layout = structuredClone(args.layout);
       else if (operation === "conversation_create")
         owner.conversations.push(conversation("created-thread"));
-      else if (operation === "conversation_draft") {
+      else if (operation === "project_instructions")
+        owner.instructions = args.instructions;
+      else if (
+        operation === "conversation_context" ||
+        operation === "conversation_rename"
+      ) {
+        const target = owner.conversations.find(
+          (c) => c.id === args.conversationId,
+        );
+        if (operation === "conversation_rename") target.title = args.title;
+        else {
+          target.contextNote = args.contextNote;
+          target.contextPaths = structuredClone(args.contextPaths);
+        }
+      } else if (operation === "conversation_draft") {
         const target = owner.conversations.find(
           (c) => c.id === args.conversationId,
         );
@@ -901,4 +918,283 @@ test("concurrent suspension requests cannot bypass a caller's visibility fence",
   assert.equal(await ui.value.prepareSuspend(() => false), false);
   saved.resolve();
   assert.equal(await preparing, true);
+});
+
+test("late context acknowledgement preserves newer edits and the original project owner", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "submitted",
+    contextPaths: ["src/Main.java"],
+  });
+  host.handlers.set("conversation_context", async (args) => {
+    await saved.promise;
+    assert.equal(args.projectId, "A");
+    assert.equal(args.conversationId, "A-thread");
+    Object.assign(host.data.projects[0].conversations[0], {
+      contextNote: args.contextNote,
+      contextPaths: args.contextPaths,
+    });
+    return host.commit();
+  });
+  const request = ui.value.saveConversationContext("A", "A-thread");
+  assert.equal(ui.value.getLifecycleState().busy, 1);
+  await ui.flush();
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "newer typed note",
+    contextPaths: ["src/Main.java", "README.md"],
+  });
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  ui.value.setConversationContext("B-thread", {
+    contextNote: "B goal",
+    contextPaths: [],
+  });
+  saved.resolve();
+  await request;
+  await ui.flush();
+  assert.equal(ui.value.projectId, "B");
+  assert.equal(ui.value.conversationContext("B-thread").contextNote, "B goal");
+  ui.value.choose(ui.value.snapshot.projects[0]);
+  await ui.flush();
+  assert.deepEqual(ui.value.conversationContext("A-thread"), {
+    contextNote: "newer typed note",
+    contextPaths: ["src/Main.java", "README.md"],
+  });
+  assert.equal(ui.value.contextDirty("A-thread"), true);
+  host.handlers.delete("conversation_context");
+  await ui.value.saveConversationContext("A", "A-thread");
+  await ui.flush();
+  assert.equal(ui.value.contextDirty("A-thread"), false);
+  assert.equal(
+    host.data.projects[0].conversations[0].contextNote,
+    "newer typed note",
+  );
+  assert.equal(host.data.projects[1].conversations[0].contextNote, "");
+});
+
+test("CAS refresh retains context and rename identity, then explicit retry uses the new revision", async (t) => {
+  const { host, ui } = await fixture(t);
+  const identity = host.data.projects[0].conversations[0];
+  identity.messages.push({
+    id: "earlier",
+    role: "user",
+    content: "Earlier request",
+    jobId: null,
+  });
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "local goal",
+    contextPaths: ["src/Main.java"],
+  });
+  ui.value.setConversationTitle("A-thread", "Local name");
+  ui.value.setProjectInstructions("project conventions");
+  host.commit();
+  await assert.rejects(ui.value.saveConversationContext("A", "A-thread"));
+  await ui.flush();
+  assert.equal(ui.value.snapshot.revision, host.data.revision);
+  assert.deepEqual(ui.value.conversationContext("A-thread"), {
+    contextNote: "local goal",
+    contextPaths: ["src/Main.java"],
+  });
+  assert.equal(ui.value.conversationTitle("A-thread"), "Local name");
+  assert.equal(ui.value.projectInstructions(), "project conventions");
+  await ui.value.saveConversationContext("A", "A-thread");
+  await ui.value.saveConversationTitle("A", "A-thread");
+  await ui.value.saveProjectInstructions("A");
+  await ui.flush();
+  assert.equal(identity.id, "A-thread");
+  assert.equal(identity.title, "Local name");
+  assert.deepEqual(identity.messages, [
+    { id: "earlier", role: "user", content: "Earlier request", jobId: null },
+  ]);
+  assert.equal(identity.activeJob, null);
+  assert.deepEqual(identity.contextPaths, ["src/Main.java"]);
+  assert.equal(ui.value.getLifecycleState().dirty, false);
+  ui.close();
+  ui.remount();
+  await ui.flush();
+  assert.deepEqual(ui.value.conversationContext("A-thread"), {
+    contextNote: "local goal",
+    contextPaths: ["src/Main.java"],
+  });
+  assert.equal(ui.value.conversationTitle("A-thread"), "Local name");
+  assert.equal(ui.value.projectInstructions(), "project conventions");
+});
+
+test("late rename and project-instruction saves cannot acknowledge newer typed metadata", async (t) => {
+  const { host, ui } = await fixture(t),
+    renamed = deferred(),
+    instructed = deferred();
+  ui.value.setConversationTitle("A-thread", "submitted name");
+  ui.value.setProjectInstructions("submitted conventions");
+  host.handlers.set("conversation_rename", async (args) => {
+    await renamed.promise;
+    host.data.projects[0].conversations[0].title = args.title;
+    return host.commit();
+  });
+  host.handlers.set("project_instructions", async (args) => {
+    await instructed.promise;
+    host.data.projects[0].instructions = args.instructions;
+    return host.commit();
+  });
+  const name = ui.value.saveConversationTitle("A", "A-thread"),
+    instructions = ui.value.saveProjectInstructions("A");
+  await ui.flush();
+  ui.value.setConversationTitle("A-thread", "newer name");
+  ui.value.setProjectInstructions("newer conventions");
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  renamed.resolve();
+  await name;
+  await ui.flush();
+  instructed.resolve();
+  await instructions;
+  await ui.flush();
+  assert.equal(ui.value.projectInstructions(), "");
+  ui.value.choose(ui.value.snapshot.projects[0]);
+  await ui.flush();
+  assert.equal(ui.value.conversationTitle("A-thread"), "newer name");
+  assert.equal(ui.value.projectInstructions(), "newer conventions");
+  assert.equal(ui.value.titleDirty("A-thread"), true);
+  assert.equal(ui.value.instructionsDirty(), true);
+});
+
+test("suspension persists context owned by hidden conversations and every project", async (t) => {
+  const { host, ui } = await fixture(t);
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "A goal",
+    contextPaths: ["src/Main.java"],
+  });
+  ui.value.setConversationTitle("A-thread", "A name");
+  ui.value.setProjectInstructions("A conventions");
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  ui.value.setConversationContext("B-thread", {
+    contextNote: "B goal",
+    contextPaths: [],
+  });
+  ui.value.setProjectInstructions("B conventions");
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+  assert.equal(await ui.value.prepareSuspend(), true);
+  assert.equal(host.data.projects[0].conversations[0].contextNote, "A goal");
+  assert.equal(host.data.projects[0].conversations[0].title, "A name");
+  assert.equal(host.data.projects[1].conversations[0].contextNote, "B goal");
+  assert.deepEqual(
+    host.data.projects.map((project) => project.instructions),
+    ["A conventions", "B conventions"],
+  );
+  assert.equal(ui.value.getLifecycleState().dirty, false);
+});
+
+test("Harness admission persists selected context first and rejects context typed during preparation", async (t) => {
+  const { host, ui } = await fixture(t);
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "captured goal",
+    contextPaths: ["src/Main.java"],
+  });
+  ui.value.setConversationTitle("A-thread", "captured name");
+  ui.value.setProjectInstructions("captured conventions");
+  let admitted = 0;
+  host.handlers.set("rh_code_run", async () => {
+    admitted++;
+    assert.equal(
+      host.data.projects[0].conversations[0].contextNote,
+      "captured goal",
+    );
+    assert.equal(host.data.projects[0].instructions, "captured conventions");
+    throw new Error("end isolated capture");
+  });
+  await ui.value.run("A-chat", "A-thread", "ask", "inspect");
+  assert.equal(admitted, 1);
+  const saved = deferred();
+  await openSource(ui, "source edit");
+  host.handlers.set("file_save", async (args) => {
+    await saved.promise;
+    host.files.set("A:src/Main.java", {
+      content: args.content,
+      sha256: "saved-source",
+    });
+    return host.commit();
+  });
+  const request = ui.value.run("A-chat", "A-thread", "ask", "inspect again");
+  await ui.flush();
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "typed while preparing",
+    contextPaths: [],
+  });
+  saved.resolve();
+  await request;
+  await ui.flush();
+  assert.equal(admitted, 1);
+  assert.equal(ui.value.contextDirty("A-thread"), true);
+  assert.match(ui.value.error, /Context changed while preparing/);
+});
+
+test("late metadata failure keeps its owner's draft without showing another project's error", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "retain A note",
+    contextPaths: [],
+  });
+  host.handlers.set("conversation_context", async () => saved.promise);
+  const request = ui.value.saveConversationContext("A", "A-thread");
+  await ui.flush();
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  saved.reject(new Error("A-only save failure"));
+  await assert.rejects(request, /A-only save failure/);
+  await ui.flush();
+  assert.equal(ui.value.projectId, "B");
+  assert.equal(ui.value.error, "");
+  assert.equal(ui.value.contextDirty("B-thread"), false);
+  ui.value.choose(ui.value.snapshot.projects[0]);
+  await ui.flush();
+  assert.equal(
+    ui.value.conversationContext("A-thread").contextNote,
+    "retain A note",
+  );
+  assert.equal(ui.value.contextDirty("A-thread"), true);
+  host.handlers.delete("conversation_context");
+});
+
+test("accepted context metadata drains after unmount without refilling a remounted controller", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "accepted A note",
+    contextPaths: ["src/Main.java"],
+  });
+  host.handlers.set("conversation_context", async (args) => {
+    await saved.promise;
+    Object.assign(host.data.projects[0].conversations[0], {
+      contextNote: args.contextNote,
+      contextPaths: args.contextPaths,
+    });
+    return host.commit();
+  });
+  const previous = ui.value,
+    request = previous.saveConversationContext("A", "A-thread");
+  await ui.flush();
+  ui.close();
+  ui.remount();
+  await ui.flush();
+  ui.value.setConversationContext("A-thread", {
+    contextNote: "new service draft",
+    contextPaths: [],
+  });
+  saved.resolve();
+  await request;
+  await ui.flush();
+  assert.equal(
+    ui.value.conversationContext("A-thread").contextNote,
+    "new service draft",
+  );
+  assert.equal(
+    host.data.projects[0].conversations[0].contextNote,
+    "accepted A note",
+  );
+  assert.equal(previous.getLifecycleState().busy, 0);
+  assert.equal(previous.conversationContext("A-thread").contextNote, "");
+  host.handlers.delete("conversation_context");
 });

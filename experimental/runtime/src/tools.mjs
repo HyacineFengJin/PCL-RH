@@ -2,6 +2,7 @@ import { check, RuntimeError, cloneJson, throwIfAborted } from './errors.mjs';
 
 export class ToolRegistry {
   #tools = new Map();
+  #resolvers = new Map();
   register(tool) {
     check(tool && tool.name?.length <= 80 && /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(tool.name), 'INVALID_TOOL', 'Tool needs a short namespaced name');
     check(!this.#tools.has(tool.name), 'DUPLICATE_TOOL', `Duplicate tool ${tool.name}`);
@@ -9,7 +10,32 @@ export class ToolRegistry {
     check(['read-only', 'idempotent', 'manual'].includes(tool.replaySafety), 'INVALID_TOOL', 'Declare tool replay safety');
     check(tool.projectReceipt === undefined || typeof tool.projectReceipt === 'function', 'INVALID_TOOL', 'Receipt projection must be a host function');
     check(tool.replayCompleted === undefined || (typeof tool.replayCompleted === 'boolean' && (!tool.replayCompleted || tool.replaySafety === 'read-only')), 'INVALID_TOOL', 'Only read-only tools may reconstruct completed results');
-    this.#tools.set(tool.name, Object.freeze({ ...tool })); return this;
+    // A plugin may retire while a consumer retains this descriptor. The guard
+    // revokes that old function too, rather than only removing a map entry.
+    const name = tool.name, execute = tool.execute;
+    const registered = Object.freeze({ ...tool, execute: (...args) => {
+      check(this.#tools.get(name) === registered, 'TOOL_UNAVAILABLE', `Tool ${name} registration retired`);
+      return execute.apply(registered, args);
+    } });
+    this.#tools.set(tool.name, registered); return this;
+  }
+  contribute(tool) {
+    this.register(tool);
+    const registered = this.#tools.get(tool.name);
+    return () => { if (this.#tools.get(tool.name) === registered) this.#tools.delete(tool.name); };
+  }
+  setScopeResolver(profile, resolve) {
+    check(typeof profile === 'string' && typeof resolve === 'function' && !this.#resolvers.has(profile),
+      'INVALID_TOOL_SCOPE', 'A trusted profile has one tool scope resolver');
+    this.#resolvers.set(profile, resolve);
+    return () => { if (this.#resolvers.get(profile) === resolve) this.#resolvers.delete(profile); };
+  }
+  resolveAllowed(job, fallback) {
+    const resolve = this.#resolvers.get(job.profile);
+    const names = resolve ? resolve(job) : fallback;
+    check(Array.isArray(names) && names.length <= 128 && new Set(names).size === names.length &&
+      names.every(name => typeof name === 'string'), 'INVALID_TOOL_SCOPE', 'Invalid host tool scope');
+    return [...names];
   }
   get(name, allowed) {
     check(allowed.includes(name), 'TOOL_DENIED', `Tool ${name} is not allowed in this profile`);

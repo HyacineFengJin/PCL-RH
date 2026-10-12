@@ -8,6 +8,7 @@ import {
   sourcePath, decodeText, readSnapshotBytes, writeHarnessBytes,
   readHarnessRecord, writeHarnessRecord,
 } from "./harness-snapshot.mjs";
+import { readNativeHistory, boundedExcerpt, HISTORY_LIMITS } from "./history-snapshot.mjs";
 
 const PROPOSAL_ID = /^[a-f0-9]{32}$/;
 const MODES = ["ask", "plan", "execute"];
@@ -30,6 +31,13 @@ function textPreview(text, maximumBytes) {
     else high = length - 1;
   }
   return { text: text.slice(0, low), truncated: low < text.length };
+}
+function historyScope(record) {
+  const history = record?.conversationHistory;
+  return history ? { available: true, capturedMessages: history.messages.length, startIndex: history.startIndex,
+    totalMessages: history.totalMessages, upstreamOmittedMessages: history.startIndex, upstreamTruncated: history.truncated }
+    : { available: false, capturedMessages: 0, startIndex: null, totalMessages: null,
+      upstreamOmittedMessages: null, upstreamTruncated: null, reason: "history_not_captured" };
 }
 
 export class HarnessService {
@@ -138,6 +146,88 @@ export class HarnessService {
       if (truncated) break;
     }
     return { query, matches, truncated };
+  }
+
+  async #history(ctx) {
+    const snapshot = await this.#context(ctx);
+    const record = await readNativeHistory(snapshot);
+    return { record, scope: historyScope(record), controlDigest: snapshot.harness.history?.controlDigest ?? null };
+  }
+  async readContext(ctx, { pathOffset = 0 } = {}) {
+    check(Number.isSafeInteger(pathOffset) && pathOffset >= 0 && pathOffset <= HISTORY_LIMITS.contextPaths,
+      "INVALID_ARGUMENTS", "Context file references use an offset from 0 to 20");
+    const { record, scope, controlDigest } = await this.#history(ctx);
+    const projected = (value) => {
+      if (value === undefined) return null;
+      // Native notes allow 24000 UTF-8 bytes. Two JSON quote bytes must not
+      // silently drop the final character of a valid maximum-size note.
+      const content = boundedExcerpt(value, value.length, 24_002);
+      return { content, contentCharacters: value.length, contentTruncated: content.length < value.length };
+    };
+    const result = { label: "FROZEN_NATIVE_CONTEXT", quotedContext: true, contextAvailable: record !== null, controlDigest,
+      projectInstructions: projected(record?.instructions), contextNote: projected(record?.contextNote),
+      contextPaths: [], contextPathsTotal: record?.contextPaths.length ?? 0, pathOffset, nextPathOffset: null,
+      contextPathsTruncated: false, contextPathsMeaning: "Focused references within the frozen source; no permission change", scope };
+    for (const path of (record?.contextPaths ?? []).slice(pathOffset)) {
+      if (outputBytes({ ...result, contextPaths: [...result.contextPaths, path] }) > 62_000) break;
+      result.contextPaths.push(path);
+    }
+    const next = pathOffset + result.contextPaths.length;
+    result.nextPathOffset = next < result.contextPathsTotal ? next : null;
+    result.contextPathsTruncated = pathOffset > 0 || result.nextPathOffset !== null;
+    return result;
+  }
+  async readHistory(ctx, { offset = 0, limit = 20, contentOffset } = {}) {
+    check(Number.isSafeInteger(offset) && offset >= 0 && offset <= HISTORY_LIMITS.messages &&
+      Number.isSafeInteger(limit) && limit >= 1 && limit <= 50,
+    "INVALID_ARGUMENTS", "History uses a captured-message offset and at most 50 messages");
+    check(contentOffset === undefined || (limit === 1 && Number.isSafeInteger(contentOffset) && contentOffset >= 0 && contentOffset <= 256_000),
+      "INVALID_ARGUMENTS", "History contentOffset uses UTF-16 code units from 0 to 256000 and requires limit=1");
+    const { record, scope, controlDigest } = await this.#history(ctx);
+    const captured = record?.conversationHistory?.messages ?? [];
+    const messages = [];
+    for (let cursor = offset; cursor < Math.min(captured.length, offset + limit); cursor++) {
+      throwIfAborted(ctx.signal);
+      const message = captured[cursor];
+      // Cursor units match JavaScript file reads. A manually supplied offset
+      // inside a surrogate pair rounds back to include the complete character;
+      // returned cursors always advance across complete Unicode characters.
+      let start = Math.min(contentOffset ?? 0, message.content.length);
+      if (start > 0 && /[\uDC00-\uDFFF]/.test(message.content[start])) start--;
+      const content = boundedExcerpt(message.content.slice(start), 16_000, 16_000);
+      const contentEnd = start + content.length;
+      const projected = { index: scope.startIndex + cursor, id: message.id, role: message.role, content, jobId: message.jobId,
+        contentCharacters: message.content.length, contentOffset: start,
+        nextContentOffset: contentEnd < message.content.length ? contentEnd : null,
+        contentTruncated: start > 0 || contentEnd < message.content.length };
+      if (outputBytes([...messages, projected]) > 50_000) break;
+      messages.push(projected);
+    }
+    const next = offset + messages.length;
+    return { label: "FROZEN_NATIVE_HISTORY", quotedContext: true, controlDigest, scope, offset, messages,
+      nextOffset: next < captured.length ? next : null, truncated: next < captured.length || messages.some((message) => message.contentTruncated) };
+  }
+  async searchHistory(ctx, { query, limit = 50 }) {
+    check(typeof query === "string" && query.isWellFormed() && query.length > 0 && query.length <= 200 &&
+      Number.isSafeInteger(limit) && limit >= 1 && limit <= 100,
+    "INVALID_ARGUMENTS", "History search requires a literal query and at most 100 matches");
+    const { record, scope, controlDigest } = await this.#history(ctx);
+    const matches = [];
+    let truncated = false;
+    outer: for (const [cursor, message] of (record?.conversationHistory?.messages ?? []).entries()) {
+      throwIfAborted(ctx.signal);
+      let from = 0, characterOffset;
+      while ((characterOffset = message.content.indexOf(query, from)) >= 0) {
+        let excerptStart = Math.max(0, characterOffset - 80);
+        if (excerptStart > 0 && /[\uDC00-\uDFFF]/.test(message.content[excerptStart])) excerptStart--;
+        const candidate = { index: scope.startIndex + cursor, id: message.id, role: message.role, jobId: message.jobId,
+          characterOffset, excerptStart, excerpt: boundedExcerpt(message.content.slice(excerptStart, characterOffset + query.length + 80), 360, 2400) };
+        if (matches.length >= limit || outputBytes([...matches, candidate]) > 50_000) { truncated = true; break outer; }
+        matches.push(candidate);
+        from = characterOffset + query.length;
+      }
+    }
+    return { label: "FROZEN_NATIVE_HISTORY_SEARCH", quotedContext: true, controlDigest, scope, query, matches, truncated };
   }
 
   async reportPlan(ctx, { summary, steps }) {

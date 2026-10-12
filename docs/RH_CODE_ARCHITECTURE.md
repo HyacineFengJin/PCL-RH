@@ -20,14 +20,18 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 | `code/agent-context.mjs` | 完整对话到有界模型上下文的投影 |
 | `code/agent-adapter.mjs` | Rust 快照到独立 Pi 任务的适配，先准备后启动 |
 | `code/harness-snapshot.mjs` | 冻结文本、私有清单、内容指纹及旧 Maker 锁的保留 |
+| `code/history-snapshot.mjs` | 私有对话历史、项目说明、记要和引用文件的不可变快照 |
+| `code/harness-tool-catalog.mjs` | 工具归属、精确准入清单、模式与注册退役 |
 | `code/harness-service.mjs` | 按需读取、检索、计划、不可变建议与宿主审阅投影 |
 | `experimental/runtime/src/harness-tools.mjs` | 通用工具声明、参数边界和紧凑读取回执 |
 | `code/source-ownership.mjs` | 旧 Maker 工作流的源码所有权协调 |
 | `apps/desktop/src-tauri/src/rh_code.rs` | 项目存储、修订检查、插件依赖、对话归属和原生源码快照 |
 | `rh_code/files.rs` | 有界读取、内容指纹、原子保存和空目录产物发布 |
 | `rh_code/harness.rs` | 原生快照绑定、受审阅建议应用、备份与中断恢复 |
+| `rh_code/context.rs` | 上下文字段边界、连续历史片段及原生传输预算 |
 | `rh_code/layout.rs` | 布局及组件状态校验、可移植预设投影 |
 | `experimental/host.mjs` | 既有 Pi 执行、预设、审阅、任务产物和兼容接口 |
+| `experimental/job-snapshot.mjs` | 同一次读取生成任务状态与结果，避免跨代完成回执 |
 
 表中缩写路径分别相对于 `apps/desktop/src/` 和 `apps/desktop/src-tauri/src/`。
 
@@ -51,7 +55,17 @@ Agent 准入先保存编辑缓冲，再由 Rust 捕获当前对话和源码。�
 
 `harness` profile 通过模式过滤工具。询问只读；规划增加计划回执；执行必须先完成计划回执才能提出建议。初始上下文有界，完整文本存于任务的 `workspace/source`，不可变清单和建议存于宿主私有 control 路径。读取工具只持久保存路径、指纹和范围等紧凑回执，重放同一操作时重新验证冻结内容并重建结果，避免把源码全文重复写入任务记录。
 
+项目说明与对话记要、引用和名称使用原生修订检查。控制器按所属项目/对话持有编辑草稿，回执只结算对应编辑代次；切换区域不会丢弃未保存内容。任务准入先保存当前对话元数据，新的未保存编辑会阻止本轮捕获。既有 schema 1 文件默认这些字段为空，读取不会重写旧文件。
+
+`conversationHistory` 是带绝对起始索引、消息 ID 和遗漏范围的连续后缀。原生层保持完整单条内容，在 1 MB、1024 条及最终 24 MiB stdio 预算内选取。宿主将其与说明、记要和引用共同保存在 `control/harness-history.json`，摘要输入只保存指纹与受限投影。`fitHarnessInput` 在附加工具清单后计算整个输入的 JSON/UTF-8 大小，仅收缩投影，不修改请求、权限、描述符或原始记录。
+
+历史读取和字面检索重新验证私有快照。`read_history` 的 `offset` 选择片段内的消息；长消息用 `limit: 1` 和返回的 `nextContentOffset` 继续读取，索引和消息身份保持原值。说明与记要按完整字段读取，引用路径过长时单独分页。模型输出与旧讨论均不能授权新工具或批准源码建议。
+
+工具声明位于共用清单的 `tools` 字段。宿主登记实现时匹配 owner、capability 和 modes，新任务捕获精确 `toolGrants`；调度器按捕获清单和当前注册过滤。退役移除注册并撤回保留的旧函数引用，旧清理回调不能移除新注册。没有工具清单的历史任务仅保留原有五种工具，不因升级取得新贡献。前端插件生命周期与 Node 工具登记各自管理资源，共用清单身份；社区声明型扩展不能借此装载可执行工具。
+
 对话与输出组件只显示受限的助手文本、工具状态和计划，不读取原始 provider state、推理或工具参数。完成的建议经私有 stdio 导出；渲染层只能提交审阅时的 proposal ID 和 digest，不能提交替换字节。Rust 再复核本机绑定、项目和对话归属及快照指纹，并在有备份的事务中发布文件。原生提交后宿主保存 applied 回执；两者之间的失败通过精确 digest 重试协调。
+
+任务读取的公开状态、修订、结果和工具活动来自同一次磁盘快照。不要为生成 summary 再读一次任务：任务可能在两次读取之间完成，导致前端收到「已完成」却仍持有旧的空结果，进而过早结算对话。
 
 当前 Linux 应用边界使用 FD 相对的 `openat2`、匿名暂存 inode、`renameat2` 与持久恢复日志。发布按文件原子完成，批次中断由日志恢复；外部修改或身份变化阻止自动恢复并保留备份。控制器将应用加入元数据修订队列，保留 I/O 期间新输入的编辑。原生准入拥有整个捕获或应用区间，包含 stdio 请求之间的时间，防止休眠或关闭过早释放宿主。
 

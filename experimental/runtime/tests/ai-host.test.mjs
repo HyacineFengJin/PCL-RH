@@ -13,14 +13,14 @@ const scratch = fileURLToPath(
   new URL("../../../work/ai-management-2026-10-07/fixtures/", import.meta.url),
 );
 const pause = () => new Promise((resolve) => setTimeout(resolve, 10));
-async function until(check) {
-  const deadline = Date.now() + 5000;
+async function until(check, label = "host check", timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const result = await check();
     if (result) return result;
     await pause();
   }
-  throw new Error("Offline host check timed out");
+  throw new Error(`Offline ${typeof label === "function" ? label() : label} timed out`);
 }
 function response(res) {
   const chunks = [
@@ -83,9 +83,9 @@ test(
       await new Promise((resolve) => server.close(resolve));
       await fs.rm(root, { recursive: true, force: true });
     });
-    async function rpc(operation, args = {}) {
+    async function rpc(operation, args = {}, timeoutMs = 5000) {
       child.stdin.write(JSON.stringify({ operation, args }) + "\n");
-      const reply = await until(() => replies.shift());
+      const reply = await until(() => replies.shift(), `${operation} reply`, timeoutMs);
       assert.equal(reply.ok, true, reply.error);
       return reply.result;
     }
@@ -111,6 +111,10 @@ test(
     });
     assert.equal(JSON.stringify(saved).includes(firstKey), false);
     assert.equal(saved.presets[0].limits.wallTimeMs, 0);
+    // Provider selection reads the pinned offline catalog. Finish cold SDK
+    // setup before testing the separately bounded transport and Stop behavior.
+    const catalog = await rpc("provider_catalog", {}, 10000);
+    assert.ok(Array.isArray(catalog.providers));
     const before = await rpc("status");
     assert.equal(before.liveAvailable, true);
     assert.equal(before.liveConfigured, false);
@@ -120,7 +124,25 @@ test(
       spec: {},
       prompt: "Offline check only",
     });
-    await until(() => requests.length === 1);
+    let firstStatus = "unknown";
+    let firstActivity = null;
+    const transportStarted = Date.now(), startupPhases = [];
+    await until(async () => {
+      if (requests.length === 1) return true;
+      const view = await rpc("job_read", { jobId: first.jobId });
+      firstStatus = view.summary.status;
+      if (["failed", "cancelled", "interrupted", "completed"].includes(firstStatus))
+        throw new Error(`Offline job ended before its first transport request (${firstStatus}): ${JSON.stringify(view.error ?? null)}`);
+      // This isolated fixture may remain running before transport entry. Keep
+      // only bounded host activity metadata in the timeout diagnosis.
+      const stored = JSON.parse(await fs.readFile(path.join(root, "jobs", first.jobId, "job.json"), "utf8"));
+      firstActivity = { activity: stored.providerState?.livePi?.activity ?? null,
+        modelTurns: stored.providerState?.livePi?.modelTurns ?? null, requests: stored.providerState?.livePi?.requests ?? null };
+      const phase = firstActivity.activity?.phase ?? "not_checkpointed";
+      if (startupPhases.at(-1)?.phase !== phase && startupPhases.length < 8)
+        startupPhases.push({ elapsedMs: Date.now() - transportStarted, phase });
+      return false;
+    }, () => `first transport request (last job status: ${firstStatus}, activity: ${JSON.stringify(firstActivity)}, startup phases: ${JSON.stringify(startupPhases)})`);
     assert.equal((await rpc("status")).liveConfigured, true);
     await rpc("provider_preset_save", {
       id: saved.selectedId,
@@ -136,8 +158,10 @@ test(
     });
     const finished = await until(async () => {
       const view = await rpc("job_read", { jobId: second.jobId });
+      if (["failed", "cancelled", "interrupted"].includes(view.summary.status))
+        throw new Error(`Offline second job ended before completion (${view.summary.status}): ${JSON.stringify(view.error ?? null)}`);
       return view.summary.status === "completed" && view;
-    });
+    }, "second job completion");
     assert.equal(finished.result.text, "Offline preset response.");
     // The SDK also reserves room for input in the model's context window.
     assert.ok(

@@ -155,7 +155,7 @@ fn excluded(name: &str) -> bool {
         ]
         .contains(&name)
 }
-fn source_path(value: &str) -> Result<(), String> {
+pub(super) fn source_path(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 512
         || value

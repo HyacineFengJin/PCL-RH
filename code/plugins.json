@@ -16,6 +16,23 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["conversation.history"],
+    "tools": [
+      {
+        "name": "harness.read_context",
+        "capability": "conversation.history",
+        "modes": ["ask", "plan", "execute"]
+      },
+      {
+        "name": "harness.read_history",
+        "capability": "conversation.history",
+        "modes": ["ask", "plan", "execute"]
+      },
+      {
+        "name": "harness.search_history",
+        "capability": "conversation.history",
+        "modes": ["ask", "plan", "execute"]
+      }
+    ],
     "views": ["chat", "threads"],
     "scope": "rh-code"
   },
@@ -37,6 +54,23 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["project.files.read"],
+    "tools": [
+      {
+        "name": "harness.list_files",
+        "capability": "project.files.read",
+        "modes": ["ask", "plan", "execute"]
+      },
+      {
+        "name": "harness.read_file",
+        "capability": "project.files.read",
+        "modes": ["ask", "plan", "execute"]
+      },
+      {
+        "name": "harness.search_files",
+        "capability": "project.files.read",
+        "modes": ["ask", "plan", "execute"]
+      }
+    ],
     "views": ["files"],
     "scope": "rh-code"
   },
@@ -77,6 +111,18 @@
     "required": false,
     "dependencies": ["rh.project"],
     "capabilities": ["project.review"],
+    "tools": [
+      {
+        "name": "harness.report_plan",
+        "capability": "project.review",
+        "modes": ["plan", "execute"]
+      },
+      {
+        "name": "harness.propose_changes",
+        "capability": "project.review",
+        "modes": ["execute"]
+      }
+    ],
     "views": ["changes"],
     "scope": "rh-code"
   },

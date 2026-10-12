@@ -19,6 +19,7 @@ const finalText = "The fixture proposal is ready for review.";
 const privateReasoning = "PRIVATE_REASONING_FIXTURE";
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 const toolNames = ["list_files", "read_file", "search_files", "report_plan", "propose_changes"];
+const exposedTools = [...toolNames, "read_context", "read_history", "search_history"];
 const pause = () => new Promise((resolve) => setTimeout(resolve, 15));
 
 async function until(check, label) {
@@ -143,6 +144,9 @@ function sourceFixture(large) {
     ],
   };
   const script = [
+    ["read_context", {}],
+    ["search_history", { query: "previous decision" }],
+    ["read_history", { offset: 0, limit: 2 }],
     ["list_files", {}],
     ["read_file", { path: "src/module.py", limit: 8000 }],
     ["search_files", { query: "initial", pathPrefix: "src/" }],
@@ -169,7 +173,7 @@ async function fixture(t, { large = false } = {}) {
       assert.equal(request.url, "/v1/chat/completions");
       assert.equal(body.model, "harness-fixture");
       assert.ok(body.max_tokens > 0);
-      assert.deepEqual(body.tools.map((tool) => tool.function.name).sort(), toolNames.map((name) => `harness__${name}`).sort());
+      assert.deepEqual(body.tools.map((tool) => tool.function.name).sort(), exposedTools.map((name) => `harness__${name}`).sort());
       const turn = requests.length, call = source.script[turn - 1];
       assert.ok(turn <= source.script.length + 1, "The provider made an unexpected extra model turn");
       const base = { id: `loopback-${turn}`, object: "chat.completion.chunk", created: 0, model: "harness-fixture" };
@@ -211,8 +215,13 @@ async function fixture(t, { large = false } = {}) {
     limits: { modelTurns: 0, toolCalls: 0, maximumOutputTokens: 0, wallTimeMs: 0, estimatedBudgetUsd: 0 },
   });
   const runArgs = {
-    project: { id: projectId, name: "Generic Python fixture" },
-    conversation: { id: conversationId, messages: [{ role: "assistant", content: "Preserve the captured source conventions." }] },
+    project: { id: projectId, name: "Generic Python fixture", instructions: "Use the existing Python conventions." },
+    conversation: { id: conversationId, contextNote: "Retain the selected greeting behavior.", contextPaths: ["src/module.py"],
+      messages: [{ role: "user", content: "A previous decision: preserve the public greeting API." }, { role: "assistant", content: "Preserve the captured source conventions." }] },
+    conversationHistory: { schemaVersion: 1, startIndex: 0, totalMessages: 2, truncated: false, messages: [
+      { id: "history-user", role: "user", content: "A previous decision: preserve the public greeting API.", jobId: null },
+      { id: "history-assistant", role: "assistant", content: "Preserve the captured source conventions.", jobId: null },
+    ] },
     mode: "execute", request: "Inspect the generic project and propose the reviewed changes.",
     sourceFiles: Object.entries(source.files).map(([path, content]) => ({ path, size: Buffer.byteLength(content), sha256: hash(content), data: Buffer.from(content).toString("base64") })),
     protectedPaths: ["settings/config.toml"],
@@ -226,7 +235,7 @@ async function fixture(t, { large = false } = {}) {
         const view = await rpc("job_read", { jobId });
         if (["failed", "cancelled"].includes(view.summary.status))
           assert.fail(`Harness stopped before its final stream: ${JSON.stringify(view.error)}`);
-        return held && view.output === finalText && view.activity.length === 5 && view.activity.every((operation) => operation.status === "completed") && view;
+        return held && view.output === finalText && view.activity.length === source.script.length && view.activity.every((operation) => operation.status === "completed") && view;
       }, "proposal publication and visible live output");
     },
     finish(reason) { assert.ok(held, "The final SDK stream was not reached"); held.finish(reason); },
@@ -246,7 +255,7 @@ test("private host admits a large generic snapshot, runs the real SDK and persis
   const requestBytes = Buffer.byteLength(JSON.stringify({ operation: "rh_code_run", args: f.runArgs }));
   assert.ok(requestBytes > 1_000_000 && requestBytes < 24 * 1024 * 1024);
   const { jobId, contextProjection } = await f.rpc("rh_code_run", f.runArgs);
-  assert.deepEqual(contextProjection, { retained: 1, omitted: 0, method: "recent-message projection" });
+  assert.deepEqual(contextProjection, { retained: 2, omitted: 0, method: "recent-message projection" });
   const queued = await f.rpc("job_read", { jobId });
   assert.equal(queued.summary.status, "queued");
   assert.equal(queued.summary.workflow, "harness");
@@ -275,12 +284,14 @@ test("private host admits a large generic snapshot, runs the real SDK and persis
   assert.equal(running.summary.status, "running");
   assert.equal(running.summary.artifactState, "draft_ready");
   assert.equal(running.result, null);
-  assert.deepEqual(running.activity.map((operation) => operation.name), toolNames.map((name) => `harness.${name}`));
+  assert.deepEqual(running.activity.map((operation) => operation.name), f.source.script.map(([name]) => `harness.${name}`));
   assert.equal(running.activity.find((operation) => operation.name === "harness.read_file").path, "src/module.py");
-  assert.deepEqual(running.activity.find((operation) => operation.name === "harness.report_plan").steps, f.source.script[3][1].steps);
+  assert.deepEqual(running.activity.find((operation) => operation.name === "harness.report_plan").steps, f.source.script.find(([name]) => name === "report_plan")[1].steps);
   assert.equal(JSON.stringify(running).includes(privateReasoning), false);
   assert.equal(JSON.stringify(running).includes("pcl-local-no-auth"), false);
-  assert.ok(f.requests[2].body.messages.some((message) => message.role === "tool" && message.content.includes(hash(f.source.files["src/module.py"])) && message.content.includes('return \\"initial\\"')));
+  assert.ok(f.requests.some(request => request.body.messages.some((message) => message.role === "tool" && message.content.includes(hash(f.source.files["src/module.py"])) && message.content.includes('return \\"initial\\"'))));
+  assert.ok(f.requests.some(request => request.body.messages.some(message => message.role === "tool" && message.content.includes("history-user") && message.content.includes("previous decision"))));
+  assert.ok(f.requests.some(request => request.body.messages.some(message => message.role === "tool" && message.content.includes("Use the existing Python conventions."))));
   assert.match(JSON.stringify(f.requests[0].body.messages), /Generic Python fixture/);
   assert.match(JSON.stringify(f.requests[0].body.messages), /Preserve the captured source conventions/);
   const reviews = await f.rpc("rh_code_harness_reviews", ownership(jobId));
@@ -305,13 +316,13 @@ test("private host admits a large generic snapshot, runs the real SDK and persis
   assert.equal(completed.summary.status, "completed", JSON.stringify(completed.error));
   assert.equal(completed.output, finalText);
   assert.equal(completed.result.text, finalText);
-  assert.equal(completed.result.toolCalls, 5);
-  assert.equal(completed.result.modelTurns, 6);
+  assert.equal(completed.result.toolCalls, f.source.script.length);
+  assert.equal(completed.result.modelTurns, f.source.script.length + 1);
   assert.equal(completed.result.approvalGranted, false);
   assert.equal(completed.result.buildValidated, false);
   assert.equal(completed.result.runtimeValidated, false);
   assert.equal(completed.summary.verificationState, "not_run");
-  assert.equal(f.requests.length, 6);
+  assert.equal(f.requests.length, f.source.script.length + 1);
   assert.deepEqual(f.providerErrors, []);
   for (const operation of ["rh_code_harness_export", "rh_code_harness_applied"])
     await assert.rejects(f.rpc(operation, { ...grant, expectedDigest: "0".repeat(64) }), /exact.*digest/);
@@ -339,8 +350,8 @@ test("private host admits a large generic snapshot, runs the real SDK and persis
   assert.equal(readReceipt.sha256, changed.expectedSha256);
   const eventPath = path.join(jobDirectory, "events.jsonl");
   const events = await fs.readFile(eventPath, "utf8");
-  assert.equal(events.match(/pi\.tool\.started/g)?.length, 5);
-  assert.equal(events.match(/pi\.tool\.completed/g)?.length, 5);
+  assert.equal(events.match(/pi\.tool\.started/g)?.length, f.source.script.length);
+  assert.equal(events.match(/pi\.tool\.completed/g)?.length, f.source.script.length);
   assert.equal(events.includes('return "initial"'), false);
   assert.equal(events.includes(privateReasoning), false);
 
@@ -358,7 +369,7 @@ test("private host admits a large generic snapshot, runs the real SDK and persis
   assert.deepEqual(await f.rpc("rh_code_harness_reviews", { jobId, projectId }), restored, "Project-level historical review lookup may omit the conversation");
   assert.equal((await f.rpc("job_read", { jobId })).summary.status, "completed");
   assert.equal((await fs.readFile(eventPath, "utf8")).match(/harness\.proposal\.applied/g)?.length, 1);
-  assert.equal(f.requests.length, 6, "Review recovery must not restart the model");
+  assert.equal(f.requests.length, f.source.script.length + 1, "Review recovery must not restart the model");
 });
 
 for (const status of ["cancelled", "failed"])
@@ -380,6 +391,6 @@ for (const status of ["cancelled", "failed"])
     await assert.rejects(f.rpc("rh_code_harness_export", grant), /Only a successfully completed job/);
     await assert.rejects(f.rpc("rh_code_harness_applied", grant), /Only a completed job/);
     assert.equal((await f.rpc("rh_code_harness_reviews", ownership(jobId))).proposals[0].status, "pending");
-    assert.equal(f.requests.length, 6);
+    assert.equal(f.requests.length, f.source.script.length + 1);
     assert.deepEqual(f.providerErrors, []);
   });

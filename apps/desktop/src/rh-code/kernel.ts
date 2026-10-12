@@ -85,6 +85,24 @@ function validate(plugin: ProductPlugin) {
     m.capabilities.some((v) => typeof v !== "string")
   )
     throw new Error("Invalid manifest capabilities");
+  if (m.tools !== undefined) {
+    if (!Array.isArray(m.tools)) throw new Error("Invalid tool declarations");
+    ids(
+      m.tools.map((tool) => tool?.name),
+      "tool names",
+    );
+    for (const tool of m.tools)
+      if (
+        tool.name.length > 80 ||
+        !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(tool.name) ||
+        !m.capabilities.includes(tool.capability) ||
+        !Array.isArray(tool.modes) ||
+        !tool.modes.length ||
+        new Set(tool.modes).size !== tool.modes.length ||
+        tool.modes.some((mode) => !["ask", "plan", "execute"].includes(mode))
+      )
+        throw new Error(`Invalid tool scope: ${tool.name}`);
+  }
   for (const [kind, declared, contributions] of [
     ["view", m.views, plugin.views ?? []],
     ["command", m.commands ?? [], plugin.commands ?? []],

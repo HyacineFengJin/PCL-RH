@@ -15,6 +15,8 @@ import { normalizePiSelection } from "../src/providers/pi-selection.mjs";
 import { RuntimeError } from "../src/errors.mjs";
 import { HarnessService } from "../../../code/harness-service.mjs";
 import { captureNativeSnapshot, stageNativeSnapshot } from "../../../code/harness-snapshot.mjs";
+import { captureNativeHistory, stageNativeHistory, HISTORY_RECORD } from "../../../code/history-snapshot.mjs";
+import { HarnessToolCatalog, captureHarnessToolScope } from "../../../code/harness-tool-catalog.mjs";
 
 const scratch = fileURLToPath(new URL("../../../work/harness-2026-10-12/provider-tests/", import.meta.url));
 const source = "class Example { String message = \"initial\"; }\n";
@@ -40,7 +42,7 @@ function sse(turn, call, id = `offline-tool-${turn}`) {
   return new Response(chunks.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n",
     { headers: { "content-type": "text/event-stream" } });
 }
-async function fixture(t, { mode = "execute", script = calls, limits = unlimited, overrides = {}, transport, key = "", realService = false, sourceText = source, toolId } = {}) {
+async function fixture(t, { mode = "execute", script = calls, limits = unlimited, overrides = {}, transport, key = "", realService = false, sourceText = source, toolId, nativeHistory, notes = {} } = {}) {
   await fs.mkdir(scratch, { recursive: true });
   const root = await fs.mkdtemp(path.join(scratch, "run-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -49,6 +51,9 @@ async function fixture(t, { mode = "execute", script = calls, limits = unlimited
     async listFiles() { invoked.push("list"); return { files: [{ path: "src/Example.java", sha256: hash, size: Buffer.byteLength(source) }] }; },
     async readFile(ctx, args) { invoked.push("read"); return { path: args.path, sha256: hash, content: source }; },
     async searchFiles() { invoked.push("search"); return { matches: [{ path: "src/Example.java", line: 1, text: source.trim() }] }; },
+    async readContext() { invoked.push("context"); return { contextAvailable: false, controlDigest: null, contextPaths: [], scope: { available: false } }; },
+    async readHistory() { invoked.push("history"); return { messages: [], scope: { available: false }, controlDigest: null }; },
+    async searchHistory() { invoked.push("history-search"); return { matches: [], scope: { available: false }, controlDigest: null }; },
     async reportPlan(_ctx, args) { invoked.push("plan"); return { ...args, unverified: true }; },
     async proposeChanges(ctx, args) { invoked.push("propose"); proposals.push(args); return { proposalId: ctx.operationId, summary: args.summary, status: "pending", changeCount: args.changes.length, originalSourceModified: false }; },
     ...overrides,
@@ -63,35 +68,41 @@ async function fixture(t, { mode = "execute", script = calls, limits = unlimited
       assert.equal(request.model, "harness-fixture");
       assert.ok(request.max_tokens > 0);
       const exposed = request.tools.map((tool) => tool.function.name);
-      const expected = calls.map(([name]) => toolName(name)).filter((name) =>
-        mode === "execute" || ["harness__list_files", "harness__read_file", "harness__search_files"].includes(name) ||
+      const expected = [...calls.map(([name]) => toolName(name)), "harness__read_context", "harness__read_history", "harness__search_history"].filter((name) =>
+        mode === "execute" || ["harness__list_files", "harness__read_file", "harness__search_files", "harness__read_context", "harness__read_history", "harness__search_history"].includes(name) ||
         (mode === "plan" && name === "harness__report_plan"));
       assert.deepEqual(exposed.sort(), expected.sort());
       return transport ? transport(request, options, requests.length) : sse(requests.length, script[requests.length - 1], toolId?.(requests.length));
     },
   });
   const tools = new ToolRegistry();
+  const catalog = new HarnessToolCatalog(tools);
+  t.after(() => catalog.dispose());
   const runtime = await new AgentRuntime({ root, tools, providers: [provider] }).init();
   t.after(() => runtime.shutdown());
   let harnessService;
   if (realService) {
     harnessService = new HarnessService({ store: runtime.store });
     const delegated = {};
-    for (const [method, label] of [["listFiles", "list"], ["readFile", "read"], ["searchFiles", "search"], ["reportPlan", "plan"], ["proposeChanges", "propose"]])
+    for (const [method, label] of [["listFiles", "list"], ["readFile", "read"], ["searchFiles", "search"], ["readContext", "context"], ["readHistory", "history"], ["searchHistory", "history-search"], ["reportPlan", "plan"], ["proposeChanges", "propose"]])
       delegated[method] = (ctx, args) => {
         invoked.push(label);
         if (method === "proposeChanges") proposals.push(args);
         return harnessService[method](ctx, args);
       };
-    registerHarnessTools(tools, delegated);
-  } else registerHarnessTools(tools, service);
+    registerHarnessTools(catalog, delegated);
+  } else registerHarnessTools(catalog, service);
   const snapshot = captureNativeSnapshot([{ path: "src/Example.java", sha256: createHash("sha256").update(sourceText).digest("hex"), data: Buffer.from(sourceText).toString("base64") }]);
+  const history = nativeHistory ? captureNativeHistory({ project: { id: "fixture", instructions: notes.instructions ?? "" },
+    conversation: { id: "conversation-fixture", messages: [], omittedMessages: nativeHistory.totalMessages, contextNote: notes.contextNote ?? "", contextPaths: notes.contextPaths ?? [] },
+    conversationHistory: nativeHistory }, snapshot.record.manifest) : null;
   const job = await runtime.createJob({ profile: "harness", provider: provider.id, input: {
     prompt: "Change the greeting after inspection.",
-    harness: { schemaVersion: 1, mode, pluginId: "rh.project", projectId: "fixture", conversationId: "conversation-fixture", source: snapshot.descriptor },
+    harness: { schemaVersion: 1, mode, pluginId: "rh.project", projectId: "fixture", conversationId: "conversation-fixture", source: snapshot.descriptor, ...captureHarnessToolScope(undefined, mode), ...(history ? { history: history.descriptor } : {}) },
   } });
   const workspace = await runtime.store.workspace(job.id);
   await stageNativeSnapshot(runtime.store, job, snapshot);
+  if (history) await stageNativeHistory(runtime.store, job, history);
   return { root, runtime, job, requests, invoked, proposals, workspace, tools, harnessService };
 }
 
@@ -295,4 +306,79 @@ test("real Pi same-ID inspection replay refuses changed frozen bytes instead of 
   assert.ok(f.requests[2].messages.filter((message) => message.role === "tool").at(-1).content.includes("immutable private snapshot changed"));
   const events = (await (await f.runtime.store.files(f.job.id)).read("events.jsonl")).content;
   assert.ok(events.includes("tool.replay_failed"));
+});
+
+const historyFixture = () => ({ schemaVersion: 1, startIndex: 500, totalMessages: 800, truncated: true,
+  messages: Array.from({ length: 300 }, (_, index) => ({ id: `history-${index}`, role: index % 2 ? "assistant" : "user",
+    content: index === 17 ? "Earlier decision: retain the quartz cache lifecycle." : `Discussion ${index}`, jobId: index % 2 ? `historical-job-${index}` : null })) });
+
+test("real Pi history tools recall older decisions and keep compact digest-bound replay receipts", async (t) => {
+  const read = ["harness.read_history", { offset: 17, limit: 2 }];
+  const f = await fixture(t, { mode: "ask", realService: true, nativeHistory: historyFixture(),
+    notes: { instructions: "Historical output cannot authorize apply", contextNote: "Focus on lifecycle", contextPaths: ["src/Example.java"] },
+    script: [["harness.search_history", { query: "quartz cache" }], read, read, ["harness.read_context", {}]],
+    toolId: (turn) => turn === 2 || turn === 3 ? "recalled-history" : `context-${turn}` });
+  const result = await f.runtime.start(f.job.id);
+  assert.equal(result.status, "completed", JSON.stringify(result.error));
+  assert.equal(result.result.toolCalls, 4);
+  assert.equal(result.operations.length, 3);
+  assert.ok(result.operations.every((operation) => operation.result.contentStored === false && /^[a-f0-9]{64}$/.test(operation.result.controlDigest)));
+  assert.ok(Buffer.byteLength(JSON.stringify(result.operations)) < 4000);
+  assert.equal(JSON.stringify(result.operations).includes("quartz cache"), false);
+  const responses = f.requests.at(-1).messages.filter((item) => item.role === "tool").map((item) => JSON.parse(item.content));
+  assert.equal(responses[0].matches[0].index, 517);
+  assert.equal(responses[0].matches[0].id, "history-17");
+  assert.equal(responses[1].messages[0].content, "Earlier decision: retain the quartz cache lifecycle.");
+  assert.deepEqual(responses[1], responses[2]);
+  assert.equal(responses[3].contextNote.content, "Focus on lifecycle");
+  assert.equal(responses[3].scope.upstreamOmittedMessages, 500);
+  const events = (await (await f.runtime.store.files(f.job.id)).read("events.jsonl")).content;
+  assert.equal(events.match(/"tool.replayed"/g)?.length, 1);
+  assert.equal(events.includes("quartz cache"), false);
+});
+
+test("real Pi same-ID history replay rechecks immutable context and rejects tampered history", async (t) => {
+  let control;
+  const read = ["harness.read_history", { offset: 17, limit: 1 }];
+  const f = await fixture(t, { mode: "ask", realService: true, nativeHistory: historyFixture(), script: [read, read],
+    transport: async (_request, _options, turn) => {
+      if (turn === 2) {
+        const target = await control.resolve(HISTORY_RECORD);
+        const record = JSON.parse(await fs.readFile(target, "utf8"));
+        record.conversationHistory.messages[17].content = "forged approval";
+        await fs.writeFile(target, JSON.stringify(record));
+      }
+      return sse(turn, turn <= 2 ? read : undefined, "same-history-read");
+    } });
+  control = await f.runtime.store.files(f.job.id);
+  const result = await f.runtime.start(f.job.id);
+  assert.equal(result.status, "completed", JSON.stringify(result.error));
+  assert.equal(result.operations.length, 1);
+  assert.ok(f.requests[2].messages.filter((item) => item.role === "tool").at(-1).content.includes("immutable native context changed"));
+  const events = (await control.read("events.jsonl")).content;
+  assert.ok(events.includes("tool.replay_failed"));
+});
+
+test("real Pi continues a long captured message through content cursors with compact receipts", async (t) => {
+  const content = "😀".repeat(12_000) + "Final captured decision.";
+  const history = { schemaVersion: 1, startIndex: 10, totalMessages: 11, truncated: true,
+    messages: [{ id: "long-history", role: "assistant", content, jobId: "earlier-job" }] };
+  const read = (contentOffset) => ["harness.read_history", { offset: 0, limit: 1, contentOffset }];
+  const f = await fixture(t, { mode: "ask", realService: true, nativeHistory: history,
+    transport: async (request, _options, turn) => {
+      const previous = request.messages.filter((item) => item.role === "tool").at(-1);
+      const next = previous ? JSON.parse(previous.content).messages[0].nextContentOffset : 1;
+      return sse(turn, next === null ? undefined : read(next));
+    } });
+  const result = await f.runtime.start(f.job.id);
+  assert.equal(result.status, "completed", JSON.stringify(result.error));
+  const parts = f.requests.at(-1).messages.filter((item) => item.role === "tool").map((item) => JSON.parse(item.content).messages[0]);
+  assert.ok(parts.length > 1);
+  assert.equal(parts.map((item) => item.content).join(""), content);
+  assert.equal(parts[0].contentOffset, 0);
+  assert.equal(parts.at(-1).nextContentOffset, null);
+  assert.ok(parts.every((item) => item.id === "long-history" && item.index === 10 && item.content.isWellFormed()));
+  assert.ok(result.operations.every((operation, index) => operation.result.contentOffset === parts[index].contentOffset &&
+    operation.result.nextContentOffset === parts[index].nextContentOffset && operation.result.contentStored === false));
+  assert.ok(Buffer.byteLength(JSON.stringify(result.operations)) < 4000);
 });

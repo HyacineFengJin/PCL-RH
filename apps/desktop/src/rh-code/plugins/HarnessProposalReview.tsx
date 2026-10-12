@@ -30,7 +30,7 @@ export function HarnessProposalReview({ job }: { job: JobView }) {
   useEffect(() => {
     let alive = true;
     setError("");
-    if (c.native)
+    if (c.native && !c.snapshot?.disabledPlugins.includes("rh.changes"))
       void c
         .readHarnessProposals(jobId)
         .then((value) => {
@@ -42,10 +42,22 @@ export function HarnessProposalReview({ job }: { job: JobView }) {
     return () => {
       alive = false;
     };
-  }, [c.api, c.native, scope, job.summary.revision, retry]);
+  }, [
+    c.api,
+    c.native,
+    scope,
+    job.summary.revision,
+    retry,
+    c.snapshot?.disabledPlugins.includes("rh.changes"),
+  ]);
   const proposals = data?.scope === scope ? data.value.proposals : [];
   async function apply(id: string, digest: string) {
-    if (applying) return;
+    if (
+      applying ||
+      c.snapshot?.disabledPlugins.includes("rh.source") ||
+      c.snapshot?.disabledPlugins.includes("rh.changes")
+    )
+      return;
     const ownedScope = scope;
     setApplying(id);
     setError("");
@@ -58,7 +70,11 @@ export function HarnessProposalReview({ job }: { job: JobView }) {
       if (current.current === ownedScope) setApplying("");
     }
   }
-  if (!proposals.length && !error) return null;
+  if (
+    c.snapshot?.disabledPlugins.includes("rh.changes") ||
+    (!proposals.length && !error)
+  )
+    return null;
   return (
     <section
       className="rc-harness-review"
@@ -181,6 +197,7 @@ export function HarnessProposalReview({ job }: { job: JobView }) {
                 className="rc-button orange"
                 disabled={
                   !c.native ||
+                  c.snapshot?.disabledPlugins.includes("rh.source") ||
                   !!c.busy ||
                   !!applying ||
                   job.summary.status !== "completed" ||

@@ -29,6 +29,14 @@ export function assemblePlugins(
         Object.freeze(values);
         manifest[key] = values;
       }
+    if (Array.isArray(source.tools)) {
+      manifest.tools = source.tools.map((tool) => {
+        const modes = [...tool.modes];
+        Object.freeze(modes);
+        return Object.freeze({ ...tool, modes });
+      });
+      Object.freeze(manifest.tools);
+    }
     Object.freeze(manifest);
     // The array form supports already imported entries supplied by tests/hosts.
     // Production always supplies lazy module loaders.

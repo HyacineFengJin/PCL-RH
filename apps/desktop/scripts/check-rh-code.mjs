@@ -368,6 +368,51 @@ try {
   assert.equal(dynamic.statuses.has("unlisted"), false);
   await dynamic.dispose();
 
+  // Node tool scope declarations share the bundled manifest. Nested mode arrays
+  // must not remain mutable through a component's copy of that manifest.
+  const toolSource = manifest("tool-owner", [], {
+    capabilities: ["project.files.read"],
+    tools: [
+      {
+        name: "files.inspect",
+        capability: "project.files.read",
+        modes: ["ask"],
+      },
+    ],
+  });
+  const frozenTools = assemblePlugins(
+    [toolSource],
+    [{ id: "tool-owner", create: (manifest) => ({ manifest }) }],
+  );
+  assert.throws(
+    () => frozenTools[0].manifest.tools[0].modes.push("execute"),
+    TypeError,
+  );
+  assert.throws(() => {
+    frozenTools[0].manifest.tools[0].capability = "project.files.write";
+  }, TypeError);
+  toolSource.tools[0].modes.push("execute");
+  assert.deepEqual(frozenTools[0].manifest.tools[0].modes, ["ask"]);
+  const toolKernel = new Kernel([
+    ...frozenTools,
+    {
+      manifest: manifest("invalid-tool", [], {
+        capabilities: ["project.files.read"],
+        tools: [
+          {
+            name: "files.write",
+            capability: "project.files.write",
+            modes: ["execute"],
+          },
+        ],
+      }),
+    },
+  ]);
+  await toolKernel.configure([]);
+  assert.equal(toolKernel.statuses.get("tool-owner").state, "active");
+  assert.equal(toolKernel.statuses.get("invalid-tool").state, "failed");
+  await toolKernel.dispose();
+
   // The production agent entry explicitly fails without its runtime handlers;
   // supplied handlers remain declared commands with normal lifecycle ownership.
   const agentManifest = manifest("rh.agent", [], {

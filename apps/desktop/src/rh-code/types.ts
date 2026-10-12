@@ -34,7 +34,13 @@ export type Conversation = {
   mode: Mode;
   messages: Message[];
   activeJob: string | null;
+  contextNote: string;
+  contextPaths: string[];
 };
+export type ConversationContext = Pick<
+  Conversation,
+  "contextNote" | "contextPaths"
+>;
 export type Target = { minecraft: string; loaders: string[] };
 export type Project = {
   id: string;
@@ -44,6 +50,7 @@ export type Project = {
   targets: Target[];
   conversations: Conversation[];
   layout: Layout | null;
+  instructions: string;
 };
 export type PluginScope = "launcher" | "rh-code" | "both";
 /** Host surfaces that are currently alive; `both` is a manifest lifetime. */
@@ -60,6 +67,8 @@ export type Manifest = {
   views: ViewId[];
   commands?: string[];
   layouts?: string[];
+  /** Native-captured grants are resolved by the trusted Node tool catalog. */
+  tools?: { name: string; capability: string; modes: Mode[] }[];
 };
 export type LayoutPreset = { id: string; name: string; layout: Layout };
 export type Snapshot = {

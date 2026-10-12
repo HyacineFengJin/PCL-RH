@@ -20,6 +20,7 @@ import {
 import { HarnessProposalReview } from "./HarnessProposalReview";
 import { JobActivity } from "./JobActivity";
 import { useProjectJobs } from "./useProjectJobs";
+import { ConversationContext, ConversationName } from "./ConversationContext";
 
 function RuntimeNotice() {
   const c = useCode();
@@ -188,6 +189,7 @@ export function Chat({ area }: { area: Area }) {
         >
           <Plus size={15} />
         </button>
+        <ConversationName key={c.projectId + ":" + t.id} conversation={t} />
       </div>
       <RuntimeNotice />
       <div
@@ -232,12 +234,13 @@ export function Chat({ area }: { area: Area }) {
         {t.activeJob && (
           <JobActivity job={active} jobId={t.activeJob} onStop={stop} />
         )}
-        {latest?.summary.workflow === "harness" && (
-          <HarnessProposalReview
-            key={c.projectId + ":" + latest.summary.jobId}
-            job={latest}
-          />
-        )}
+        {latest?.summary.workflow === "harness" &&
+          !c.snapshot?.disabledPlugins.includes("rh.changes") && (
+            <HarnessProposalReview
+              key={c.projectId + ":" + latest.summary.jobId}
+              job={latest}
+            />
+          )}
         {history.error && (
           <p className="rc-harness-error" role="alert">
             {history.error}
@@ -254,6 +257,7 @@ export function Chat({ area }: { area: Area }) {
             {p!.targets[0]?.minecraft} · {p!.targets[0]?.loaders.join(" + ")}
           </span>
         </div>
+        <ConversationContext key={c.projectId + ":" + t.id} conversation={t} />
         <textarea
           aria-label={label("对话草稿", "Conversation draft") + " · " + t.title}
           placeholder={label("继续这一轮…", "Continue this conversation…")}
