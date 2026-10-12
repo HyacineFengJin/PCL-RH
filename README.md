@@ -29,7 +29,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 - Microsoft 正版登录、系统密钥环保存登录、自动获取头像和当前披风。[账号说明](docs/AUTHENTICATION.md)。
 - 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
-- **RH Code**：可拆分与调整的工作区、项目内多对话、文件目录树和源码编辑、版本与加载器目标、改动审阅及任务输出。内置模块采用 Cordis 插件生命周期，社区插件使用声明与权限管理。[使用与范围](docs/RH_CODE.md)。
+- **RH Code**：可调整的项目工作区、多 AI 对话、源码编辑，以及通用项目 Harness 的文件检索、计划、实时输出和改动审阅。确认后的建议可应用到原项目，带指纹检查、备份与中断恢复。内置模块采用 Cordis 插件生命周期。[使用与范围](docs/RH_CODE.md)。
 - 共享下载并发与速度限制、代理与 DoH、日志导出清理及应用入口恢复。
 - 项目发行检查、校验下载、便携更新与回退，以及独立游戏监控。
 - 可分别开启 Minecraft 正式版与快照更新提醒，按官方发布时间判断新版本并保存已读记录。
@@ -96,7 +96,7 @@ Modrinth mods, resource packs and shaders can be installed with required depende
 
 Microsoft sign-in supports remembered accounts through the system credential service, with automatic avatar and current cape retrieval. See [account setup](docs/AUTHENTICATION.md).
 
-RH Code is the project workspace: configurable split areas, multiple AI conversations per project, source editing, loader/version targets, review and task output. Trusted built-in modules use Cordis; community extensions remain declarative and permission-controlled. The current Pi adapter generates Fabric 1.21.1 Maker projects; generic multi-loader generation, project builds and game tests are not connected yet. See [RH Code](docs/RH_CODE.md).
+RH Code provides configurable workspace areas, multiple AI conversations per project, source editing, and a generic project Harness. Its tools inspect frozen text files, search, record plans and propose changes for review. Explicitly approved changes can be applied to the original project with hash checks, backups and interruption recovery. Trusted built-in modules use Cordis; community extensions remain declarative and permission-controlled. Project builds, shell execution and game tests are not connected yet. See [RH Code](docs/RH_CODE.md).
 
 ## 致谢
 

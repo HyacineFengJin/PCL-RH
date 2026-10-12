@@ -86,7 +86,7 @@ export type ExtensionCard = {
 export type JobSummary = {
   jobId: string;
   revision: number;
-  workflow: "maker" | "porter";
+  workflow: "maker" | "porter" | "harness";
   status: string;
   mode: "template" | "live";
   updatedAt: string;
@@ -102,6 +102,7 @@ export type JobView = {
   summary: JobSummary;
   mode: string;
   result: unknown;
+  output?: string;
   activity?: import("./MakerAgentState").MakerActivity[];
   error?: { message: string };
   artifacts: Artifact[];

@@ -6,9 +6,13 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("pcl-rh-code-{}", id()));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../work/harness-2026-10-12/native/store-fixtures")
+            .join(id());
         let folder = root.join("source");
         fs::create_dir_all(&folder).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let folder = fs::canonicalize(folder).unwrap();
         let store = Store::new(&root);
         Self {
             root,
@@ -171,8 +175,13 @@ fn rh_code_completed_job_is_idempotent_and_cannot_clear_another_job() {
 }
 #[test]
 fn rh_code_native_context_is_owned_and_includes_exact_source() {
+    use base64::Engine;
     let f = Fixture::new();
     fs::write(f.folder.join("Main.java"), "source").unwrap();
+    fs::write(f.folder.join("binary.dat"), [0xff]).unwrap();
+    fs::write(f.folder.join(".private"), "private").unwrap();
+    fs::create_dir(f.folder.join("node_modules")).unwrap();
+    fs::write(f.folder.join("node_modules/dependency.js"), "dependency").unwrap();
     let project = f.project();
     let state = f.write(
         "conversation_create",
@@ -180,9 +189,194 @@ fn rh_code_native_context_is_owned_and_includes_exact_source() {
     );
     let id = state["projects"][0]["conversations"][0]["id"].clone();
     let context=f.store.call("agent_context",json!({"projectId":project,"conversationId":id,"request":"plan","mode":"plan","expectedRevision":state["revision"]})).unwrap();
-    assert_eq!(context["source"]["Main.java"], "source");
+    assert_eq!(context["sourceFiles"].as_array().unwrap().len(), 1);
+    assert_eq!(context["sourceFiles"][0]["path"], "Main.java");
     assert_eq!(context["sourceFiles"][0]["sha256"], hash(b"source"));
+    assert_eq!(context["sourceFiles"][0]["size"], 6);
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(context["sourceFiles"][0]["data"].as_str().unwrap())
+            .unwrap(),
+        b"source"
+    );
+    assert_eq!(
+        context["sourceManifest"],
+        json!([{"path":"Main.java","sha256":hash(b"source"),"size":6}])
+    );
+    assert_eq!(
+        context["sourceFingerprint"],
+        hash(&serde_json::to_vec(&context["sourceManifest"]).unwrap())
+    );
+    assert_eq!(
+        context["sourceOmissions"],
+        json!([{"path":"binary.dat","reason":"notText"}])
+    );
+    assert!(context["rootIdentity"]["device"].is_u64());
+    assert!(context["rootIdentity"]["inode"].is_u64());
+    assert!(context.get("source").is_none());
+    assert!(context["project"].get("folder").is_none());
     assert!(f.store.call("agent_context",json!({"projectId":project,"conversationId":"foreign","request":"plan","mode":"plan","expectedRevision":state["revision"]})).is_err());
+}
+
+#[test]
+fn rh_code_harness_store_bridge_binds_native_source_and_gates_reviewed_application() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let f = Fixture::new();
+    fs::write(f.folder.join("Main.java"), "frozen source").unwrap();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Owner"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let captured = f.store.call("agent_context", json!({"projectId":project,"conversationId":conversation,"request":"Change Main.java","mode":"execute","expectedRevision":state["revision"]})).unwrap();
+    let job = "harness-owned-job";
+    let proposal_id = "b".repeat(32);
+    let digest = "c".repeat(64);
+    let approval = || json!({"projectId":project,"jobId":job,"proposalId":proposal_id,"expectedDigest":digest,"expectedRevision":f.snapshot()["revision"]});
+    // This synthetic receipt is passed only through the private host bridge.
+    // The renderer dispatcher below receives no authority from matching bytes.
+    let export = json!({"jobId":job,"proposalId":proposal_id,"digest":digest,"projectId":project,"conversationId":conversation,
+        "sourceFingerprint":captured["sourceFingerprint"],"files":[{"path":"Main.java","expectedSha256":hash(b"frozen source"),"data":STANDARD.encode(b"reviewed change"),"delete":false}]});
+    let public_bind = json!({"projectId":project,"conversationId":conversation,"jobId":job,"sourceFiles":captured["sourceFiles"],"rootIdentity":captured["rootIdentity"]});
+    assert!(f
+        .store
+        .call("harness_bind", public_bind)
+        .unwrap_err()
+        .contains("captured native provenance"));
+    let mut foreign_context = captured.clone();
+    foreign_context["conversation"]["id"] = json!("foreign-conversation");
+    assert!(f
+        .store
+        .bind_harness(foreign_context, "foreign-job")
+        .is_err());
+    f.store.bind_harness(captured.clone(), job).unwrap();
+
+    // A bound native job still needs a persisted conversation membership.
+    assert!(f
+        .store
+        .apply_harness(approval(), export.clone())
+        .unwrap_err()
+        .contains("does not belong"));
+    f.write("conversation_append", json!({"projectId":project,"conversationId":conversation,"role":"user","content":"Change Main.java","jobId":job,"activeJob":job,"mode":"execute"}));
+    assert!(f
+        .store
+        .bind_harness(captured, "other-job")
+        .unwrap_err()
+        .contains("idle conversation"));
+    assert!(f
+        .store
+        .apply_harness(approval(), export.clone())
+        .unwrap_err()
+        .contains("finish"));
+    f.write("conversation_complete", json!({"projectId":project,"conversationId":conversation,"role":"assistant","content":"Review ready","jobId":job,"activeJob":null}));
+    assert!(f
+        .store
+        .call("harness_apply", approval())
+        .unwrap_err()
+        .contains("verified private host export"));
+
+    let stale = approval();
+    f.write("conversation_draft", json!({"projectId":project,"conversationId":conversation,"draft":"Changes the document revision"}));
+    assert!(f
+        .store
+        .apply_harness(stale, export.clone())
+        .unwrap_err()
+        .contains("refresh"));
+    for key in [
+        "jobId",
+        "conversationId",
+        "projectId",
+        "sourceFingerprint",
+        "digest",
+    ] {
+        let mut foreign = export.clone();
+        foreign[key] = json!("foreign");
+        assert!(f.store.apply_harness(approval(), foreign).is_err(), "{key}");
+    }
+    let mut foreign_approval = approval();
+    foreign_approval["jobId"] = json!("unowned-job");
+    assert!(f
+        .store
+        .apply_harness(foreign_approval, export.clone())
+        .unwrap_err()
+        .contains("does not belong"));
+
+    // Even a forged history entry in another project cannot redirect the
+    // original native binding or its verified host proposal.
+    let other_folder = f.root.join("other-source");
+    fs::create_dir(&other_folder).unwrap();
+    fs::write(other_folder.join("Main.java"), "other project").unwrap();
+    let other = f.write(
+        "project_create",
+        json!({"name":"Other","folder":other_folder}),
+    )["projects"][1]["id"]
+        .clone();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":other,"title":"Foreign"}),
+    );
+    let foreign_conversation = state["projects"][1]["conversations"][0]["id"].clone();
+    f.write("conversation_append", json!({"projectId":other,"conversationId":foreign_conversation,"role":"user","content":"Forged membership","jobId":job}));
+    let mut redirected = approval();
+    redirected["projectId"] = other;
+    assert!(f.store.apply_harness(redirected, export.clone()).is_err());
+    assert_eq!(
+        fs::read(other_folder.join("Main.java")).unwrap(),
+        b"other project"
+    );
+    for plugin in ["rh.changes", "rh.source"] {
+        f.write("plugin_set", json!({"id":plugin,"enabled":false}));
+        assert!(f
+            .store
+            .apply_harness(approval(), export.clone())
+            .unwrap_err()
+            .contains("Plugin disabled"));
+        f.write("plugin_set", json!({"id":plugin,"enabled":true}));
+    }
+    assert_eq!(
+        fs::read(f.folder.join("Main.java")).unwrap(),
+        b"frozen source"
+    );
+
+    // The Store derives the owner from native history, rather than trusting a
+    // renderer-supplied conversation selector.
+    let mut owned_approval = approval();
+    owned_approval["conversationId"] = json!("renderer-selector");
+    let applied = f
+        .store
+        .apply_harness(owned_approval, export.clone())
+        .unwrap();
+    assert_eq!(
+        applied["projects"][0]["conversations"][0]["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        fs::read(f.folder.join("Main.java")).unwrap(),
+        b"reviewed change"
+    );
+    let transaction = hash(format!("{job}:{proposal_id}").as_bytes());
+    assert_eq!(
+        fs::read(
+            f.store
+                .root
+                .join("harness-transactions")
+                .join(transaction)
+                .join("before-0")
+        )
+        .unwrap(),
+        b"frozen source"
+    );
+    let reopened = Store::new(&f.root);
+    fs::write(f.folder.join("Main.java"), "handwritten after application").unwrap();
+    reopened.apply_harness(approval(), export).unwrap();
+    assert_eq!(
+        fs::read(f.folder.join("Main.java")).unwrap(),
+        b"handwritten after application"
+    );
 }
 
 #[test]

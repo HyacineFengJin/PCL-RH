@@ -3,7 +3,12 @@
  * conversation, cancels a job or discards a typed buffer. */
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { Api } from "../types";
-import { experimentalCall, type JobView } from "../experimentalTypes";
+import {
+  experimentalCall,
+  type JobView,
+  type EngineStatus,
+} from "../experimentalTypes";
+import type { HarnessProposalSet } from "./harnessView";
 import type {
   Area,
   FileBuffer,
@@ -38,7 +43,8 @@ export function useController(hostApi: Api, native: boolean) {
     [busy, setBusy] = useState(0),
     [epoch, update] = useState(0),
     [jobs, setJobs] = useState<Record<string, JobView>>({}),
-    [filesEpoch, setFilesEpoch] = useState(0);
+    [filesEpoch, setFilesEpoch] = useState(0),
+    [engine, setEngine] = useState<EngineStatus | null>(null);
   const latest = useRef<Snapshot | null>(null),
     serial = useRef(Promise.resolve()),
     revision = useRef<string | null>(null),
@@ -106,6 +112,7 @@ export function useController(hostApi: Api, native: boolean) {
           "catalog",
           "maker_threads",
           "extensions_list",
+          "rh_code_harness_reviews",
         ].includes(operation);
       if (!readOnly) lifecycle.edited();
       const end = lifecycle.begin("external", !readOnly),
@@ -456,6 +463,113 @@ export function useController(hostApi: Api, native: boolean) {
     const owned = buffers.get(key(file));
     if (owned) await saveOwnedFile(owned);
   }
+  async function flushProjectFiles(owner: string) {
+    for (const owned of buffers.values())
+      if (
+        owned.projectId === owner &&
+        owned.value.content !== owned.value.original
+      )
+        await saveOwnedFile(owned);
+    if (
+      [...buffers.values()].some(
+        (owned) =>
+          owned.projectId === owner &&
+          owned.value.content !== owned.value.original,
+      )
+    )
+      throw new Error(
+        "Source changed while saving; save the newer edits before starting or applying a task",
+      );
+  }
+  async function refreshEngine() {
+    if (!native || !usable()) return;
+    const end = lifecycle.begin("read", false);
+    try {
+      const next = await experimentalCall<EngineStatus>(api, "status", {});
+      if (usable()) setEngine(next);
+    } finally {
+      end();
+      releaseAfterUnmount();
+    }
+  }
+  useEffect(() => {
+    void refreshEngine().catch((e) => {
+      if (usable()) setError(String(e));
+    });
+  }, [native]);
+  async function readHarnessProposals(
+    jobId: string,
+  ): Promise<HarnessProposalSet> {
+    assertUsable();
+    return publicApi<HarnessProposalSet>("rh_code_harness_reviews", {
+      args: { projectId, jobId },
+    });
+  }
+  async function applyHarnessProposal(
+    jobId: string,
+    proposalId: string,
+    expectedDigest: string,
+  ) {
+    assertUsable();
+    const owner = projectId,
+      end = lifecycle.begin("operation");
+    setBusy((n) => n + 1);
+    try {
+      await flushProjectFiles(owner);
+      // Application mutates both source and native metadata. It shares the
+      // revision queue with draft/layout writes, including their acknowledgments.
+      const task = serial.current
+        .catch(() => {})
+        .then(async () => {
+          assertUsable();
+          loadSequence.current++;
+          try {
+            const data = await api<Snapshot>("rh_code_harness_apply", {
+              args: {
+                projectId: owner,
+                jobId,
+                proposalId,
+                expectedDigest,
+                expectedRevision: revision.current ?? (await read()).revision,
+              },
+            });
+            revision.current = data.revision;
+            setData(data);
+          } catch (error) {
+            // Source publication can succeed before its host receipt is saved.
+            // Refresh the native revision so an exact-digest retry can finish that
+            // receipt without being trapped by our stale metadata revision.
+            if (usable()) await read().catch(() => {});
+            throw error;
+          } finally {
+            if (usable()) {
+              // Retain edits typed during I/O; their old SHA guard will surface a
+              // conflict if this proposal changed the same file on disk.
+              for (const [id, owned] of buffers)
+                if (
+                  owned.projectId === owner &&
+                  owned.value.content === owned.value.original
+                )
+                  buffers.delete(id);
+              setFilesEpoch((n) => n + 1);
+              update((n) => n + 1);
+            }
+          }
+        });
+      serial.current = task.then(
+        () => {},
+        () => {},
+      );
+      await task;
+    } catch (e) {
+      if (usable()) setError(String(e));
+      throw e;
+    } finally {
+      end();
+      releaseAfterUnmount();
+      if (usable()) setBusy((n) => n - 1);
+    }
+  }
   async function run(
     areaId: string,
     conversationId: string,
@@ -482,6 +596,8 @@ export function useController(hostApi: Api, native: boolean) {
         await persistDraft(ownedKey);
       }
       await serial.current;
+      await flushProjectFiles(p.id);
+      await refreshEngine();
       assertUsable();
       const created = await experimentalCall<{ jobId: string }>(
         api,
@@ -558,7 +674,9 @@ export function useController(hostApi: Api, native: boolean) {
               previous.summary.revision !== job.summary.revision ||
               previous.summary.status !== job.summary.status ||
               previous.summary.updatedAt !== job.summary.updatedAt ||
-              JSON.stringify(previous.activity) !== JSON.stringify(job.activity)
+              JSON.stringify(previous.activity) !==
+                JSON.stringify(job.activity) ||
+              previous.output !== job.output
             )
               lifecycle.touch();
             jobsRef.current = { ...jobsRef.current, [item.jobId]: job };
@@ -749,6 +867,11 @@ export function useController(hostApi: Api, native: boolean) {
     api: publicApi,
     ...lifecycleMethods,
     native,
+    engine,
+    refreshEngine,
+    openAiSettings: () => {},
+    readHarnessProposals,
+    applyHarnessProposal,
     snapshot,
     project,
     projectId,

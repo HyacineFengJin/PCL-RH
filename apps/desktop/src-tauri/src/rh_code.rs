@@ -2,6 +2,7 @@
 //! panel lifetimes. The native store is authoritative; renderer plugin state
 //! cannot grant filesystem access or overwrite a newer project revision.
 mod files;
+mod harness;
 mod layout;
 use crate::Shared;
 use files::{atomic, atomic_with_permissions, inventory, read, safe_file};
@@ -294,6 +295,14 @@ impl Store {
     pub(crate) fn adopt(&self, a: Value, source: Value) -> Result<Value, String> {
         self.call_inner("source_adopt", a, Some(source))
     }
+    pub(crate) fn bind_harness(&self, captured: Value, job_id: &str) -> Result<(), String> {
+        let args = json!({"projectId":captured["project"]["id"],"conversationId":captured["conversation"]["id"],"jobId":job_id});
+        self.call_inner("harness_bind", args, Some(captured))
+            .map(|_| ())
+    }
+    pub(crate) fn apply_harness(&self, a: Value, proposal: Value) -> Result<Value, String> {
+        self.call_inner("harness_apply", a, Some(proposal))
+    }
     fn call_inner(
         &self,
         operation: &str,
@@ -325,6 +334,55 @@ impl Store {
         let (mut d, revision) = self.load()?;
         if operation == "bootstrap" {
             return Ok(snapshot(&d, &revision));
+        }
+        if operation == "harness_bind" {
+            ensure_plugin(&d, "rh.agent")?;
+            let p = Self::project_mut(&mut d, &a)?;
+            let conversation = text(&a, "conversationId", 100)?;
+            if !p
+                .conversations
+                .iter()
+                .any(|c| c.id == conversation && c.active_job.is_none())
+            {
+                return Err("Harness admission no longer belongs to this idle conversation".into());
+            }
+            harness::bind(
+                &self.root,
+                p,
+                &text(&a, "jobId", 100)?,
+                &conversation,
+                &source.ok_or("Harness binding requires captured native provenance")?,
+            )?;
+            return Ok(snapshot(&d, &revision));
+        }
+        if operation == "harness_apply" {
+            ensure_plugin(&d, "rh.changes")?;
+            ensure_plugin(&d, "rh.source")?;
+            if a["expectedRevision"].as_str() != Some(&revision) {
+                return Err("RH Code changed; refresh before applying the reviewed changes".into());
+            }
+            let p = Self::project_mut(&mut d, &a)?;
+            let job = text(&a, "jobId", 100)?;
+            let owner = p
+                .conversations
+                .iter()
+                .find(|c| c.messages.iter().any(|m| m.job_id.as_deref() == Some(&job)))
+                .ok_or("Harness task does not belong to this project")?;
+            if owner.active_job.as_deref() == Some(&job) {
+                return Err("Wait for the Harness task to finish before applying changes".into());
+            }
+            let mut approved = a.clone();
+            approved["conversationId"] = json!(owner.id);
+            harness::apply(
+                &self.root,
+                p,
+                &approved,
+                &source.ok_or("Harness apply requires the verified private host export")?,
+            )?;
+            p.updated_at = now();
+            let bytes = serde_json::to_vec(&d).map_err(|e| e.to_string())?;
+            atomic(&self.root.join("workspace.json"), &bytes)?;
+            return Ok(snapshot(&d, &hash(&bytes)));
         }
         if operation == "artifact_owner" || operation == "source_adopt" {
             ensure_plugin(&d, "rh.changes")?;
@@ -394,30 +452,8 @@ impl Store {
                 .iter()
                 .find(|p| Some(p.id.as_str()) == a["projectId"].as_str())
                 .unwrap();
-            let inventory = inventory(p)?;
-            let mut source = serde_json::Map::new();
-            let mut source_files = vec![];
-            let mut total = 0;
-            let mut excerpt_budget = 24000usize;
-            for rel in inventory {
-                let bytes = read(&Self::path(p, &rel)?, 256000)?;
-                total += bytes.len();
-                if total > 256000 || source_files.len() >= 300 {
-                    return Err(
-                        "Agent source snapshot is too large; choose a narrower folder".into(),
-                    );
-                }
-                use base64::Engine;
-                source_files.push(json!({"path":rel,"sha256":hash(&bytes),"data":base64::engine::general_purpose::STANDARD.encode(&bytes)}));
-                if let Ok(content) = String::from_utf8(bytes) {
-                    if excerpt_budget > 0 {
-                        let excerpt: String =
-                            content.chars().take(excerpt_budget.min(5000)).collect();
-                        excerpt_budget -= excerpt.chars().count();
-                        source.insert(rel, Value::String(excerpt));
-                    }
-                }
-            }
+            harness::recover(&self.root, p)?;
+            let captured = harness::capture(p)?;
             let c = p
                 .conversations
                 .iter()
@@ -428,9 +464,14 @@ impl Store {
             let start = c.messages.len().saturating_sub(8);
             let messages: Vec<Value> = c.messages[start..].iter().map(|m|
                 json!({"role":m.role,"content":m.content.chars().take(1800).collect::<String>()})).collect();
-            return Ok(
-                json!({"project":{"id":p.id,"name":p.name},"conversation":{"id":c.id,"messages":messages,"omittedMessages":start},"request":request,"mode":mode,"target":p.targets[index],"source":source,"sourceFiles":source_files}),
-            );
+            let mut context = json!({"project":{"id":p.id,"name":p.name},"conversation":{"id":c.id,"messages":messages,"omittedMessages":start},"request":request,"mode":mode,"target":p.targets[index]});
+            for (key, value) in captured
+                .as_object()
+                .ok_or("Invalid native Harness capture")?
+            {
+                context[key] = value.clone();
+            }
+            return Ok(context);
         }
         if operation == "files" || operation == "file_read" {
             ensure_plugin(&d, "rh.files")?;
@@ -660,6 +701,7 @@ impl Store {
             "file_save" => {
                 ensure_plugin(&d, "rh.source")?;
                 let p = Self::project_mut(&mut d, &a)?;
+                harness::recover(&self.root, p)?;
                 let rel = text(&a, "path", 4096)?;
                 let path = Self::path(p, &rel)?;
                 let original = read(&path, 1024 * 1024)?;

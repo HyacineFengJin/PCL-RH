@@ -19,9 +19,13 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 | `code/plugins.json` | WebUI 与 Rust 共用的内置清单、依赖和视图归属 |
 | `code/agent-context.mjs` | 完整对话到有界模型上下文的投影 |
 | `code/agent-adapter.mjs` | Rust 快照到独立 Pi 任务的适配，先准备后启动 |
-| `code/source-ownership.mjs` | 在任务副本中协调手写源码保护，保持原文件夹不变 |
+| `code/harness-snapshot.mjs` | 冻结文本、私有清单、内容指纹及旧 Maker 锁的保留 |
+| `code/harness-service.mjs` | 按需读取、检索、计划、不可变建议与宿主审阅投影 |
+| `experimental/runtime/src/harness-tools.mjs` | 通用工具声明、参数边界和紧凑读取回执 |
+| `code/source-ownership.mjs` | 旧 Maker 工作流的源码所有权协调 |
 | `apps/desktop/src-tauri/src/rh_code.rs` | 项目存储、修订检查、插件依赖、对话归属和原生源码快照 |
 | `rh_code/files.rs` | 有界读取、内容指纹、原子保存和空目录产物发布 |
+| `rh_code/harness.rs` | 原生快照绑定、受审阅建议应用、备份与中断恢复 |
 | `rh_code/layout.rs` | 布局及组件状态校验、可移植预设投影 |
 | `experimental/host.mjs` | 既有 Pi 执行、预设、审阅、任务产物和兼容接口 |
 
@@ -43,9 +47,15 @@ WebUI 控制器串行提交元数据，始终使用最近成功的原生修订�
 
 布局预设沿用 schema 1，以默认空数组兼容旧文件。原生层限制树深、区域数量、标识符和状态大小，未知组件 ID 可保留。预设在完整验证后移除项目定位和组件状态，套用时生成新区域 ID。具体边界见[内置插件开发](RH_CODE_PLUGINS.md)。
 
-Agent 准入分三步：Rust 捕获当前对话和源码；宿主创建未启动任务；Rust 持久保存用户消息与活动任务绑定。只有绑定成功才允许启动模型。任务结束时按精确 job ID 追加回执，重复完成不会重复写入，也不能清除另一个活动任务。
+Agent 准入先保存编辑缓冲，再由 Rust 捕获当前对话和源码。宿主创建未启动任务及私有快照，Rust 将目录身份和快照指纹绑定到 job ID；控制器随后持久保存用户消息与活动任务绑定。只有绑定成功才允许启动模型。任务结束时按精确 job ID 追加回执，重复完成不会重复写入，也不能清除另一个活动任务。
 
-现有审阅服务验证产物清单和内容哈希。采用源码时，原生桥取得经过验证的字节，在相邻暂存目录构建，再一次发布到空项目目录。渲染层不能自行提交字节或指定任意任务取得写入权限。
+`harness` profile 通过模式过滤工具。询问只读；规划增加计划回执；执行必须先完成计划回执才能提出建议。初始上下文有界，完整文本存于任务的 `workspace/source`，不可变清单和建议存于宿主私有 control 路径。读取工具只持久保存路径、指纹和范围等紧凑回执，重放同一操作时重新验证冻结内容并重建结果，避免把源码全文重复写入任务记录。
+
+对话与输出组件只显示受限的助手文本、工具状态和计划，不读取原始 provider state、推理或工具参数。完成的建议经私有 stdio 导出；渲染层只能提交审阅时的 proposal ID 和 digest，不能提交替换字节。Rust 再复核本机绑定、项目和对话归属及快照指纹，并在有备份的事务中发布文件。原生提交后宿主保存 applied 回执；两者之间的失败通过精确 digest 重试协调。
+
+当前 Linux 应用边界使用 FD 相对的 `openat2`、匿名暂存 inode、`renameat2` 与持久恢复日志。发布按文件原子完成，批次中断由日志恢复；外部修改或身份变化阻止自动恢复并保留备份。控制器将应用加入元数据修订队列，保留 I/O 期间新输入的编辑。原生准入拥有整个捕获或应用区间，包含 stdio 请求之间的时间，防止休眠或关闭过早释放宿主。
+
+旧版审阅和空目录「采用源码」仍通过原有服务提供，未改变为通用自动合并。Shell、构建和游戏测试不在通用工具列表中。
 
 ## 扩展边界
 
@@ -67,7 +77,10 @@ node apps/desktop/scripts/check-rh-code-host.mjs
 node apps/desktop/scripts/check-rh-code-scopes.mjs
 node --test experimental/runtime/tests/idle-host.test.mjs
 node --test code/tests/*.test.mjs
+node apps/desktop/scripts/check-rh-code-harness-ui.mjs
+node --test experimental/runtime/tests/harness-provider.test.mjs experimental/runtime/tests/harness-host.test.mjs
 cargo test --locked -p pcl-desktop --features custom-protocol rh_code
+cargo test --locked -p pcl-desktop --features custom-protocol experimental::tests
 ```
 
 这些检查覆盖真实 Cordis 卸载与恢复、布局身份、原生存储冲突、对话任务归属和源码保护。它们使用隔离数据；不证明真实模型服务、Java 构建或游戏运行已经通过。

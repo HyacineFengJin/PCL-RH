@@ -99,7 +99,7 @@ impl Session {
         // RH snapshots are captured by Rust, include bounded base64 bytes, and
         // need more room than renderer-authored legacy requests.
         let limit = if operation == "rh_code_run" {
-            1_000_000
+            24 * 1024 * 1024
         } else {
             128_000
         };
@@ -113,6 +113,11 @@ impl Session {
             .and_then(|_| self.input.flush())
             .map_err(|_| "实验功能引擎已断开".to_string())?;
         let mut line = Vec::new();
+        let reply_limit = if operation == "rh_code_harness_export" {
+            24 * 1024 * 1024
+        } else {
+            1_000_000
+        };
         // Poll each chunk instead of allowing a crashed host to block shutdown.
         loop {
             if self.output.buffer().is_empty() {
@@ -140,8 +145,8 @@ impl Session {
                 .unwrap_or(bytes.len());
             line.extend_from_slice(&bytes[..count]);
             self.output.consume(count);
-            if line.len() > 1_000_001 {
-                return Err("实验功能结果超过 1 MB".into());
+            if line.len() > reply_limit + 1 {
+                return Err("实验功能结果超过接口上限".into());
             }
             if line.last() == Some(&b'\n') {
                 break;
@@ -180,6 +185,14 @@ pub struct Host {
 // Admission begins before the session lock, so idle retirement also sees calls
 // queued behind a snapshot or a child operation. Drop covers all error paths.
 struct CallAdmission<'a>(&'a AtomicUsize);
+// Native source capture/application also owns the engine lifetime between
+// individual stdio requests. App close waits for the complete admitted action.
+struct NativeAdmission(Arc<Host>);
+impl Drop for NativeAdmission {
+    fn drop(&mut self) {
+        self.0.callers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 impl Drop for CallAdmission<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
@@ -191,6 +204,16 @@ pub struct SuspendResult {
     busy: bool,
 }
 impl Host {
+    fn admit_native(self: &Arc<Self>) -> Result<NativeAdmission, String> {
+        self.callers.fetch_add(1, Ordering::SeqCst);
+        let admission = NativeAdmission(self.clone());
+        // Acquire ownership before checking close: close either observes this
+        // owner or this action refuses to begin native work after its fence.
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("Launcher is closing".into());
+        }
+        Ok(admission)
+    }
     pub fn new(project: PathBuf) -> Self {
         Self {
             project,
@@ -332,7 +355,7 @@ impl Host {
         })
     }
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst)
+        self.stopped.load(Ordering::SeqCst) && self.callers.load(Ordering::SeqCst) == 0
     }
     pub fn shutdown(self: &Arc<Self>) {
         if self.closing.swap(true, Ordering::SeqCst) {
@@ -387,12 +410,6 @@ pub async fn experimental_call(
     if !args.is_object() {
         return Err("实验功能参数必须为对象".into());
     }
-    if matches!(operation, Operation::RhCodeStart) {
-        args = code.call("agent_bound", args)?;
-    }
-    if matches!(operation, Operation::RhCodeRun) {
-        args = code.call("agent_context", args)?;
-    }
     if matches!(
         operation,
         Operation::ExtensionsCards | Operation::ExtensionsAction
@@ -405,9 +422,32 @@ pub async fn experimental_call(
         .unwrap()
         .to_owned();
     let host = host.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || host.call(&operation, args))
-        .await
-        .map_err(|e| e.to_string())?
+    let code = code.inner().clone();
+    let admission = host.admit_native()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        let mut capture = None;
+        if operation == "rh_code_start" {
+            args = code.call("agent_bound", args)?;
+        }
+        if operation == "rh_code_run" {
+            args = code.call("agent_context", args)?;
+            capture = Some(args.clone());
+        }
+        let result = host.call(&operation, args)?;
+        if let Some(captured) = capture {
+            let job = result["jobId"]
+                .as_str()
+                .ok_or("Harness returned no task identity")?;
+            if let Err(error) = code.bind_harness(captured, job) {
+                let _ = host.call("job_cancel", json!({"jobId":job}));
+                return Err(error);
+            }
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -492,6 +532,56 @@ pub async fn rh_code_adopt(
         code.call("artifact_owner", args.clone())?;
         let source = host.call("rh_code_artifact", args.clone())?;
         code.adopt(args, source)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Review requests project only bounded diff text. Exporting source bytes and
+/// marking a proposal applied stay behind this native approval boundary.
+#[tauri::command]
+pub async fn rh_code_harness_reviews(
+    host: State<'_, Arc<Host>>,
+    code: State<'_, Arc<crate::rh_code::Store>>,
+    shared: State<'_, Arc<Shared>>,
+    args: Value,
+) -> Result<Value, String> {
+    if shared.closing.load(Ordering::SeqCst) {
+        return Err("Launcher is closing".into());
+    }
+    let host = host.inner().clone();
+    let code = code.inner().clone();
+    let admission = host.admit_native()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        code.call("artifact_owner", args.clone())?;
+        host.call("rh_code_harness_reviews", args)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub async fn rh_code_harness_apply(
+    host: State<'_, Arc<Host>>,
+    code: State<'_, Arc<crate::rh_code::Store>>,
+    shared: State<'_, Arc<Shared>>,
+    args: Value,
+) -> Result<Value, String> {
+    if shared.closing.load(Ordering::SeqCst) {
+        return Err("Launcher is closing".into());
+    }
+    let host = host.inner().clone();
+    let code = code.inner().clone();
+    let admission = host.admit_native()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        code.call("artifact_owner", args.clone())?;
+        let proposal = host.call("rh_code_harness_export", args.clone())?;
+        let snapshot = code.apply_harness(args.clone(), proposal)?;
+        // A failed receipt update is retryable: the native transaction records
+        // its exact digest and never applies that same proposal twice.
+        host.call("rh_code_harness_applied", args)?;
+        Ok(snapshot)
     })
     .await
     .map_err(|e| e.to_string())?

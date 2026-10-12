@@ -1,62 +1,56 @@
-import { useEffect, useState } from "react";
-import { Layers, ExternalLink, FolderInput } from "lucide-react";
+import { useRef, useState } from "react";
+import { Layers, ExternalLink, FolderInput, RefreshCw } from "lucide-react";
 import { useCode } from "../controller";
 import { label } from "../locale";
 import {
   experimentalCall,
-  type EngineStatus,
   type JobView,
   type ReviewView,
 } from "../../experimentalTypes";
 import { MakerChangeSet } from "../../MakerChangeSet";
+import { isActiveJob, jobStatusLabel, projectJobOwner } from "../harnessView";
+import { HarnessProposalReview } from "./HarnessProposalReview";
+import { JobActivity } from "./JobActivity";
+import { useProjectJobs } from "./useProjectJobs";
+
+function ReadError({ error, retry }: { error: string; retry: () => void }) {
+  return error ? (
+    <div className="rc-harness-error" role="alert">
+      <p>{error}</p>
+      <button className="rc-button" onClick={retry}>
+        <RefreshCw size={13} />
+        {label("重新读取", "Reload")}
+      </button>
+    </div>
+  ) : null;
+}
+
 export function Output() {
   const c = useCode(),
-    [engine, setEngine] = useState<EngineStatus | null>(null);
-  useEffect(() => {
-    let alive = true;
-    if (c.native)
-      void experimentalCall<EngineStatus>(c.api, "status")
-        .then((e) => {
-          if (alive) setEngine(e);
-        })
-        .catch((e) => c.setError(String(e)));
-    return () => {
-      alive = false;
-    };
-  }, [c.native, c.projectId, c.snapshot?.revision]);
-  const ids = new Set(
-    c.project?.conversations.flatMap((t) =>
-      t.messages.map((m) => m.jobId).filter(Boolean),
-    ),
-  );
+    { jobs, error, refresh } = useProjectJobs();
   return (
-    <div className="rc-panel-pad">
+    <div className="rc-panel-pad rc-harness-tasks">
       <header className="rc-section-title">
         {label("项目任务", "Project tasks")}
       </header>
-      {engine?.jobs
-        .filter((j) => ids.has(j.jobId))
-        .map((j) => (
-          <div className="rc-task" key={j.jobId}>
-            <span className={j.status === "running" ? "rc-live-dot" : ""} />
+      <ReadError error={error} retry={refresh} />
+      {jobs.map((job) => (
+        <article key={job.summary.jobId}>
+          <header className="rc-harness-task-title">
+            <strong>
+              {c.project &&
+                projectJobOwner(c.project, job.summary.jobId)?.title}
+            </strong>
             <span>
-              {j.workflow}
-              <small>{j.status}</small>
+              {job.summary.workflow === "harness"
+                ? "RH Code"
+                : job.summary.workflow}
             </span>
-            <code>{j.jobId.slice(0, 8)}</code>
-            {["queued", "running"].includes(j.status) && (
-              <button
-                className="rc-button"
-                onClick={() =>
-                  void c.stop(j.jobId).catch((e) => c.setError(String(e)))
-                }
-              >
-                {label("停止", "Stop")}
-              </button>
-            )}
-          </div>
-        ))}
-      {!ids.size && (
+          </header>
+          <JobActivity job={job} jobId={job.summary.jobId} onStop={c.stop} />
+        </article>
+      ))}
+      {!jobs.length && !error && (
         <p className="rc-muted">
           {label("尚无项目任务", "No project tasks yet")}
         </p>
@@ -64,126 +58,130 @@ export function Output() {
     </div>
   );
 }
+
 export function Changes() {
   const c = useCode(),
-    [jobs, setJobs] = useState<JobView[]>([]),
-    [review, setReview] = useState<{ job: JobView; review: ReviewView } | null>(
-      null,
-    ),
-    [diff, setDiff] = useState("");
-  const last =
-    c.project?.conversations.flatMap((t) =>
-      t.messages.map((m) => m.jobId).filter((id): id is string => !!id),
-    ) ?? [];
-  useEffect(() => {
-    let alive = true;
-    if (c.native)
-      void Promise.all(
-        [...new Set(last)]
-          .slice(-12)
-          .map((jobId) =>
-            experimentalCall<JobView>(c.api, "job_read", { jobId }),
-          ),
-      )
-        .then((v) => {
-          if (alive) setJobs(v);
-        })
-        .catch((e) => c.setError(String(e)));
-    return () => {
-      alive = false;
-    };
-  }, [c.native, c.projectId, c.project?.conversations]);
+    { jobs, error, refresh } = useProjectJobs(),
+    [review, setReview] = useState<{
+      scope: string;
+      job: JobView;
+      review: ReviewView;
+    } | null>(null),
+    [diff, setDiff] = useState<{ scope: string; text: string } | null>(null),
+    current = useRef(c.projectId);
+  current.current = c.projectId;
   async function show(job: JobView, id: string) {
-    setReview({
-      job,
-      review: await experimentalCall<ReviewView>(c.api, "review_read", {
+    const scope = c.projectId,
+      value = await experimentalCall<ReviewView>(c.api, "review_read", {
         jobId: job.summary.jobId,
         reviewId: id,
-      }),
-    });
+      });
+    if (current.current === scope) {
+      setReview({ scope, job, review: value });
+      setDiff(null);
+    }
   }
+  const visibleReview = review?.scope === c.projectId ? review : null;
   return (
     <div className="rc-panel-pad">
       <header className="rc-section-title">
         {label("任务产物与改动", "Artifacts and changes")}
       </header>
+      <ReadError error={error} retry={refresh} />
       {jobs.map((job) => (
         <section className="rc-artifacts" key={job.summary.jobId}>
           <header>
-            {job.summary.status} · {job.summary.jobId.slice(0, 8)}
+            {c.project && projectJobOwner(c.project, job.summary.jobId)?.title}{" "}
+            · {jobStatusLabel(job.summary.status)} ·{" "}
+            {job.summary.jobId.slice(0, 8)}
           </header>
-          {job.artifacts.map((a) => (
-            <button
-              className="rc-button"
-              key={a.operationId}
-              onClick={() =>
-                void c
-                  .api("experimental_open", {
-                    jobId: job.summary.jobId,
-                    operationId: a.operationId,
-                  })
-                  .catch((e) => c.setError(String(e)))
-              }
-            >
-              <ExternalLink size={14} />
-              {a.operationId}
-            </button>
-          ))}
-          {job.artifacts.map((a) => (
-            <button
-              className="rc-button purple"
-              key={"adopt-" + a.operationId}
-              disabled={
-                !c.native ||
-                !!c.busy ||
-                ["queued", "running"].includes(job.summary.status)
-              }
-              onClick={() =>
-                void c
-                  .adoptSource(job.summary.jobId, a.operationId)
-                  .catch(() => {})
-              }
-            >
-              <FolderInput size={14} />
-              {label("采用源码到空文件夹", "Adopt into empty folder")}
-            </button>
-          ))}
-          {job.reviews.map((id) => (
-            <button
-              className="rc-button orange"
-              key={id}
-              onClick={() =>
-                void show(job, id).catch((e) => c.setError(String(e)))
-              }
-            >
-              <Layers size={14} />
-              {label("审阅补丁", "Review patch")}
-            </button>
-          ))}
+          {job.summary.workflow === "harness" ? (
+            <HarnessProposalReview
+              key={c.projectId + ":" + job.summary.jobId}
+              job={job}
+            />
+          ) : (
+            <>
+              {job.artifacts.map((artifact) => (
+                <button
+                  className="rc-button"
+                  key={artifact.operationId}
+                  onClick={() =>
+                    void c
+                      .api("experimental_open", {
+                        jobId: job.summary.jobId,
+                        operationId: artifact.operationId,
+                      })
+                      .catch((error) => c.setError(String(error)))
+                  }
+                >
+                  <ExternalLink size={14} />
+                  {artifact.operationId}
+                </button>
+              ))}
+              {job.summary.workflow === "maker" &&
+                job.artifacts.map((artifact) => (
+                  <button
+                    className="rc-button purple"
+                    key={"adopt-" + artifact.operationId}
+                    disabled={
+                      !c.native || !!c.busy || isActiveJob(job.summary.status)
+                    }
+                    onClick={() =>
+                      void c
+                        .adoptSource(job.summary.jobId, artifact.operationId)
+                        .catch(() => {})
+                    }
+                  >
+                    <FolderInput size={14} />
+                    {label("采用源码到空文件夹", "Adopt into empty folder")}
+                  </button>
+                ))}
+              {job.reviews.map((id) => (
+                <button
+                  className="rc-button orange"
+                  key={id}
+                  onClick={() =>
+                    void show(job, id).catch((error) =>
+                      c.setError(String(error)),
+                    )
+                  }
+                >
+                  <Layers size={14} />
+                  {label("审阅补丁", "Review patch")}
+                </button>
+              ))}
+            </>
+          )}
         </section>
       ))}
-      {!jobs.length && (
+      {!jobs.length && !error && (
         <p className="rc-muted">
           {label("还没有任务产物", "No task artifacts yet")}
         </p>
       )}
-      {review && (
+      {visibleReview && (
         <MakerChangeSet
+          key={visibleReview.scope + ":" + visibleReview.review.reviewId}
           api={c.api}
           native={c.native}
           threadId={c.projectId}
-          jobId={review.job.summary.jobId}
-          reviewId={review.review.reviewId}
+          jobId={visibleReview.job.summary.jobId}
+          reviewId={visibleReview.review.reviewId}
           units={[]}
-          finished={!["queued", "running"].includes(review.job.summary.status)}
+          finished={!isActiveJob(visibleReview.job.summary.status)}
           onPending={() => {}}
           onFiles={() => {}}
           onCommitted={async () => {
             setReview(null);
             await c.read();
+            refresh();
           }}
-          onDiff={(_title, text) => setDiff(text)}
+          onDiff={(_title, text) =>
+            setDiff({ scope: visibleReview.scope, text })
+          }
           onFollowup={(text) => {
+            if (current.current !== visibleReview.scope) return;
             const id = c.project?.conversations[0]?.id;
             if (id) {
               c.setDraft(id, text);
@@ -191,8 +189,10 @@ export function Changes() {
             }
           }}
         />
-      )}{" "}
-      {diff && <pre className="rc-diff">{diff}</pre>}
+      )}
+      {diff?.scope === c.projectId && (
+        <pre className="rc-diff">{diff.text}</pre>
+      )}
     </div>
   );
 }

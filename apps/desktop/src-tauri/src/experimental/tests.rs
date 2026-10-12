@@ -172,3 +172,98 @@ fn failed_probe_retains_ownership_until_an_ordinary_call_recovers_transport() {
     assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
     assert!(host.suspend().unwrap().released);
 }
+
+#[test]
+fn native_admission_blocks_idle_retirement_between_stdio_requests() {
+    let fixture = Fixture::new();
+    let host = Arc::new(Host::new(fixture.0.clone()));
+    let native = host.admit_native().unwrap();
+    assert!(!host.is_stopped());
+    assert!(host.suspend().unwrap().busy);
+    assert!(!fixture.0.join(".pcl-rust").exists());
+
+    host.call("synthetic_export", json!({})).unwrap();
+    let pid = host.session.lock().unwrap().as_ref().unwrap().child.id();
+    assert_eq!(host.callers.load(Ordering::SeqCst), 1);
+    // No stdio call owns the session mutex in this interval. The native guard
+    // covers source application before the later receipt request enters it.
+    assert!(host.session.try_lock().is_ok());
+    assert_eq!(
+        host.suspend().unwrap(),
+        SuspendResult {
+            released: false,
+            busy: true
+        }
+    );
+    assert_eq!(
+        host.session.lock().unwrap().as_ref().unwrap().child.id(),
+        pid
+    );
+    host.call("synthetic_receipt", json!({})).unwrap();
+    assert_eq!(host.callers.load(Ordering::SeqCst), 1);
+    drop(native);
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert!(host.suspend().unwrap().released);
+    assert!(host.is_stopped());
+    assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+}
+
+#[test]
+fn app_close_remains_pending_after_child_reap_until_native_work_releases_admission() {
+    let fixture = Fixture::new();
+    let host = Arc::new(Host::new(fixture.0.clone()));
+    let native = host.admit_native().unwrap();
+    host.call("synthetic_export", json!({})).unwrap();
+    let pid = host.session.lock().unwrap().as_ref().unwrap().child.id();
+    host.shutdown();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !host.stopped.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "isolated host was not reaped");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(host.session.lock().unwrap().is_none());
+    assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+    assert_eq!(host.callers.load(Ordering::SeqCst), 1);
+    assert!(
+        !host.is_stopped(),
+        "app close must wait for the native interval too"
+    );
+    // Shutdown prevents a late receipt call from restarting the host. Its own
+    // failed CallAdmission must release without releasing the native owner.
+    assert!(host.call("synthetic_receipt", json!({})).is_err());
+    assert_eq!(host.callers.load(Ordering::SeqCst), 1);
+    assert!(!host.is_stopped());
+    drop(native);
+    assert!(host.is_stopped());
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert!(host.session.lock().unwrap().is_none());
+}
+
+#[test]
+fn native_failure_releases_the_whole_action_admission() {
+    let fixture = Fixture::new();
+    let host = Arc::new(Host::new(fixture.0.clone()));
+    let result = (|| {
+        let _native = host.admit_native()?;
+        host.call("synthetic_export", json!({}))?;
+        assert_eq!(host.callers.load(Ordering::SeqCst), 1);
+        Err::<(), String>("synthetic native application failure".into())
+    })();
+    assert_eq!(result.unwrap_err(), "synthetic native application failure");
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert!(host.suspend().unwrap().released);
+    assert!(host.is_stopped());
+}
+
+#[test]
+fn native_admission_after_the_close_fence_does_not_start_or_pin_a_host() {
+    let fixture = Fixture::new();
+    let host = Arc::new(Host::new(fixture.0.clone()));
+    // This is the gap between the outer Tauri check and native admission.
+    host.closing.store(true, Ordering::SeqCst);
+    assert!(host.admit_native().is_err());
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert!(host.is_stopped());
+    assert!(host.session.lock().unwrap().is_none());
+    assert!(!fixture.0.join(".pcl-rust").exists());
+}

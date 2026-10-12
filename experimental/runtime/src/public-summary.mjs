@@ -16,6 +16,7 @@ const DOMAIN_TOOLS = new Set([
   "porter.plan",
   "porter.validate",
   "porter.apply_patch",
+  "harness.propose_changes",
 ]);
 
 // A read-only projection for host-owned cards. Never return the internal job.
@@ -30,7 +31,7 @@ export function projectPublicJobSummary(job) {
     "Invalid job identity",
   );
   check(
-    ["maker", "porter"].includes(job.profile) && STATES.has(job.status),
+    ["maker", "porter", "harness"].includes(job.profile) && STATES.has(job.status),
     "INVALID_JOB",
     "Invalid job profile/status",
   );
@@ -79,6 +80,8 @@ export function projectPublicJobSummary(job) {
     } else if (domain.result?.status === "review-required")
       artifactState = "draft_ready";
   }
+  if (domain?.name === "harness.propose_changes" && domain.result?.status === "pending")
+    artifactState = "draft_ready";
   if (job.status === "failed") {
     blockedReason =
       job.error?.code === "BUILD_EXECUTION_DISABLED"

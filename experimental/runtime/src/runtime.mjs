@@ -22,7 +22,7 @@ export class AgentRuntime {
   }
   async init() { await this.store.init(); return this; }
   async createJob({ profile, input = {}, provider = 'deterministic-fake', providerConfig = {} }) {
-    check(typeof profile === 'string' && Object.hasOwn(PROFILES, profile), 'INVALID_PROFILE', 'Choose maker or porter');
+    check(typeof profile === 'string' && Object.hasOwn(PROFILES, profile), 'INVALID_PROFILE', 'Choose a registered runtime profile');
     check(this.providers.has(provider), 'PROVIDER_UNAVAILABLE', `Provider ${provider} is not configured`);
     return this.store.create({ profile,
       input: cloneJson(input, { maxBytes: 64_000, code: 'INPUT_TOO_LARGE' }), provider,
@@ -76,11 +76,20 @@ export class AgentRuntime {
       await this.store.save(job); await this.store.event(id, 'job.started', { attempt: job.attempt });
       // Permission modes are captured by the trusted host, not by model text.
       // Other workflows and older Maker jobs keep their original tool contract.
-      const intent = job.profile === 'maker' ? job.input.makerThread?.mode : null;
-      check(!intent || ['ask', 'plan', 'execute'].includes(intent), 'INVALID_MODE', 'Unsupported Maker mode');
-      const allowedTools = intent && intent !== 'execute'
-        ? profile.tools.filter(name => ['workspace.read', 'maker.plan', 'maker.report_plan'].includes(name))
-        : profile.tools.filter(name => !(intent && job.input.sourceOperationId && name === 'maker.generate'));
+      const isHarness = job.profile === 'harness';
+      const intent = isHarness ? job.input.harness?.mode
+        : job.profile === 'maker' ? job.input.makerThread?.mode : null;
+      check((!isHarness && !intent) || ['ask', 'plan', 'execute'].includes(intent),
+        'INVALID_MODE', 'Unsupported captured agent mode');
+      // The trusted host captures mode before admission. Neither provider text
+      // nor a tool argument can widen it. Legacy workflows retain their tools.
+      const allowedTools = isHarness
+        ? profile.tools.filter(name => intent === 'execute' ||
+          ['harness.list_files', 'harness.read_file', 'harness.search_files'].includes(name) ||
+          (intent === 'plan' && name === 'harness.report_plan'))
+        : intent && intent !== 'execute'
+          ? profile.tools.filter(name => ['workspace.read', 'maker.plan', 'maker.report_plan'].includes(name))
+          : profile.tools.filter(name => !(intent && job.input.sourceOperationId && name === 'maker.generate'));
       const signal = run.controller.signal;
       const workspace = await this.store.workspace(id);
       // Providers may supply a captured host budget; persisted job input has
@@ -107,31 +116,62 @@ export class AgentRuntime {
           check(typeof operationId === 'string' && /^[a-zA-Z0-9_-]{1,120}(?![\s\S])/.test(operationId), 'INVALID_OPERATION', 'Tool operation needs a stable ID');
           const tool = this.tools.get(name, allowedTools);
           const args = cloneJson(input); tool.validate(args);
+          const toolContext = { workspace, signal: toolSignal, jobId: id, operationId, profile: profile.id };
           if (intent && name === 'maker.preview_source_edit') {
             const protectedPaths = job.input.makerThread.protectedPaths ?? [];
             check(!args.request.edits.some(edit=>protectedPaths.includes(edit.path)), 'HANDWRITTEN_PROTECTED', 'Agent cannot edit handwritten protected files; choose an unprotected implementation path');
           }
           if (intent === 'execute' && ['maker.generate', 'maker.preview_revision', 'maker.preview_source_edit'].includes(name))
             check(job.operations.some(o => o.name === 'maker.report_plan' && o.status === 'completed'), 'PLAN_REQUIRED', 'Record a plan before source changes');
+          if (isHarness && name === 'harness.propose_changes')
+            check(job.operations.some(o => o.name === 'harness.report_plan' && o.status === 'completed'),
+              'PLAN_REQUIRED', 'Record a plan before proposing source changes');
           const fingerprint = createHash('sha256').update(canonical({ name, args })).digest('hex');
           let operation = job.operations.find(o => o.id === operationId);
           if (operation) {
             check(operation.fingerprint === fingerprint, 'OPERATION_MISMATCH', 'Operation ID was reused with different arguments');
-            if (operation.status === 'completed') return cloneJson(operation.result);
+            if (operation.status === 'completed') {
+              if (!tool.replayCompleted) return cloneJson(operation.result);
+              // Generic inspection receipts omit large excerpts. Reconstruct
+              // only read-only results from their still-verified frozen source;
+              // model work budgets count the call, durable operation IDs do not.
+              try {
+                const result = safeToolResult(await tool.execute(args, toolContext));
+                await this.store.event(id, 'tool.replayed', { operationId, name });
+                throwIfAborted(toolSignal);
+                return cloneJson(result);
+              } catch (error) {
+                await this.store.event(id, 'tool.replay_failed', { operationId, name, code: error.code ?? 'TOOL_FAILED' });
+                throw error;
+              }
+            }
             check(tool.replaySafety !== 'manual', 'RECONCILIATION_REQUIRED', 'An incomplete non-idempotent tool needs manual reconciliation');
           } else {
             check(toolOperationLimit === 0 || job.operations.length < toolOperationLimit, 'TOOL_LIMIT', 'Job exceeded its tool operation budget');
-            operation = { id: operationId, name, fingerprint, status: 'running', ...(intent && name === 'workspace.read' ? { path: args.path } : {}) };
+            operation = { id: operationId, name, fingerprint, status: 'running',
+              ...(intent && ['workspace.read', 'harness.read_file'].includes(name) ? { path: args.path } : {}) };
             cloneJson([...job.operations, operation], { maxBytes: 128_000, code: 'RECEIPT_BUDGET' });
             job.operations.push(operation);
           }
           operation.status = 'running';
           await this.store.save(job); await this.store.event(id, 'tool.started', { operationId, name });
-          const result = safeToolResult(await tool.execute(args, { workspace, signal: toolSignal, jobId: id, operationId, profile: profile.id }));
+          let result;
+          try {
+            result = safeToolResult(await tool.execute(args, toolContext));
+          } catch (error) {
+            // Tool loops may recover from a failed call. Retain a failure receipt
+            // so a completed round cannot present an interrupted effect as active.
+            // Arguments, private exception text and uncertain results stay private.
+            operation.status = 'failed'; operation.error = { code: error.code ?? 'TOOL_FAILED' };
+            await this.store.save(job);
+            await this.store.event(id, 'tool.failed', { operationId, name, code: operation.error.code });
+            throw error;
+          }
           // Save the receipt even if cancellation arrived after the effect completed.
-          const proposed = job.operations.map(o => o === operation ? { ...o, status: 'completed', result } : o);
+          const receipt = safeToolResult(tool.projectReceipt ? tool.projectReceipt(result) : result);
+          const proposed = job.operations.map(o => o === operation ? { ...o, status: 'completed', result: receipt } : o);
           cloneJson(proposed, { maxBytes: 128_000, code: 'RECEIPT_BUDGET' });
-          operation.status = 'completed'; operation.result = result;
+          operation.status = 'completed'; operation.result = receipt; delete operation.error;
           await this.store.save(job); await this.store.event(id, 'tool.completed', { operationId, name });
           throwIfAborted(toolSignal);
           return cloneJson(result);

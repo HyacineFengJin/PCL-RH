@@ -7,6 +7,8 @@ import { constants } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { prepareCodeJob } from "../code/agent-adapter.mjs";
+import { HarnessService } from "../code/harness-service.mjs";
+import { registerHarnessTools } from "./runtime/src/harness-tools.mjs";
 import { fileURLToPath } from "node:url";
 import {
   AgentRuntime,
@@ -133,6 +135,8 @@ const runtime = await new AgentRuntime({
   providers: [new TemplateProvider(), live],
 }).init();
 const reviews = new HostReviewService({ store: runtime.store });
+const harness = new HarnessService({ store: runtime.store });
+registerHarnessTools(adapters.registry, harness);
 const porterProjects = await new PorterProjects(root, {
   getJob: (id) => runtime.getJob(id),
   hasActiveJob: hasCurrentJob,
@@ -457,7 +461,7 @@ function checkRhOwner(job, args, conversation = false) {
   if (
     !args.projectId ||
     job.input?.rhCode?.projectId !== args.projectId ||
-    (conversation &&
+    ((conversation || args.conversationId !== undefined) &&
       (!args.conversationId ||
         job.input.rhCode.conversationId !== args.conversationId))
   )
@@ -500,6 +504,18 @@ async function dispatch(operation, a) {
       const job = await runtime.getJob(a.jobId);
       checkRhOwner(job, a, true);
       return startCapturedJob(job, liveRuns.get(a.jobId));
+    }
+    case "rh_code_harness_reviews": {
+      checkRhOwner(await runtime.getJob(a.jobId), a);
+      return harness.listReviews(a.jobId);
+    }
+    case "rh_code_harness_export": {
+      checkRhOwner(await runtime.getJob(a.jobId), a);
+      return harness.exportProposal(a.jobId, { proposalId: a.proposalId, expectedDigest: a.expectedDigest });
+    }
+    case "rh_code_harness_applied": {
+      checkRhOwner(await runtime.getJob(a.jobId), a);
+      return harness.markApplied(a.jobId, { proposalId: a.proposalId, expectedDigest: a.expectedDigest });
     }
     case "status":
       return {
@@ -999,21 +1015,22 @@ async function dispatch(operation, a) {
           : {}),
         mode: job.provider === "pcl-template" ? "template" : "live",
         result: job.result,
-        ...(job.profile === "maker"
+        ...(job.profile === "maker" || job.profile === "harness"
           ? {
               activity: job.operations.map((op) => ({
                 id: op.id,
                 name: op.name,
                 status: op.status,
-                ...(op.name === "workspace.read" && typeof op.path === "string"
+                ...(["workspace.read", "harness.read_file"].includes(op.name) && typeof op.path === "string"
                   ? { path: op.path }
                   : {}),
-                ...(op.name === "maker.report_plan" && op.status === "completed"
+                ...(["maker.report_plan", "harness.report_plan"].includes(op.name) && op.status === "completed"
                   ? { steps: op.result.steps }
                   : {}),
               })),
             }
           : {}),
+        ...(job.profile === "harness" ? { output: job.providerState?.livePi?.output ?? "" } : {}),
         error: job.error,
         ...(job.profile === "porter"
           ? { porterSource: await reviews.getPorterSource(job.id) }
@@ -1161,11 +1178,12 @@ const input = readline.createInterface({
   crlfDelay: Infinity,
 });
 for await (const line of input) {
-  let reply;
+  let reply, replyLimit = 1000000;
   try {
-    if (Buffer.byteLength(line) > 1000000)
-      throw new Error("Request exceeds 1 MB");
+    if (Buffer.byteLength(line) > 24 * 1024 * 1024)
+      throw new Error("Request exceeds native snapshot limit");
     const request = JSON.parse(line);
+    if (request.operation === "rh_code_harness_export") replyLimit = 24 * 1024 * 1024;
     if (request.operation !== "rh_code_run" && Buffer.byteLength(line) > 128000)
       throw new Error("Request exceeds 128 KB");
     reply = {
@@ -1177,7 +1195,7 @@ for await (const line of input) {
   }
   const output = JSON.stringify(reply);
   process.stdout.write(
-    (Buffer.byteLength(output) <= 1000000
+    (Buffer.byteLength(output) <= replyLimit
       ? output
       : JSON.stringify({ ok: false, error: "Host response exceeds limit" })) +
       "\n",

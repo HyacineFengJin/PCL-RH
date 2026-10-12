@@ -197,13 +197,25 @@ function hostFixture() {
     },
     snapshot: () => structuredClone(data),
     async api(command, { operation, args }) {
+      operation ??= command;
       assert.ok(
-        ["rh_code_call", "experimental_call", "rh_code_adopt"].includes(
-          command,
-        ),
+        [
+          "rh_code_call",
+          "experimental_call",
+          "rh_code_adopt",
+          "rh_code_harness_apply",
+          "rh_code_harness_reviews",
+        ].includes(command),
       );
       calls.push({ operation, args: structuredClone(args) });
       if (operation === "bootstrap") return structuredClone(data);
+      if (operation === "status")
+        return {
+          jobs: [],
+          liveConfigured: false,
+          liveAvailable: true,
+          aiPresets: { selectedId: "preset", presets: [] },
+        };
       if (handlers.has(operation)) return handlers.get(operation)(args);
       if (operation === "file_read")
         return structuredClone(files.get(args.projectId + ":" + args.path));
@@ -357,6 +369,140 @@ async function openSource(ui, content) {
   ui.value.edit("src/Main.java", content);
   await ui.flush();
 }
+
+test("Harness capture waits for dirty source saves and refuses an external conflict before admission", async (t) => {
+  const { host, ui } = await fixture(t);
+  await openSource(ui, "saved input");
+  host.handlers.set("rh_code_run", async () => {
+    assert.equal(host.files.get("A:src/Main.java").content, "saved input");
+    throw new Error("end isolated preparation");
+  });
+  await ui.value.run("A-chat", "A-thread", "ask", "inspect");
+  assert.ok(
+    host.calls.findIndex((c) => c.operation === "file_save") <
+      host.calls.findIndex((c) => c.operation === "rh_code_run"),
+  );
+  ui.value.edit("src/Main.java", "new draft");
+  host.files.set("A:src/Main.java", {
+    content: "external",
+    sha256: "external-hash",
+  });
+  const before = host.calls.filter((c) => c.operation === "rh_code_run").length;
+  await ui.value.run("A-chat", "A-thread", "execute", "modify");
+  assert.equal(
+    host.calls.filter((c) => c.operation === "rh_code_run").length,
+    before,
+  );
+  assert.equal(ui.value.buffer("src/Main.java").content, "new draft");
+});
+
+test("Harness application shares metadata ordering and retains edits made during native publication", async (t) => {
+  const { host, ui } = await fixture(t),
+    applying = deferred();
+  await ui.value.loadFile("src/Main.java");
+  await ui.flush();
+  let admittedRevision;
+  host.handlers.set("rh_code_harness_apply", async (args) => {
+    admittedRevision = args.expectedRevision;
+    await applying.promise;
+    assert.equal(args.projectId, "A");
+    host.files.set("A:src/Main.java", {
+      content: "published",
+      sha256: "published-hash",
+    });
+    return host.commit();
+  });
+  const apply = ui.value.applyHarnessProposal("job", "proposal", "digest");
+  await ui.flush();
+  assert.equal(admittedRevision, "revision-0");
+  const metadata = ui.value.write("conversation_draft", {
+    projectId: "A",
+    conversationId: "A-thread",
+    draft: "new metadata",
+  });
+  await ui.flush();
+  assert.equal(
+    host.calls.filter((c) => c.operation === "conversation_draft").length,
+    0,
+  );
+  ui.value.edit("src/Main.java", "typed while publishing");
+  await ui.flush();
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  applying.resolve();
+  await apply;
+  await metadata;
+  await ui.flush();
+  assert.equal(ui.value.projectId, "B");
+  assert.equal(ui.value.snapshot.revision, host.data.revision);
+  ui.value.choose(ui.value.snapshot.projects[0]);
+  await ui.flush();
+  assert.equal(
+    ui.value.buffer("src/Main.java").content,
+    "typed while publishing",
+  );
+  assert.equal(ui.value.buffer("src/Main.java").sha256, "A-hash");
+});
+
+test("native commit followed by host receipt failure refreshes revision for an idempotent retry", async (t) => {
+  const { host, ui } = await fixture(t);
+  await ui.value.loadFile("src/Main.java");
+  await ui.flush();
+  let attempts = 0;
+  host.handlers.set("rh_code_harness_apply", async (args) => {
+    assert.equal(args.expectedRevision, host.data.revision);
+    if (++attempts === 1) {
+      host.files.set("A:src/Main.java", {
+        content: "committed",
+        sha256: "committed-hash",
+      });
+      host.commit();
+      throw new Error("host receipt unavailable");
+    }
+    return host.snapshot();
+  });
+  await assert.rejects(
+    ui.value.applyHarnessProposal("job", "proposal", "digest"),
+    /host receipt/,
+  );
+  await ui.flush();
+  assert.equal(ui.value.snapshot.revision, host.data.revision);
+  assert.equal(ui.value.buffer("src/Main.java"), undefined);
+  await ui.value.applyHarnessProposal("job", "proposal", "digest");
+  assert.equal(attempts, 2);
+  await ui.value.loadFile("src/Main.java");
+  await ui.flush();
+  assert.equal(ui.value.buffer("src/Main.java").content, "committed");
+});
+
+test("source edits arriving during a pre-Harness save remain dirty and do not start the model", async (t) => {
+  const { host, ui } = await fixture(t),
+    saved = deferred();
+  await openSource(ui, "submitted source");
+  host.handlers.set("file_save", async (args) => {
+    await saved.promise;
+    host.files.set("A:src/Main.java", {
+      content: args.content,
+      sha256: "new-hash",
+    });
+    return host.commit();
+  });
+  const run = ui.value.run("A-chat", "A-thread", "execute", "change source");
+  await ui.flush();
+  ui.value.edit("src/Main.java", "newer unsaved source");
+  saved.resolve();
+  await run;
+  await ui.flush();
+  assert.equal(
+    host.calls.some((c) => c.operation === "rh_code_run"),
+    false,
+  );
+  assert.equal(
+    ui.value.buffer("src/Main.java").content,
+    "newer unsaved source",
+  );
+  assert.equal(ui.value.getLifecycleState().dirty, true);
+});
 
 test("suspension flushes drafts and source edits owned by every project, then releases caches", async (t) => {
   const { host, ui } = await fixture(t);

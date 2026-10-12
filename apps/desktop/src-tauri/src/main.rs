@@ -2011,6 +2011,8 @@ fn main() {
             rh_code::rh_code_call,
             rh_code::rh_code_choose,
             experimental::rh_code_adopt,
+            experimental::rh_code_harness_reviews,
+            experimental::rh_code_harness_apply,
             experimental::experimental_choose,
             experimental::experimental_open,
             instance_metadata_update,

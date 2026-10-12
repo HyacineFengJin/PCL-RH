@@ -64,6 +64,7 @@ export function RHCode({
     <CodeContext.Provider
       value={{
         ...c,
+        openAiSettings: () => setSettings(true),
         run: (...args) =>
           kernel.invoke<ReturnType<typeof c.run>>("agent.run", ...args),
         stop: (id) =>
@@ -181,7 +182,10 @@ export function RHCode({
         {settings && (
           <Dialog
             title={label("RH Code 设置", "RH Code settings")}
-            onClose={() => setSettings(false)}
+            onClose={() => {
+              setSettings(false);
+              void c.refreshEngine().catch((e) => c.setError(String(e)));
+            }}
             className="rc-settings-dialog"
           >
             <div className="rc-settings-scroll">

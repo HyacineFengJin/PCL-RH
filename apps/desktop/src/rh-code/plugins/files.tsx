@@ -147,7 +147,7 @@ export function Source({ area }: { area: Area }) {
     return () => {
       alive = false;
     };
-  }, [file, c.projectId, c.native]);
+  }, [file, c.projectId, c.native, c.filesEpoch]);
   const value = file && c.buffer(file);
   if (!file)
     return (

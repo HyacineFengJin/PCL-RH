@@ -64,6 +64,33 @@ function containsSecret(value, secret) {
     ([name, child]) => name.includes(secret) || containsSecret(child, secret),
   );
 }
+// Streamed text is a display projection, not a durable transcript. Redact a
+// complete key and withhold a trailing key prefix until the next delta arrives,
+// otherwise a credential split across chunks could be exposed temporarily.
+function publicAssistantOutput(text, secret) {
+  let output = secret ? text.split(secret).join("[redacted]") : text;
+  if (secret) {
+    for (let length = Math.min(secret.length - 1, output.length); length > 0; length--) {
+      if (output.endsWith(secret.slice(0, length))) {
+        output = output.slice(0, -length);
+        break;
+      }
+    }
+  }
+  output = output.slice(0, 16_000);
+  // Escaped control characters can make a short string exceed the checkpoint's
+  // JSON budget. Keep enough space for counters and the rest of provider state.
+  if (Buffer.byteLength(JSON.stringify(output)) > 48_000) {
+    let low = 0, high = output.length;
+    while (low < high) {
+      const length = Math.ceil((low + high) / 2);
+      if (Buffer.byteLength(JSON.stringify(output.slice(0, length))) <= 48_000) low = length;
+      else high = length - 1;
+    }
+    output = output.slice(0, low);
+  }
+  return output;
+}
 
 /** Real SDK integration. The host owns activation, provider selection and limits, never job input. */
 export class LivePiProvider {
@@ -142,6 +169,12 @@ export class LivePiProvider {
       key,
       failure,
       awaitingUser;
+    const activity = { phase: "starting", textChars: 0 };
+    let activityWrites = Promise.resolve();
+    let lastActivitySave = 0;
+    let outputTimer;
+    let assistantOutput = "";
+    let output = "";
     const counts = {
       modelTurns: 0,
       requests: 0,
@@ -207,8 +240,23 @@ export class LivePiProvider {
       const model = { ...selectedModel, maxTokens: outputLimit };
       const saveCounts = () =>
         ctx.checkpoint({
-          livePi: { schemaVersion: 2, ...counts, liveResumeSupported: false },
+          livePi: { schemaVersion: 2, ...counts, output, activity: { ...activity }, liveResumeSupported: false },
         });
+      // SDK subscription callbacks are synchronous. Queue small host-owned
+      // activity projections and drain them before finalizing the round. Raw
+      // deltas, tool arguments and provider diagnostics never enter the log.
+      const saveActivity = (event, metadata = {}) => {
+        const livePi = { schemaVersion: 2, ...counts, output, activity: { ...activity }, liveResumeSupported: false };
+        clearTimeout(outputTimer); outputTimer = undefined;
+        lastActivitySave = Date.now();
+        activityWrites = activityWrites.then(async () => {
+          if (signal.aborted) return;
+          await ctx.checkpoint({ livePi });
+          if (event) await ctx.emit(event, metadata);
+        }).catch(() => {
+          if (!signal.aborted) stop("MODEL_FAILED", "Live activity could not be persisted");
+        });
+      };
       const guardFetch = async (url, options = {}) => {
         throwIfAborted(signal);
         const bytes = Buffer.byteLength(options.body);
@@ -340,6 +388,11 @@ export class LivePiProvider {
           "MODEL_REQUEST_DENIED",
           "Model routing changes are disabled",
         );
+        activity.phase = "requesting";
+        delete activity.toolName;
+        saveActivity("pi.model.turn.started", { turn: counts.modelTurns });
+        await activityWrites;
+        throwIfAborted(signal);
         return modelRuntime.streamSimple(model, context, {
           ...requestOptions,
           apiKey: key,
@@ -355,7 +408,36 @@ export class LivePiProvider {
           ),
         });
       };
+      const toolNames = new Map(ctx.toolDescriptions.map((tool) => [tool.name.replace(".", "__"), tool.name]));
       unsubscribe = session.subscribe((event) => {
+        if (event.type === "message_update") {
+          const delta = event.assistantMessageEvent;
+          if (delta?.type === "text_delta") {
+            const firstText = activity.phase !== "responding";
+            activity.phase = "responding";
+            delete activity.toolName;
+            activity.textChars += typeof delta.delta === "string" ? delta.delta.length : 0;
+            // Retain one bounded prefix of visible text, including enough look
+            // ahead to recognize a key that crosses the display limit.
+            assistantOutput = (assistantOutput + (typeof delta.delta === "string" ? delta.delta : ""))
+              .slice(0, 16_000 + (selection.key?.length ?? 0));
+            output = publicAssistantOutput(assistantOutput, selection.key);
+            if (firstText || Date.now() - lastActivitySave >= 250) saveActivity();
+            else outputTimer ??= setTimeout(() => {
+              outputTimer = undefined;
+              if (!signal.aborted) saveActivity();
+            }, Math.max(1, 250 - (Date.now() - lastActivitySave)));
+          }
+        } else if (["tool_execution_start", "tool_execution_end"].includes(event.type)) {
+          const name = toolNames.get(event.toolName);
+          activity.phase = event.type === "tool_execution_start" ? "tool" : "requesting";
+          if (name && activity.phase === "tool") activity.toolName = name;
+          else delete activity.toolName;
+          if (name) saveActivity(event.type === "tool_execution_start" ? "pi.tool.started" : "pi.tool.completed",
+            { name, ...(event.type === "tool_execution_end" ? { failed: !!event.isError } : {}) });
+        } else if (event.type === "message_end" && event.message.role === "assistant") {
+          saveActivity("pi.model.turn.completed", { turn: counts.modelTurns });
+        }
         if (
           !awaitingUser &&
           event.type === "message_end" &&
@@ -377,6 +459,7 @@ export class LivePiProvider {
       await session.prompt(JSON.stringify(ctx.job.input), {
         expandPromptTemplates: false,
       });
+      await activityWrites;
       if (failure) throw failure;
       throwIfAborted(signal);
       const last = session.messages
@@ -394,6 +477,8 @@ export class LivePiProvider {
         "MODEL_RESULT_LIMIT",
         "Final model text exceeded the safe result limit",
       );
+      activity.phase = "idle";
+      delete activity.toolName;
       await saveCounts();
       return {
         label: "UNTRUSTED_MODEL_PROPOSAL",
@@ -426,12 +511,15 @@ export class LivePiProvider {
       );
     } finally {
       clearTimeout(timer);
+      clearTimeout(outputTimer);
       signal.removeEventListener("abort", onAbort);
       try {
         if (abortPromise) await abortPromise;
+        await activityWrites;
       } finally {
         unsubscribe();
         session?.dispose();
+        assistantOutput = "";
         key = undefined;
       }
     }

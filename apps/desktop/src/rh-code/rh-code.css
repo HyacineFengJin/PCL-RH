@@ -1694,3 +1694,309 @@
   line-height: 1.6;
   margin: 12px 0 18px;
 }
+
+/* Harness activity follows project-owned jobs across conversation/output areas.
+   Only review actions use orange; runtime and tool activity retain AI purple. */
+.rc-harness-runtime {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+  padding: 9px 12px;
+  color: var(--rc-muted);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--rc-purple) 5%, var(--rc-surface));
+  border-bottom: 1px solid var(--rc-line);
+}
+.rc-harness-runtime > span {
+  flex: 1;
+  min-width: 100px;
+}
+.rc-harness-runtime .rc-button {
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.rc-harness-mode {
+  color: var(--rc-muted);
+  font-size: 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rc-harness-activity,
+.rc-harness-review {
+  min-width: 0;
+  border: 1px solid var(--rc-line);
+  border-radius: 10px;
+  background: var(--rc-surface);
+  margin: 12px 0;
+  font-size: 12px;
+}
+.rc-harness-activity > header,
+.rc-harness-review > header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 11px;
+  color: var(--rc-purple);
+}
+.rc-harness-activity > header > code {
+  margin-left: auto;
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rc-harness-activity .rc-harness-stop {
+  font-size: 10px;
+  padding: 3px 6px;
+  color: var(--rc-muted);
+}
+.rc-harness-spinner {
+  animation: rc-harness-spin 1.5s linear infinite;
+}
+@keyframes rc-harness-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.rc-harness-tools > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  color: var(--rc-muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  border-top: 1px solid var(--rc-line);
+}
+.rc-harness-tools > summary::after {
+  content: "+";
+  margin-left: auto;
+}
+.rc-harness-tools[open] > summary::after {
+  content: "−";
+}
+.rc-harness-tools > summary::-webkit-details-marker,
+.rc-harness-file-diff > summary::-webkit-details-marker {
+  display: none;
+}
+.rc-harness-tools > ol {
+  margin: 0;
+  padding: 0 11px 8px;
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+}
+.rc-harness-tools > ol > li {
+  padding: 6px 0;
+  border-top: 1px solid color-mix(in srgb, var(--rc-line) 65%, transparent);
+}
+.rc-harness-tools > ol > li > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rc-harness-tools code {
+  min-width: 0;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.rc-harness-tools > ol > li > div > span {
+  margin-left: auto;
+  color: var(--rc-muted);
+  font-size: 10px;
+  flex: none;
+}
+.rc-harness-tools > ol > li[data-status="running"] > div > span {
+  color: var(--rc-purple);
+}
+.rc-harness-tools > ol > li[data-status="failed"] > div > span {
+  color: var(--rc-orange);
+}
+.rc-harness-path {
+  display: block;
+  margin-top: 4px;
+  color: var(--rc-muted);
+}
+.rc-harness-tools ul {
+  padding-left: 18px;
+  margin: 7px 0 0;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.rc-harness-output {
+  padding: 10px 11px;
+  border-top: 1px solid var(--rc-line);
+}
+.rc-harness-output > span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rc-harness-output > p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 7px 0 0;
+  line-height: 1.65;
+}
+.rc-harness-error {
+  color: var(--rc-orange);
+  background: color-mix(in srgb, var(--rc-orange) 6%, var(--rc-surface));
+  border: 1px solid color-mix(in srgb, var(--rc-orange) 25%, var(--rc-line));
+  border-radius: 7px;
+  padding: 8px 10px;
+  margin: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.rc-harness-error > p {
+  margin: 0 0 7px;
+}
+.rc-harness-wait {
+  padding: 0 11px 10px;
+  margin: 0;
+  color: var(--rc-muted);
+  font-size: 11px;
+}
+.rc-harness-task-title {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 16px;
+}
+.rc-harness-task-title > strong {
+  overflow-wrap: anywhere;
+}
+.rc-harness-task-title > span {
+  margin-left: auto;
+  color: var(--rc-muted);
+  font-size: 10px;
+  flex: none;
+}
+.rc-harness-review > header {
+  color: var(--rc-orange);
+  border-bottom: 1px solid var(--rc-line);
+}
+.rc-harness-review > article {
+  padding: 10px;
+}
+.rc-harness-review > article + article {
+  border-top: 1px solid var(--rc-line);
+}
+.rc-harness-review > article > header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--rc-ink);
+}
+.rc-harness-review > article > header > strong {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.rc-harness-review > article > header > span {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--rc-muted);
+}
+.rc-harness-file-count {
+  margin: 7px 0;
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rc-harness-file-diff {
+  border: 1px solid var(--rc-line);
+  border-radius: 6px;
+  margin: 6px 0;
+  overflow: hidden;
+}
+.rc-harness-file-diff > summary {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  padding: 7px 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.rc-harness-file-diff > summary > span {
+  color: var(--rc-orange);
+  font-size: 10px;
+  flex: none;
+}
+.rc-harness-file-diff > summary > code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.rc-harness-file-diff > pre {
+  overflow: auto;
+  max-height: 320px;
+  margin: 0;
+  border-top: 1px solid var(--rc-line);
+  background: var(--rc-soft);
+  font:
+    11px/1.65 ui-monospace,
+    SFMono-Regular,
+    monospace;
+  tab-size: 4;
+}
+.rc-harness-diff-header,
+.rc-harness-diff-line {
+  display: block;
+  padding: 0 8px;
+  min-width: max-content;
+}
+.rc-harness-diff-header {
+  color: var(--rc-muted);
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.rc-harness-diff-line.add {
+  background: color-mix(in srgb, var(--rc-purple) 10%, var(--rc-soft));
+  color: var(--rc-purple);
+}
+.rc-harness-diff-line.remove {
+  background: color-mix(in srgb, var(--rc-orange) 10%, var(--rc-soft));
+  color: var(--rc-orange);
+}
+.rc-harness-review > article > footer > p {
+  margin: 9px 0;
+  font-size: 10px;
+  color: var(--rc-muted);
+  line-height: 1.5;
+}
+.rc-harness-review > article > footer > .rc-button {
+  margin: 0;
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.rc-harness-applied {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0;
+  color: var(--rc-purple);
+}
+.rc-harness-activity.compact {
+  margin: 8px 0 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rc-harness-spinner {
+    animation: none;
+  }
+}
+.rc-harness-diff-newline {
+  display: block;
+  padding: 0 8px;
+  min-width: max-content;
+  color: var(--rc-muted);
+  font-style: italic;
+}

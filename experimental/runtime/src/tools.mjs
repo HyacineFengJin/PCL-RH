@@ -7,6 +7,8 @@ export class ToolRegistry {
     check(!this.#tools.has(tool.name), 'DUPLICATE_TOOL', `Duplicate tool ${tool.name}`);
     check(typeof tool.execute === 'function' && typeof tool.validate === 'function', 'INVALID_TOOL', 'Tool needs validation and execution');
     check(['read-only', 'idempotent', 'manual'].includes(tool.replaySafety), 'INVALID_TOOL', 'Declare tool replay safety');
+    check(tool.projectReceipt === undefined || typeof tool.projectReceipt === 'function', 'INVALID_TOOL', 'Receipt projection must be a host function');
+    check(tool.replayCompleted === undefined || (typeof tool.replayCompleted === 'boolean' && (!tool.replayCompleted || tool.replaySafety === 'read-only')), 'INVALID_TOOL', 'Only read-only tools may reconstruct completed results');
     this.#tools.set(tool.name, Object.freeze({ ...tool })); return this;
   }
   get(name, allowed) {
