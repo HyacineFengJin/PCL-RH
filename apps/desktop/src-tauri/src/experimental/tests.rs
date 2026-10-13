@@ -267,3 +267,43 @@ fn native_admission_after_the_close_fence_does_not_start_or_pin_a_host() {
     assert!(host.session.lock().unwrap().is_none());
     assert!(!fixture.0.join(".pcl-rust").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn build_artifact_open_requires_exact_owned_directory_without_links() {
+    let fixture = Fixture::new();
+    let root = fs::canonicalize(&fixture.0).unwrap();
+    let job = "12345678-1234-1234-1234-123456789abc";
+    let run = "abcdef12-1234-1234-1234-123456789abc";
+    let base = root
+        .join(".pcl-rust/experimental/jobs")
+        .join(job)
+        .join("build-runs");
+    let directory = base.join(run).join("artifacts");
+    fs::create_dir_all(&directory).unwrap();
+    let args = json!({"jobId":job,"runId":run});
+    let result = json!({"directory":directory,"runId":run,"artifactCount":1});
+    assert_eq!(
+        checked_build_directory(&root, &args, &result).unwrap(),
+        directory
+    );
+    assert!(
+        checked_build_directory(&root, &json!({"jobId":"../escape","runId":run}), &result).is_err()
+    );
+    assert!(checked_build_directory(
+        &root,
+        &args,
+        &json!({"directory":root,"runId":run,"artifactCount":1})
+    )
+    .is_err());
+    assert!(checked_build_directory(
+        &root,
+        &args,
+        &json!({"directory":directory,"runId":run,"artifactCount":0})
+    )
+    .is_err());
+    let saved = base.join("saved");
+    fs::rename(base.join(run), &saved).unwrap();
+    std::os::unix::fs::symlink(&saved, base.join(run)).unwrap();
+    assert!(checked_build_directory(&root, &args, &result).is_err());
+}

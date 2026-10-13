@@ -1,6 +1,7 @@
 mod account_appearance;
 mod account_commands;
 mod accounts;
+mod code_runner;
 mod config;
 mod downloads;
 mod editing;
@@ -1864,6 +1865,9 @@ fn open_folder(
     Ok(())
 }
 fn main() {
+    if let Some(code) = code_runner::main_if_requested() {
+        std::process::exit(code);
+    }
     if let Some(code) = launcher_game_monitor::dispatch_cli() {
         std::process::exit(code);
     }
@@ -2013,6 +2017,7 @@ fn main() {
             experimental::rh_code_adopt,
             experimental::rh_code_harness_reviews,
             experimental::rh_code_harness_apply,
+            experimental::rh_code_build_open,
             experimental::experimental_choose,
             experimental::experimental_open,
             instance_metadata_update,

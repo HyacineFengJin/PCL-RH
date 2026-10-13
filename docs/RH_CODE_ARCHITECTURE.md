@@ -74,7 +74,21 @@ Agent 准入先保存编辑缓冲，再由 Rust 捕获当前对话和源码。�
 
 当前 Linux 应用边界使用 FD 相对的 `openat2`、匿名暂存 inode、`renameat2` 与持久恢复日志。发布按文件原子完成，批次中断由日志恢复；外部修改或身份变化阻止自动恢复并保留备份。控制器将应用加入元数据修订队列，保留 I/O 期间新输入的编辑。原生准入拥有整个捕获或应用区间，包含 stdio 请求之间的时间，防止休眠或关闭过早释放宿主。
 
-旧版审阅和空目录「采用源码」仍通过原有服务提供，未改变为通用自动合并。Shell、构建和游戏测试不在通用工具列表中。
+旧版审阅和空目录「采用源码」仍通过原有服务提供，未改变为通用自动合并。任意 Shell 和游戏测试不在通用工具列表中；固定构建工具由独立插件提供。
+
+## 构建执行的所有权
+
+`rh.build` 贡献构建视图、`build.open` 命令和 `build.run` / `build.read_log` 工具。项目的 `buildPolicy` 由 Rust 持久保存，旧项目默认关闭。`agent_context` 仅在 Execute 模式且插件启用时捕获策略和二进制输入；任务参数不能扩大权限。后续策略变更不修改已准入任务。
+
+`build-snapshot.mjs` 验证并冻结二进制清单。`HarnessService.buildSnapshot` 允许正在运行的任务使用同一任务的精确提案 ID/digest，构建路径不放宽对外导出与源码应用的完成状态要求。`HarnessBuildService` 在 `build-runs/<runId>/source` 拼装副本；control 记录与原始冻结输入不挂载进执行环境。
+
+`AgentRuntime` 在整个工具调用期间持有任务租约；构建服务不能重入获取该租约，也不写 `job.json`。服务独立持有构建记录、日志、产物和取消句柄。它先持久预留 operation → run 对应关系，再启动执行；重放只返回已有回执，丢失拥有者的运行显示 interrupted，不自动再执行。原有模板校验 `BuildService` 保持独立。
+
+Rust 在启动 Node 宿主时提供自身可执行文件路径。`NativeBuildRunner` 只以 `--rh-code-build-runner` 启动无界面的辅助模式，通过受限 NDJSON 交换 started/output/finished。stdin 是拥有权租约：取消或 EOF 要求辅助进程先清理 sandbox，再发送最终回执。强制终止且清理未确认时不能返回成功。活动构建加入 idle/shutdown 检查；停止既有任务不依赖启动命令插件仍然注册。
+
+`code_runner` 将固定 javac/Gradle 配方放入 bubblewrap PID、用户、挂载等命名空间，默认关闭网络。副本 source/home 使用已打开的目录 FD 挂载，系统工具只读；不暴露原项目、宿主 control、用户 HOME 或凭据。资源限制为单进程及部分目录限制，没有使用系统 cgroup，也不保证整个进程树的内存或磁盘总配额。
+
+输出有字节预算，逐步写入私有日志，记录只确认已写前缀。日志读取按 UTF-8 字节分页，模型回执省略全文。成功后按固定路径收集产物并记录哈希；「打开产物」再验证哈希，Rust 复核项目/任务归属、运行 ID 和无链接的私有目录。构建成功与游戏验证状态分开，不能把命令退出码推广为整体模组可用。
 
 ## 视觉资产的所有权
 
@@ -110,6 +124,7 @@ node --test experimental/runtime/tests/visual-provider.test.mjs
 node --test experimental/runtime/tests/harness-provider.test.mjs experimental/runtime/tests/harness-host.test.mjs
 cargo test --locked -p pcl-desktop --features custom-protocol rh_code
 cargo test --locked -p pcl-desktop --features custom-protocol experimental::tests
+cargo test --locked -p pcl-desktop --features custom-protocol code_runner
 ```
 
-这些检查覆盖真实 Cordis 卸载与恢复、布局身份、原生存储冲突、对话任务归属和源码保护。它们使用隔离数据；不证明真实模型服务、Java 构建或游戏运行已经通过。
+这些检查覆盖 Cordis 卸载与恢复、布局身份、原生存储冲突、对话归属和源码保护。构建服务测试使用模拟 helper；原生 runner 的 Linux 检查使用隔离 Java 和 wrapper 夹具，依赖本机 JDK/bubblewrap。它们不证明真实模型服务、任意模组工程或游戏运行已经通过。

@@ -67,8 +67,10 @@ export function RHCode({
         openAiSettings: () => setSettings(true),
         run: (...args) =>
           kernel.invoke<ReturnType<typeof c.run>>("agent.run", ...args),
-        stop: (id) =>
-          kernel.invoke<ReturnType<typeof c.stop>>("agent.stop", id),
+        // Admission belongs to the launch plugin. The controller owns admitted
+        // jobs until their children drain, so plugin retirement cannot revoke
+        // cancellation while a project task is still running.
+        stop: c.stop,
       }}
     >
       <div

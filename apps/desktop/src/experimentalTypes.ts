@@ -98,6 +98,36 @@ export type Artifact = {
   directory: string;
   files: string[];
 };
+/** Native build receipts describe one immutable project copy. Model text and
+ * the current editor buffer never establish which source was compiled. */
+export type BuildRunView = {
+  runId: string;
+  jobId: string;
+  recipe: "javac" | "gradle";
+  target: "classes" | "build" | "test";
+  status: string;
+  revision: number;
+  sourceFingerprint: string;
+  proposalId?: string | null;
+  proposalDigest?: string | null;
+  startedAt: string;
+  finishedAt?: string | null;
+  exitCode?: number | null;
+  signal?: string | null;
+  logBytes: number;
+  logTruncated?: boolean;
+  artifactCount?: number;
+  artifactTruncated?: boolean;
+  artifacts: { path: string; size: number; sha256: string }[];
+  actualGeneratedCodeExecuted?: boolean;
+  error?: { code: string; message: string } | null;
+};
+export type BuildLogView = {
+  content: string;
+  nextOffset: number | null;
+  truncated: boolean;
+  totalBytes: number;
+};
 export type JobView = {
   summary: JobSummary;
   mode: string;
@@ -107,6 +137,7 @@ export type JobView = {
   error?: { message: string };
   artifacts: Artifact[];
   reviews: string[];
+  buildRuns?: BuildRunView[];
   porterSource?: PorterSource;
 };
 export type ReviewView = {
@@ -195,6 +226,7 @@ export type MakerSpec = {
 export type ExperimentalOperation =
   | "rh_code_run"
   | "rh_code_start"
+  | "harness_build_log"
   | "maker_thread_read"
   | "maker_threads"
   | "maker_thread_run"

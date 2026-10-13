@@ -5,6 +5,7 @@ import { agentContext, fitHarnessInput } from "./agent-context.mjs";
 import { captureNativeSnapshot, stageNativeSnapshot, decodeText } from "./harness-snapshot.mjs";
 import { captureNativeHistory, stageNativeHistory } from "./history-snapshot.mjs";
 import { captureHarnessToolScope } from "./harness-tool-catalog.mjs";
+import { captureBuildInput, stageBuildInput } from "./build-snapshot.mjs";
 
 export async function prepareCodeJob(a, { runtime, preset, provider, jobs, admit }) {
   if (!preset) throw new Error("Save and select an AI preset first");
@@ -12,6 +13,7 @@ export async function prepareCodeJob(a, { runtime, preset, provider, jobs, admit
     throw new Error("The shared runtime already has two active jobs");
   const toolScope = captureHarnessToolScope(a.enabledPlugins, a.mode);
   const snapshot = captureNativeSnapshot(a.sourceFiles ?? [], a.protectedPaths ?? []);
+  const buildInput = captureBuildInput(a.buildPolicy, a.buildFiles ?? [], snapshot.record.manifest);
   const history = captureNativeHistory(a, snapshot.record.manifest);
   const context = agentContext({ ...a,
     historyRecord: history.record,
@@ -27,13 +29,15 @@ export async function prepareCodeJob(a, { runtime, preset, provider, jobs, admit
       harness: {
         schemaVersion: 1, mode: a.mode, pluginId: "rh.project",
         projectId: a.project.id, conversationId: a.conversation.id,
-        thread: context.thread, source: snapshot.descriptor, history: history.descriptor, ...toolScope,
+        thread: context.thread, source: snapshot.descriptor, history: history.descriptor,
+        buildPolicy: buildInput.policy, buildInput: buildInput.descriptor, ...toolScope,
       },
     }),
   });
   try {
     await stageNativeSnapshot(runtime.store, job, snapshot);
     await stageNativeHistory(runtime.store, job, history);
+    await stageBuildInput(runtime.store, job, buildInput);
     const { retained, omitted, method } = job.input.harness.thread.projection;
     return { ...(await admit(job, preset, true)), contextProjection: { retained, omitted, method } };
   } catch (error) {

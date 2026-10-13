@@ -29,6 +29,7 @@ export type PluginRuntime = {
   commands?: {
     run: (...args: any[]) => unknown;
     stop: (...args: any[]) => unknown;
+    openBuild?: (...args: any[]) => unknown;
   };
 };
 /** A *.plugin.tsx entry exports this value as its default export. The shared

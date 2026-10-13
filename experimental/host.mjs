@@ -10,6 +10,8 @@ import { prepareCodeJob } from "../code/agent-adapter.mjs";
 import { HarnessService } from "../code/harness-service.mjs";
 import { HarnessToolCatalog } from "../code/harness-tool-catalog.mjs";
 import { VisualService } from "../code/visual-service.mjs";
+import { HarnessBuildService } from "../code/build-service.mjs";
+import { registerBuildTools } from "./runtime/src/build-tools.mjs";
 import { registerVisualTools } from "./runtime/src/visual-tools.mjs";
 import { readJobSnapshot } from "./job-snapshot.mjs";
 import { registerHarnessTools } from "./runtime/src/harness-tools.mjs";
@@ -143,6 +145,8 @@ const reviews = new HostReviewService({ store: runtime.store });
 const harness = new HarnessService({ store: runtime.store });
 const harnessTools = new HarnessToolCatalog(adapters.registry);
 registerHarnessTools(harnessTools, harness);
+const builds = new HarnessBuildService({ store: runtime.store, harnessService: harness });
+registerBuildTools(harnessTools.forPlugin("rh.build"), builds);
 const visualAssets = new VisualService({
   store: runtime.store,
   harnessService: harness,
@@ -514,7 +518,7 @@ async function dispatch(operation, a) {
       return prepareIdle({
         runtime,
         reviews,
-        children: [reviews, adapters, bridge],
+        children: [reviews, adapters, bridge, builds],
         pendingJobs,
         liveRuns,
         pendingExtensions,
@@ -561,6 +565,12 @@ async function dispatch(operation, a) {
         proposalId: a.proposalId,
         expectedDigest: a.expectedDigest,
       });
+    }
+    case "harness_build_log":
+      return builds.readLog({ jobId: a.jobId }, a);
+    case "rh_code_build_artifact_directory": {
+      checkRhOwner(await runtime.getJob(a.jobId), a);
+      return builds.artifactDirectory(a.jobId, a.runId);
     }
     case "status":
       return {
@@ -1078,6 +1088,7 @@ async function dispatch(operation, a) {
         ...(job.profile === "harness"
           ? {
               output: job.providerState?.livePi?.output ?? "",
+              buildRuns: await builds.listForJob(job),
               ...(await visualPreview(job)),
             }
           : {}),
@@ -1211,6 +1222,7 @@ async function dispatch(operation, a) {
       closing = true;
       selection = null;
       await runtime.shutdown();
+      await builds.shutdown();
       harnessTools.dispose();
       visualPreviews.clear();
       await Promise.all([

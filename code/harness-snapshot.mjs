@@ -166,6 +166,12 @@ export const writeHarnessBytes = (workspace, relative, bytes) =>
   writePrivateBytes(workspace, relative, bytes, HARNESS_LIMITS.fileBytes);
 export const readSnapshotBytes = (workspace, relative, expected) =>
   readPrivateBytes(workspace, relative, expected, HARNESS_LIMITS.fileBytes);
+// Binary build inputs have a separate native capture budget. They remain outside
+// the model workspace and never widen the source editor's text contract.
+export const writeHarnessBuildBytes = (workspace, relative, bytes) =>
+  writePrivateBytes(workspace, relative, bytes, 4 * 1024 * 1024);
+export const readHarnessBuildBytes = (workspace, relative, expected) =>
+  readPrivateBytes(workspace, relative, expected, 4 * 1024 * 1024);
 export async function writeHarnessRecord(workspace, relative, record) {
   return writePrivateBytes(workspace, relative, Buffer.from(JSON.stringify(record)), HARNESS_LIMITS.recordBytes);
 }

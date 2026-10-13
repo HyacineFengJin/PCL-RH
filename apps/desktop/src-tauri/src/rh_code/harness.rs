@@ -487,6 +487,22 @@ fn verify_root(project: &Project, expected: &Identity) -> Result<(), String> {
 }
 
 pub(super) fn capture(project: &Project) -> Result<Value, String> {
+    capture_with_build(project, false)
+}
+
+fn build_resource(path: &str) -> bool {
+    path == "gradle/wrapper/gradle-wrapper.jar"
+        || path
+            .split('/')
+            .collect::<Vec<_>>()
+            .split_last()
+            .is_some_and(|(_, parents)| parents.contains(&"src"))
+}
+
+/// Binary build inputs are opt-in and never become readable source context.
+/// Capture them in this same pinned walk, so later build staging cannot pick up
+/// fresh user files or follow a different project directory between snapshots.
+pub(super) fn capture_with_build(project: &Project, include_build: bool) -> Result<Value, String> {
     let root = root(project)?;
     let root_identity = root.key()?;
     let mut pending = vec![(String::new(), 0usize)];
@@ -494,6 +510,8 @@ pub(super) fn capture(project: &Project) -> Result<Value, String> {
     let mut manifest = vec![];
     let mut omissions = vec![];
     let mut total = 0usize;
+    let mut build_files = vec![];
+    let mut build_bytes = 0usize;
     let mut scanned = 0usize;
     while let Some((path, depth)) = pending.pop() {
         if depth > 12 {
@@ -528,11 +546,21 @@ pub(super) fn capture(project: &Project) -> Result<Value, String> {
                         None
                     };
                     if let Some(reason) = reason {
+                        if include_build && build_resource(&path) {
+                            return Err(format!("Build input cannot be captured ({reason}): {path}. Use a regular file up to 1 MiB."));
+                        }
                         omissions.push(json!({"path":path,"reason":reason}));
                         continue;
                     }
                     let (state, bytes) = directory.read(&name, MAX_FILE)?;
                     if std::str::from_utf8(&bytes).is_err() || bytes.contains(&0) {
+                        if include_build && build_resource(&path) {
+                            build_bytes += bytes.len();
+                            if build_files.len() >= MAX_FILES || build_bytes > 4 * 1024 * 1024 {
+                                return Err("Build resources exceed 1000 files or 4 MiB; choose a narrower project".into());
+                            }
+                            build_files.push(json!({"path":path,"sha256":state.sha256,"size":state.size,"base64":STANDARD.encode(&bytes)}));
+                        }
                         omissions.push(json!({"path":path,"reason":"notText"}));
                         continue;
                     }
@@ -547,17 +575,33 @@ pub(super) fn capture(project: &Project) -> Result<Value, String> {
                     });
                     source_files.push(json!({"path":path,"sha256":state.sha256,"size":state.size,"data":STANDARD.encode(bytes)}));
                 }
-                _ => omissions.push(json!({"path":path,"reason":"notRegular"})),
+                _ => {
+                    if include_build
+                        && (build_resource(&path)
+                            || path == "src"
+                            || path == "gradle"
+                            || path == "gradle/wrapper"
+                            || path.ends_with("/src"))
+                    {
+                        return Err(format!(
+                            "Build input is not a regular file or directory: {path}"
+                        ));
+                    }
+                    omissions.push(json!({"path":path,"reason":"notRegular"}));
+                }
             }
         }
     }
     manifest.sort_by(|a, b| a.path.cmp(&b.path));
     source_files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
     omissions.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    build_files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
     verify_root(project, &root_identity)?;
-    Ok(
-        json!({"sourceFiles":source_files,"sourceManifest":manifest,"sourceFingerprint":manifest_fingerprint(&manifest)?,"rootIdentity":root_identity,"sourceOmissionCount":omissions.len(),"sourceOmissions":omissions.into_iter().take(32).collect::<Vec<_>>()}),
-    )
+    let mut captured = json!({"sourceFiles":source_files,"sourceManifest":manifest,"sourceFingerprint":manifest_fingerprint(&manifest)?,"rootIdentity":root_identity,"sourceOmissionCount":omissions.len(),"sourceOmissions":omissions.into_iter().take(32).collect::<Vec<_>>()});
+    if include_build {
+        captured["buildFiles"] = json!(build_files);
+    }
+    Ok(captured)
 }
 
 fn store(store_root: &Path) -> Result<Dir, String> {

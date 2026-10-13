@@ -11,8 +11,8 @@ import {
 import { useCode } from "../controller";
 import { useRetainedWork } from "../retention";
 import { label } from "../locale";
-import type { Area, Target } from "../types";
-export function Targets() {
+import type { Area, Target, ViewProps } from "../types";
+export function Targets({ area, api }: ViewProps) {
   const c = useCode(),
     [drafts, setDrafts] = useState<Record<string, Target[]>>({}),
     targets = drafts[c.projectId] ?? c.project?.targets ?? [];
@@ -124,7 +124,21 @@ export function Targets() {
           {label("构建与产物", "Build and artifacts")}
         </header>
         <div className="rc-row">
-          <button className="rc-button orange" disabled>
+          <button
+            className="rc-button orange"
+            disabled={
+              !c.native ||
+              !!c.busy ||
+              c.snapshot?.disabledPlugins.includes("rh.build")
+            }
+            onClick={() => {
+              try {
+                api.invoke("build.open", area.id, c.projectId);
+              } catch (error) {
+                c.setError(String(error));
+              }
+            }}
+          >
             <Hammer size={15} />
             {label("构建", "Build")}
           </button>
@@ -138,7 +152,10 @@ export function Targets() {
           {label("启动测试", "Launch test")}
         </button>
         <p className="rc-muted">
-          {label("构建与测试尚未接入", "Build and test are not connected yet")}
+          {label(
+            "在构建组件中管理 AI 构建授权与输出",
+            "Manage AI build permission and output in the Build component",
+          )}
         </p>
       </section>
     </div>

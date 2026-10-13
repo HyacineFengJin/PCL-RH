@@ -128,6 +128,7 @@ export function useController(hostApi: Api, native: boolean) {
           "maker_threads",
           "extensions_list",
           "rh_code_harness_reviews",
+          "harness_build_log",
         ].includes(operation);
       if (!readOnly) lifecycle.edited();
       const end = lifecycle.begin("external", !readOnly),
@@ -853,7 +854,9 @@ export function useController(hostApi: Api, native: boolean) {
               previous.summary.updatedAt !== job.summary.updatedAt ||
               JSON.stringify(previous.activity) !==
                 JSON.stringify(job.activity) ||
-              previous.output !== job.output
+              previous.output !== job.output ||
+              JSON.stringify(previous.buildRuns) !==
+                JSON.stringify(job.buildRuns)
             )
               lifecycle.touch();
             jobsRef.current = { ...jobsRef.current, [item.jobId]: job };
@@ -938,6 +941,13 @@ export function useController(hostApi: Api, native: boolean) {
       end();
       releaseAfterUnmount();
     }
+  };
+  const openBuild = (areaId: string, owner: string) => {
+    // A retained command from an old area must not alter another project.
+    if (!usable() || selection.current !== owner) return;
+    if (!leaves(currentLayout.current).some((area) => area.id === areaId))
+      return;
+    patchArea(areaId, { view: "build" });
   };
   const activeJobs = () => {
     const active = new Set(
@@ -1137,6 +1147,7 @@ export function useController(hostApi: Api, native: boolean) {
     adoptSource,
     run,
     stop,
+    openBuild,
   };
 }
 export type Controller = ReturnType<typeof useController>;

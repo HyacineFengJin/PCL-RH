@@ -63,6 +63,7 @@ pub enum Operation {
     ProviderStop,
     JobCreate,
     JobRead,
+    HarnessBuildLog,
     JobCancel,
     ArtifactRead,
     MakerReview,
@@ -246,6 +247,10 @@ impl Host {
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("LANG", "C.UTF-8")
+            .env(
+                "PCL_RH_BUILD_RUNNER_EXE",
+                std::env::current_exe().map_err(|e| e.to_string())?,
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -585,6 +590,88 @@ pub async fn rh_code_harness_apply(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Only the native-owned project/job relation and the host's immutable run
+/// receipt can select this directory. The renderer never supplies a path.
+#[tauri::command]
+pub async fn rh_code_build_open(
+    host: State<'_, Arc<Host>>,
+    code: State<'_, Arc<crate::rh_code::Store>>,
+    shared: State<'_, Arc<Shared>>,
+    args: Value,
+) -> Result<(), String> {
+    if shared.closing.load(Ordering::SeqCst) {
+        return Err("Launcher is closing".into());
+    }
+    let host = host.inner().clone();
+    let code = code.inner().clone();
+    let admission = host.admit_native()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        code.call("build_artifact_owner", args.clone())?;
+        let result = host.call("rh_code_build_artifact_directory", args.clone())?;
+        let directory = checked_build_directory(&host.project, &args, &result)?;
+        Command::new("xdg-open")
+            .arg(directory)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn checked_build_directory(
+    project: &std::path::Path,
+    args: &Value,
+    result: &Value,
+) -> Result<PathBuf, String> {
+    let identifier = |key: &str| -> Result<&str, String> {
+        let id = args[key].as_str().ok_or("Missing build identity")?;
+        if id.len() != 36
+            || id.bytes().enumerate().any(|(i, c)| {
+                if [8, 13, 18, 23].contains(&i) {
+                    c != b'-'
+                } else {
+                    !c.is_ascii_digit() && !(b'a'..=b'f').contains(&c)
+                }
+            })
+        {
+            return Err("Invalid build identity".into());
+        }
+        Ok(id)
+    };
+    let job = identifier("jobId")?;
+    let run = identifier("runId")?;
+    if result["runId"] != run || result["artifactCount"].as_u64().unwrap_or(0) == 0 {
+        return Err("No completed build artifacts".into());
+    }
+    let base = project.join(".pcl-rust/experimental/jobs");
+    let expected = base
+        .join(job)
+        .join("build-runs")
+        .join(run)
+        .join("artifacts");
+    if result["directory"].as_str() != expected.to_str() {
+        return Err("Build artifact directory differs from its owned run".into());
+    }
+    // Recheck each descendant, not just the final prefix; an intervening symlink
+    // must not redirect the file manager into another run or user directory.
+    let mut cursor = fs::canonicalize(&base).map_err(|e| e.to_string())?;
+    if cursor != base {
+        return Err("Build store path contains a link".into());
+    }
+    for segment in [job, "build-runs", run, "artifacts"] {
+        cursor.push(segment);
+        if !fs::symlink_metadata(&cursor)
+            .map_err(|e| e.to_string())?
+            .is_dir()
+        {
+            return Err("Build artifact path is not an owned directory".into());
+        }
+    }
+    Ok(expected)
 }
 
 #[cfg(test)]

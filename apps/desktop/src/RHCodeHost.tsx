@@ -59,6 +59,10 @@ export function RHCodeHost(props: Props) {
             if (!controller.current) throw new Error("RH Code is not active");
             return controller.current.stop(id);
           },
+          openBuild: (areaId: string, projectId: string) => {
+            if (!controller.current) throw new Error("RH Code is not active");
+            return controller.current.openBuild(areaId, projectId);
+          },
         },
         undefined,
         leases.acquire,

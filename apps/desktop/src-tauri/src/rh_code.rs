@@ -52,6 +52,12 @@ pub struct Target {
     pub minecraft: String,
     pub loaders: Vec<String>,
 }
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BuildPolicy {
+    pub enabled: bool,
+    pub network: bool,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Project {
@@ -64,6 +70,8 @@ pub struct Project {
     pub layout: Value,
     #[serde(default)]
     pub instructions: String,
+    #[serde(default)]
+    pub build_policy: BuildPolicy,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -218,6 +226,9 @@ impl Store {
         }
         let mut ids = HashSet::new();
         for p in &d.projects {
+            if p.build_policy.network && !p.build_policy.enabled {
+                return Err("Invalid stored build policy; retained for recovery".into());
+            }
             context::checked_note(&p.instructions, "Stored project instructions")?;
             if p.id.len() != 24
                 || !p.id.bytes().all(|v| v.is_ascii_hexdigit())
@@ -407,8 +418,18 @@ impl Store {
             atomic(&self.root.join("workspace.json"), &bytes)?;
             return Ok(snapshot(&d, &hash(&bytes)));
         }
-        if operation == "artifact_owner" || operation == "source_adopt" {
-            ensure_plugin(&d, "rh.changes")?;
+        if operation == "artifact_owner"
+            || operation == "source_adopt"
+            || operation == "build_artifact_owner"
+        {
+            ensure_plugin(
+                &d,
+                if operation == "build_artifact_owner" {
+                    "rh.build"
+                } else {
+                    "rh.changes"
+                },
+            )?;
             if operation == "source_adopt" {
                 ensure_plugin(&d, "rh.source")?;
             }
@@ -476,7 +497,15 @@ impl Store {
                 .find(|p| Some(p.id.as_str()) == a["projectId"].as_str())
                 .unwrap();
             harness::recover(&self.root, p)?;
-            let captured = harness::capture(p)?;
+            // Build permission is a native project choice, never a tool argument.
+            // A disabled plugin contributes neither execution nor binary inputs.
+            let build_policy =
+                if mode == "execute" && !d.disabled_plugins.iter().any(|id| id == "rh.build") {
+                    p.build_policy.clone()
+                } else {
+                    BuildPolicy::default()
+                };
+            let captured = harness::capture_with_build(p, build_policy.enabled)?;
             let c = p
                 .conversations
                 .iter()
@@ -489,6 +518,7 @@ impl Store {
             let messages: Vec<Value> = c.messages[start..].iter().map(|m|
                 json!({"role":m.role,"content":m.content.chars().take(1800).collect::<String>()})).collect();
             let mut context = json!({"project":{"id":p.id,"name":p.name,"instructions":p.instructions},"conversation":{"id":c.id,"messages":messages,"omittedMessages":start,"contextNote":c.context_note,"contextPaths":c.context_paths},"conversationHistory":context::history(&c.messages)?,"request":request,"mode":mode,"target":p.targets[index]});
+            context["buildPolicy"] = json!(build_policy);
             context["enabledPlugins"] = json!(manifests()
                 .as_array()
                 .ok_or("Invalid bundled plugins")?
@@ -561,12 +591,24 @@ impl Store {
                     conversations: vec![],
                     layout: Value::Null,
                     instructions: String::new(),
+                    build_policy: BuildPolicy::default(),
                 });
             }
             "project_instructions" => {
                 ensure_plugin(&d, "rh.project")?;
                 let instructions = context::note(&a, "instructions")?;
                 Self::project_mut(&mut d, &a)?.instructions = instructions;
+            }
+            "project_build_policy" => {
+                ensure_plugin(&d, "rh.build")?;
+                let enabled = a["enabled"].as_bool().ok_or("Choose a build permission")?;
+                let network = a["network"]
+                    .as_bool()
+                    .ok_or("Choose a build network permission")?;
+                if network && !enabled {
+                    return Err("Build network access requires enabled builds".into());
+                }
+                Self::project_mut(&mut d, &a)?.build_policy = BuildPolicy { enabled, network };
             }
             "plugin_set" => {
                 let key = text(&a, "id", 120)?;

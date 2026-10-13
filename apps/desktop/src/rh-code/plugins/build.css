@@ -1,0 +1,120 @@
+.rc-build-policy,
+.rc-build-run {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--rc-line);
+  border-radius: 10px;
+  background: var(--rc-surface);
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.rc-build-policy > label {
+  display: flex;
+  align-items: start;
+  gap: 7px;
+  margin: 5px 0 10px;
+  line-height: 1.5;
+}
+.rh-code .rc-build-policy input[type="checkbox"] {
+  accent-color: var(--rc-orange);
+  flex: none;
+}
+.rc-build-policy .rc-muted,
+.rc-build-run .rc-muted {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.rc-build-run > header,
+.rc-build-source {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.rc-build-run > header {
+  color: var(--rc-orange);
+}
+.rc-build-run > header > span {
+  margin-left: auto;
+  font-size: 11px;
+}
+.rc-build-source {
+  margin: 8px 0;
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rc-build-source code {
+  overflow-wrap: anywhere;
+}
+.rc-build-run details {
+  border-top: 1px solid var(--rc-line);
+  margin-top: 10px;
+  padding-top: 8px;
+}
+.rc-build-run summary {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  cursor: pointer;
+  color: var(--rc-muted);
+  list-style: none;
+}
+.rc-build-run summary::after {
+  content: "+";
+  margin-left: auto;
+}
+.rc-build-run details[open] > summary::after {
+  content: "−";
+}
+.rc-build-run summary::-webkit-details-marker {
+  display: none;
+}
+.rc-build-stop {
+  margin: 2px 0;
+}
+.rc-build-log pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+  margin: 10px 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--rc-soft);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.rc-build-log .rc-row {
+  flex-wrap: wrap;
+  margin-top: 8px;
+  gap: 5px;
+}
+.rc-build-log .rc-button {
+  padding: 4px 7px;
+  font-size: 10px;
+}
+.rc-build-artifacts {
+  padding: 0;
+  margin: 10px 0;
+  list-style: none;
+}
+.rc-build-artifacts > li {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+.rc-build-artifacts code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+.rc-build-artifacts span {
+  flex: none;
+  margin-left: auto;
+  color: var(--rc-muted);
+  font-size: 10px;
+}
+.rc-build-panel .rc-harness-error {
+  margin: 8px 0;
+}

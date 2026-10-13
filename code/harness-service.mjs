@@ -379,6 +379,36 @@ export class HarnessService {
     return record;
   }
 
+  // Host-only source construction grants no publication authority. Build tools
+  // receive verified private bytes while native review retains its own gate.
+  async buildSnapshot(ctx, { proposalId, expectedDigest } = {}) {
+    const snapshot = await this.#context(ctx);
+    const files = new Map();
+    for (const entry of snapshot.record.manifest) {
+      throwIfAborted(ctx.signal);
+      files.set(entry.path, await readSnapshotBytes(snapshot.workspace, `source/${entry.path}`, entry));
+    }
+    check((proposalId === undefined) === (expectedDigest === undefined),
+      "INVALID_BUILD_PROPOSAL", "A build overlay requires both proposal ID and exact digest");
+    if (proposalId !== undefined) {
+      const review = await this.#review(snapshot.job.id, proposalId);
+      check(exactHash(expectedDigest) && review.digest === expectedDigest &&
+        snapshot.job.operations.some((operation) => operation.status === "completed" &&
+          ["harness.propose_changes", "pixel.propose", "model.propose"].includes(operation.name) &&
+          operation.result?.proposalId === proposalId && operation.result.digest === expectedDigest),
+      "BUILD_PROPOSAL_CHANGED", "Build overlay must match a completed proposal operation from this task");
+      // A running task can compile its private proposal before final review.
+      // Export/adoption keep their completed-job gate and separate approval.
+      for (const change of await this.#verifyProposal(snapshot, review, { verifySource: false })) {
+        if (change.delete) files.delete(change.path);
+        else files.set(change.path, Buffer.from(change.data, "base64"));
+      }
+    }
+    const totalBytes = [...files.values()].reduce((total, bytes) => total + bytes.length, 0);
+    check(files.size <= HARNESS_LIMITS.files && totalBytes <= HARNESS_LIMITS.sourceBytes,
+      "BUILD_SOURCE_LIMIT", "Final text build overlay exceeds its captured source budget");
+    return { job: snapshot.job, files, proposalId: proposalId ?? null, proposalDigest: expectedDigest ?? null };
+  }
   // These methods are intentionally absent from the tool registry. Native
   // review actions supply the exact digest the user saw and target ownership.
   async getReview(jobId, proposalId) {

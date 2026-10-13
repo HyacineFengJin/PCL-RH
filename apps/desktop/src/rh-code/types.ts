@@ -51,6 +51,8 @@ export type Project = {
   conversations: Conversation[];
   layout: Layout | null;
   instructions: string;
+  /** Older projects have no process grant. Changes apply to future captures. */
+  buildPolicy?: { enabled: boolean; network: boolean };
 };
 export type PluginScope = "launcher" | "rh-code" | "both";
 /** Host surfaces that are currently alive; `both` is a manifest lifetime. */

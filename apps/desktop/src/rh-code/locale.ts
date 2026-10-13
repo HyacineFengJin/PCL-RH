@@ -9,6 +9,7 @@ export const viewNames = {
   files: ["文件图谱", "Project files"],
   source: ["源码编辑", "Source editor"],
   targets: ["构建与测试", "Build and test"],
+  build: ["构建", "Build"],
   changes: ["改动审阅", "Changes and review"],
   logs: ["任务与输出", "Tasks and output"],
   porting: ["版本迁移", "Version migration"],

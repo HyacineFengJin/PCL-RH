@@ -509,6 +509,7 @@ fn rh_code_source_adoption_retains_folder_on_invalid_snapshot() {
     let f = Fixture::new();
     let p = Project {
         instructions: String::new(),
+        build_policy: BuildPolicy::default(),
         id: id(),
         name: "A".into(),
         folder: f.folder.to_string_lossy().into_owned(),
@@ -1318,4 +1319,72 @@ fn rh_code_host_budget_can_omit_optional_history_but_rejects_required_metadata_o
     assert!(context::fit_host_budget(&mut capture, &messages)
         .unwrap_err()
         .contains("24 MiB"));
+}
+
+#[test]
+fn rh_code_build_permission_is_native_captured_and_never_widened_by_request() {
+    let f = Fixture::new();
+    let project = f.project();
+    let state = f.write(
+        "conversation_create",
+        json!({"projectId":project,"title":"Build"}),
+    );
+    let conversation = state["projects"][0]["conversations"][0]["id"].clone();
+    let capture = |mode: &str| {
+        f.store.call("agent_context", json!({
+        "projectId":project,"conversationId":conversation,"request":"Compile", "mode":mode,
+        "expectedRevision":f.snapshot()["revision"],"buildPolicy":{"enabled":true,"network":true}
+    })).unwrap()
+    };
+    assert_eq!(
+        capture("execute")["buildPolicy"],
+        json!({"enabled":false,"network":false})
+    );
+    assert!(capture("execute").get("buildFiles").is_none());
+    let before = f.snapshot();
+    assert!(f.store.call("project_build_policy", json!({"projectId":project,"enabled":false,"network":true,"expectedRevision":before["revision"]})).is_err());
+    assert_eq!(f.snapshot(), before);
+    f.write(
+        "project_build_policy",
+        json!({"projectId":project,"enabled":true,"network":false}),
+    );
+    let admitted = capture("execute");
+    assert_eq!(
+        admitted["buildPolicy"],
+        json!({"enabled":true,"network":false})
+    );
+    assert_eq!(admitted["buildFiles"], json!([]));
+    assert_eq!(capture("ask")["buildPolicy"]["enabled"], false);
+    assert_eq!(capture("plan")["buildPolicy"]["enabled"], false);
+    f.write(
+        "project_build_policy",
+        json!({"projectId":project,"enabled":true,"network":true}),
+    );
+    assert_eq!(
+        admitted["buildPolicy"]["network"], false,
+        "existing admission stays frozen"
+    );
+    assert_eq!(capture("execute")["buildPolicy"]["network"], true);
+    f.write("plugin_set", json!({"id":"rh.build","enabled":false}));
+    assert_eq!(capture("execute")["buildPolicy"]["enabled"], false);
+    assert_eq!(f.snapshot()["projects"][0]["buildPolicy"]["enabled"], true);
+}
+
+#[test]
+fn rh_code_legacy_project_defaults_build_permission_without_rewriting_file() {
+    let f = Fixture::new();
+    f.project();
+    let path = f.store.root.join("workspace.json");
+    let mut old: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    old["projects"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("buildPolicy");
+    let bytes = serde_json::to_vec(&old).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        f.snapshot()["projects"][0]["buildPolicy"],
+        json!({"enabled":false,"network":false})
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }

@@ -20,6 +20,7 @@ impl Fixture {
             directory,
             project: Project {
                 instructions: String::new(),
+                build_policy: crate::rh_code::BuildPolicy::default(),
                 id: "a".repeat(24),
                 name: "Fixture".into(),
                 folder: project_folder.to_string_lossy().into(),
@@ -689,4 +690,71 @@ fn replacing_a_staging_slot_with_a_symlink_retains_source_and_link_target() {
         .unwrap()
         .file_type()
         .is_symlink());
+}
+
+#[test]
+fn build_capture_separates_opt_in_binary_resources_from_model_text() {
+    let f = Fixture::new();
+    f.write("common/src/main/java/Main.java", "class Main {}\n");
+    f.write("common/src/main/resources/tile.png", [0, 255, 137]);
+    f.write("gradle/wrapper/gradle-wrapper.jar", [80, 75, 0]);
+    f.write("private-backup.bin", [0, 255]);
+    f.write(".gradle/cache.bin", [0, 255]);
+    let plain = capture(&f.project).unwrap();
+    assert!(plain.get("buildFiles").is_none());
+    let built = capture_with_build(&f.project, true).unwrap();
+    assert_eq!(built["sourceManifest"], plain["sourceManifest"]);
+    assert_eq!(built["sourceFingerprint"], plain["sourceFingerprint"]);
+    let files = built["buildFiles"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    for file in files {
+        let bytes = f.read(file["path"].as_str().unwrap());
+        assert_eq!(file["size"], bytes.len());
+        assert_eq!(file["sha256"], hash(&bytes));
+        assert_eq!(
+            STANDARD.decode(file["base64"].as_str().unwrap()).unwrap(),
+            bytes
+        );
+    }
+    assert_eq!(built["sourceFiles"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn build_capture_rejects_unsafe_or_oversized_required_resources() {
+    let f = Fixture::new();
+    f.write("src/main/resources/tile.bin", [0, 255]);
+    let src = Path::new(&f.project.folder).join("src/main/resources/tile.bin");
+    fs::hard_link(&src, f.directory.join("linked-backup")).unwrap();
+    assert!(capture_with_build(&f.project, true)
+        .unwrap_err()
+        .contains("multipleLinks"));
+    fs::remove_file(f.directory.join("linked-backup")).unwrap();
+    fs::write(&src, vec![0; MAX_FILE + 1]).unwrap();
+    assert!(capture_with_build(&f.project, true)
+        .unwrap_err()
+        .contains("fileTooLarge"));
+    fs::remove_file(&src).unwrap();
+    symlink(f.directory.join("outside"), &src).unwrap();
+    assert!(capture_with_build(&f.project, true)
+        .unwrap_err()
+        .contains("not a regular"));
+    assert!(
+        capture(&f.project).is_ok(),
+        "ordinary text capture still reports omissions"
+    );
+}
+
+#[test]
+fn build_capture_binary_budget_fails_without_mutating_source() {
+    let f = Fixture::new();
+    for index in 0..5 {
+        f.write(
+            &format!("src/main/resources/{index}.bin"),
+            vec![0; MAX_FILE],
+        );
+    }
+    assert!(capture_with_build(&f.project, true)
+        .unwrap_err()
+        .contains("4 MiB"));
+    assert_eq!(f.read("src/main/resources/4.bin"), vec![0; MAX_FILE]);
 }

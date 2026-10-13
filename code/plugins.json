@@ -384,5 +384,43 @@
         ]
       }
     ]
+  },
+  {
+    "id": "rh.build",
+    "name": "Build",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "rh-code",
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "project.build.run",
+      "project.build.read"
+    ],
+    "views": [
+      "build"
+    ],
+    "commands": [
+      "build.open"
+    ],
+    "tools": [
+      {
+        "name": "build.run",
+        "capability": "project.build.run",
+        "modes": [
+          "execute"
+        ]
+      },
+      {
+        "name": "build.read_log",
+        "capability": "project.build.read",
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
+      }
+    ]
   }
 ]

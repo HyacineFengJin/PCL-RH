@@ -28,6 +28,7 @@ const names: Record<string, [string, string]> = {
   "rh.graph": ["内容图谱", "Content graph"],
   "rh.source": ["源码编辑", "Source editor"],
   "rh.targets": ["构建目标", "Build targets"],
+  "rh.build": ["受控构建", "Controlled builds"],
   "rh.changes": ["改动审阅", "Change review"],
   "rh.tasks": ["任务与输出", "Tasks and output"],
   "rh.porting": ["版本迁移", "Version migration"],

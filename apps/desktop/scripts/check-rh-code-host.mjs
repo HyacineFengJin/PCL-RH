@@ -648,7 +648,10 @@ function viewDriver(file, name, initialCode) {
   function render() {
     cursor = 0;
     pending = [];
-    value = component();
+    value = component({
+      area: { type: "area", id: "fixture-targets", view: "targets" },
+      api: { invoke: async () => {} },
+    });
     for (const effect of pending) effect();
   }
   function nodes(node, result = []) {

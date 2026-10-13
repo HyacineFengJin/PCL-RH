@@ -1198,3 +1198,42 @@ test("accepted context metadata drains after unmount without refilling a remount
   assert.equal(previous.conversationContext("A-thread").contextNote, "");
   host.handlers.delete("conversation_context");
 });
+
+test("build navigation preserves the project binding of a retained command", async (t) => {
+  const { host, ui } = await fixture(t),
+    retained = ui.value.openBuild;
+  retained("A-source", "A");
+  await ui.flush();
+  assert.equal(ui.value.layout.children[1].view, "build");
+  const beforeB = structuredClone(host.data.projects[1].layout);
+  ui.value.choose(ui.value.snapshot.projects[1]);
+  await ui.flush();
+  retained("B-source", "A");
+  await ui.flush();
+  assert.deepEqual(ui.value.layout, beforeB);
+  assert.equal(
+    host.calls.filter((call) => call.operation === "layout_save").length,
+    1,
+  );
+});
+
+test("a failed build log read retains no mutation failure or dirty workspace", async (t) => {
+  const { host, ui } = await fixture(t),
+    log = deferred();
+  host.handlers.set("harness_build_log", () => log.promise);
+  const request = ui.value.api("experimental_call", {
+    operation: "harness_build_log",
+    args: {
+      jobId: "fixture-job",
+      runId: "fixture-build",
+      offset: 0,
+      limit: 16000,
+    },
+  });
+  assert.equal(await ui.value.prepareSuspend(), false);
+  log.reject(new Error("Fixture log is unavailable"));
+  await assert.rejects(request, /Fixture log is unavailable/);
+  await ui.flush();
+  assert.equal(ui.value.getLifecycleState().dirty, false);
+  assert.equal(await ui.value.prepareSuspend(), true);
+});

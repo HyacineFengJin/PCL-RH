@@ -44,6 +44,8 @@ const exposedTools = [
     "model.edit",
     "model.inspect",
     "model.propose",
+    "build.run",
+    "build.read_log",
   ]);
 const sdkName = (name) =>
   (name.includes(".") ? name : `harness.${name}`).replace(".", "__");
@@ -647,6 +649,7 @@ test(
     assert.equal(queued.summary.workflow, "harness");
     assert.equal(queued.output, "");
     assert.deepEqual(queued.activity, []);
+    assert.deepEqual(queued.buildRuns, []);
     assert.deepEqual(await f.rpc("idle_prepare"), { busy: true });
     await new Promise((resolve) => setTimeout(resolve, 75));
     assert.equal(

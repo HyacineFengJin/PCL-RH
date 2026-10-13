@@ -51,6 +51,7 @@ function driver(file, exported, initial, controller, language = "en") {
         previous = hooks[index];
       if (
         !previous ||
+        !deps ||
         deps.some((value, index) => !Object.is(value, previous.deps[index]))
       ) {
         hooks[index] = { deps };
@@ -75,7 +76,29 @@ function driver(file, exported, initial, controller, language = "en") {
     }).outputText;
     function localRequire(name) {
       if (name === "react") return react;
-      if (name.endsWith("/controller")) return { useCode: () => controller };
+      if (name.endsWith(".css")) return {};
+      if (name.endsWith("/retention")) return { useRetainedWork() {} };
+      if (name.endsWith("/controller") || name === "./controller")
+        return {
+          useCode: () => controller,
+          useController: () => controller,
+          CodeContext: { Provider: Symbol("CodeContext.Provider") },
+        };
+      if (
+        path.basename(file) === "RHCode.tsx" &&
+        [
+          "../ExperimentalAi",
+          "./LegacyArchive",
+          "./Projects",
+          "./Dialog",
+          "./Plugins",
+          "./Workspace",
+          "./Layouts",
+        ].includes(name)
+      ) {
+        const component = name.split("/").at(-1);
+        return { [component]: function Component() {} };
+      }
       if (name.endsWith("/locale") || name === "./locale")
         return { label: (zh, en) => (language === "en" ? en : zh) };
       if (name.endsWith("experimentalTypes"))
@@ -213,6 +236,7 @@ const controller = () => ({
   patchArea() {},
   run: async () => {},
   stop: async () => {},
+  write: async () => {},
 });
 
 test("diff retains changed lines and trims unchanged context; only visible text is projected", () => {
@@ -998,4 +1022,308 @@ test("disabled changes never mount/read Harness review and disabled source preve
   assert.equal(applications, 0);
   chat.close();
   review.close();
+});
+
+const buildRun = (overrides = {}) => ({
+  runId: "build-one",
+  jobId: "one",
+  recipe: "javac",
+  target: "classes",
+  status: "running",
+  revision: 1,
+  sourceFingerprint: "frozen-source-digest",
+  startedAt: "2026-10-13T00:00:00.000Z",
+  logBytes: 48000,
+  artifacts: [],
+  ...overrides,
+});
+
+test("build permission defaults deny, binds writes to its project and retains failed policy", async () => {
+  const c = controller(),
+    pending = deferred(),
+    calls = [];
+  c.write = async (operation, args) => {
+    calls.push({ operation, args });
+    return pending.promise;
+  };
+  const view = driver("plugins/BuildPanel.tsx", "BuildPolicy", {}, c);
+  const inputs = () =>
+    elements(view.value).filter((node) => node.type === "input");
+  assert.equal(inputs()[0].props.checked, false);
+  assert.equal(inputs()[1].props.checked, false);
+  assert.equal(inputs()[1].props.disabled, true);
+  inputs()[0].props.onChange({ target: { checked: true } });
+  inputs()[0].props.onChange({ target: { checked: true } });
+  await view.flush();
+  assert.deepEqual(calls, [
+    {
+      operation: "project_build_policy",
+      args: { projectId: "first", enabled: true, network: false },
+    },
+  ]);
+  assert.equal(inputs()[0].props.disabled, true);
+  c.projectId = "second";
+  c.project = {
+    ...project("second", []),
+    buildPolicy: { enabled: true, network: true },
+  };
+  view.render();
+  pending.reject(new Error("Old policy conflict"));
+  await view.flush();
+  assert.doesNotMatch(text(view.value), /Old policy conflict/);
+  c.write = async (_operation, args) => {
+    calls.push(args);
+    throw new Error("Policy conflict");
+  };
+  inputs()[0].props.onChange({ target: { checked: false } });
+  await view.flush();
+  assert.deepEqual(calls[1], {
+    projectId: "second",
+    enabled: false,
+    network: false,
+  });
+  assert.match(text(view.value), /Policy conflict/);
+  assert.equal(inputs()[0].props.checked, true);
+  assert.equal(inputs()[1].props.checked, true);
+  c.projectId = "first";
+  c.project = project("first", []);
+  view.render();
+  assert.equal(inputs()[0].props.disabled, false);
+  view.close();
+});
+
+test("build log pages retire old reads and keep an earlier page during live updates", async () => {
+  const c = controller(),
+    oldRead = deferred(),
+    calls = [];
+  c.api = async (_command, { operation, args }) => {
+    assert.equal(operation, "harness_build_log");
+    calls.push(args);
+    if (args.runId === "build-one") return oldRead.promise;
+    return {
+      content:
+        args.offset === 16000 ? "Earlier 中文 output" : "Current 中文 output",
+      nextOffset: args.offset + 16000,
+      totalBytes: 48000,
+      truncated: true,
+    };
+  };
+  const view = driver(
+    "plugins/BuildPanel.tsx",
+    "BuildRunLog",
+    { run: buildRun() },
+    c,
+  );
+  assert.deepEqual(calls[0], {
+    jobId: "one",
+    runId: "build-one",
+    offset: 32000,
+    limit: 16000,
+  });
+  c.projectId = "second";
+  let run = buildRun({ runId: "build-two", jobId: "two" });
+  view.render({ run });
+  await view.flush();
+  oldRead.resolve({
+    content: "Old project output",
+    nextOffset: 48000,
+    totalBytes: 48000,
+    truncated: true,
+  });
+  await view.flush();
+  assert.match(text(view.value), /Current 中文 output/);
+  assert.doesNotMatch(text(view.value), /Old project output/);
+  const button = (name) =>
+    elements(view.value).find(
+      (node) => node.type === "button" && text(node) === name,
+    );
+  button("Previous").props.onClick();
+  await view.flush();
+  assert.match(text(view.value), /Earlier 中文 output/);
+  const count = calls.length;
+  run = { ...run, revision: 2, logBytes: 64000, logTruncated: true };
+  view.render({ run });
+  await view.flush();
+  assert.equal(calls.length, count);
+  assert.match(text(view.value), /some output was omitted/);
+  button("Latest log").props.onClick();
+  await view.flush();
+  assert.equal(calls.at(-1).offset, 48000);
+  view.close();
+});
+
+test("build stop waits for terminal receipt and artifact open submits only native identities", async () => {
+  const c = controller(),
+    pending = deferred(),
+    stopped = [],
+    opened = [];
+  c.stop = async (id) => {
+    stopped.push(id);
+    return pending.promise;
+  };
+  c.api = async (...args) => {
+    opened.push(args);
+  };
+  let run = buildRun();
+  const view = driver(
+    "plugins/BuildPanel.tsx",
+    "BuildRunCard",
+    { run, job: job("one", "running") },
+    c,
+  );
+  const button = (name) =>
+    elements(view.value).find(
+      (node) => node.type === "button" && text(node) === name,
+    );
+  button("Stop task").props.onClick();
+  button("Stop task").props.onClick();
+  await view.flush();
+  pending.resolve();
+  await view.flush();
+  assert.deepEqual(stopped, ["one"]);
+  assert.equal(button("Stop task").props.disabled, true);
+  assert.match(text(view.value), /Stopping/);
+  run = {
+    ...run,
+    revision: 2,
+    status: "completed",
+    exitCode: 0,
+    artifactTruncated: true,
+    artifacts: [
+      { path: "classes/Main.class", size: 42, sha256: "native-artifact-hash" },
+    ],
+  };
+  view.render({ run, job: job("one", "running", 2) });
+  await view.flush();
+  assert.equal(button("Stop task"), undefined);
+  assert.match(text(view.value), /Exit code 0/);
+  assert.match(text(view.value), /Some artifacts are not shown/);
+  button("Open artifact folder").props.onClick();
+  await view.flush();
+  assert.deepEqual(opened, [
+    [
+      "rh_code_build_open",
+      { args: { projectId: "first", jobId: "one", runId: "build-one" } },
+    ],
+  ]);
+  view.close();
+});
+
+test("build commands keep plugin ownership and target entry uses the public command host", () => {
+  const c = controller(),
+    calls = [];
+  const view = driver(
+    "plugins/targets.tsx",
+    "Targets",
+    {
+      area: { id: "target-area" },
+      api: { invoke: (...args) => calls.push(args) },
+    },
+    c,
+  );
+  const build = elements(view.value).find(
+    (node) => node.type === "button" && text(node) === "Build",
+  );
+  assert.equal(build.props.disabled, undefined);
+  build.props.onClick();
+  assert.deepEqual(calls, [["build.open", "target-area", "first"]]);
+  const entry = view.module("plugins/build.plugin.tsx").default;
+  const handler = () => {};
+  const plugin = entry.create(
+    { id: "rh.build" },
+    { commands: { openBuild: handler } },
+  );
+  assert.deepEqual(
+    plugin.views.map(({ id, owner, tone }) => ({ id, owner, tone })),
+    [{ id: "build", owner: "rh.build", tone: "orange" }],
+  );
+  assert.equal(plugin.commands[0].id, "build.open");
+  assert.equal(plugin.commands[0].owner, "rh.build");
+  assert.equal(plugin.commands[0].handler, handler);
+  c.snapshot = { disabledPlugins: ["rh.build"] };
+  view.render();
+  assert.equal(
+    elements(view.value).find(
+      (node) => node.type === "button" && text(node) === "Build",
+    ).props.disabled,
+    true,
+  );
+  view.close();
+});
+
+test("retiring the launch plugin blocks new runs while the shell retains cancellation ownership", async () => {
+  const c = controller(),
+    stopped = [],
+    admissions = [];
+  let enabled = true;
+  c.stop = async (id) => stopped.push(id);
+  c.snapshot = { disabledPlugins: [], projects: [c.project] };
+  const kernel = {
+    subscribe: () => () => {},
+    invoke: (id, ...args) => {
+      if (!enabled) throw new Error("Launch plugin is unavailable");
+      admissions.push({ id, args });
+      return "admitted";
+    },
+  };
+  const view = driver(
+    "RHCode.tsx",
+    "RHCode",
+    {
+      api: c.api,
+      native: true,
+      section: "code",
+      kernel,
+      onController() {},
+      onConfiguration() {},
+      onNavigate() {},
+    },
+    c,
+  );
+  assert.equal(
+    view.value.props.value.run("area", "thread", "execute"),
+    "admitted",
+  );
+  enabled = false;
+  c.snapshot.disabledPlugins = ["rh.agent"];
+  view.render();
+  assert.throws(
+    () => view.value.props.value.run("area", "thread", "execute"),
+    /unavailable/,
+  );
+  await view.value.props.value.stop("owned-running-job");
+  assert.deepEqual(stopped, ["owned-running-job"]);
+  assert.deepEqual(admissions, [
+    { id: "agent.run", args: ["area", "thread", "execute"] },
+  ]);
+  view.close();
+});
+
+test("a null log cursor marks the last page and cannot request another range", async () => {
+  const c = controller(),
+    calls = [];
+  c.api = async (_command, { args }) => {
+    calls.push(args);
+    return {
+      content: "Final 中文 log",
+      nextOffset: null,
+      truncated: false,
+      totalBytes: 14,
+    };
+  };
+  const view = driver(
+    "plugins/BuildPanel.tsx",
+    "BuildRunLog",
+    { run: buildRun({ logBytes: 14, status: "completed" }) },
+    c,
+  );
+  await view.flush();
+  const next = elements(view.value).find(
+    (node) => node.type === "button" && text(node) === "Next",
+  );
+  assert.equal(next.props.disabled, true);
+  next.props.onClick();
+  await view.flush();
+  assert.equal(calls.length, 1);
+  view.close();
 });
