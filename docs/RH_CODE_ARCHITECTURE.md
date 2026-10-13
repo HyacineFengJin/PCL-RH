@@ -23,11 +23,16 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 | `code/history-snapshot.mjs` | 私有对话历史、项目说明、记要和引用文件的不可变快照 |
 | `code/harness-tool-catalog.mjs` | 工具归属、精确准入清单、模式与注册退役 |
 | `code/harness-service.mjs` | 按需读取、检索、计划、不可变建议与宿主审阅投影 |
+| `code/visual-assets.mjs`、`visual-png.mjs` | 共用像素/模型格式、原子编辑、CPU 渲染与 PNG 编码 |
+| `code/visual-service.mjs` | 任务私有的视觉草稿、不可变编辑版本、图片回执及建议 |
+| `rh-code/visual-assets/` | 像素和立方体编辑器、所属项目缓冲、按需画布与 AI 预览 |
 | `experimental/runtime/src/harness-tools.mjs` | 通用工具声明、参数边界和紧凑读取回执 |
+| `experimental/runtime/src/visual-tools.mjs` | 可选视觉工具的结构化参数与图像回传 |
 | `code/source-ownership.mjs` | 旧 Maker 工作流的源码所有权协调 |
 | `apps/desktop/src-tauri/src/rh_code.rs` | 项目存储、修订检查、插件依赖、对话归属和原生源码快照 |
 | `rh_code/files.rs` | 有界读取、内容指纹、原子保存和空目录产物发布 |
 | `rh_code/harness.rs` | 原生快照绑定、受审阅建议应用、备份与中断恢复 |
+| `rh_code/assets.rs`、`harness/manual_assets.rs` | 手动资产校验、PNG/Java 导出与共用原生发布事务 |
 | `rh_code/context.rs` | 上下文字段边界、连续历史片段及原生传输预算 |
 | `rh_code/layout.rs` | 布局及组件状态校验、可移植预设投影 |
 | `experimental/host.mjs` | 既有 Pi 执行、预设、审阅、任务产物和兼容接口 |
@@ -71,6 +76,14 @@ Agent 准入先保存编辑缓冲，再由 Rust 捕获当前对话和源码。�
 
 旧版审阅和空目录「采用源码」仍通过原有服务提供，未改变为通用自动合并。Shell、构建和游戏测试不在通用工具列表中。
 
+## 视觉资产的所有权
+
+手动绘图和建模使用控制器的文件缓冲，新文档以空的原文件指纹表示尚未创建；内容保存后复读确认并记录真实指纹。关闭区域不会丢弃文档，任务准入和休眠沿用统一的保存顺序。界面状态只保存路径、选择及视角，不持有整份资产。渲染由数据或视角变化触发，不创建常驻渲染循环。
+
+AI 的视觉操作在任务私有目录中保存不可变版本及操作提交记录，不直接编辑手动缓冲。相同操作 ID 重放返回原提交；创建和修改先验证冻结源码、保护记录、插件权限和计划。`inspect` 可选择模型视角，图片与版本指纹进入回执；图片字节不进入任务日志。宿主按已完成视觉操作缓存有界预览，轮询空闲任务不重复渲染。
+
+`propose` 将私有文档送入通用文本审阅流程。手动导出是另一明确入口：Rust 从严格校验的 JSON 生成 PNG 或 Java 模型/纹理对，先检查全部目标和目录身份，再逐个原子发布并记录可恢复日志。导出采用仅创建语义，已有路径不覆盖；保存资产文档采用原指纹检查。两种入口共用发布和恢复实现，但手动编辑不伪造 Agent 审阅授权。
+
 ## 扩展边界
 
 新增内置插件先在共用清单声明依赖与贡献 ID，再添加独立的 `*.plugin.tsx` 入口。Vite 在编译时发现这些入口；区域选择器和布局菜单从贡献注册表生成。新的组件不需要修改工作区外壳或 Rust 的视图名称列表。可释放的订阅使用 Cordis effect，项目数据保存在项目服务中。不要通过组件卸载隐式删除项目或取消任务。
@@ -92,6 +105,8 @@ node apps/desktop/scripts/check-rh-code-scopes.mjs
 node --test experimental/runtime/tests/idle-host.test.mjs
 node --test code/tests/*.test.mjs
 node apps/desktop/scripts/check-rh-code-harness-ui.mjs
+node apps/desktop/scripts/check-rh-code-visual-ui.mjs
+node --test experimental/runtime/tests/visual-provider.test.mjs
 node --test experimental/runtime/tests/harness-provider.test.mjs experimental/runtime/tests/harness-host.test.mjs
 cargo test --locked -p pcl-desktop --features custom-protocol rh_code
 cargo test --locked -p pcl-desktop --features custom-protocol experimental::tests

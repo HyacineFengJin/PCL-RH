@@ -9,6 +9,8 @@ import readline from "node:readline";
 import { prepareCodeJob } from "../code/agent-adapter.mjs";
 import { HarnessService } from "../code/harness-service.mjs";
 import { HarnessToolCatalog } from "../code/harness-tool-catalog.mjs";
+import { VisualService } from "../code/visual-service.mjs";
+import { registerVisualTools } from "./runtime/src/visual-tools.mjs";
 import { readJobSnapshot } from "./job-snapshot.mjs";
 import { registerHarnessTools } from "./runtime/src/harness-tools.mjs";
 import { fileURLToPath } from "node:url";
@@ -141,6 +143,39 @@ const reviews = new HostReviewService({ store: runtime.store });
 const harness = new HarnessService({ store: runtime.store });
 const harnessTools = new HarnessToolCatalog(adapters.registry);
 registerHarnessTools(harnessTools, harness);
+const visualAssets = new VisualService({
+  store: runtime.store,
+  harnessService: harness,
+});
+registerVisualTools(harnessTools.forPlugin("rh.pixel"), visualAssets, "pixel");
+registerVisualTools(harnessTools.forPlugin("rh.model"), visualAssets, "model");
+// Image previews change only after completed visual operations. Chat streaming
+// must not rerasterize a model on every status poll. This small cache dies with
+// the idle host; each entry is bounded and contains no credentials.
+const visualPreviews = new Map();
+async function visualPreview(job) {
+  const operations = job.operations.filter(
+    (op) => /^(pixel|model)\./.test(op.name) && op.status === "completed",
+  );
+  if (!operations.length) return {};
+  const key = JSON.stringify(operations.map((op) => [op.id, op.result]));
+  const cached = visualPreviews.get(job.id);
+  if (cached?.key === key) return cached.value;
+  let value;
+  try {
+    value = { visualArtifacts: await visualAssets.preview(job.id) };
+  } catch {
+    value = {
+      visualArtifacts: [],
+      visualError:
+        "Visual preview is unavailable; inspect the task before trying again.",
+    };
+  }
+  if (visualPreviews.size >= 8)
+    visualPreviews.delete(visualPreviews.keys().next().value);
+  visualPreviews.set(job.id, { key, value });
+  return value;
+}
 const porterProjects = await new PorterProjects(root, {
   getJob: (id) => runtime.getJob(id),
   hasActiveJob: hasCurrentJob,
@@ -515,11 +550,17 @@ async function dispatch(operation, a) {
     }
     case "rh_code_harness_export": {
       checkRhOwner(await runtime.getJob(a.jobId), a);
-      return harness.exportProposal(a.jobId, { proposalId: a.proposalId, expectedDigest: a.expectedDigest });
+      return harness.exportProposal(a.jobId, {
+        proposalId: a.proposalId,
+        expectedDigest: a.expectedDigest,
+      });
     }
     case "rh_code_harness_applied": {
       checkRhOwner(await runtime.getJob(a.jobId), a);
-      return harness.markApplied(a.jobId, { proposalId: a.proposalId, expectedDigest: a.expectedDigest });
+      return harness.markApplied(a.jobId, {
+        proposalId: a.proposalId,
+        expectedDigest: a.expectedDigest,
+      });
     }
     case "status":
       return {
@@ -1007,7 +1048,11 @@ async function dispatch(operation, a) {
         : startCapturedJob(job, preset);
     }
     case "job_read": {
-      const { job, summary } = await readJobSnapshot(runtime, a.jobId, hasCurrentJob);
+      const { job, summary } = await readJobSnapshot(
+        runtime,
+        a.jobId,
+        hasCurrentJob,
+      );
       return {
         summary,
         mode: job.provider === "pcl-template" ? "template" : "live",
@@ -1018,16 +1063,24 @@ async function dispatch(operation, a) {
                 id: op.id,
                 name: op.name,
                 status: op.status,
-                ...(["workspace.read", "harness.read_file"].includes(op.name) && typeof op.path === "string"
+                ...(["workspace.read", "harness.read_file"].includes(op.name) &&
+                typeof op.path === "string"
                   ? { path: op.path }
                   : {}),
-                ...(["maker.report_plan", "harness.report_plan"].includes(op.name) && op.status === "completed"
+                ...(["maker.report_plan", "harness.report_plan"].includes(
+                  op.name,
+                ) && op.status === "completed"
                   ? { steps: op.result.steps }
                   : {}),
               })),
             }
           : {}),
-        ...(job.profile === "harness" ? { output: job.providerState?.livePi?.output ?? "" } : {}),
+        ...(job.profile === "harness"
+          ? {
+              output: job.providerState?.livePi?.output ?? "",
+              ...(await visualPreview(job)),
+            }
+          : {}),
         error: job.error,
         ...(job.profile === "porter"
           ? { porterSource: await reviews.getPorterSource(job.id) }
@@ -1159,6 +1212,7 @@ async function dispatch(operation, a) {
       selection = null;
       await runtime.shutdown();
       harnessTools.dispose();
+      visualPreviews.clear();
       await Promise.all([
         reviews.shutdown(),
         adapters.shutdown(),
@@ -1176,12 +1230,14 @@ const input = readline.createInterface({
   crlfDelay: Infinity,
 });
 for await (const line of input) {
-  let reply, replyLimit = 1000000;
+  let reply,
+    replyLimit = 1000000;
   try {
     if (Buffer.byteLength(line) > 24 * 1024 * 1024)
       throw new Error("Request exceeds native snapshot limit");
     const request = JSON.parse(line);
-    if (request.operation === "rh_code_harness_export") replyLimit = 24 * 1024 * 1024;
+    if (request.operation === "rh_code_harness_export")
+      replyLimit = 24 * 1024 * 1024;
     if (request.operation !== "rh_code_run" && Buffer.byteLength(line) > 128000)
       throw new Error("Request exceeds 128 KB");
     reply = {

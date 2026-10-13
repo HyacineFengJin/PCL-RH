@@ -118,4 +118,8 @@ export type PluginStatus = {
   error?: string;
   dependencies?: string[];
 };
-export type FileBuffer = { content: string; original: string; sha256: string };
+export type FileBuffer = {
+  content: string;
+  original: string;
+  sha256: string | null;
+};

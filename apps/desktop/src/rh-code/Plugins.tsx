@@ -33,6 +33,8 @@ const names: Record<string, [string, string]> = {
   "rh.porting": ["版本迁移", "Version migration"],
   "rh.settings": ["工作区设置", "Workspace settings"],
   "rh.overview": ["项目概览", "Project overview"],
+  "rh.pixel": ["像素材质", "Pixel textures"],
+  "rh.model": ["方块模型", "Cuboid models"],
 };
 export function Plugins({
   kernel,

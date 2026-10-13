@@ -211,6 +211,7 @@ export class AiPresets {
               api: selection.api,
               baseUrl: selection.baseUrl,
               contextWindow: selection.contextWindow,
+              supportsImages: selection.supportsImages === true,
               cost: selection.cost,
             }
           : {}),

@@ -329,6 +329,7 @@ export class LivePiProvider {
       const toolContext = {
         ...ctx,
         signal,
+        supportsImages: Array.isArray(model.input) && model.input.includes("image"),
         invoke: async (...args) => {
           throwIfAborted(signal);
           counts.toolCalls++;

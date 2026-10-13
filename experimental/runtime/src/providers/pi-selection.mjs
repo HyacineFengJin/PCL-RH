@@ -146,6 +146,7 @@ export function getPiCatalog() {
               reasoning: model.reasoning,
               contextWindow: model.contextWindow,
               maxTokens: model.maxTokens,
+              supportsImages: model.input.includes("image"),
               cost: hasPrice(model.cost)
                 ? { input: model.cost.input, output: model.cost.output }
                 : null,
@@ -185,12 +186,19 @@ export async function normalizePiSelection(input) {
           "contextWindow",
           "cost",
           "thinking",
+          "supportsImages",
         ].includes(k),
       ),
     "INVALID_LIVE_CONFIG",
     "Unknown provider configuration",
   );
   const thinking = input.thinking ?? "off";
+  check(
+    input.supportsImages === undefined ||
+      typeof input.supportsImages === "boolean",
+    "INVALID_LIVE_CONFIG",
+    "Image capability must be a trusted boolean declaration",
+  );
   check(
     THINKING_LEVELS.includes(thinking),
     "INVALID_LIVE_CONFIG",
@@ -229,7 +237,8 @@ export async function normalizePiSelection(input) {
       input.baseUrl === undefined &&
         input.api === undefined &&
         input.contextWindow === undefined &&
-        input.cost === undefined,
+        input.cost === undefined &&
+        input.supportsImages === undefined,
       "INVALID_LIVE_CONFIG",
       "Use a custom provider to override model routing",
     );
@@ -276,6 +285,7 @@ export async function normalizePiSelection(input) {
     thinking,
     key,
     custom: true,
+    supportsImages: input.supportsImages ?? false,
     costKnown: hasPrice(input.cost),
     cost: input.cost ? Object.freeze({ ...input.cost }) : null,
   });
@@ -293,6 +303,7 @@ export function publicPiSelection(selection) {
     cost: selection.cost,
     costKnown: selection.costKnown,
     keyConfigured: selection.key.length > 0,
+    supportsImages: selection.supportsImages === true,
   };
 }
 export function installPiModel(runtime, selection) {
@@ -306,7 +317,8 @@ export function installPiModel(runtime, selection) {
           id: selection.id,
           name: selection.name,
           api: selection.api,
-          input: ["text"],
+          input:
+            selection.supportsImages === true ? ["text", "image"] : ["text"],
           reasoning: false,
           cost: {
             input: 0,

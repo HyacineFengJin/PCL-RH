@@ -9,7 +9,10 @@ export class ToolRegistry {
     check(typeof tool.execute === 'function' && typeof tool.validate === 'function', 'INVALID_TOOL', 'Tool needs validation and execution');
     check(['read-only', 'idempotent', 'manual'].includes(tool.replaySafety), 'INVALID_TOOL', 'Declare tool replay safety');
     check(tool.projectReceipt === undefined || typeof tool.projectReceipt === 'function', 'INVALID_TOOL', 'Receipt projection must be a host function');
-    check(tool.replayCompleted === undefined || (typeof tool.replayCompleted === 'boolean' && (!tool.replayCompleted || tool.replaySafety === 'read-only')), 'INVALID_TOOL', 'Only read-only tools may reconstruct completed results');
+    check(tool.replayCompleted === undefined || (typeof tool.replayCompleted === 'boolean' &&
+      (!tool.replayCompleted || tool.replaySafety === 'read-only' ||
+        (tool.replaySafety === 'idempotent' && typeof tool.projectReceipt === 'function'))),
+    'INVALID_TOOL', 'Completed reconstruction needs a read-only tool or an idempotent tool with a compact receipt');
     // A plugin may retire while a consumer retains this descriptor. The guard
     // revokes that old function too, rather than only removing a map entry.
     const name = tool.name, execute = tool.execute;

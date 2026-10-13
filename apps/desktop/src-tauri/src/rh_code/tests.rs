@@ -99,6 +99,8 @@ fn rh_code_dependency_controls_preserve_project_metadata() {
         "rh.porting",
         "rh.agent",
         "rh.graph",
+        "rh.pixel",
+        "rh.model",
         "rh.source",
         "rh.files",
     ] {
@@ -344,6 +346,9 @@ fn rh_code_harness_store_bridge_binds_native_source_and_gates_reviewed_applicati
         fs::read(other_folder.join("Main.java")).unwrap(),
         b"other project"
     );
+    for plugin in ["rh.pixel", "rh.model"] {
+        f.write("plugin_set", json!({"id":plugin,"enabled":false}));
+    }
     for plugin in ["rh.changes", "rh.source"] {
         f.write("plugin_set", json!({"id":plugin,"enabled":false}));
         assert!(f

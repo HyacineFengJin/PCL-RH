@@ -392,7 +392,7 @@ export class HarnessService {
   async listReviews(jobId) {
     const snapshot = await this.snapshot(jobId);
     const operations = snapshot.job.operations.filter((operation) =>
-      operation.name === "harness.propose_changes" && operation.status === "completed");
+      ["harness.propose_changes", "pixel.propose", "model.propose"].includes(operation.name) && operation.status === "completed");
     const seen = new Set(), proposals = [];
     let truncated = false;
     // One complete original check covers every displayed review for this job.

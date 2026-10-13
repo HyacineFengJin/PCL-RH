@@ -14,6 +14,7 @@ import {
   type PiWorkLimits,
 } from "./experimentalTypes";
 import "./experimental.css";
+import { label } from "./rh-code/locale";
 const customProvider = "pcl-custom";
 const fallbackLimits: PiWorkLimits = {
   modelTurns: 32,
@@ -43,6 +44,7 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
     [model, setModel] = useState("");
   const [protocol, setProtocol] = useState("openai-completions"),
     [baseUrl, setBaseUrl] = useState("");
+  const [supportsImages, setSupportsImages] = useState(false);
   const [contextWindow, setContextWindow] = useState("32768"),
     [thinking, setThinking] = useState("off");
   const [inputPrice, setInputPrice] = useState(""),
@@ -70,6 +72,7 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
   const disabled = !native || busy || !loaded || !!store?.warning;
   function chooseProvider(id: string, source = catalog) {
     setProvider(id);
+    setSupportsImages(false);
     setKey("");
     setClearKey(false);
     const models = source?.providers.find((p) => p.id === id)?.models ?? [];
@@ -105,6 +108,7 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
     setModel(value.model);
     setProtocol(value.api);
     setBaseUrl(value.baseUrl);
+    setSupportsImages(value.supportsImages === true);
     setContextWindow(String(value.contextWindow));
     setThinking(value.thinking);
     setInputPrice(value.cost ? String(value.cost.input) : "");
@@ -192,6 +196,7 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
             api: protocol,
             baseUrl: baseUrl.trim(),
             contextWindow: Number(contextWindow),
+            supportsImages,
             cost:
               inputPrice === "" && outputPrice === ""
                 ? null
@@ -401,6 +406,15 @@ export function ExperimentalAi({ api, native }: { api: Api; native: boolean }) {
             <p className="experimental-origin">
               {t("experimental.baseUrlHelp")}
             </p>
+            <label className="ce-check">
+              <input
+                type="checkbox"
+                checked={supportsImages}
+                disabled={disabled}
+                onChange={(e) => setSupportsImages(e.target.checked)}
+              />
+              {label("模型支持图片输入", "Model supports image input")}
+            </label>
           </>
         )}
         <label className="ce-row">

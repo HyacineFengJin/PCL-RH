@@ -5,7 +5,9 @@
     "version": "1.0.0",
     "required": true,
     "dependencies": [],
-    "capabilities": ["project.metadata"],
+    "capabilities": [
+      "project.metadata"
+    ],
     "views": [],
     "scope": "rh-code"
   },
@@ -14,26 +16,45 @@
     "name": "Conversations",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["conversation.history"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "conversation.history"
+    ],
     "tools": [
       {
         "name": "harness.read_context",
         "capability": "conversation.history",
-        "modes": ["ask", "plan", "execute"]
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
       },
       {
         "name": "harness.read_history",
         "capability": "conversation.history",
-        "modes": ["ask", "plan", "execute"]
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
       },
       {
         "name": "harness.search_history",
         "capability": "conversation.history",
-        "modes": ["ask", "plan", "execute"]
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
       }
     ],
-    "views": ["chat", "threads"],
+    "views": [
+      "chat",
+      "threads"
+    ],
     "scope": "rh-code"
   },
   {
@@ -41,10 +62,19 @@
     "name": "Agent runtime",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.conversation", "rh.files"],
-    "capabilities": ["agent.run", "agent.cancel"],
+    "dependencies": [
+      "rh.conversation",
+      "rh.files"
+    ],
+    "capabilities": [
+      "agent.run",
+      "agent.cancel"
+    ],
     "views": [],
-    "commands": ["agent.run", "agent.stop"],
+    "commands": [
+      "agent.run",
+      "agent.stop"
+    ],
     "scope": "rh-code"
   },
   {
@@ -52,26 +82,44 @@
     "name": "Project files",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["project.files.read"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "project.files.read"
+    ],
     "tools": [
       {
         "name": "harness.list_files",
         "capability": "project.files.read",
-        "modes": ["ask", "plan", "execute"]
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
       },
       {
         "name": "harness.read_file",
         "capability": "project.files.read",
-        "modes": ["ask", "plan", "execute"]
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
       },
       {
         "name": "harness.search_files",
         "capability": "project.files.read",
-        "modes": ["ask", "plan", "execute"]
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
       }
     ],
-    "views": ["files"],
+    "views": [
+      "files"
+    ],
     "scope": "rh-code"
   },
   {
@@ -79,9 +127,15 @@
     "name": "Content graph",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.files"],
-    "capabilities": ["project.graph.read"],
-    "views": ["graph"],
+    "dependencies": [
+      "rh.files"
+    ],
+    "capabilities": [
+      "project.graph.read"
+    ],
+    "views": [
+      "graph"
+    ],
     "scope": "rh-code"
   },
   {
@@ -89,9 +143,15 @@
     "name": "Source editor",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.files"],
-    "capabilities": ["project.files.write"],
-    "views": ["source"],
+    "dependencies": [
+      "rh.files"
+    ],
+    "capabilities": [
+      "project.files.write"
+    ],
+    "views": [
+      "source"
+    ],
     "scope": "rh-code"
   },
   {
@@ -99,9 +159,15 @@
     "name": "Build targets",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["project.targets"],
-    "views": ["targets"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "project.targets"
+    ],
+    "views": [
+      "targets"
+    ],
     "scope": "rh-code"
   },
   {
@@ -109,21 +175,32 @@
     "name": "Changes and review",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["project.review"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "project.review"
+    ],
     "tools": [
       {
         "name": "harness.report_plan",
         "capability": "project.review",
-        "modes": ["plan", "execute"]
+        "modes": [
+          "plan",
+          "execute"
+        ]
       },
       {
         "name": "harness.propose_changes",
         "capability": "project.review",
-        "modes": ["execute"]
+        "modes": [
+          "execute"
+        ]
       }
     ],
-    "views": ["changes"],
+    "views": [
+      "changes"
+    ],
     "scope": "rh-code"
   },
   {
@@ -131,9 +208,15 @@
     "name": "Tasks and output",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["task.read"],
-    "views": ["logs"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "task.read"
+    ],
+    "views": [
+      "logs"
+    ],
     "scope": "rh-code"
   },
   {
@@ -141,9 +224,17 @@
     "name": "Version migration",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.agent", "rh.targets", "rh.files"],
-    "capabilities": ["agent.migrate"],
-    "views": ["porting"],
+    "dependencies": [
+      "rh.agent",
+      "rh.targets",
+      "rh.files"
+    ],
+    "capabilities": [
+      "agent.migrate"
+    ],
+    "views": [
+      "porting"
+    ],
     "scope": "rh-code"
   },
   {
@@ -151,9 +242,15 @@
     "name": "Previous projects",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["legacy.projects"],
-    "views": ["legacy"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "legacy.projects"
+    ],
+    "views": [
+      "legacy"
+    ],
     "scope": "rh-code"
   },
   {
@@ -162,7 +259,10 @@
     "version": "1.0.0",
     "required": true,
     "dependencies": [],
-    "capabilities": ["plugin.manage", "agent.presets"],
+    "capabilities": [
+      "plugin.manage",
+      "agent.presets"
+    ],
     "views": [],
     "layouts": [
       "rh.settings.conversation",
@@ -176,9 +276,113 @@
     "name": "Project overview",
     "version": "1.0.0",
     "required": false,
-    "dependencies": ["rh.project"],
-    "capabilities": ["project.metadata"],
-    "views": ["rh.overview.summary"],
+    "dependencies": [
+      "rh.project"
+    ],
+    "capabilities": [
+      "project.metadata"
+    ],
+    "views": [
+      "rh.overview.summary"
+    ],
     "scope": "rh-code"
+  },
+  {
+    "id": "rh.pixel",
+    "name": "Pixel textures",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "rh-code",
+    "dependencies": [
+      "rh.files",
+      "rh.source"
+    ],
+    "capabilities": [
+      "project.assets.pixel"
+    ],
+    "views": [
+      "pixel"
+    ],
+    "tools": [
+      {
+        "name": "pixel.create",
+        "capability": "project.assets.pixel",
+        "modes": [
+          "execute"
+        ]
+      },
+      {
+        "name": "pixel.edit",
+        "capability": "project.assets.pixel",
+        "modes": [
+          "execute"
+        ]
+      },
+      {
+        "name": "pixel.inspect",
+        "capability": "project.assets.pixel",
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
+      },
+      {
+        "name": "pixel.propose",
+        "capability": "project.assets.pixel",
+        "modes": [
+          "execute"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "rh.model",
+    "name": "Cuboid models",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "rh-code",
+    "dependencies": [
+      "rh.files",
+      "rh.source"
+    ],
+    "capabilities": [
+      "project.assets.model"
+    ],
+    "views": [
+      "model"
+    ],
+    "tools": [
+      {
+        "name": "model.create",
+        "capability": "project.assets.model",
+        "modes": [
+          "execute"
+        ]
+      },
+      {
+        "name": "model.edit",
+        "capability": "project.assets.model",
+        "modes": [
+          "execute"
+        ]
+      },
+      {
+        "name": "model.inspect",
+        "capability": "project.assets.model",
+        "modes": [
+          "ask",
+          "plan",
+          "execute"
+        ]
+      },
+      {
+        "name": "model.propose",
+        "capability": "project.assets.model",
+        "modes": [
+          "execute"
+        ]
+      }
+    ]
   }
 ]

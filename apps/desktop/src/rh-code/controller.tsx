@@ -265,6 +265,8 @@ export function useController(hostApi: Api, native: boolean) {
           // only the revision; snapshots cannot refill the unloaded service.
           revision.current = data.revision;
           setData(data);
+          if (usable() && operation === "asset_export")
+            setFilesEpoch((v) => v + 1);
           failures.current.delete(failure);
           if (
             usable() &&
@@ -541,6 +543,36 @@ export function useController(hostApi: Api, native: boolean) {
     }
   }
   const buffer = (file: string) => buffers.get(key(file))?.value;
+  const assetDocumentPaths = (kind: "pixel" | "model") => {
+    const suffix = kind === "pixel" ? ".rhtexture.json" : ".rhmodel.json";
+    return [...buffers.values()]
+      .filter(
+        (owned) => owned.projectId === projectId && owned.path.endsWith(suffix),
+      )
+      .map((owned) => owned.path);
+  };
+  /** New visual documents enter the same owned buffer collection as source
+   * files. A null hash means create-only in native storage, so this cannot
+   * replace an existing file discovered after the renderer's file listing. */
+  function createAssetDocument(file: string, content: string) {
+    assertUsable();
+    if (!project || selection.current !== project.id)
+      throw new Error("Select a project before creating an asset document");
+    if (!/\.(rhtexture|rhmodel)\.json$/.test(file))
+      throw new Error("Unsupported visual asset document suffix");
+    const id = key(file);
+    if (buffers.has(id))
+      throw new Error(
+        "This document already has an open buffer; choose a new name",
+      );
+    buffers.set(id, {
+      projectId: project.id,
+      path: file,
+      value: { content, original: "", sha256: null },
+    });
+    lifecycle.edited();
+    update((v) => v + 1);
+  }
   const edit = (file: string, content: string) => {
     if (!usable()) return;
     const value = buffer(file);
@@ -556,12 +588,15 @@ export function useController(hostApi: Api, native: boolean) {
       submitted = value.content,
       end = lifecycle.begin("source");
     try {
-      await write("file_save", {
-        projectId: owner,
-        path: file,
-        content: submitted,
-        sha256: value.sha256,
-      });
+      await write(
+        /\.(rhtexture|rhmodel)\.json$/.test(file) ? "asset_save" : "file_save",
+        {
+          projectId: owner,
+          path: file,
+          content: submitted,
+          sha256: value.sha256,
+        },
+      );
       const disk = await api<{ content: string; sha256: string }>(
         "rh_code_call",
         {
@@ -1094,6 +1129,8 @@ export function useController(hostApi: Api, native: boolean) {
     saveProjectInstructions: (owner: string) =>
       persistMetadata("project_instructions", instructionDrafts.current, owner),
     loadFile,
+    createAssetDocument,
+    assetDocumentPaths,
     buffer,
     edit,
     saveFile,

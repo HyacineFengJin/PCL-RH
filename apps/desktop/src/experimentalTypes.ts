@@ -128,6 +128,7 @@ export type PiCatalogModel = {
   api: string;
   baseUrl: string;
   reasoning: boolean;
+  supportsImages?: boolean;
   contextWindow: number;
   maxTokens: number;
   cost: { input: number; output: number } | null;
@@ -143,6 +144,7 @@ export type PiSelection = {
   contextWindow: number;
   thinking: string;
   keyConfigured: boolean;
+  supportsImages?: boolean;
   cost: { input: number; output: number } | null;
   costKnown: boolean;
 };

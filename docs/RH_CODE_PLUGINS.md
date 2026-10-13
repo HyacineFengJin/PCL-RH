@@ -80,11 +80,19 @@ AI 工具使用单独的 Node 登记边界。工具名为小写命名空间与�
 
 在随应用发布的宿主初始化模块中，使用 `HarnessToolCatalog.forPlugin("rh.example")` 登记实现。工具对象包含相同的 `owner`、`capability`、`modes`，以及 `name`、`description`、`inputSchema`、`validate(args)`、`replaySafety` 和 `execute(args, context)`。当前内置工具可参考 `experimental/runtime/src/harness-tools.mjs`；宿主装配入口是 `experimental/host.mjs`。
 
-`replaySafety` 支持只读、幂等或需人工协调。询问模式的工具必须只读。参数校验、文件范围、取消检查和结果边界由实现负责，能力声明本身不执行这些检查。需要紧凑回执的只读工具可提供 `projectReceipt(result)` 和 `replayCompleted: true`；重放必须验证原快照并重建结果。
+`replaySafety` 支持只读、幂等或需人工协调。询问模式的工具必须只读。参数校验、文件范围、取消检查和结果边界由实现负责，能力声明本身不执行这些检查。需要紧凑回执的只读或幂等工具可提供 `projectReceipt(result)` 和 `replayCompleted: true`；重放必须验证原快照或已提交的不可变操作版本，重建原结果，不能再次修改数据。
 
 新任务保存具体工具名、归属、版本、能力和模式。之后增加工具不会扩大旧任务清单；归属或版本发生变化时，旧任务不能悄悄改用新声明继续运行。`retire(owner)` 移除该插件的工具注册，保留的旧函数也会拒绝执行；整个目录用 `dispose()` 释放。停用界面模块会影响后续任务的准入，已运行任务保留捕获清单。
 
 这个接口用于随应用发布、经过维护者审查的内置实现。社区扩展的 JSON、卡片或权限声明不能注册 JavaScript 工具；Cordis 与工具目录都不提供第三方代码沙箱。
+
+## 视觉工具与预览
+
+`rh.pixel` 和 `rh.model` 是完整的组件与 AI 工具实例，分别声明 `project.assets.pixel` 和 `project.assets.model`。前端使用共享的 `code/visual-assets.mjs` 校验、编辑与渲染文档；Node 的 `VisualService` 将相同操作应用到任务私有版本。像素及模型工具各有 `create`、`edit`、`inspect`、`propose`，其中 `inspect` 可用于只读模式，其他工具要求执行模式和已经记录的计划。
+
+编辑以有界、原子的结构化批次完成。工具返回文档摘要和真实 PNG；Pi 适配器仅向支持图片的模型发送图片内容块，不把 Base64 当作文字。任务记录只保存版本与图片指纹等紧凑回执，重放验证同一不可变版本并重建图片。预览不授予项目写入权限：`propose` 仍调用通用 Harness 建议服务，用户通过原有审阅入口应用 JSON 文档。
+
+手动保存与导出经过 Rust 的 `asset_save` / `asset_export`：重新验证文档、插件状态和输出路径；原生编码 PNG 和 Java 模型资源，并使用可恢复事务发布。它们是用户编辑器操作，不接受 AI 自动批准。二进制导出不绕过文本建议的审阅边界。
 
 ## 组件外观与状态
 

@@ -1,6 +1,7 @@
 //! RH Code owns projects, conversations and workspace layout independently of
 //! panel lifetimes. The native store is authoritative; renderer plugin state
 //! cannot grant filesystem access or overwrite a newer project revision.
+mod assets;
 mod context;
 mod files;
 mod harness;
@@ -518,6 +519,20 @@ impl Store {
         }
         if a["expectedRevision"].as_str() != Some(&revision) {
             return Err("RH Code changed; refresh before saving".into());
+        }
+        if operation == "asset_save" || operation == "asset_export" {
+            let prepared = assets::prepare(operation, &a)?;
+            ensure_plugin(&d, prepared.plugin)?;
+            ensure_plugin(&d, "rh.source")?;
+            let p = Self::project_mut(&mut d, &a)?;
+            p.updated_at = now();
+            // Check the final document before publishing any project bytes.
+            // Metadata and source saves use the same store lease and revision.
+            let bytes = document_bytes(&d)?;
+            let p = Self::project_mut(&mut d, &a)?;
+            harness::save_assets(&self.root, p, &prepared.files)?;
+            atomic(&self.root.join("workspace.json"), &bytes)?;
+            return Ok(snapshot(&d, &hash(&bytes)));
         }
         match operation {
             "project_create" => {

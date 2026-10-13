@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "note": "Shared JS/Rust contract fixtures. RGBA rows are lossless hexadecimal bytes; PNG compression may differ. Compare Java JSON numbers by value.",
+  "textureResource": "fixture:block/test_texture",
+  "textures": [
+    {
+      "name": "edited-eight",
+      "document": {
+        "format": "pcl-rh-pixel",
+        "version": 1,
+        "width": 8,
+        "height": 8,
+        "palette": [
+          "#00000000",
+          "#C84528FF",
+          "#27BCDA80"
+        ],
+        "pixels": [
+          2, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 2, 2, 2, 1, 1, 0, 0, 1, 2,
+          2, 1, 2, 1, 0, 0, 1, 2, 1, 2, 2, 1, 0, 0, 1, 1, 2, 2, 2, 1, 0, 0, 1, 1, 1, 1, 1,
+          1, 0, 1, 0, 0, 0, 0, 0, 0, 2
+        ]
+      },
+      "rgbaRows": [
+        "27bcda80000000000000000000000000000000000000000000000000c84528ff",
+        "00000000c84528ffc84528ffc84528ffc84528ffc84528ffc84528ff00000000",
+        "00000000c84528ff27bcda8027bcda8027bcda80c84528ffc84528ff00000000",
+        "00000000c84528ff27bcda8027bcda80c84528ff27bcda80c84528ff00000000",
+        "00000000c84528ff27bcda80c84528ff27bcda8027bcda80c84528ff00000000",
+        "00000000c84528ffc84528ff27bcda8027bcda8027bcda80c84528ff00000000",
+        "00000000c84528ffc84528ffc84528ffc84528ffc84528ffc84528ff00000000",
+        "c84528ff00000000000000000000000000000000000000000000000027bcda80"
+      ]
+    },
+    {
+      "name": "cube-texture",
+      "document": {
+        "format": "pcl-rh-pixel",
+        "version": 1,
+        "width": 16,
+        "height": 16,
+        "palette": [
+          "#00000000",
+          "#8B75CFFF",
+          "#BFAAEDFF",
+          "#65549AFF"
+        ],
+        "pixels": [
+          3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+          2, 1, 1, 1, 3, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 3, 3, 2, 1, 1, 1, 2,
+          1, 1, 1, 2, 1, 1, 1, 2, 1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 3, 3,
+          1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 3, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1,
+          1, 1, 2, 3, 3, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 3, 3, 1, 1, 1, 2, 1, 1,
+          1, 2, 1, 1, 1, 2, 1, 1, 3, 3, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 3, 3, 1,
+          2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 3, 3, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+          2, 1, 3, 3, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 3, 3, 1, 1, 2, 1, 1, 1, 2,
+          1, 1, 1, 2, 1, 1, 1, 3, 3, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 1, 1, 1, 2, 3, 3, 3, 3,
+          3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+        ]
+      },
+      "rgbaRows": [
+        "65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff",
+        "65549aff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff65549aff",
+        "65549affbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff65549aff",
+        "65549aff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff65549aff",
+        "65549affbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff65549aff",
+        "65549aff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff65549aff",
+        "65549affbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff65549aff",
+        "65549aff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfff65549aff",
+        "65549aff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff8b75cfff8b75cfff8b75cfffbfaaedff65549aff",
+        "65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff65549aff"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "name": "default-cube",
+      "texture": "cube-texture",
+      "elements": [
+        {
+          "id": "cube",
+          "from": [0, 0, 0],
+          "to": [16, 16, 16],
+          "faces": {
+            "north": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            },
+            "south": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            },
+            "east": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            },
+            "west": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            },
+            "up": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            },
+            "down": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            }
+          }
+        }
+      ],
+      "javaModel": {
+        "textures": {
+          "texture": "fixture:block/test_texture",
+          "particle": "fixture:block/test_texture"
+        },
+        "elements": [
+          {
+            "from": [0, 0, 0],
+            "to": [16, 16, 16],
+            "faces": {
+              "north": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              },
+              "south": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              },
+              "east": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              },
+              "west": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              },
+              "up": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              },
+              "down": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "rotated-three-faces",
+      "texture": "cube-texture",
+      "elements": [
+        {
+          "id": "cube",
+          "from": [0, 0, 0],
+          "to": [16, 16, 16],
+          "faces": {
+            "south": {
+              "uv": [16, 0, 0, 16],
+              "rotation": 90
+            },
+            "east": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            },
+            "up": {
+              "uv": [0, 0, 16, 16],
+              "rotation": 0
+            }
+          },
+          "rotation": {
+            "origin": [8, 8, 8],
+            "axis": "y",
+            "angle": 22.5,
+            "rescale": true
+          }
+        }
+      ],
+      "javaModel": {
+        "textures": {
+          "texture": "fixture:block/test_texture",
+          "particle": "fixture:block/test_texture"
+        },
+        "elements": [
+          {
+            "from": [0, 0, 0],
+            "to": [16, 16, 16],
+            "faces": {
+              "south": {
+                "uv": [16, 0, 0, 16],
+                "rotation": 90,
+                "texture": "#texture"
+              },
+              "east": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              },
+              "up": {
+                "uv": [0, 0, 16, 16],
+                "rotation": 0,
+                "texture": "#texture"
+              }
+            },
+            "rotation": {
+              "origin": [8, 8, 8],
+              "axis": "y",
+              "angle": 22.5,
+              "rescale": true
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

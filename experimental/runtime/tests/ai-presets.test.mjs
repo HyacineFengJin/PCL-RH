@@ -82,6 +82,21 @@ test("blank edits retain keys on the same route; a new endpoint cannot inherit t
   });
   assert.equal(presets.selected().selection.key, "");
 });
+test("custom image capability persists explicitly without changing old presets", async (t) => {
+  const { presets, root } = await fixture(t);
+  await presets.save({ name: "Text only", config });
+  assert.equal(presets.selected().selection.supportsImages, false);
+  const id = presets.view().selectedId;
+  await presets.save({
+    id,
+    name: "Vision",
+    config: { ...config, supportsImages: true },
+  });
+  const restored = await new AiPresets(root).init();
+  assert.equal(restored.selected().selection.supportsImages, true);
+  assert.equal(restored.view().presets[0].selection.supportsImages, true);
+  assert.equal(JSON.stringify(restored.view()).includes(config.key), false);
+});
 test("zero budgets survive save, restart and later preset edits", async (t) => {
   const { presets, root } = await fixture(t);
   const unlimited = Object.fromEntries(

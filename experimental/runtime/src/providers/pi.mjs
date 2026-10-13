@@ -22,6 +22,27 @@ export class DisabledPiProvider {
   }
 }
 
+export function projectPiToolResult(name, result, supportsImages = false) {
+  if (!/^(pixel|model)\.(create|edit|inspect)$/.test(name))
+    return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+  const { image, ...description } = result;
+  check(image?.mimeType === 'image/png' && typeof image.data === 'string' && image.data.length <= 42_668 &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(image.data) &&
+    createHash('sha256').update(Buffer.from(image.data, 'base64')).digest('hex') === image.sha256,
+    'INVALID_VISUAL_RESULT', 'Visual tools must return a bounded verified PNG');
+  const { data, ...receipt } = image;
+  const visible = { ...description, image: receipt, visualFeedback: supportsImages
+    ? { status: 'available', meaning: 'Actual rendered PNG is attached as image content; inspect it before the next edit.' }
+    : { status: 'unavailable', reason: 'model_does_not_accept_images', message: 'Visual feedback unavailable: the selected model does not accept images. A PNG preview is available in the project editor; structured summary alone cannot confirm appearance.' } };
+  // SDK details are for local renderers. Keep them compact so they do not copy
+  // the image or a large structure summary alongside the model content.
+  const details = { kind: result.kind, path: result.path, revision: result.revision,
+    sha256: result.sha256, image: receipt, visualFeedback: visible.visualFeedback };
+  const projected = { content: [{ type: 'text', text: JSON.stringify(visible) },
+    ...(supportsImages ? [{ type: 'image', mimeType: 'image/png', data }] : [])], details };
+  check(Buffer.byteLength(JSON.stringify(projected)) <= 64_000, 'INVALID_VISUAL_RESULT', 'SDK visual result exceeds 64 KB');
+  return projected;
+}
 export function makePiTools(ctx) {
   return ctx.toolDescriptions.filter(tool => tool.name !== 'build.validate').map(tool => ({
     name: tool.name.replace('.', '__'), label: tool.name, description: tool.description,
@@ -31,7 +52,7 @@ export function makePiTools(ctx) {
       const id = `pi-${createHash('sha256').update(toolCallId).digest('hex')}`;
       const signals = [ctx.signal, signal].filter(Boolean);
       const result = await ctx.invoke(id, tool.name, args, { signal: AbortSignal.any(signals) });
-      return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
+      return projectPiToolResult(tool.name, result, ctx.supportsImages === true);
     },
   }));
 }
@@ -40,10 +61,11 @@ export function makePiTools(ctx) {
 // their explicit model/auth runtime and persisted session manager. No defaults.
 export function makePiSessionOptions(sdk, ctx, { modelRuntime, model, sessionManager }) {
   check(modelRuntime && model && sessionManager, 'EXPLICIT_SESSION_REQUIRED', 'Supply explicit model/auth runtime, model and session storage');
-  const customTools = makePiTools(ctx);
+  const supportsImages = Array.isArray(model.input) && model.input.includes('image');
+  const customTools = makePiTools({ ...ctx, supportsImages });
   const settingsManager = sdk.SettingsManager.inMemory({
     compaction: { enabled: false }, retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
-    cacheWarming: 'off', images: { blockImages: true },
+    cacheWarming: 'off', images: { blockImages: !supportsImages, autoResize: false },
   });
   const agentDir = path.join(ctx.workspaceRoot, '..', 'pi-private');
   const resourceLoader = new sdk.DefaultResourceLoader({

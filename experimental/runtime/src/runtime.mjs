@@ -85,7 +85,7 @@ export class AgentRuntime {
       // nor a tool argument can widen it. Legacy workflows retain their tools.
       const modeTools = isHarness
         ? profile.tools.filter(name => intent === 'execute' ||
-          ['harness.list_files', 'harness.read_file', 'harness.search_files', 'harness.read_context', 'harness.read_history', 'harness.search_history'].includes(name) ||
+          ['harness.list_files', 'harness.read_file', 'harness.search_files', 'harness.read_context', 'harness.read_history', 'harness.search_history', 'pixel.inspect', 'model.inspect'].includes(name) ||
           (intent === 'plan' && name === 'harness.report_plan'))
         : intent && intent !== 'execute'
           ? profile.tools.filter(name => ['workspace.read', 'maker.plan', 'maker.report_plan'].includes(name))
@@ -124,7 +124,7 @@ export class AgentRuntime {
           }
           if (intent === 'execute' && ['maker.generate', 'maker.preview_revision', 'maker.preview_source_edit'].includes(name))
             check(job.operations.some(o => o.name === 'maker.report_plan' && o.status === 'completed'), 'PLAN_REQUIRED', 'Record a plan before source changes');
-          if (isHarness && name === 'harness.propose_changes')
+          if (isHarness && (name === 'harness.propose_changes' || /^(pixel|model)\.(create|edit|propose)$/.test(name)))
             check(job.operations.some(o => o.name === 'harness.report_plan' && o.status === 'completed'),
               'PLAN_REQUIRED', 'Record a plan before proposing source changes');
           const fingerprint = createHash('sha256').update(canonical({ name, args })).digest('hex');
@@ -133,11 +133,14 @@ export class AgentRuntime {
             check(operation.fingerprint === fingerprint, 'OPERATION_MISMATCH', 'Operation ID was reused with different arguments');
             if (operation.status === 'completed') {
               if (!tool.replayCompleted) return cloneJson(operation.result);
-              // Generic inspection receipts omit large excerpts. Reconstruct
-              // only read-only results from their still-verified frozen source;
-              // model work budgets count the call, durable operation IDs do not.
+              // Inspection receipts omit excerpts and images. Visual mutations
+              // recover their immutable operation commit instead of editing
+              // again; verify its projected receipt before returning the image.
               try {
-                const result = safeToolResult(await tool.execute(args, toolContext));
+                const result = safeToolResult(await tool.execute(args, { ...toolContext, replayReceipt: operation.result }));
+                if (tool.replaySafety === 'idempotent' || /^(pixel|model)\.inspect$/.test(name))
+                  check(canonical(safeToolResult(tool.projectReceipt(result))) === canonical(operation.result),
+                    'REPLAY_RECEIPT_CHANGED', 'Reconstructed visual result differs from its committed receipt');
                 await this.store.event(id, 'tool.replayed', { operationId, name });
                 throwIfAborted(toolSignal);
                 return cloneJson(result);

@@ -10,6 +10,9 @@
 //! atomic per file, not per batch. Original inodes stay in named temporary slots
 //! until the durable commit. Recovery checks the whole batch before reversing
 //! any publication; an external edit blocks recovery and keeps every backup.
+mod manual_assets;
+pub(super) use manual_assets::save_assets;
+
 use super::{hash, id, Project};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -1181,7 +1184,7 @@ pub(super) fn apply(
     let root = root(project)?;
     verify_root(project, &binding.root_identity)?;
     let changes = preflight(&root, &binding, export)?;
-    let mut journal = Journal {
+    let journal = Journal {
         schema_version: 1,
         binding,
         proposal_id: proposal_id.clone(),
@@ -1193,6 +1196,22 @@ pub(super) fn apply(
         created_directories: vec![],
     };
     let transaction = transactions.ensure_child(&transaction_name)?;
+    commit_changes(project, &root, &transaction, journal, &changes, true)
+}
+
+/// Shared file publication used by reviewed AI changes and explicit asset-editor
+/// saves. AI calls retain the full frozen-source check; manual calls bind the
+/// selected originals themselves. Both retain the same backup/recovery journal.
+fn commit_changes(
+    project: &Project,
+    root: &Dir,
+    transaction: &Dir,
+    mut journal: Journal,
+    changes: &[Change],
+    verify_whole_snapshot: bool,
+) -> Result<Value, String> {
+    let proposal_id = journal.proposal_id.clone();
+    let digest = journal.digest.clone();
     write_journal(&transaction, &journal)?;
     let result = (|| {
         for (index, change) in changes.iter().enumerate() {
@@ -1237,8 +1256,9 @@ pub(super) fn apply(
                 return Err("Harness source changed before publication".into());
             }
         }
-        if capture(project)?["sourceFingerprint"].as_str()
-            != Some(&journal.binding.source_fingerprint)
+        if verify_whole_snapshot
+            && capture(project)?["sourceFingerprint"].as_str()
+                != Some(&journal.binding.source_fingerprint)
         {
             return Err("Harness project changed during preparation".into());
         }
