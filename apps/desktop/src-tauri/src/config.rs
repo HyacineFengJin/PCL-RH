@@ -624,8 +624,9 @@ impl ConfigStore {
         )
     }
 
-    #[cfg(test)]
-    fn registered(&self, id: &str) -> Result<GameRoot, String> {
+    /// Registry-only lookup for metadata operations. File access must still
+    /// use resolve(), which requires a currently available directory.
+    pub(crate) fn registered(&self, id: &str) -> Result<GameRoot, String> {
         self.lock()
             .config
             .roots
@@ -741,23 +742,50 @@ impl ConfigStore {
 
     /// Removes only a registry reference. Game files are never removed.
     pub fn remove(&self, id: &str) -> Result<Settings, String> {
-        let mut current = self.lock();
-        let index = current
-            .config
-            .roots
-            .iter()
-            .position(|root| root.id == id)
-            .ok_or("游戏目录未注册或已移除")?;
-        if current.config.roots.len() == 1 {
-            return Err("至少需要保留一个游戏目录".into());
+        loop {
+            let (roots, active, revision) = {
+                let current = self.lock();
+                if let Some(reason) = &current.blocked {
+                    return Err(reason.clone());
+                }
+                (
+                    current.config.roots.clone(),
+                    current.config.active_root_id.clone(),
+                    current.revision.clone(),
+                )
+            };
+            let index = roots
+                .iter()
+                .position(|root| root.id == id)
+                .ok_or("游戏目录未注册或已移除")?;
+            if roots.len() == 1 {
+                return Err("至少需要保留一个游戏目录，请先添加其他目录".into());
+            }
+            let mut remaining = roots;
+            remaining.remove(index);
+            let next_active = if active == id {
+                // Offline mounts must not hold the settings mutex. Prefer the
+                // next usable neighbour, wrapping before retaining an offline
+                // entry; a missing directory must never be silently recreated.
+                let start = index.min(remaining.len() - 1);
+                (start..remaining.len())
+                    .chain(0..start)
+                    .find(|&candidate| canonical_root(&remaining[candidate].path).is_ok())
+                    .map(|candidate| remaining[candidate].id.clone())
+                    .unwrap_or_else(|| remaining[start].id.clone())
+            } else {
+                active
+            };
+            let mut current = self.lock();
+            if current.revision != revision {
+                continue; // Recompute after a concurrent select/register/save.
+            }
+            let mut next = current.config.clone();
+            next.roots = remaining;
+            next.active_root_id = next_active;
+            self.commit(&mut current, next)?;
+            return Ok(project_settings(&current.config, &current.revision));
         }
-        let mut next = current.config.clone();
-        next.roots.remove(index);
-        if next.active_root_id == id {
-            next.active_root_id = next.roots[index.min(next.roots.len() - 1)].id.clone();
-        }
-        self.commit(&mut current, next)?;
-        Ok(project_settings(&current.config, &current.revision))
     }
 
     pub fn save(&self, settings: Settings) -> Result<(), String> {

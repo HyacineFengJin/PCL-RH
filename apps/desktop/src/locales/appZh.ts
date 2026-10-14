@@ -68,6 +68,9 @@ const messages = {
   "folders.name": "文件夹名称",
   "folders.nameRequired": "请输入文件夹名称",
   "folders.occupied": "此目录正在使用，请等待任务结束",
+  "folders.lastRoot": "至少保留一个游戏目录，请先添加其他目录",
+  "folders.unavailableHelp": "可添加已有文件夹，或从列表移除此目录登记。",
+  "folders.unavailableLastHelp": "请先添加已有文件夹，再移除此目录登记。",
   "main.saving": "正在保存…",
   "main.confirm": "确定",
   "main.remove": "移除",
@@ -251,6 +254,8 @@ const messages = {
   "main.instanceHeading": "实例设置 - {id}",
   "folders.manageNamed": "管理文件夹 {name}",
   "folders.removeHelp": "从文件夹列表移除“{name}”，游戏文件会保留。",
+  "folders.removeUnavailableHelp":
+    "从列表移除暂不可用的“{name}”登记，不删除游戏文件。",
   "accounts.codeExpiry":
     "代码有效期约 {minutes} 分钟。网页授权完成后，启动器会继续登录。",
   "main.cancelled": "{name} {action}已取消",

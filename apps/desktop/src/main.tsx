@@ -534,8 +534,8 @@ async function api<T>(
     const id = String(args?.id);
     const roots = preview!.roots!;
     if (roots.length <= 1) throw new Error("请至少保留一个游戏目录");
-    if (!roots.some((root) => root.id === id))
-      throw new Error("游戏目录不存在");
+    const index = roots.findIndex((root) => root.id === id);
+    if (index < 0) throw new Error("游戏目录不存在");
     if (
       (["preparing", "running"].includes(preview!.status.stage) &&
         preview!.status.root_id === id) ||
@@ -547,9 +547,17 @@ async function api<T>(
       throw new Error("此目录正在使用，请等待任务结束");
     preview = { ...preview!, roots: roots.filter((root) => root.id !== id) };
     previewRoots.delete(id);
+    const remaining = preview!.roots!;
+    const start = Math.min(index, remaining.length - 1);
+    // Follow the native registry order, preferring a usable root before
+    // retaining an unavailable neighbour when every remaining root is offline.
+    const nextRoot =
+      remaining.slice(start).find((root) => root.available) ||
+      remaining.slice(0, start).find((root) => root.available) ||
+      remaining[start];
     return (
       preview!.settings.root_id === id
-        ? selectPreviewRoot(preview!.roots![0].id)
+        ? selectPreviewRoot(nextRoot.id)
         : normalizedState(preview!)
     ) as T;
   }
@@ -2737,10 +2745,26 @@ function App() {
                           <span>{data.config_warning}</span>
                         </div>
                       )}
-                      {(data.scan_error || selectedRoot?.error) && (
+                      {(data.scan_error ||
+                        selectedRoot?.error ||
+                        selectedRoot?.available === false) && (
                         <div className="error-banner" role="alert">
                           <TriangleAlert size={17} />
-                          <span>{data.scan_error || selectedRoot?.error}</span>
+                          <span>
+                            {data.scan_error ||
+                              selectedRoot?.error ||
+                              t("main.unavailable")}
+                            {selectedRoot?.available === false && (
+                              <>
+                                {" · "}
+                                {t(
+                                  (data.roots?.length || 0) <= 1
+                                    ? "folders.unavailableLastHelp"
+                                    : "folders.unavailableHelp",
+                                )}
+                              </>
+                            )}
+                          </span>
                         </div>
                       )}
                       {!!data.scan_issues?.length && (
@@ -3053,7 +3077,13 @@ function App() {
                   (data?.roots?.length || 0) <= 1 ||
                   menuRootOccupied
                 }
-                title={menuRootOccupied ? t("folders.occupied") : undefined}
+                title={
+                  menuRootOccupied
+                    ? t("folders.occupied")
+                    : (data?.roots?.length || 0) <= 1
+                      ? t("folders.lastRoot")
+                      : undefined
+                }
                 onClick={() => editRoot(menuRoot, "remove")}
               >
                 <X size={16} />
@@ -3106,7 +3136,12 @@ function App() {
                   />
                 ) : (
                   <p>
-                    {t("folders.removeHelp", { name: rootDialog.root.name })}
+                    {t(
+                      rootDialog.root.available
+                        ? "folders.removeHelp"
+                        : "folders.removeUnavailableHelp",
+                      { name: rootDialog.root.name },
+                    )}
                   </p>
                 )}
                 {rootError && (

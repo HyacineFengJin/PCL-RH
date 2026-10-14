@@ -70,6 +70,11 @@ const messages = {
   "folders.name": "Folder name",
   "folders.nameRequired": "Enter a folder name",
   "folders.occupied": "This folder is in use. Wait for the task to finish",
+  "folders.lastRoot": "Keep at least one game folder. Add another folder first",
+  "folders.unavailableHelp":
+    "Add an existing folder or remove this entry from the list.",
+  "folders.unavailableLastHelp":
+    "Add an existing folder before removing this entry.",
   "main.saving": "Saving…",
   "main.confirm": "Confirm",
   "main.remove": "Remove",
@@ -268,6 +273,8 @@ const messages = {
   "folders.manageNamed": "Manage folder {name}",
   "folders.removeHelp":
     "Remove “{name}” from the folder list. Game files are retained.",
+  "folders.removeUnavailableHelp":
+    "Remove the unavailable “{name}” entry from the list. Game files are retained.",
   "accounts.codeExpiry":
     "The code is valid for about {minutes} minutes. The launcher will continue sign-in after browser authorization.",
   "main.cancelled": "{name}: {action} cancelled",

@@ -533,3 +533,42 @@ fn java_bounds_and_strict_format_reject_without_overwrites() {
         .is_err());
     assert_eq!(store.snapshot(), before);
 }
+
+#[test]
+fn removal_prefers_a_usable_neighbour_and_retains_offline_entries() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let first = store.snapshot().root_id;
+    let imported = store.register(fixture.root("imported"), None).unwrap();
+    let offline = store.register(fixture.root("offline"), None).unwrap();
+    let next = store.register(fixture.root("next"), None).unwrap();
+    fs::remove_dir_all(&offline.path).unwrap();
+    store.select(&imported.id).unwrap();
+    assert_eq!(store.remove(&imported.id).unwrap().root_id, next.id);
+    assert!(store.registered(&offline.id).is_ok());
+    assert!(!Path::new(&offline.path).exists());
+    // Removing a non-selected entry must not switch the active root.
+    assert_eq!(store.remove(&offline.id).unwrap().root_id, next.id);
+    // At the end of the list, wrap back to the remaining available root.
+    assert_eq!(store.remove(&next.id).unwrap().root_id, first);
+}
+
+#[test]
+fn removal_with_all_remaining_roots_offline_keeps_a_valid_registry_selection() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let first = store.snapshot();
+    let imported = store.register(fixture.root("imported"), None).unwrap();
+    let offline = store.register(fixture.root("offline"), None).unwrap();
+    store.select(&imported.id).unwrap();
+    for path in [&first.root, &imported.path, &offline.path] {
+        fs::remove_dir_all(path).unwrap();
+    }
+    assert_eq!(store.remove(&imported.id).unwrap().root_id, offline.id);
+    let (reloaded, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    assert_eq!(reloaded.snapshot().root_id, offline.id);
+    assert!(reloaded.roots().iter().all(|root| !root.available));
+    assert!(!Path::new(&first.root).exists());
+    assert!(!Path::new(&offline.path).exists());
+}

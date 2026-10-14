@@ -54,6 +54,7 @@ mod resource_save;
 mod resource_save_commands;
 mod resource_update_commands;
 mod rh_code;
+mod root_removal;
 mod tasks;
 mod toolbox_download;
 mod toolbox_download_commands;
@@ -572,47 +573,14 @@ async fn root_update(
     .map_err(|_| "更新游戏目录失败")?
 }
 
-fn require_root_unused(s: &Shared, id: &str) -> Result<(), String> {
-    launcher_monitor_runtime::require_root_unused(s, id)?;
-    let root = s.config.resolve(Some(id))?;
-    let run = s.status.lock().unwrap();
-    if s.tasks.uses_root(id)
-        || s.tasks.blocks_path(Path::new(&root.path))?
-        || (run.root_id.as_deref() == Some(id)
-            && matches!(run.stage.as_str(), "preparing" | "running"))
-    {
-        return Err("该目录正在被游戏或文件操作使用，请等待结束后移除".into());
-    }
-    Ok(())
-}
-
-fn require_root_removable(s: &Shared, id: &str) -> Result<(), String> {
-    require_root_unused(s, id)?;
-    // Re-registration allocates a different registry identity. Keep the root
-    // and its preferences until all deleted instances have been restored.
-    let root = s
-        .config
-        .resolve(Some(id))
-        .map_err(|error| format!("无法检查实例恢复记录，请先恢复目录访问后再移除登记：{error}"))?;
-    // Keep the registered identity while an interrupted publication still needs
-    // its root-level recovery entry, including instances whose JSON is missing.
-    resource_ops::ensure_verified_batches_ready(Path::new(&root.path))?;
-    if !instance_delete::reserved_names(Path::new(&root.path))?.is_empty() {
-        return Err("此游戏目录仍有已删除实例，请先恢复它们后再移除目录登记".into());
-    }
-    Ok(())
-}
+#[cfg(test)]
+use root_removal::{require_root_removable, require_root_unused};
 
 #[tauri::command]
 async fn root_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        {
-            let _operation = s.operations.lock().unwrap();
-            require_reference_write(&s)?;
-            require_root_removable(&s, &id)?;
-            s.config.remove(&id)?;
-        }
+        root_removal::remove(&s, &id)?;
         Ok(bootstrap_view(&s))
     })
     .await
@@ -2179,6 +2147,8 @@ mod integration_tests {
     mod content_scope;
     #[path = "resource_updates.rs"]
     mod resource_updates;
+    #[path = "root_removal.rs"]
+    mod root_removal_tests;
 
     #[test]
     fn game_preparation_uses_a_captured_policy_and_refuses_unverified_preferences() {
