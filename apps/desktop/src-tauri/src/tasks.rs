@@ -284,6 +284,12 @@ impl Tasks {
         self.project_list(&inner)
     }
 
+    /// Diagnostics need to notice even a task that started and finished during
+    /// their read. Capture the generation without cloning the task history.
+    pub(crate) fn revision(&self) -> u64 {
+        self.inner.lock().unwrap().revision
+    }
+
     fn project_list(&self, inner: &Inner) -> TaskListSnapshot {
         TaskListSnapshot {
             revision: inner.revision.to_string(),

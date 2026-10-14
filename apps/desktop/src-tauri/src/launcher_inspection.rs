@@ -33,7 +33,7 @@ struct CapturedInspection {
     root: GameRoot,
     settings_revision: String,
     preferences_revision: String,
-    tasks_revision: String,
+    tasks_revision: u64,
     close_generation: u64,
     run: RunStatus,
     java: JavaSelection,
@@ -165,7 +165,7 @@ fn capture(shared: &Shared, id: &str, root_id: Option<&str>) -> Result<CapturedI
         settings_revision: settings.revision,
         preferences_revision: preferences.revision,
         root,
-        tasks_revision: shared.tasks.list_snapshot().revision,
+        tasks_revision: shared.tasks.revision(),
         close_generation: shared.close_generation.load(Ordering::SeqCst),
         run: shared.status.lock().unwrap().clone(),
         nodes,
@@ -182,7 +182,7 @@ fn verify(shared: &Shared, captured: &CapturedInspection) -> Result<(), String> 
     }
     if settings.revision != captured.settings_revision
         || preferences.revision != captured.preferences_revision
-        || shared.tasks.list_snapshot().revision != captured.tasks_revision
+        || shared.tasks.revision() != captured.tasks_revision
         || shared.close_generation.load(Ordering::SeqCst) != captured.close_generation
         || *shared.status.lock().unwrap() != captured.run
     {
