@@ -14,6 +14,8 @@ export function JavaPanel({
   onNotify,
   downloadDisabled = disabled,
   onJavaTask = () => {},
+  recommendation,
+  onInstanceJava,
 }: {
   settings: Settings;
   api: Api;
@@ -24,6 +26,8 @@ export function JavaPanel({
   onNotify: (message: string) => void;
   downloadDisabled?: boolean;
   onJavaTask?: (id: string, reveal: boolean) => void;
+  recommendation?: { name: string; major: number };
+  onInstanceJava?: () => void;
 }) {
   const { catalog, loading, error } = useJavaCatalog(api, settings);
   const action = useJavaAction({ api, settings, native, disabled, onNotify });
@@ -51,6 +55,21 @@ export function JavaPanel({
   }
   return (
     <div className="ce-settings-panel">
+      {recommendation && (
+        <section className="ce-card">
+          <p className="ce-java-status">
+            {t("inspection.javaRecommendation", {
+              name: recommendation.name,
+              version: recommendation.major,
+            })}
+          </p>
+          {onInstanceJava && (
+            <button className="ce-button" onClick={onInstanceJava}>
+              {t("inspection.instanceJava")}
+            </button>
+          )}
+        </section>
+      )}
       <div className="ce-card ce-java-add">
         <button
           disabled={action.disabled}
@@ -71,12 +90,14 @@ export function JavaPanel({
         </button>
       </div>
       <JavaDownloads
+        key={`${settings.root_id || settings.root}:${recommendation?.major || 0}`}
         api={api}
         settings={settings}
         native={native}
         disabled={downloadDisabled}
         onNotify={onNotify}
         onTask={onJavaTask}
+        recommendedMajor={recommendation?.major}
       />
       <section className="ce-card ce-java-list" aria-label={t("java.runtimes")}>
         <button

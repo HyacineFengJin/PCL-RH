@@ -1,5 +1,7 @@
 //! Native launch planning for installed Mojang-format instances.
 pub mod content_scope;
+mod dependencies;
+pub mod inspection;
 pub mod java;
 pub mod launch_options;
 pub mod platform;
@@ -148,6 +150,15 @@ pub fn safe_join(base: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
     Ok(result)
 }
 fn read_json(path: &Path) -> Result<Value> {
+    if !fs::metadata(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .is_file()
+    {
+        return Err(format!(
+            "Metadata must be a regular file: {}",
+            path.display()
+        ));
+    }
     let raw = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     serde_json::from_str(raw.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("{}: {e}", path.display()))
@@ -222,7 +233,13 @@ fn metadata(root: &Path, id: &str, visiting: &mut HashSet<String>) -> Result<Val
     Ok(data)
 }
 fn required_java(data: &Value) -> u32 {
-    data["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32
+    match data["javaVersion"].get("majorVersion") {
+        None => 8,
+        Some(value) => value
+            .as_u64()
+            .and_then(|major| u32::try_from(major).ok())
+            .unwrap_or(0),
+    }
 }
 fn game_argument<'a>(data: &'a Value, flag: &str) -> Option<&'a str> {
     data["arguments"]["game"]
@@ -230,6 +247,12 @@ fn game_argument<'a>(data: &'a Value, flag: &str) -> Option<&'a str> {
         .windows(2)
         .find(|pair| pair[0].as_str() == Some(flag))
         .and_then(|pair| pair[1].as_str())
+}
+fn minecraft_version(data: &Value) -> &str {
+    game_argument(data, "--fml.mcVersion")
+        .or_else(|| data["clientVersion"].as_str())
+        .or_else(|| data["inheritsFrom"].as_str())
+        .unwrap_or_else(|| text(data, "id"))
 }
 fn loader_description(data: &Value) -> String {
     let coordinate_version = |coordinates: &[&str]| -> Option<&str> {
@@ -364,17 +387,7 @@ fn scan_instance_at_root(root: &Path, id: &str) -> Result<Option<Instance>> {
             }
         }
     }
-    let minecraft_version = data["arguments"]["game"]
-        .as_array()
-        .and_then(|args| {
-            args.windows(2)
-                .find(|w| w[0].as_str() == Some("--fml.mcVersion"))
-                .and_then(|w| w[1].as_str())
-        })
-        .or_else(|| data["clientVersion"].as_str())
-        .or_else(|| data["inheritsFrom"].as_str())
-        .unwrap_or_else(|| text(&data, "id"))
-        .to_string();
+    let minecraft_version = minecraft_version(&data).to_string();
     Ok(Some(Instance {
         id: id.into(),
         minecraft_version,
@@ -409,7 +422,9 @@ fn library_path(root: &Path, artifact: &Value, name: &str) -> Result<PathBuf> {
     } else {
         maven_path(name)?
     };
-    safe_join(root, format!("libraries/{relative}"))
+    // Path joining preserves an absolute metadata path as absolute, allowing
+    // safe_join to reject it instead of disguising it as libraries//absolute.
+    safe_join(root, Path::new("libraries").join(relative))
 }
 pub fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Result<()> {
     extract_natives_for(archive, target, excludes, platform::Platform::current()?)
@@ -670,99 +685,30 @@ fn build_launch_plan_inner(
     let game_scope = content_scope::inspect(&root, id)?;
     let game_dir = content_scope::verified_base(&root, id, game_scope)?;
     let context = RuleContext::current()?;
-    let mut classpath = vec![];
-    let mut native_jars = vec![];
-    let mut missing = vec![];
-    for lib in data["libraries"].as_array().into_iter().flatten() {
-        if !context.library_allowed(lib)? {
-            continue;
-        }
-        let name = text(lib, "name");
-        let artifact = &lib["downloads"]["artifact"];
-        if !artifact.is_null() || lib.get("downloads").is_none() {
-            let path = library_path(&root, artifact, name)?;
-            if !path.is_file() {
-                missing.push(path.display().to_string());
-            } else {
-                // Modern native artifacts remain on the classpath as well as being extracted.
-                classpath.push(path.clone());
-                if context.platform.native_artifact(name)? {
-                    native_jars.push((path, lib.clone()));
-                }
-            }
-        }
-        if let Some(classifier) = context.platform.legacy_native_classifier(lib)? {
-            let native = &lib["downloads"]["classifiers"][&classifier];
-            let path = library_path(&root, native, &format!("{name}:{classifier}"))?;
-            if !path.is_file() {
-                missing.push(path.display().to_string());
-            } else {
-                native_jars.push((path, lib.clone()));
-            }
-        }
-    }
-    let jar_id = data["jar"].as_str().unwrap_or(id);
-    identifier(jar_id)?;
-    let jar = safe_join(&root, format!("versions/{jar_id}/{jar_id}.jar"))?;
-    if jar.is_file() {
-        classpath.push(jar);
-    } else {
-        missing.push(jar.display().to_string());
-    }
-    deduplicate_launch_paths(&mut classpath, &mut native_jars);
-    let asset_id = data["assetIndex"]["id"]
-        .as_str()
-        .or_else(|| data["assets"].as_str())
-        .unwrap_or("");
-    if !asset_id.is_empty() {
-        identifier(asset_id)?;
-        let index = safe_join(&root, format!("assets/indexes/{asset_id}.json"))?;
-        if !index.is_file() {
-            missing.push(index.display().to_string());
-        } else {
-            let index_data = read_json(&index)?;
-            for object in index_data["objects"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(_, v)| v)
-            {
-                let hash = text(object, "hash");
-                if hash.len() != 40 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err("Invalid asset object hash".into());
-                }
-                let object_path =
-                    safe_join(&root, format!("assets/objects/{}/{}", &hash[..2], hash))?;
-                if !object_path.is_file() {
-                    missing.push(object_path.display().to_string());
-                }
-            }
-        }
-    }
-    let logging = &data["logging"]["client"];
-    let log_config = if let Some(log_id) = logging["file"]["id"].as_str() {
-        identifier(log_id)?;
-        let path = safe_join(&root, format!("assets/log_configs/{log_id}"))?;
-        if !path.is_file() {
-            missing.push(path.display().to_string());
-        }
-        Some(path)
-    } else {
-        None
-    };
-    if !missing.is_empty() {
+    let dependencies = dependencies::resolve(&root, id, &data, &context)?;
+    let dependencies::InstalledDependencies {
+        classpath,
+        native_jars,
+        asset_id,
+        log_config,
+        missing,
+        asset_index: _,
+    } = dependencies;
+    if missing.total > 0 {
         return Err(format!(
             "Missing {} installed dependencies (downloads are not available in phase 1):\n{}{}",
-            missing.len(),
+            missing.total,
             missing
+                .paths
                 .iter()
                 .take(12)
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n"),
-            if missing.len() > 12 { "\n…" } else { "" }
+            if missing.total > 12 { "\n…" } else { "" }
         ));
     }
+    let logging = &data["logging"]["client"];
     let loader = loader_description(&data);
     let exact_java = loader.starts_with("Forge ") || loader.starts_with("NeoForge ");
     let java = java::select(
@@ -1248,9 +1194,19 @@ mod tests {
             xuid: "12345".into(),
             client_id: "project-client".into(),
         };
-        let online =
-            build_launch_plan_authenticated(&root, fixture.path(), "fixture", &identity, 4)
-                .unwrap();
+        let selection = java::JavaSelection::Manual {
+            path: java.display().to_string(),
+        };
+        let online = build_launch_plan_authenticated_with_java(
+            &root,
+            fixture.path(),
+            "fixture",
+            &identity,
+            4,
+            &selection,
+            &[],
+        )
+        .unwrap();
         for expected in [
             "RealPlayer",
             &identity.uuid,
@@ -1269,8 +1225,16 @@ mod tests {
             .unwrap()
             .contains(&identity.access_token));
         assert!(!format!("{online:?}").contains(&identity.access_token));
-        let offline =
-            build_launch_plan(&root, fixture.path(), "fixture", "OfflinePlayer", 4).unwrap();
+        let offline = build_launch_plan_with_java(
+            &root,
+            fixture.path(),
+            "fixture",
+            "OfflinePlayer",
+            4,
+            &selection,
+            &[],
+        )
+        .unwrap();
         assert!(offline.args.contains(&"legacy".into()));
         assert!(offline.args.contains(&"0".into()));
         assert!(!offline.args.contains(&"msa".into()));
@@ -1279,8 +1243,16 @@ mod tests {
         assert_eq!(json["args"], serde_json::to_value(&offline.args).unwrap());
         // Even errors caused by mixed known and unknown placeholders must be safe.
         fs::write(version.join("fixture.json"), json!({"id":"fixture","mainClass":"Main","arguments":{"game":["${auth_access_token}-${unknown}"],"jvm":[]},"libraries":[]}).to_string()).unwrap();
-        let error = build_launch_plan_authenticated(&root, fixture.path(), "fixture", &identity, 4)
-            .unwrap_err();
+        let error = build_launch_plan_authenticated_with_java(
+            &root,
+            fixture.path(),
+            "fixture",
+            &identity,
+            4,
+            &selection,
+            &[],
+        )
+        .unwrap_err();
         assert!(!error.contains(&identity.access_token));
     }
 }

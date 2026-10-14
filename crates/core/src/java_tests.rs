@@ -334,22 +334,15 @@ fn manual_selection_never_falls_back_and_exact_requirement_is_enforced() {
 #[test]
 fn auto_uses_lowest_compatible_major_and_exact_loader_major() {
     let fixture = Fixture::new();
-    // Future fixture majors avoid depending on the developer's installed JVMs.
     let low = fixture.runtime("runtime/bin/java", "123");
     let high = fixture.runtime("runtime-25/bin/java", "125");
-    assert_eq!(
-        select(fixture.path(), None, &[], &JavaSelection::Auto, 123, false).unwrap(),
-        low
-    );
-    assert_eq!(
-        select(fixture.path(), None, &[], &JavaSelection::Auto, 124, false).unwrap(),
-        high
-    );
-    assert_eq!(
-        select(fixture.path(), None, &[], &JavaSelection::Auto, 125, true).unwrap(),
-        high
-    );
-    assert!(select(fixture.path(), None, &[], &JavaSelection::Auto, 124, true).is_err());
+    // Discovery coverage supplies an explicit candidate set. Calling the
+    // production catalog here would also execute the developer's system JVMs.
+    let catalog = candidates(&[], vec![high.clone(), low.clone()]);
+    assert_eq!(select_from_catalog(&catalog, 123, false).unwrap(), low);
+    assert_eq!(select_from_catalog(&catalog, 124, false).unwrap(), high);
+    assert_eq!(select_from_catalog(&catalog, 125, true).unwrap(), high);
+    assert!(select_from_catalog(&catalog, 124, true).is_err());
 }
 
 #[test]

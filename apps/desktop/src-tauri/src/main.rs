@@ -30,6 +30,7 @@ mod launcher_document;
 mod launcher_favorite_commands;
 mod launcher_favorites;
 mod launcher_game_monitor;
+mod launcher_inspection;
 mod launcher_local;
 mod launcher_local_commands;
 mod launcher_log_commands;
@@ -76,7 +77,7 @@ use std::{
     time::Duration,
 };
 use tauri::{Emitter, Manager, State};
-#[derive(Clone, Serialize, Default)]
+#[derive(Clone, Serialize, Default, PartialEq, Eq)]
 struct RunStatus {
     stage: String,
     message: String,
@@ -200,13 +201,6 @@ struct InstanceView {
     instance: pcl_core::Instance,
     metadata: instance_meta::Metadata,
     metadata_revision: String,
-}
-#[derive(Serialize)]
-struct Inspection {
-    java: String,
-    game_dir: String,
-    arguments: usize,
-    log_path: String,
 }
 fn project() -> PathBuf {
     std::env::var_os("PCL_LINUX_HOME")
@@ -1537,39 +1531,10 @@ async fn inspect_instance(
     id: String,
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
-) -> Result<Inspection, String> {
+) -> Result<launcher_inspection::Inspection, String> {
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // Building the current launch plan extracts natives. Coordinate this
-        // short write with game startup, installs and root removal.
-        let _operation = s.operations.lock().unwrap();
-        launcher_monitor_runtime::require_idle(&s)?;
-        s.config.ensure_writable()?;
-        require_account_edit(&s.status.lock().unwrap())?;
-        if s.tasks.active().is_some() {
-            return Err("请在文件操作结束后检查启动环境".into());
-        }
-        let (cfg, root) = instance_context(&s.config, root_id.as_deref(), &id)?;
-        resource_ops::ensure_ready(Path::new(&root.path))?;
-        instance_reset::ensure_ready(Path::new(&root.path))?;
-        ensure_instance_files_ready(&s, &root)?;
-        let launcher_policy = captured_launch_preferences(&s)?;
-        let plan = pcl_core::build_launch_plan_with_options(
-            Path::new(&root.path),
-            &s.project,
-            &id,
-            &cfg.player,
-            *root.overrides.get(&id).unwrap_or(&cfg.memory_gib),
-            java_service::effective_choice(&cfg, &root, &id),
-            &cfg.java_paths,
-            &launcher_policy.game_launch,
-        )?;
-        Ok(Inspection {
-            java: plan.java.display().to_string(),
-            game_dir: plan.game_dir.display().to_string(),
-            arguments: plan.args.len(),
-            log_path: plan.log_path.display().to_string(),
-        })
+        launcher_inspection::inspect(&s, &id, root_id.as_deref())
     })
     .await
     .map_err(|e| e.to_string())?

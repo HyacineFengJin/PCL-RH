@@ -1,0 +1,147 @@
+.ce-inspection-modal {
+  width: 640px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 22px;
+  border-radius: 7px;
+  background: var(--ce-surface, #f7faff);
+  color: var(--ce-text, #414c59);
+  box-shadow: 0 4px 24px #172b4c40;
+}
+.ce-inspection-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  padding: 0 2px 11px;
+  color: var(--ce-link, #2078da);
+  border-bottom: 2px solid var(--ce-link, #2078da);
+}
+.ce-inspection-heading h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+}
+.ce-inspection-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 15px 0 0;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ce-inspection-help {
+  margin: 0 0 15px;
+  font-size: 12px;
+  color: var(--ce-muted-text, #9299a3);
+}
+.ce-inspection-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 15px;
+  color: var(--ce-link, #2078da);
+}
+.ce-inspection-state.is-problem,
+.ce-inspection-problem,
+.ce-inspection-error {
+  color: var(--ce-danger-text, #bc7368);
+}
+.ce-inspection-error p {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+.ce-inspection-section {
+  margin: 0 0 13px;
+  padding: 13px 15px;
+  border: 1px solid var(--ce-border, #d5e2f2);
+  border-radius: 5px;
+  background: var(--ce-tinted-surface, #edf4fd);
+  font-size: 13px;
+}
+.ce-inspection-section:last-child {
+  margin-bottom: 0;
+}
+.ce-inspection-section h3 {
+  margin: 0 0 9px;
+  color: var(--ce-link, #2078da);
+  font-size: 15px;
+  font-weight: 400;
+}
+.ce-inspection-section p {
+  margin: 5px 0;
+}
+.ce-inspection-section dl {
+  display: grid;
+  grid-template-columns: 105px minmax(0, 1fr);
+  gap: 7px 10px;
+  margin: 0;
+}
+.ce-inspection-section dt {
+  color: var(--ce-muted-text, #9299a3);
+}
+.ce-inspection-section dd {
+  min-width: 0;
+  margin: 0;
+}
+.ce-inspection-section ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.ce-inspection-section li + li {
+  margin-top: 5px;
+}
+.ce-inspection-path,
+.ce-inspection-files li {
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+.ce-inspection-files summary {
+  padding-top: 5px;
+  color: var(--ce-link, #2078da);
+  cursor: pointer;
+}
+.ce-inspection-java-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+}
+.ce-inspection-java-action small {
+  flex: 1;
+  min-width: 160px;
+  color: var(--ce-muted-text, #9299a3);
+  font-size: 12px;
+}
+.ce-inspection-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+.ce-inspection-modal .ce-button {
+  height: 34px;
+  padding: 0 14px;
+}
+@media (max-width: 560px) {
+  .ce-inspection-shade {
+    padding: 12px;
+  }
+  .ce-inspection-modal {
+    padding: 16px;
+  }
+  .ce-inspection-section dl {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .ce-inspection-section dd + dt {
+    margin-top: 6px;
+  }
+}

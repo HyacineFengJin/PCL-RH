@@ -34,6 +34,8 @@ type Props = {
   onRefresh: () => Promise<void>;
   downloadDisabled?: boolean;
   onJavaTask?: (id: string, reveal: boolean) => void;
+  javaRecommendation?: { name: string; major: number };
+  onInstanceJava?: () => void;
 };
 const unavailable = () => t("settings.unavailable");
 const jvm =
@@ -92,6 +94,8 @@ export function SettingsPanel({
   onRefresh,
   downloadDisabled,
   onJavaTask,
+  javaRecommendation,
+  onInstanceJava,
 }: Props) {
   const [memory, setMemory] = useState(settings.memory_gib);
   const [advanced, setAdvanced] = useState(false);
@@ -130,6 +134,8 @@ export function SettingsPanel({
         onNotify={onNotify}
         downloadDisabled={downloadDisabled}
         onJavaTask={onJavaTask}
+        recommendation={javaRecommendation}
+        onInstanceJava={onInstanceJava}
       />
     );
   if (!["launch", "启动", "game"].includes(section))

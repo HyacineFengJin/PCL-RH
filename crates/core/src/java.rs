@@ -365,14 +365,7 @@ pub fn select(
     required: u32,
     exact: bool,
 ) -> Result<PathBuf> {
-    if required == 0 || required > 999 {
-        return Err("实例要求的 Java 主版本无效".into());
-    }
-    let requirement = if exact {
-        format!("此实例需要 Java {required}，必须使用相同主版本")
-    } else {
-        format!("此实例需要 Java {required} 或更新版本")
-    };
+    let requirement = requirement(required, exact)?;
     match choice {
         JavaSelection::Manual { path } => {
             let runtime = inspect(Path::new(path))
@@ -385,15 +378,40 @@ pub fn select(
             }
             Ok(runtime.path.into())
         }
-        JavaSelection::Auto => catalog(project, root, extras)?
-            .runtimes
-            .into_iter()
-            .find(|runtime| compatible(runtime.major, required, exact))
-            .map(|runtime| PathBuf::from(runtime.path))
-            .ok_or_else(|| {
-                format!("{requirement}；未找到兼容运行环境，请登记 Java 路径或设置 JAVA_HOME")
-            }),
+        JavaSelection::Auto => {
+            select_from_catalog(&catalog(project, root, extras)?, required, exact)
+        }
     }
+}
+
+fn requirement(required: u32, exact: bool) -> Result<String> {
+    if required == 0 || required > 999 {
+        return Err("实例要求的 Java 主版本无效".into());
+    }
+    Ok(if exact {
+        format!("此实例需要 Java {required}，必须使用相同主版本")
+    } else {
+        format!("此实例需要 Java {required} 或更新版本")
+    })
+}
+
+/// Separate policy from discovery so deterministic callers/tests can supply an
+/// already inspected catalog without running Java a second time.
+pub(crate) fn select_from_catalog(
+    catalog: &JavaCatalog,
+    required: u32,
+    exact: bool,
+) -> Result<PathBuf> {
+    let requirement = requirement(required, exact)?;
+    catalog
+        .runtimes
+        .iter()
+        .filter(|runtime| compatible(runtime.major, required, exact))
+        .min_by(|a, b| a.major.cmp(&b.major).then(a.path.cmp(&b.path)))
+        .map(|runtime| PathBuf::from(&runtime.path))
+        .ok_or_else(|| {
+            format!("{requirement}；未找到兼容运行环境，请登记 Java 路径或设置 JAVA_HOME")
+        })
 }
 
 #[cfg(unix)]

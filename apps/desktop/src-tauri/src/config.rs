@@ -605,6 +605,34 @@ impl ConfigStore {
         project_settings(&current.config, &current.revision)
     }
 
+    /// A diagnostic must describe the cached settings only while their source
+    /// file still agrees. This check creates no lock file or directories, and
+    /// filesystem reads happen after releasing the settings mutex.
+    pub(crate) fn checked_snapshot(&self) -> Result<Settings, String> {
+        let (settings, expected_disk) = {
+            let current = self.lock();
+            if let Some(reason) = &current.blocked {
+                return Err(reason.clone());
+            }
+            (
+                project_settings(&current.config, &current.revision),
+                current.disk.clone(),
+            )
+        };
+        let (disk, _) = crate::instance_rename_refs::store_snapshot(
+            self.project()?,
+            "settings.json",
+            2 * 1024 * 1024,
+        )?;
+        if !expected_disk.compatible(&disk) {
+            return Err("设置文件已由外部修改，请重新打开启动器后再检查启动环境".into());
+        }
+        if self.lock().revision != settings.revision {
+            return Err("设置已更新，请重新检查启动环境".into());
+        }
+        Ok(settings)
+    }
+
     /// Checks directory metadata only; this does not read any game contents.
     pub fn roots(&self) -> Vec<RootSummary> {
         let roots = self.lock().config.roots.clone();

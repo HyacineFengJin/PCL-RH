@@ -309,6 +309,7 @@ export function InstancePanel({
   onSave,
   onOpen,
   onInspect,
+  onTestLaunch,
   onNotify,
   onResourceDetails,
   onMetadataChange,
@@ -325,6 +326,7 @@ export function InstancePanel({
   onSave: (s: Settings) => Promise<void>;
   onOpen: (kind: string) => void;
   onInspect: () => void;
+  onTestLaunch: () => void;
   onNotify: (s: string) => void;
   onResourceDetails?: (resource: LocalResourceDetails) => void;
   onMetadataChange?: (id: string, meta: MetaView) => void;
@@ -907,10 +909,16 @@ export function InstancePanel({
             <button
               className="ce-button"
               disabled={disabled}
-              onClick={onInspect}
-              title={t("instance.inspectHelp")}
+              onClick={onTestLaunch}
             >
               {t("instance.inspect")}
+            </button>
+            <button
+              className="ce-button"
+              disabled={!native || disabled || !!mutationDisabled}
+              onClick={onInspect}
+            >
+              {t("inspection.open")}
             </button>
             <button
               className="ce-button"

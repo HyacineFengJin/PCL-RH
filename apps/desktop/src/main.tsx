@@ -101,6 +101,7 @@ import {
 } from "./taskLifecycle";
 import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
+import { LaunchInspection } from "./LaunchInspection";
 import { ContextMenu } from "./ContextMenu";
 import { useDownloadTasks } from "./useDownloadTasks";
 import {
@@ -172,12 +173,6 @@ type State = {
   instances: Instance[];
   status: Status;
   auth: AuthState;
-};
-type Inspection = {
-  java: string;
-  game_dir: string;
-  arguments: number;
-  log_path: string;
 };
 const native = isTauri();
 const resourceWrites = new Set([
@@ -856,8 +851,6 @@ function App() {
     >(null),
     [query, setQuery] = useState(""),
     [toast, setToast] = useState(""),
-    [inspection, setInspection] = useState<Inspection | null>(null),
-    [checking, setChecking] = useState(false),
     [draft, setDraft] = useState<Settings | null>(null),
     [override, setOverride] = useState(6);
   const [screen, setScreen] = useState<
@@ -971,6 +964,16 @@ function App() {
   const [instanceImport, setInstanceImport] = useState<{
     rootKey: string;
     epoch: number;
+  } | null>(null);
+  const [inspectionTarget, setInspectionTarget] = useState<{
+    rootKey: string;
+    id: string;
+    epoch: number;
+  } | null>(null);
+  const [javaRecommendation, setJavaRecommendation] = useState<{
+    rootKey: string;
+    id: string;
+    major: number;
   } | null>(null);
   const importEntry = React.useRef(instanceImport);
   importEntry.current = instanceImport;
@@ -1252,6 +1255,11 @@ function App() {
   }
   const navigationEpoch = taskNavigation.current.epoch;
   useEffect(() => {
+    setInspectionTarget((current) =>
+      current?.epoch === navigationEpoch ? current : null,
+    );
+  }, [navigationEpoch]);
+  useEffect(() => {
     const choice = importEntry.current;
     if (
       !choice ||
@@ -1530,8 +1538,8 @@ function App() {
     };
   }, []);
   useEffect(() => {
-    setInspection(null);
-    setChecking(false);
+    setInspectionTarget(null);
+    setJavaRecommendation(null);
     setResource(null);
     setQuery("");
     setRootMenu(null);
@@ -1720,7 +1728,7 @@ function App() {
       if (contextKey.current !== targetKey) return;
       setDialog(null);
       setScreen("home");
-      setInspection(null);
+      setInspectionTarget(null);
     } catch (e) {
       notify(String(e));
     }
@@ -1766,25 +1774,26 @@ function App() {
       notify(String(e));
     }
   }
-  async function inspect() {
-    if (!selected) return;
-    const targetKey = rootKey;
-    setChecking(true);
-    setInspection(null);
-    try {
-      const result = await rootApi<Inspection>("inspect_instance", {
-        id: selected.id,
-      });
-      if (contextKey.current === targetKey) setInspection(result);
-    } catch (e) {
-      notify(String(e));
-    } finally {
-      if (contextKey.current === targetKey) setChecking(false);
-    }
+  function inspect() {
+    if (
+      !native ||
+      !selected ||
+      tasks.closing ||
+      busy ||
+      downloadBusy ||
+      resourceBusy ||
+      rootWorking ||
+      !rootAvailable ||
+      instanceRecoveryBlocked ||
+      contextKey.current !== rootKey ||
+      viewContext.current.selected !== selected.id
+    )
+      return;
+    setInspectionTarget({ rootKey, id: selected.id, epoch: navigationEpoch });
   }
   function instanceSettings() {
     if (!selected || !data) return;
-    setInspection(null);
+    setInspectionTarget(null);
     setOverride(
       data.settings.overrides[selected.id] || data.settings.memory_gib,
     );
@@ -2440,7 +2449,7 @@ function App() {
                             (!selected ||
                               downloadBusy ||
                               resourceBusy ||
-                              checking ||
+                              !!inspectionTarget ||
                               rootWorking ||
                               !rootAvailable ||
                               instanceRecoveryBlocked ||
@@ -2800,7 +2809,8 @@ function App() {
                       )}
                       onSave={save}
                       onOpen={open}
-                      onInspect={launch}
+                      onTestLaunch={launch}
+                      onInspect={inspect}
                       onNotify={notify}
                       onMetadataChange={(id: string, meta: MetaView) => {
                         if (contextKey.current !== rootKey) return;
@@ -2863,17 +2873,39 @@ function App() {
                       {tab === "launch" &&
                         processInRoot &&
                         data.status.stage === "error" && (
-                          <button
-                            className="error-banner"
-                            onClick={() => {
-                              setTab("settings");
-                              setSettingsPage("logs");
-                            }}
-                          >
-                            <TriangleAlert size={18} />
-                            <span>{data.status.message}</span>
-                            <ChevronRight size={18} />
-                          </button>
+                          <>
+                            <button
+                              className="error-banner"
+                              onClick={() => {
+                                setTab("settings");
+                                setSettingsPage("logs");
+                              }}
+                            >
+                              <TriangleAlert size={18} />
+                              <span>{data.status.message}</span>
+                              <ChevronRight size={18} />
+                            </button>
+                            {selected?.id === data.status.version && (
+                              <div className="ce-actions">
+                                <button
+                                  className="ce-button"
+                                  onClick={inspect}
+                                  disabled={
+                                    !native ||
+                                    !!busy ||
+                                    downloadBusy ||
+                                    resourceBusy ||
+                                    rootWorking ||
+                                    !rootAvailable ||
+                                    instanceRecoveryBlocked ||
+                                    tasks.closing
+                                  }
+                                >
+                                  {t("inspection.open")}
+                                </button>
+                              </div>
+                            )}
+                          </>
                         )}
                       {tab === "launch" && (
                         <ExperimentalCards
@@ -2919,6 +2951,20 @@ function App() {
                               instanceRecoveryBlocked
                             }
                             onInstances={instanceSettings}
+                            javaRecommendation={
+                              javaRecommendation?.rootKey === rootKey &&
+                              javaRecommendation.id === selected?.id
+                                ? {
+                                    name: javaRecommendation.id,
+                                    major: javaRecommendation.major,
+                                  }
+                                : undefined
+                            }
+                            onInstanceJava={() => {
+                              setInspectionTarget(null);
+                              setScreen("instance");
+                              setInstancePage("settings");
+                            }}
                             showInstanceSettings={
                               !launcher.isHidden("feature.instance_management")
                             }
@@ -3003,6 +3049,50 @@ function App() {
               </span>
             </button>
           )}
+          {data &&
+            inspectionTarget &&
+            inspectionTarget.rootKey === rootKey &&
+            inspectionTarget.id === selected?.id &&
+            inspectionTarget.epoch === navigationEpoch && (
+              <LaunchInspection
+                key={`${inspectionTarget.rootKey}:${inspectionTarget.id}:${inspectionTarget.epoch}`}
+                id={inspectionTarget.id}
+                scopeKey={`${rootKey}:${data.settings.revision || ""}`}
+                api={rootApi}
+                native={native}
+                disabled={
+                  !!busy ||
+                  downloadBusy ||
+                  resourceBusy ||
+                  rootWorking ||
+                  !rootAvailable ||
+                  instanceRecoveryBlocked ||
+                  tasks.closing
+                }
+                onClose={() =>
+                  setInspectionTarget((current) =>
+                    current === inspectionTarget ? null : current,
+                  )
+                }
+                onManageJava={(major) => {
+                  if (
+                    contextKey.current !== inspectionTarget.rootKey ||
+                    viewContext.current.selected !== inspectionTarget.id ||
+                    taskNavigation.current.epoch !== inspectionTarget.epoch
+                  )
+                    return;
+                  setJavaRecommendation({
+                    rootKey,
+                    id: inspectionTarget.id,
+                    major,
+                  });
+                  setInspectionTarget(null);
+                  setTab("settings");
+                  setSettingsPage("java");
+                  setScreen("home");
+                }}
+              />
+            )}
           {data &&
             instanceImport &&
             instanceImport.rootKey === rootKey &&

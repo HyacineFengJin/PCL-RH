@@ -49,6 +49,7 @@ export function JavaDownloads({
   disabled,
   onNotify,
   onTask,
+  recommendedMajor,
 }: {
   api: Api;
   settings: Settings;
@@ -56,10 +57,11 @@ export function JavaDownloads({
   disabled: boolean;
   onNotify: (message: string) => void;
   onTask: (id: string, reveal: boolean) => void;
+  recommendedMajor?: number;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(!!recommendedMajor);
   const [refresh, setRefresh] = useState(0);
-  const [choice, setChoice] = useState("");
+  const [choice, setChoice] = useState({ major: recommendedMajor, value: "" });
   const [catalog, setCatalog] = useState<{
     api: Api;
     packages: JavaPackage[];
@@ -68,7 +70,17 @@ export function JavaDownloads({
   } | null>(null);
   const current = useRef(api);
   current.current = api;
-  const action = useJavaAction({ api, settings, native, disabled, onNotify });
+  const action = useJavaAction({
+    api,
+    settings,
+    native,
+    disabled,
+    onNotify,
+    context: String(recommendedMajor || 0),
+  });
+  useEffect(() => {
+    if (recommendedMajor) setOpen(true);
+  }, [recommendedMajor]);
   useEffect(() => {
     if (!open || !native) return;
     let live = true;
@@ -94,7 +106,14 @@ export function JavaDownloads({
   }, [api, native, open, refresh]);
   const result = catalog?.api === api ? catalog : null;
   const packages = result?.packages || [];
-  const selected = packages.find((p) => identity(p) === choice) || packages[0];
+  // A diagnostic recommendation must not quietly choose a different Java
+  // major when the official catalog has no matching runtime.
+  const selected =
+    (choice.major === recommendedMajor &&
+      packages.find((p) => identity(p) === choice.value)) ||
+    (recommendedMajor
+      ? packages.find((p) => p.major === recommendedMajor)
+      : packages[0]);
   return (
     <section className="ce-card ce-java-download">
       <button
@@ -119,9 +138,18 @@ export function JavaDownloads({
             <CeSelect
               className="ce-field"
               value={selected ? identity(selected) : ""}
-              disabled={!selected || !!result?.loading || action.disabled}
-              onChange={(e) => setChoice(e.target.value)}
+              disabled={
+                !packages.length || !!result?.loading || action.disabled
+              }
+              onChange={(e) =>
+                setChoice({ major: recommendedMajor, value: e.target.value })
+              }
             >
+              {!selected && packages.length > 0 && (
+                <option value="" disabled>
+                  {t("java.chooseVersion")}
+                </option>
+              )}
               {packages.length ? (
                 packages.map((p) => (
                   <option key={identity(p)} value={identity(p)}>
