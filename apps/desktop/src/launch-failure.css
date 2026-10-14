@@ -1,0 +1,163 @@
+.ce-failure-modal {
+  width: 640px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 22px;
+  border-radius: 7px;
+  background: var(--ce-surface, #f7faff);
+  color: var(--ce-text, #414c59);
+  box-shadow: 0 4px 24px #172b4c40;
+}
+.ce-failure-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  padding: 0 2px 11px;
+  color: var(--ce-link, #2078da);
+  border-bottom: 2px solid var(--ce-link, #2078da);
+}
+.ce-failure-heading h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 22px;
+  font-weight: 400;
+}
+.ce-failure-body {
+  min-height: 0;
+  overflow: auto;
+  padding-top: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ce-failure-summary {
+  margin-bottom: 13px;
+  font-size: 13px;
+}
+.ce-failure-summary > p {
+  margin: 0;
+  color: var(--ce-danger-text, #bc7368);
+  white-space: pre-wrap;
+}
+.ce-failure-summary dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin: 7px 0 0;
+  font-size: 12px;
+}
+.ce-failure-summary dt {
+  color: var(--ce-muted-text, #9299a3);
+}
+.ce-failure-summary dd {
+  min-width: 0;
+  margin: 0 12px 0 0;
+}
+.ce-failure-help {
+  margin: 0 0 11px;
+  font-size: 12px;
+  color: var(--ce-muted-text, #9299a3);
+}
+.ce-failure-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--ce-link, #2078da);
+}
+.ce-failure-error {
+  color: var(--ce-danger-text, #bc7368);
+  font-size: 13px;
+}
+.ce-failure-error p {
+  margin: 5px 0 0;
+  white-space: pre-wrap;
+}
+.ce-failure-findings {
+  display: grid;
+  gap: 10px;
+}
+.ce-failure-finding {
+  padding: 11px 14px;
+  border: 1px solid var(--ce-border, #d5e2f2);
+  border-radius: 5px;
+  background: var(--ce-tinted-surface, #edf4fd);
+  font-size: 13px;
+}
+.ce-failure-finding h3 {
+  margin: 0 0 5px;
+  color: var(--ce-link, #2078da);
+  font-size: 15px;
+  font-weight: 400;
+}
+.ce-failure-finding p {
+  margin: 0;
+}
+.ce-failure-evidence {
+  margin-top: 7px;
+}
+.ce-failure-body summary {
+  color: var(--ce-link, #2078da);
+  cursor: pointer;
+  font-size: 13px;
+}
+.ce-failure-evidence ul {
+  margin: 7px 0 0;
+  padding-left: 18px;
+}
+.ce-failure-evidence li + li {
+  margin-top: 4px;
+}
+.ce-failure-evidence code,
+.ce-failure-log pre {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ce-failure-log,
+.ce-failure-log-error,
+.ce-failure-no-log {
+  margin-top: 13px;
+}
+.ce-failure-log-name {
+  margin: 7px 0 4px;
+  font-size: 12px;
+}
+.ce-failure-log .ce-failure-help {
+  margin: 7px 0;
+}
+.ce-failure-log pre {
+  max-height: 210px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid var(--ce-border, #d5e2f2);
+  border-radius: 4px;
+  background: var(--ce-tinted-surface, #edf4fd);
+}
+.ce-failure-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 19px;
+}
+.ce-failure-modal .ce-button {
+  height: 34px;
+  padding: 0 12px;
+}
+@media (max-width: 560px) {
+  .ce-failure-shade {
+    padding: 12px;
+  }
+  .ce-failure-modal {
+    padding: 16px;
+  }
+}

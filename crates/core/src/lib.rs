@@ -705,7 +705,7 @@ fn build_launch_plan_inner(
     } = dependencies;
     if missing.total > 0 {
         return Err(format!(
-            "Missing {} installed dependencies (downloads are not available in phase 1):\n{}{}",
+            "Missing {} installed dependencies. Check the launch environment to download missing files:\n{}{}",
             missing.total,
             missing
                 .paths

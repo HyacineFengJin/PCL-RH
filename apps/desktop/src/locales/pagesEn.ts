@@ -204,6 +204,53 @@ const messages = {
   "inspection.repairFiles": "Download and verify missing files",
   "inspection.repairCheck": "Recheck instance files",
   "inspection.repairUnsupported": "{count} files need manual attention",
+  "failure.open": "Launch failure report",
+  "failure.help":
+    "These log clues need an environment check to confirm the cause.",
+  "failure.loading": "Reading launch failure report…",
+  "failure.desktopOnly": "View the launch failure report in the desktop app",
+  "failure.disabled": "The report is unavailable right now. Try again later.",
+  "failure.failed": "Could not read the launch failure report",
+  "failure.wrongRun": "The report does not match this launch. Refresh it.",
+  "failure.refresh": "Refresh report",
+  "failure.close": "Close",
+  "failure.inspect": "Check environment",
+  "failure.viewLogs": "View / export log",
+  "failure.version": "Instance",
+  "failure.exitCode": "Exit code",
+  "failure.evidence": "View clues",
+  "failure.logTail": "Log tail",
+  "failure.logTruncated":
+    "Only the log tail is shown. View or export the full log on the logs page.",
+  "failure.logReadFailed": "Could not read the log",
+  "failure.noLog": "No log is available for this launch.",
+  "failure.emptyLog": "The log tail has no content to show.",
+  "failure.java_runtime.title": "Java runtime clue",
+  "failure.java_runtime.suggestion":
+    "Check the Java path, execute permission and architecture compatibility.",
+  "failure.java_version.title": "Java version clue",
+  "failure.java_version.suggestion":
+    "Check the Java version required by this instance and the current selection.",
+  "failure.java_memory.title": "Java memory clue",
+  "failure.java_memory.suggestion":
+    "Check allocated and available memory. Reduce the allocation if needed.",
+  "failure.java_option.title": "Java argument clue",
+  "failure.java_option.suggestion":
+    "Check whether custom Java arguments support the selected version.",
+  "failure.missing_dependency.title": "Dependency loading clue",
+  "failure.missing_dependency.suggestion":
+    "Check dependency versions and conflicts. Download missing files only after an environment check confirms them.",
+  "failure.graphics.title": "Graphics initialization clue",
+  "failure.graphics.suggestion":
+    "Check graphics drivers, the window environment and rendering mod compatibility.",
+  "failure.mod_loading.title": "Mod loading clue",
+  "failure.mod_loading.suggestion":
+    "Use the log to check mod dependencies, game and loader versions.",
+  "failure.unknown.title": "No clear clue found yet",
+  "failure.unknown.suggestion":
+    "Check the launch environment, then review the log.",
+  "logs.requestedMissing":
+    "The requested log is unavailable. Refresh or select another log.",
   "java.chooseVersion": "Choose a Java version",
   "instance.completeFiles": "Complete files",
   "ui.reset": "Reset",

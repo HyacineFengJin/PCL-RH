@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -30,6 +31,8 @@ const MAX_ENTRIES: usize = 4096;
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_JOURNAL_BYTES: u64 = 4 * 1024 * 1024;
+const FAILURE_TAIL_BYTES: u64 = 256 * 1024;
+const FAILURE_TAIL_LINES: usize = 400;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LogRow {
@@ -364,6 +367,194 @@ pub fn read_tail(
         .collect::<Vec<_>>()
         .join("\n");
     Ok(redact(&suffix))
+}
+
+/// Failure analysis binds one session log before releasing admission. It never
+/// scans for a latest file, and keeps the root, directory and file FDs alive
+/// through the final session check to prevent inode reuse hiding replacements.
+pub(super) struct FailureLogCapture {
+    path: PathBuf,
+    root: Dir,
+    owner: Option<FailureDirectory>,
+    logs: Option<FailureDirectory>,
+    pub name: Option<String>,
+    file: Option<File>,
+    stamp: Option<Stamp>,
+    error: Option<String>,
+}
+
+struct FailureDirectory {
+    stamp: Option<Stamp>,
+    directory: Option<Dir>,
+    error: Option<String>,
+}
+impl FailureDirectory {
+    fn capture(parent: &Dir, name: &str) -> Result<Self, String> {
+        let stamp = parent.entry_stamp(name)?;
+        let (directory, error) = match parent.optional_child(name) {
+            Ok(directory) => (directory, None),
+            Err(error) => (None, Some(error)),
+        };
+        let captured = Self {
+            stamp,
+            directory,
+            error,
+        };
+        captured.verify(parent, name)?;
+        Ok(captured)
+    }
+
+    fn verify(&self, parent: &Dir, name: &str) -> Result<(), String> {
+        let identity = |stamp: &Stamp| (stamp.identity(), stamp.mode & libc::S_IFMT);
+        let fresh = parent.entry_stamp(name)?;
+        if fresh.as_ref().map(identity) != self.stamp.as_ref().map(identity)
+            || self.directory.as_ref().is_some_and(|directory| {
+                directory.stamp().ok().as_ref().map(identity) != self.stamp.as_ref().map(identity)
+            })
+        {
+            return Err("本次启动日志目录已变化，请重新诊断".into());
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct FailureLogTail {
+    pub text: String,
+    pub truncated: bool,
+}
+
+impl FailureLogCapture {
+    pub fn capture(path: &Path, current: Option<&Path>) -> Result<Self, String> {
+        let mut captured = Self {
+            path: path.to_owned(),
+            root: Dir::absolute(path)?,
+            owner: None,
+            logs: None,
+            name: None,
+            file: None,
+            stamp: None,
+            error: Some("本次启动尚未生成可读取的日志".into()),
+        };
+        let Some(current) = current else {
+            return Ok(captured);
+        };
+        if current.parent() != Some(path.join(".pcl-linux/logs").as_path()) {
+            captured.error = Some("本次会话日志未绑定到该游戏目录".into());
+            return Ok(captured);
+        }
+        let Some(name) = current.file_name().and_then(|name| name.to_str()) else {
+            captured.error = Some("本次会话日志文件名无效".into());
+            return Ok(captured);
+        };
+        if let Err(error) = valid_log(name) {
+            captured.error = Some(error);
+            return Ok(captured);
+        }
+        captured.name = Some(name.to_owned());
+        captured.owner = Some(FailureDirectory::capture(&captured.root, ".pcl-linux")?);
+        let owner = captured.owner.as_ref().unwrap();
+        let Some(owner_directory) = &owner.directory else {
+            captured.error = Some(
+                owner
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "本次启动日志目录不存在".into()),
+            );
+            return Ok(captured);
+        };
+        captured.logs = Some(FailureDirectory::capture(owner_directory, "logs")?);
+        let logs = captured.logs.as_ref().unwrap();
+        let Some(logs_directory) = &logs.directory else {
+            captured.error = Some(
+                logs.error
+                    .clone()
+                    .unwrap_or_else(|| "本次启动日志目录不存在".into()),
+            );
+            return Ok(captured);
+        };
+        captured.stamp = logs_directory.entry_stamp(name)?;
+        match logs_directory.file(name) {
+            Ok(Some(file)) => {
+                if Some(Stamp::of(
+                    &file.metadata().map_err(|error| error.to_string())?,
+                )) != captured.stamp
+                {
+                    return Err("本次启动日志已变化，请重新诊断".into());
+                }
+                captured.file = Some(file);
+                captured.error = None;
+            }
+            Ok(None) => captured.error = Some("本次启动日志不存在".into()),
+            Err(error) => captured.error = Some(error),
+        }
+        captured.verify()?;
+        Ok(captured)
+    }
+
+    pub fn verify(&self) -> Result<(), String> {
+        if Dir::absolute(&self.path)?.stamp()?.identity() != self.root.stamp()?.identity() {
+            return Err("本次启动游戏目录已变化，请重新诊断".into());
+        }
+        if let Some(owner) = &self.owner {
+            owner.verify(&self.root, ".pcl-linux")?;
+            if let (Some(parent), Some(logs)) = (&owner.directory, &self.logs) {
+                logs.verify(parent, "logs")?;
+                if let (Some(directory), Some(name)) = (&logs.directory, &self.name) {
+                    if directory.entry_stamp(name)? != self.stamp
+                        || self.file.as_ref().is_some_and(|file| {
+                            file.metadata().ok().map(|metadata| Stamp::of(&metadata)) != self.stamp
+                        })
+                    {
+                        return Err("本次启动日志已变化，请重新诊断".into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a fixed suffix from the captured FD. Dropping the initial partial
+    /// line also removes a split UTF-8 character; one giant line cannot enlarge
+    /// the buffer or manufacture a diagnostic from a fragment of a message.
+    pub fn read_tail(&mut self) -> Result<FailureLogTail, String> {
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        let file = self.file.as_mut().ok_or("本次启动日志不存在")?;
+        let stamp = self.stamp.as_ref().ok_or("本次启动日志不存在")?;
+        let start = stamp.bytes.saturating_sub(FAILURE_TAIL_BYTES);
+        file.seek(SeekFrom::Start(start))
+            .map_err(|error| error.to_string())?;
+        let mut bytes = Vec::new();
+        (&mut *file)
+            .take(stamp.bytes - start)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 != stamp.bytes - start
+            || Stamp::of(&file.metadata().map_err(|error| error.to_string())?) != *stamp
+        {
+            return Err("本次启动日志读取期间发生变化，请重新诊断".into());
+        }
+        let suffix = if start > 0 {
+            bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|index| &bytes[index + 1..])
+                .unwrap_or(&[])
+        } else {
+            &bytes
+        };
+        let text = String::from_utf8_lossy(suffix);
+        let count = text.lines().count();
+        Ok(FailureLogTail {
+            text: text
+                .lines()
+                .skip(count.saturating_sub(FAILURE_TAIL_LINES))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            truncated: start > 0 || count > FAILURE_TAIL_LINES,
+        })
+    }
 }
 
 fn export_names(

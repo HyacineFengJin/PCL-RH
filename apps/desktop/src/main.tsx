@@ -102,6 +102,7 @@ import {
 import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
 import { LaunchInspection } from "./LaunchInspection";
+import { LaunchFailure, type FailureRunStatus } from "./LaunchFailure";
 import { ContextMenu } from "./ContextMenu";
 import { useDownloadTasks } from "./useDownloadTasks";
 import {
@@ -205,6 +206,7 @@ const rootCommands = new Set([
   "java_download_start",
   "launch_game",
   "inspect_instance",
+  "launch_failure_report",
   "instance_repair_start",
   "open_folder",
   "instance_resources",
@@ -972,6 +974,28 @@ function App() {
     id: string;
     epoch: number;
   } | null>(null);
+  const failureRun: FailureRunStatus | null =
+    data?.status.stage === "error"
+      ? {
+          ...data.status,
+          root_id: data.status.root_id ?? null,
+          root_path: data.status.root_path ?? null,
+        }
+      : null;
+  const failureKey = JSON.stringify(failureRun);
+  const currentFailureKey = React.useRef(failureKey);
+  currentFailureKey.current = failureKey;
+  const [failureTarget, setFailureTarget] = useState<{
+    rootKey: string;
+    epoch: number;
+    key: string;
+  } | null>(null);
+  const [logEntry, setLogEntry] = useState<{
+    rootKey: string;
+    name: string;
+    requestKey: string;
+  } | null>(null);
+  const logEntrySequence = React.useRef(0);
   const [javaRecommendation, setJavaRecommendation] = useState<{
     rootKey: string;
     id: string;
@@ -1260,7 +1284,19 @@ function App() {
     setInspectionTarget((current) =>
       current?.epoch === navigationEpoch ? current : null,
     );
+    setFailureTarget((current) =>
+      current?.epoch === navigationEpoch ? current : null,
+    );
   }, [navigationEpoch]);
+  useEffect(() => {
+    setFailureTarget((current) =>
+      current?.key === failureKey ? current : null,
+    );
+  }, [failureKey]);
+  useEffect(() => {
+    if (screen !== "home" || tab !== "settings" || settingsPage !== "logs")
+      setLogEntry(null);
+  }, [screen, tab, settingsPage]);
   useEffect(() => {
     const choice = importEntry.current;
     if (
@@ -1541,6 +1577,8 @@ function App() {
   }, []);
   useEffect(() => {
     setInspectionTarget(null);
+    setFailureTarget(null);
+    setLogEntry(null);
     setJavaRecommendation(null);
     setResource(null);
     setQuery("");
@@ -1792,6 +1830,21 @@ function App() {
     )
       return;
     setInspectionTarget({ rootKey, id: selected.id, epoch: navigationEpoch });
+  }
+  function diagnoseFailure() {
+    if (
+      !native ||
+      !failureRun ||
+      !processInRoot ||
+      !rootAvailable ||
+      rootWorking ||
+      tasks.closing ||
+      contextKey.current !== rootKey ||
+      taskNavigation.current.epoch !== navigationEpoch ||
+      currentFailureKey.current !== failureKey
+    )
+      return;
+    setFailureTarget({ rootKey, epoch: navigationEpoch, key: failureKey });
   }
   function instanceSettings() {
     if (!selected || !data) return;
@@ -2452,6 +2505,7 @@ function App() {
                               downloadBusy ||
                               resourceBusy ||
                               !!inspectionTarget ||
+                              !!failureTarget ||
                               rootWorking ||
                               !rootAvailable ||
                               instanceRecoveryBlocked ||
@@ -2878,10 +2932,14 @@ function App() {
                           <>
                             <button
                               className="error-banner"
-                              onClick={() => {
-                                setTab("settings");
-                                setSettingsPage("logs");
-                              }}
+                              onClick={diagnoseFailure}
+                              title={t("failure.open")}
+                              disabled={
+                                !native ||
+                                rootWorking ||
+                                !rootAvailable ||
+                                tasks.closing
+                              }
                             >
                               <TriangleAlert size={18} />
                               <span>{data.status.message}</span>
@@ -2982,6 +3040,14 @@ function App() {
                             section={settingsPage}
                             settings={data.settings}
                             api={rootApi}
+                            initialLog={
+                              logEntry?.rootKey === rootKey
+                                ? {
+                                    name: logEntry.name,
+                                    requestKey: logEntry.requestKey,
+                                  }
+                                : undefined
+                            }
                             onOpen={open}
                             onNotify={notify}
                             preferences={launcher.view}
@@ -3051,6 +3117,65 @@ function App() {
               </span>
             </button>
           )}
+          {data &&
+            failureRun &&
+            failureTarget &&
+            failureTarget.rootKey === rootKey &&
+            failureTarget.key === failureKey &&
+            failureTarget.epoch === navigationEpoch && (
+              <LaunchFailure
+                expected={failureRun}
+                scopeKey={`${rootKey}:${failureTarget.epoch}`}
+                api={rootApi}
+                native={native}
+                disabled={rootWorking || !rootAvailable || tasks.closing}
+                canInspect={
+                  !!selected &&
+                  selected.id === failureRun.version &&
+                  !busy &&
+                  !downloadBusy &&
+                  !resourceBusy &&
+                  !rootWorking &&
+                  rootAvailable &&
+                  !instanceRecoveryBlocked &&
+                  !tasks.closing
+                }
+                onClose={() =>
+                  setFailureTarget((current) =>
+                    current === failureTarget ? null : current,
+                  )
+                }
+                onInspect={() => {
+                  if (
+                    contextKey.current !== failureTarget.rootKey ||
+                    currentFailureKey.current !== failureTarget.key ||
+                    taskNavigation.current.epoch !== failureTarget.epoch ||
+                    viewContext.current.selected !== failureRun.version
+                  )
+                    return;
+                  inspect();
+                }}
+                onLogs={(name) => {
+                  if (
+                    !name ||
+                    contextKey.current !== failureTarget.rootKey ||
+                    currentFailureKey.current !== failureTarget.key ||
+                    taskNavigation.current.epoch !== failureTarget.epoch
+                  )
+                    return;
+                  // A diagnostic opens its exact log once. Returning to general
+                  // settings later must not resurrect this selection request.
+                  setLogEntry({
+                    rootKey,
+                    name,
+                    requestKey: String(++logEntrySequence.current),
+                  });
+                  setScreen("home");
+                  setTab("settings");
+                  setSettingsPage("logs");
+                }}
+              />
+            )}
           {data &&
             inspectionTarget &&
             inspectionTarget.rootKey === rootKey &&

@@ -12,7 +12,7 @@
 | 下载与任务界面 | `useDownloadTasks.ts`、`DownloadPanel.tsx`、`TaskManager.tsx` | 集合轮询、逐项取消、完成刷新与页面所有权 |
 | 在线资源界面 | `ResourceDetails.tsx`、`ResourceInstall.tsx`、`resourceInstallPlan.ts`、`LocalResources.tsx`、`ResourceUpdates.tsx` | 版本与文件选择、作用域确认、必要依赖计划和安装提交 |
 | Java 管理界面 | `JavaPanel.tsx`、`JavaSelect.tsx`、`javaManagement.ts` | 全局与实例选择、目录/修订作用域、过期响应排除 |
-| 启动诊断与补全界面 | `LaunchInspection.tsx`、`TaskManager.tsx` | 只读报告、缺失文件任务提交、部分补全清单 |
+| 启动诊断与补全界面 | `LaunchInspection.tsx`、`LaunchFailure.tsx`、`LauncherLogs.tsx`、`TaskManager.tsx` | 环境检查、失败线索与精确日志入口、缺失文件任务与部分补全清单 |
 | 桌面命令与应用生命周期 | `apps/desktop/src-tauri/src/main.rs` | 命令参数、目标绑定、任务调度、游戏进程与关闭处理 |
 | 本地实例操作命令 | `instance_commands.rs` | ZIP 导入与删除恢复的目录绑定、计划确认、任务准入与错误归类 |
 | 在线资源命令 | `resource_install_commands.rs`、`resource_update_commands.rs` | 目标绑定、后台任务、传输进度、提交检查与根目录恢复 |
@@ -223,6 +223,12 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 持久记录绑定进程 ID、启动身份、游戏根和日志位置。停止必须重新检查身份，不能只向缓存 PID 发送信号。损坏或未知记录保留并阻止写入；记录消失不证明游戏已经退出。重新打开 GUI 时，`launcher_monitor_runtime.rs` 将实际监控状态接入准入和运行状态。
 
 排查退出、重新启动与窗口恢复交叉问题时，核对会话所有权：旧任务的终态、停止意图和可见性恢复不能作用于下一次启动。成功交接后仍需消费准备阶段收到的取消请求，再执行隐藏或关闭。
+
+`launcher_failure_commands.rs` 接收显式 root 和界面所见的失败状态，`launcher_failure.rs` 在操作锁内捕获监控代次、设置修订及日志目录/文件身份。日志读取和已知账号字段脱敏在锁外进行，返回前重新验证整个绑定。新一轮准备启动会清除旧日志引用；没有本次日志时不搜索“最新日志”作为替代。
+
+`launcher_logs::FailureLogCapture` 从固定文件描述符读取最多 256 KiB、400 行尾部，丢弃截断的首行；目录或文件替换使报告失效。`launcher_failure_analysis.rs` 是纯文本分类器，只接收已脱敏文本，返回有限错误族与有界证据，未匹配和单纯退出码保持未知。这些线索不代表确定根因或模组兼容性结论。
+
+前端 `LaunchFailure` 将报告和操作绑定到失败状态、目录/API 与导航代次，退休后的回复不能重新打开旧报告。进入日志页使用一次性的精确文件名选择；列表中缺失时明确显示不可用，刷新不会静默选另一份日志，用户手动选择优先于已经消费的入口请求。
 
 ## 单文件保存与更新事务
 

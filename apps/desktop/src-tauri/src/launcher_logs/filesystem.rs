@@ -158,6 +158,38 @@ impl Dir {
             .map(|m| Stamp::of(&m))
             .map_err(|e| e.to_string())
     }
+    /// Observe an entry without opening or following it. Failed diagnostics
+    /// also bind absent/invalid carriers so replacing one cannot publish an
+    /// error that described a different directory or file.
+    pub fn entry_stamp(&self, name: &str) -> Result<Option<Stamp>, String> {
+        let c = cstring(name)?;
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe {
+            libc::fstatat(
+                self.0.as_raw_fd(),
+                c.as_ptr(),
+                &mut stat,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
+            return if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err(error("无法检查日志入口"))
+            };
+        }
+        Ok(Some(Stamp {
+            device: stat.st_dev,
+            inode: stat.st_ino,
+            mode: stat.st_mode,
+            owner: stat.st_uid,
+            links: stat.st_nlink,
+            bytes: stat.st_size.max(0) as u64,
+            modified: (stat.st_mtime, stat.st_mtime_nsec),
+            changed: (stat.st_ctime, stat.st_ctime_nsec),
+        }))
+    }
     pub fn verify_private(&self) -> Result<(), String> {
         let stamp = self.stamp()?;
         if stamp.owner != unsafe { libc::geteuid() } || stamp.mode & 0o077 != 0 {

@@ -27,6 +27,9 @@ mod launcher_delay;
 mod launcher_discovery;
 mod launcher_discovery_commands;
 mod launcher_document;
+mod launcher_failure;
+mod launcher_failure_analysis;
+mod launcher_failure_commands;
 mod launcher_favorite_commands;
 mod launcher_favorites;
 mod launcher_game_monitor;
@@ -79,7 +82,8 @@ use std::{
     time::Duration,
 };
 use tauri::{Emitter, Manager, State};
-#[derive(Clone, Serialize, Default, PartialEq, Eq)]
+#[derive(Clone, Serialize, serde::Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct RunStatus {
     stage: String,
     message: String,
@@ -2050,6 +2054,7 @@ fn main() {
             java_download_commands::java_download_catalog,
             java_download_commands::java_download_start,
             launcher_repair_commands::instance_repair_start,
+            launcher_failure_commands::launch_failure_report,
             ui_data::instance_resources,
             ui_data::modrinth_search,
             save_settings,

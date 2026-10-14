@@ -171,6 +171,52 @@ pub fn require_root_unused(shared: &Shared, root_id: &str) -> Result<(), String>
     }
     Ok(())
 }
+
+/// A diagnostic owns this exact failed attempt, including a generation even
+/// when a later attempt happens to publish an identical error and log path.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct FailureSnapshot {
+    pub run: RunStatus,
+    pub log: Option<PathBuf>,
+    generation: Generation,
+}
+
+/// Caller holds operations. Refresh may itself describe a broken monitor; that
+/// error remains diagnosable. Capture status and log while holding the session
+/// lock so a new preparation cannot substitute either half of this binding.
+pub(super) fn failure_snapshot(shared: &Shared) -> Result<FailureSnapshot, String> {
+    let mut session = shared.monitor.lock();
+    let _ = refresh_locked(shared, &mut session);
+    failure_snapshot_locked(shared, &session)
+}
+
+fn failure_snapshot_locked(shared: &Shared, session: &Session) -> Result<FailureSnapshot, String> {
+    let run = shared.status.lock().unwrap().clone();
+    if run.stage != "error" {
+        return Err("当前没有可诊断的启动失败，请刷新启动状态".into());
+    }
+    Ok(FailureSnapshot {
+        run,
+        log: shared.log.lock().unwrap().clone(),
+        generation: Generation(session.generation),
+    })
+}
+
+/// Keep monitor adoption and worker updates fenced through the final metadata
+/// check. This callback only checks already-bound FDs; the bounded content read
+/// and redaction must run before taking the session lock.
+pub(super) fn verify_failure(
+    shared: &Shared,
+    expected: &FailureSnapshot,
+    verify: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let mut session = shared.monitor.lock();
+    let _ = refresh_locked(shared, &mut session);
+    if failure_snapshot_locked(shared, &session)? != *expected {
+        return Err("当前启动失败已变化，请重新诊断".into());
+    }
+    verify()
+}
 /// Caller holds operations. Account edits take status while starting auth, so
 /// their admission check and publication of `preparing` share that same lock.
 pub fn begin_preparation(shared: &Shared, next: RunStatus) -> Result<Generation, String> {
@@ -197,6 +243,9 @@ pub fn begin_preparation(shared: &Shared, next: RunStatus) -> Result<Generation,
     session.supervisor = None;
     shared.stop.store(false, Ordering::SeqCst);
     *run = next;
+    // Preparing can fail before a monitor creates its log. The preceding
+    // attempt's log must never become evidence for that new failure.
+    *shared.log.lock().unwrap() = None;
     Ok(Generation(session.generation))
 }
 pub fn update_current(

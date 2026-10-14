@@ -115,6 +115,26 @@ fn previous_worker_cannot_change_new_status_consume_its_stop_or_restore_its_wind
     assert_eq!(run.version.as_deref(), Some("Current"));
     assert_ne!(previous, current);
 }
+
+#[test]
+fn new_preparation_that_fails_before_monitor_spawn_cannot_reuse_the_previous_log() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let old_log = shared.project.join("previous.log");
+    *shared.log.lock().unwrap() = Some(old_log);
+    let generation = begin_preparation(&shared, preparing(&shared, "Current")).unwrap();
+    update_current(
+        &shared,
+        generation,
+        "error",
+        "preparation failed".into(),
+        None,
+        None,
+    );
+    let failed = failure_snapshot(&shared).unwrap();
+    assert_eq!(failed.run.message, "preparation failed");
+    assert!(failed.log.is_none());
+}
 #[test]
 fn successful_stop_intent_survives_a_later_failed_signal_retry() {
     let fixture = Fixture::new();

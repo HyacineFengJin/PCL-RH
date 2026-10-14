@@ -5,7 +5,7 @@ import type { LauncherPreferencePanelProps } from "./launcherTypes";
 import { defaultLauncherPreferenceView } from "./launcherTypes";
 import { LauncherPersonalize, LauncherLanguage } from "./LauncherPersonalize";
 import { LauncherMisc } from "./LauncherMisc";
-import { LauncherLogs } from "./LauncherLogs";
+import { LauncherLogs, type LauncherLogInitialSelection } from "./LauncherLogs";
 import { LauncherUpdates } from "./LauncherUpdates";
 import {
   LauncherCard as Card,
@@ -124,6 +124,7 @@ export type ExtraSettingsProps = LauncherPreferencePanelProps & {
   settings: Settings;
   api: Api;
   rootApi?: Api;
+  initialLog?: LauncherLogInitialSelection;
   native?: boolean;
   revealHidden?: boolean;
   onOpen: (kind: string) => void;
@@ -146,6 +147,7 @@ function ExtraSettingsContent({
   settings,
   api,
   rootApi,
+  initialLog,
   native = isTauri(),
   onOpen,
   onNotify,
@@ -622,6 +624,7 @@ function ExtraSettingsContent({
         key={`${settings.root_id || ""}:${settings.root}`}
         api={rootApi || api}
         scopeKey={`${settings.root_id || ""}:${settings.root}`}
+        initialLog={initialLog}
         native={native}
         operationsEnabled={!!supportedEffects?.includes("logs")}
         busy={!!preferenceBusy}

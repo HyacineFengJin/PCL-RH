@@ -31,6 +31,61 @@ fn live_log_tail_remains_bounded_after_log_exceeds_history_export_limit() {
     );
     assert!(prepare_export(&f.root(), &ExportSelection::Named("large.log".into()), None).is_err());
 }
+
+#[test]
+fn failure_log_tail_keeps_at_most_four_hundred_complete_lines() {
+    let f = Fixture::new();
+    let text = (0..450).map(|i| format!("line {i}\n")).collect::<String>();
+    f.write("failed.log", &text);
+    let mut captured = FailureLogCapture::capture(&f.root(), Some(&f.log("failed.log"))).unwrap();
+    let tail = captured.read_tail().unwrap();
+    assert!(tail.truncated);
+    assert_eq!(tail.text.lines().count(), 400);
+    assert!(tail.text.starts_with("line 50\n"));
+    assert!(tail.text.ends_with("line 449"));
+    captured.verify().unwrap();
+}
+
+#[test]
+fn failure_log_tail_limits_bytes_and_discards_a_partial_or_giant_first_line() {
+    let f = Fixture::new();
+    for suffix in ["", "\nlast complete line\n"] {
+        let mut file = fs::File::create(f.log("failed.log")).unwrap();
+        file.write_all(&vec![b'x'; (FAILURE_TAIL_BYTES + 1024) as usize])
+            .unwrap();
+        file.write_all(suffix.as_bytes()).unwrap();
+        drop(file);
+        let mut captured =
+            FailureLogCapture::capture(&f.root(), Some(&f.log("failed.log"))).unwrap();
+        let tail = captured.read_tail().unwrap();
+        assert!(tail.truncated);
+        assert_eq!(
+            tail.text,
+            if suffix.is_empty() {
+                ""
+            } else {
+                "last complete line"
+            }
+        );
+        captured.verify().unwrap();
+    }
+}
+
+#[test]
+fn failure_log_tail_discards_split_utf8_and_marks_only_actual_truncation() {
+    let f = Fixture::new();
+    f.write("failed.log", &"完整行\n".repeat(30_000));
+    let mut captured = FailureLogCapture::capture(&f.root(), Some(&f.log("failed.log"))).unwrap();
+    let tail = captured.read_tail().unwrap();
+    assert!(tail.truncated);
+    assert_eq!(tail.text.lines().count(), 400);
+    assert!(!tail.text.contains('\u{fffd}'));
+    f.write("short.log", "one line\ntwo lines\n");
+    let mut short = FailureLogCapture::capture(&f.root(), Some(&f.log("short.log"))).unwrap();
+    let tail = short.read_tail().unwrap();
+    assert!(!tail.truncated);
+    assert_eq!(tail.text, "one line\ntwo lines");
+}
 use std::{
     fs,
     os::unix::fs::{symlink, PermissionsExt},
