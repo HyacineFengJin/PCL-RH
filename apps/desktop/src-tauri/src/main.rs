@@ -39,6 +39,8 @@ mod launcher_minecraft_update_commands;
 mod launcher_minecraft_updates;
 mod launcher_monitor_runtime;
 mod launcher_prefs;
+mod launcher_repair;
+mod launcher_repair_commands;
 mod launcher_runtime;
 mod launcher_update_commands;
 mod launcher_updates;
@@ -2047,6 +2049,7 @@ fn main() {
             java_commands::java_add,
             java_download_commands::java_download_catalog,
             java_download_commands::java_download_start,
+            launcher_repair_commands::instance_repair_start,
             ui_data::instance_resources,
             ui_data::modrinth_search,
             save_settings,
@@ -3146,6 +3149,7 @@ mod integration_tests {
             TaskKind::Install,
             TaskKind::ResourceOperation,
             TaskKind::InstanceReset,
+            TaskKind::InstanceRepair,
             TaskKind::InstanceExport,
             TaskKind::InstanceRename,
             TaskKind::InstanceImport,

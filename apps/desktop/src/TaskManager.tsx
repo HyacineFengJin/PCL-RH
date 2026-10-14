@@ -18,6 +18,16 @@ import {
 } from "./taskLifecycle";
 import "./task-manager.css";
 function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
+  if (kind === "instance_repair") {
+    switch (step.id) {
+      case "repair-check":
+        return t("inspection.repairPlan");
+      case "repair-download":
+        return t("inspection.repairFiles");
+      case "repair-verify":
+        return t("inspection.repairCheck");
+    }
+  }
   if (kind === "java_install") {
     switch (step.id) {
       case "java-metadata":
@@ -31,6 +41,23 @@ function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
     }
   }
   return step.label;
+}
+function repairFallbackSteps(status: DownloadStatus): DownloadStep[] {
+  const phases = ["repair-check", "repair-download", "repair-verify"];
+  const current = Math.max(0, phases.indexOf(status.phase || "repair-check"));
+  return phases.map((id, index) => {
+    const step: DownloadStep = {
+      id,
+      label: "",
+      state:
+        status.stage === "complete" || index < current
+          ? "complete"
+          : index === current && status.stage !== "queued"
+            ? "running"
+            : "pending",
+    };
+    return { ...step, label: taskStepLabel("instance_repair", step) };
+  });
 }
 function javaFallbackSteps(status: DownloadStatus): DownloadStep[] {
   const phases = ["java-metadata", "java-files", "java-probe", "java-publish"];
@@ -58,6 +85,7 @@ const taskActionMessages: Partial<
   resource_save: "task.resourceSave",
   launcher_logs: "task.launcherLogs",
   instance_reset: "ui.reset",
+  instance_repair: "inspection.repair",
   instance_export: "nav.export",
   instance_rename: "ui.rename",
   instance_import: "ui.import",
@@ -361,18 +389,20 @@ function TaskCard({
                       ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
-    : status.kind === "java_install"
-      ? javaFallbackSteps(status)
-      : fallbackLabels.map((label, index) => ({
-          id: `legacy-${index}`,
-          label,
-          state:
-            status.stage === "complete"
-              ? "complete"
-              : active && status.stage !== "queued" && index === current
-                ? "running"
-                : "pending",
-        }));
+    : status.kind === "instance_repair"
+      ? repairFallbackSteps(status)
+      : status.kind === "java_install"
+        ? javaFallbackSteps(status)
+        : fallbackLabels.map((label, index) => ({
+            id: `legacy-${index}`,
+            label,
+            state:
+              status.stage === "complete"
+                ? "complete"
+                : active && status.stage !== "queued" && index === current
+                  ? "running"
+                  : "pending",
+          }));
   async function cancel() {
     if (
       !native ||
@@ -433,6 +463,18 @@ function TaskCard({
       }
     }
   }
+  const repairResult =
+    status.kind === "instance_repair" &&
+    status.result &&
+    "unsupported" in status.result &&
+    Array.isArray(status.result.unsupported)
+      ? status.result
+      : null;
+  const unsupported = repairResult?.unsupported.slice(0, 32) || [];
+  const unsupportedOmitted = Math.max(
+    0,
+    (repairResult?.unsupported_total || 0) - unsupported.length,
+  );
   if (["idle", "cancelled", "complete"].includes(status.stage)) return null;
   return (
     <section className={`ce-card ce-task-card ${status.stage}`}>
@@ -513,6 +555,30 @@ function TaskCard({
         <p className="ce-task-message auth-error" role="alert">
           {t("task.originalWarning", { message: status.error })}
         </p>
+      )}
+      {!!repairResult?.unsupported_total && (
+        <details className="ce-task-repair-details">
+          <summary>
+            {t("inspection.repairUnsupported", {
+              count: formatNumber(repairResult.unsupported_total),
+            })}
+          </summary>
+          <ul>
+            {unsupported.map((item, index) => (
+              <li key={`${index}:${item.path}`}>
+                <span>{item.path}</span>
+                <small>{item.reason}</small>
+              </li>
+            ))}
+          </ul>
+          {unsupportedOmitted > 0 && (
+            <p>
+              {t("inspection.moreFiles", {
+                count: formatNumber(unsupportedOmitted),
+              })}
+            </p>
+          )}
+        </details>
       )}
     </section>
   );

@@ -20,12 +20,21 @@ export type LaunchInspectionReport = {
   ready: boolean;
 };
 
-type Scope = { id: string; key: string; api: Api };
+type Scope = { id: string; key: string; api: Api; revision?: string };
 type Result = {
   scope: Scope;
   status: "loading" | "ready" | "error";
   report?: LaunchInspectionReport;
   error?: string;
+};
+type RepairResult = {
+  scope: Scope;
+  status: "pending" | "error";
+  error?: string;
+};
+type RepairRequest = {
+  scope: Scope;
+  onTaskStart: (id: string, reveal: boolean) => void;
 };
 type Props = {
   id: string;
@@ -33,46 +42,59 @@ type Props = {
   api: Api;
   native: boolean;
   disabled: boolean;
+  revision?: string;
   onClose: () => void;
   onManageJava: (major: number) => void;
+  onTaskStart: (id: string, reveal: boolean) => void;
 };
 
-/** This read owns no launch/task state. Render-time scope replacement retires
- * old replies and saved handlers before effect cleanup, including instance
- * changes within the same root. Closing retires immediately before navigation. */
+/** Render-time scope replacement retires reports and saved handlers. A repair
+ * submission survives close/unmount because an admitted task belongs to the
+ * global task manager; late success registers it without changing navigation. */
 export function LaunchInspection({
   id,
   scopeKey,
   api,
   native,
   disabled,
+  revision,
   onClose,
   onManageJava,
+  onTaskStart,
 }: Props) {
-  const owner = useRef<Scope>({ id, key: scopeKey, api });
+  const owner = useRef<Scope>({ id, key: scopeKey, api, revision });
   if (
     owner.current.id !== id ||
     owner.current.key !== scopeKey ||
-    owner.current.api !== api
+    owner.current.api !== api ||
+    owner.current.revision !== revision
   )
-    owner.current = { id, key: scopeKey, api };
+    owner.current = { id, key: scopeKey, api, revision };
   const scope = owner.current;
   const live = useRef(true);
   const retired = useRef<Scope | null>(null);
   const generation = useRef(0);
   const operation = useRef<{ scope: Scope; generation: number } | null>(null);
+  const repairOperation = useRef<RepairRequest | null>(null);
   const admission = useRef({ native, disabled });
   admission.current = { native, disabled };
-  const callbacks = useRef({ onClose, onManageJava });
-  callbacks.current = { onClose, onManageJava };
+  const callbacks = useRef({ onClose, onManageJava, onTaskStart });
+  callbacks.current = { onClose, onManageJava, onTaskStart };
   const [result, setResult] = useState<Result | null>(null);
   const latestResult = useRef(result);
   latestResult.current = result;
+  const [repairResult, setRepairResult] = useState<RepairResult | null>(null);
+  const latestRepair = useRef(repairResult);
+  latestRepair.current = repairResult;
   const closeButton = useRef<HTMLButtonElement>(null);
   const publish = (next: Result) => {
     // Retire saved result actions when the reply lands, before React renders it.
     latestResult.current = next;
     setResult(next);
+  };
+  const publishRepair = (next: RepairResult | null) => {
+    latestRepair.current = next;
+    setRepairResult(next);
   };
 
   const current = () =>
@@ -94,9 +116,17 @@ export function LaunchInspection({
     callbacks.current.onClose();
   };
   async function inspect() {
-    if (!allowed() || operation.current?.scope === scope) return;
+    if (
+      !allowed() ||
+      operation.current?.scope === scope ||
+      repairOperation.current?.scope === scope
+    )
+      return;
     const request = ++generation.current;
     operation.current = { scope, generation: request };
+    // Keep another scope's pending marker so its completion still schedules a
+    // render when the global submission guard is released.
+    if (latestRepair.current?.status !== "pending") publishRepair(null);
     publish({ scope, status: "loading" });
     try {
       const report = await scope.api<LaunchInspectionReport>(
@@ -128,7 +158,9 @@ export function LaunchInspection({
     };
   }, []);
   useEffect(() => {
-    void inspect();
+    // Native busy flags can change after repair admission. Keep its report and
+    // retry error until an explicit recheck or a genuinely new scope.
+    if (latestRepair.current?.scope !== scope) void inspect();
     return () => {
       if (operation.current?.scope === scope) {
         generation.current++;
@@ -138,9 +170,12 @@ export function LaunchInspection({
   }, [scope, native, disabled]);
 
   const displayed = result?.scope === scope ? result : null;
+  const displayedRepair = repairResult?.scope === scope ? repairResult : null;
+  const repairing = displayedRepair?.status === "pending";
   const readable = native && !disabled;
-  const loading = readable && (!displayed || displayed.status === "loading");
-  const report = readable ? displayed?.report : undefined;
+  const loading =
+    readable && !repairing && (!displayed || displayed.status === "loading");
+  const report = readable || repairing ? displayed?.report : undefined;
   const javaProblem = report && (!report.java_path || !!report.java_error);
   const missingPaths = report?.missing_files.slice(0, 32) ?? [];
   const omitted = Math.max(
@@ -151,6 +186,7 @@ export function LaunchInspection({
     if (
       !allowed() ||
       operation.current ||
+      repairOperation.current ||
       latestResult.current !== displayed ||
       !javaProblem ||
       !report ||
@@ -161,6 +197,53 @@ export function LaunchInspection({
     callbacks.current.onClose();
     callbacks.current.onManageJava(report.java_major);
   };
+  const repairable =
+    !!report && report.missing_total > 0 && report.issues.length === 0;
+  const canRepair =
+    allowed() &&
+    repairable &&
+    !!scope.revision?.trim() &&
+    !operation.current &&
+    !repairOperation.current;
+  async function repair() {
+    if (
+      !allowed() ||
+      !repairable ||
+      !scope.revision?.trim() ||
+      operation.current ||
+      repairOperation.current ||
+      latestResult.current !== displayed
+    )
+      return;
+    const request = { scope, onTaskStart: callbacks.current.onTaskStart };
+    repairOperation.current = request;
+    publishRepair({ scope, status: "pending" });
+    let task: { id: string };
+    try {
+      task = await scope.api<{ id: string }>("instance_repair_start", {
+        id: scope.id,
+        revision: scope.revision,
+      });
+    } catch (error) {
+      if (current())
+        publishRepair({ scope, status: "error", error: serviceError(error) });
+      else if (live.current) publishRepair(null);
+      return;
+    } finally {
+      if (repairOperation.current === request) repairOperation.current = null;
+    }
+    if (current()) {
+      retire();
+      try {
+        callbacks.current.onClose();
+      } finally {
+        request.onTaskStart(task.id, true);
+      }
+    } else {
+      if (live.current) publishRepair(null);
+      request.onTaskStart(task.id, false);
+    }
+  }
 
   return (
     <div
@@ -174,7 +257,7 @@ export function LaunchInspection({
         role="dialog"
         aria-modal="true"
         aria-labelledby="launch-inspection-title"
-        aria-busy={loading}
+        aria-busy={loading || repairing}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
@@ -214,7 +297,7 @@ export function LaunchInspection({
         </header>
         <div className="ce-inspection-body">
           <p className="ce-inspection-help">{t("inspection.help")}</p>
-          {!readable ? (
+          {!readable && !repairing ? (
             <p className="ce-inspection-state" role="status">
               {t(native ? "inspection.disabled" : "inspection.desktopOnly")}
             </p>
@@ -288,6 +371,7 @@ export function LaunchInspection({
                     <button
                       className="ce-button"
                       type="button"
+                      disabled={!readable || !!repairOperation.current}
                       onClick={manageJava}
                     >
                       {t("inspection.manageJava")}
@@ -330,6 +414,32 @@ export function LaunchInspection({
                     )}
                   </details>
                 )}
+                {repairable && (
+                  <div className="ce-inspection-repair-action">
+                    <button
+                      className="ce-button primary"
+                      type="button"
+                      disabled={!canRepair}
+                      onClick={() => void repair()}
+                    >
+                      {repairing && (
+                        <LoaderCircle
+                          className="spin"
+                          size={16}
+                          aria-hidden="true"
+                        />
+                      )}
+                      {t(
+                        repairing
+                          ? "inspection.repairStarting"
+                          : "inspection.repair",
+                      )}
+                    </button>
+                    <p className="ce-inspection-repair-help">
+                      {t("inspection.repairHelp")}
+                    </p>
+                  </div>
+                )}
               </section>
               {report.issues.length > 0 && (
                 <section className="ce-inspection-section">
@@ -343,12 +453,18 @@ export function LaunchInspection({
               )}
             </>
           ) : null}
+          {displayedRepair?.status === "error" && (
+            <div className="ce-inspection-error" role="alert">
+              <strong>{t("inspection.repairFailed")}</strong>
+              <p>{displayedRepair.error}</p>
+            </div>
+          )}
         </div>
         <footer className="ce-inspection-footer">
           <button
             className="ce-button primary"
             type="button"
-            disabled={!readable || loading}
+            disabled={!readable || loading || !!repairOperation.current}
             onClick={() => void inspect()}
           >
             <RotateCcw size={16} aria-hidden="true" />

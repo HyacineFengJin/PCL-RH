@@ -5,6 +5,7 @@ pub mod inspection;
 pub mod java;
 pub mod launch_options;
 pub mod platform;
+pub mod repair;
 mod rules;
 use launch_options::{LaunchOptions, WindowSize};
 use regex::Regex;
@@ -219,18 +220,26 @@ fn metadata(root: &Path, id: &str, visiting: &mut HashSet<String>) -> Result<Val
         let base = metadata(root, parent, visiting)?;
         // A child may omit its client jar and reuse its parent's.
         if data.get("jar").is_none() {
-            data["jar"] = if safe_join(root, format!("versions/{id}/{id}.jar"))?.is_file() {
-                Value::String(id.into())
-            } else {
-                base.get("jar")
-                    .cloned()
-                    .unwrap_or(Value::String(parent.into()))
-            };
+            data["jar"] = inherited_jar(
+                id,
+                parent,
+                &base,
+                safe_join(root, format!("versions/{id}/{id}.jar"))?.is_file(),
+            );
         }
         data = merge(base, data);
     }
     visiting.remove(id);
     Ok(data)
+}
+fn inherited_jar(id: &str, parent: &str, base: &Value, own_present: bool) -> Value {
+    if own_present {
+        Value::String(id.into())
+    } else {
+        base.get("jar")
+            .cloned()
+            .unwrap_or(Value::String(parent.into()))
+    }
 }
 fn required_java(data: &Value) -> u32 {
     match data["javaVersion"].get("majorVersion") {

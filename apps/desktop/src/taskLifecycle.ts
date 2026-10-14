@@ -26,6 +26,12 @@ export function taskNeedsBootstrap(
   task: DownloadStatus,
   currentRoot: string | null,
 ): boolean {
+  // Repair publishes verified files individually. Cancellation or a later
+  // failure can still leave useful files in the submitted root.
+  if (task.kind === "instance_repair")
+    return (
+      !!currentRoot && taskIsTerminal(task) && task.root_id === currentRoot
+    );
   if (
     [
       "resource_save",

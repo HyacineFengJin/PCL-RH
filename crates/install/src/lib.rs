@@ -5,6 +5,8 @@ use bound_root::{InstallDir, InstallTemporary};
 mod cache;
 mod components;
 mod network;
+mod repair;
+pub use repair::{MissingRepair, MissingRepairReport, RepairUnsupported};
 mod resolved;
 pub use resolved::ResolvedInstallRequest;
 use serde::{Deserialize, Serialize};

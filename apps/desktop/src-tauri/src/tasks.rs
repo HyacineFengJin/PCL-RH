@@ -42,6 +42,7 @@ pub enum TaskKind {
     ModpackInstall,
     ModpackPrepare,
     JavaInstall,
+    InstanceRepair,
     InstanceReset,
     InstanceExport,
     InstanceRename,
@@ -131,6 +132,14 @@ pub enum TaskOutcome {
         message: String,
         // A post-install persistence warning does not invalidate the installed result.
         error: Option<String>,
+    },
+    /// All eligible writes finished, but required files remain unavailable.
+    /// Retain the result and error card so a partially repaired instance cannot
+    /// disappear as an ordinary successful download from the task page.
+    Incomplete {
+        result: Option<Value>,
+        message: String,
+        error: String,
     },
     Failed(String),
     CleanupFailed(String),
@@ -479,6 +488,7 @@ impl Tasks {
                     TaskKind::ModpackInstall => "pack-prepare",
                     TaskKind::ModpackPrepare => "pack-input-metadata",
                     TaskKind::JavaInstall => "java-metadata",
+                    TaskKind::InstanceRepair => "repair-check",
                     TaskKind::InstanceReset => "reset_prepare",
                     TaskKind::InstanceExport => "export-scan",
                     TaskKind::InstanceRename => "rename_prepare",
@@ -499,6 +509,7 @@ impl Tasks {
                     TaskKind::ModpackInstall => "正在准备整合包安装…",
                     TaskKind::ModpackPrepare => "正在获取整合包文件信息…",
                     TaskKind::JavaInstall => "正在获取 Java 版本信息…",
+                    TaskKind::InstanceRepair => "正在检查可补全的缺失文件…",
                     TaskKind::InstanceReset => "正在检查重置方案…",
                     TaskKind::InstanceExport => "正在检查导出文件…",
                     TaskKind::InstanceRename => "正在检查实例名称与引用…",
@@ -579,6 +590,7 @@ impl Tasks {
                     TaskKind::ModpackInstall => "正在取消整合包安装并清理未完成文件…",
                     TaskKind::ModpackPrepare => "正在取消整合包下载并清理暂存文件…",
                     TaskKind::JavaInstall => "正在取消 Java 下载并清理未完成文件…",
+                    TaskKind::InstanceRepair => "正在取消文件补全并清理未完成文件…",
                     TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
                     TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
                     TaskKind::InstanceRename => "正在取消改名并清理临时文件…",
@@ -853,6 +865,9 @@ impl Tasks {
                             TaskKind::ModpackInstall => "整合包安装已取消，未完成文件已清理",
                             TaskKind::ModpackPrepare => "整合包下载已取消，暂存文件已清理",
                             TaskKind::JavaInstall => "Java 下载已取消，未完成文件已清理",
+                            TaskKind::InstanceRepair => {
+                                "文件补全已取消，已完成文件保留，未完成文件已清理"
+                            }
                             TaskKind::InstanceReset => "重置已取消，原实例已保留",
                             TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
                             TaskKind::InstanceRename => "改名已取消，原实例已保留",
@@ -874,6 +889,18 @@ impl Tasks {
                         error.clone()
                     };
                     snapshot.error = if cancelled { None } else { Some(error) };
+                }
+                TaskOutcome::Incomplete {
+                    result,
+                    message,
+                    error,
+                } => {
+                    snapshot.stage = TaskStage::Error;
+                    snapshot.phase = "error".into();
+                    snapshot.message = message;
+                    snapshot.progress = 1.0;
+                    snapshot.result = result;
+                    snapshot.error = Some(error);
                 }
                 TaskOutcome::CleanupFailed(error) | TaskOutcome::Error(error) => {
                     snapshot.stage = TaskStage::Error;

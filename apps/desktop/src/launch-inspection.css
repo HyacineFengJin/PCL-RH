@@ -118,6 +118,14 @@
   color: var(--ce-muted-text, #9299a3);
   font-size: 12px;
 }
+.ce-inspection-repair-action {
+  margin-top: 11px;
+}
+.ce-inspection-section .ce-inspection-repair-help {
+  margin: 6px 0 0;
+  color: var(--ce-muted-text, #9299a3);
+  font-size: 12px;
+}
 .ce-inspection-footer {
   display: flex;
   flex: none;

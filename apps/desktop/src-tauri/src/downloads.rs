@@ -161,6 +161,7 @@ impl Downloads {
             TaskKind::Install
                 | TaskKind::ModpackInstall
                 | TaskKind::ModpackPrepare
+                | TaskKind::InstanceRepair
                 | TaskKind::InstanceReset
                 | TaskKind::InstanceExport
                 | TaskKind::InstanceRename
@@ -317,15 +318,23 @@ impl Downloads {
             | "component_main"
             | "component_libraries"
             | "game_libraries" => TaskStage::Downloading,
+            "repair-download" => TaskStage::Downloading,
             "pack-files" | "processing" | "installing" | "component_install"
             | "component_analyze" | "publishing" | "complete" | "game_install" | "game_support"
-            | "reset_commit" | "reset_merge" | "export-archive" | "export-finalize" => {
-                TaskStage::Processing
-            }
+            | "reset_commit" | "reset_merge" | "export-archive" | "export-finalize"
+            | "repair-verify" => TaskStage::Processing,
             _ => TaskStage::Preparing,
         };
         let (phase, message) = if progress.stage == "complete" {
-            ("installing".into(), "正在保存安装结果…".into())
+            if self
+                .tasks
+                .snapshot(task.id())
+                .is_some_and(|snapshot| snapshot.kind == TaskKind::InstanceRepair)
+            {
+                ("repair-verify".into(), "正在复核文件补全结果…".into())
+            } else {
+                ("installing".into(), "正在保存安装结果…".into())
+            }
         } else {
             (progress.stage, progress.message)
         };

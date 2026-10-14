@@ -194,6 +194,16 @@ const messages = {
   "inspection.javaRecommendation":
     "{name} · Java {version} download recommended",
   "inspection.instanceJava": "Instance Java settings",
+  "inspection.repair": "Download missing files",
+  "inspection.repairHelp":
+    "Download verifiable missing files. Existing files are kept.",
+  "inspection.repairStarting": "Starting file repair…",
+  "inspection.repairFailed": "Could not start file repair",
+  "inspection.repairInspect": "Check missing files before downloading",
+  "inspection.repairPlan": "Check missing files",
+  "inspection.repairFiles": "Download and verify missing files",
+  "inspection.repairCheck": "Recheck instance files",
+  "inspection.repairUnsupported": "{count} files need manual attention",
   "java.chooseVersion": "Choose a Java version",
   "instance.completeFiles": "Complete files",
   "ui.reset": "Reset",

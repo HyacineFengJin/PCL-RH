@@ -12,6 +12,7 @@
 | 下载与任务界面 | `useDownloadTasks.ts`、`DownloadPanel.tsx`、`TaskManager.tsx` | 集合轮询、逐项取消、完成刷新与页面所有权 |
 | 在线资源界面 | `ResourceDetails.tsx`、`ResourceInstall.tsx`、`resourceInstallPlan.ts`、`LocalResources.tsx`、`ResourceUpdates.tsx` | 版本与文件选择、作用域确认、必要依赖计划和安装提交 |
 | Java 管理界面 | `JavaPanel.tsx`、`JavaSelect.tsx`、`javaManagement.ts` | 全局与实例选择、目录/修订作用域、过期响应排除 |
+| 启动诊断与补全界面 | `LaunchInspection.tsx`、`TaskManager.tsx` | 只读报告、缺失文件任务提交、部分补全清单 |
 | 桌面命令与应用生命周期 | `apps/desktop/src-tauri/src/main.rs` | 命令参数、目标绑定、任务调度、游戏进程与关闭处理 |
 | 本地实例操作命令 | `instance_commands.rs` | ZIP 导入与删除恢复的目录绑定、计划确认、任务准入与错误归类 |
 | 在线资源命令 | `resource_install_commands.rs`、`resource_update_commands.rs` | 目标绑定、后台任务、传输进度、提交检查与根目录恢复 |
@@ -21,6 +22,8 @@
 | 文件操作 | `resource_ops.rs`、`instance_reset.rs`、`instance_export.rs`、`instance_import.rs`、`instance_delete.rs` | 本地资源事务、组件重置、ZIP 导出/导入、实例删除恢复 |
 | 任务协调 | `tasks.rs`、`tasks/schedule.rs`、`tasks/scope.rs`、`downloads.rs` | 并发/队列、物理路径互斥、取消与结束、带修订号的集合投影 |
 | Minecraft 核心 | `crates/core/src/lib.rs` | 版本识别、继承、依赖和启动参数 |
+| 启动依赖与诊断 | `crates/core/src/dependencies.rs`、`inspection.rs` | 启动共用的依赖筛选、文件存在性和 Java 检查 |
+| 缺失文件补全 | `launcher_repair.rs`、`crates/core/src/repair.rs`、`crates/install/src/repair.rs` | 原生任务绑定、纯下载清单、固定目录下载与发布 |
 | 平台与元数据规则 | `crates/core/src/platform.rs`、`rules.rs` | 系统／架构词汇、原生库与 Java 布局、安装和启动共用的规则 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
 | 游戏启动选项 | `GameLaunchFields.tsx`、`crates/core/src/launch_options.rs` | 全局窗口尺寸、Java 地址偏好、类型校验和参数替换 |
@@ -36,6 +39,16 @@
 表中未写目录的 Rust 文件位于 `apps/desktop/src-tauri/src/`；TSX 文件位于 `apps/desktop/src/`。现有桌面和前端 `main` 仍承担较多协调工作；新增业务应先确定职责归属，避免继续堆入页面或命令函数。
 
 跨平台范围见[平台支持](PLATFORMS.md)。`core::platform` 只描述平台与路径布局，不拥有文件事务权限；桌面的 `platform.rs` 仍负责系统选择器，二者职责不同。`rules::RuleContext` 同时服务安装依赖筛选和启动参数；现代 native classifier 进一步约束系统与架构，旧版 native 表按 Mojang 的 `linux` / `windows` / `osx` 键选择。生产调用始终取当前编译目标，测试可提供显式平台。不要用另一个平台的规则结果驱动本机文件事务。
+
+## 缺失文件补全
+
+`LaunchInspection` 的报告只供展示；补全命令只接收登记的根目录、实例 ID 和设置修订号。`launcher_repair` 获取独占文件任务后，在操作锁外重新捕获版本继承链、资源索引和目录身份。`core::repair` 负责路径、当前平台规则和下载声明，不执行文件操作；`install::repair` 才持有目录描述符和下载权限。
+
+下载复用安装器的官方 HTTPS 来源检查、网络设置、共享限速和取消机制。每个缺失文件先写匿名临时文件，再验证大小与 SHA1，并在发布前复核绑定。原子发布拒绝覆盖已有目标；取消丢弃未发布的文件，已发布文件可保留复用。开始和结束重读元数据内容，中间检查目录身份和包含 ctime 的文件状态，避免每个资源文件都重读整个索引。
+
+`TaskOutcome::Incomplete` 保留结构化结果并进入 Error，让无法自动处理的文件留在任务卡上。普通取消、部分补全和完整补全都可能留下新文件，因此终态只刷新对应根目录的视图；完成不修改实例选择。诊断弹窗关闭后，迟到的任务提交回复仍交给全局任务管理，但不能重新打开已经离开的页面。
+
+排查入口为 `core/src/repair_tests.rs`、`install/src/repair_tests.rs`、`launcher_repair/tests.rs` 及 `launch-repair-*.test.mjs`。补全只处理缺失文件，不运行 Java 或加载器处理器，不验证既有文件的内容，也不取得修改模组或存档的权限。
 
 ## 以实例改名为例
 

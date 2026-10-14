@@ -6,6 +6,13 @@ export type DownloadStep = {
   state: "pending" | "running" | "complete";
   progress?: number | null;
 };
+export type FileRepairResult = {
+  id: string;
+  files_downloaded: number;
+  files_present: number;
+  unsupported_total: number;
+  unsupported: { path: string; reason: string }[];
+};
 export type DownloadStatus = {
   kind?:
     | "install"
@@ -13,6 +20,7 @@ export type DownloadStatus = {
     | "modpack_prepare"
     | "java_install"
     | "instance_reset"
+    | "instance_repair"
     | "instance_export"
     | "instance_rename"
     | "instance_import"
@@ -51,12 +59,15 @@ export type DownloadStatus = {
   error?: string | null;
   can_cancel?: boolean;
   steps?: DownloadStep[];
-  result?: {
-    id: string;
-    java_major: number;
-    files_downloaded: number;
-    files_reused: number;
-  } | null;
+  result?:
+    | {
+        id: string;
+        java_major: number;
+        files_downloaded: number;
+        files_reused: number;
+      }
+    | FileRepairResult
+    | null;
 };
 export const idleDownload: DownloadStatus = {
   stage: "idle",

@@ -922,8 +922,9 @@ export function InstancePanel({
             </button>
             <button
               className="ce-button"
-              disabled
-              title={t("common.unavailable")}
+              disabled={!native || disabled || !!mutationDisabled}
+              onClick={onInspect}
+              title={t("inspection.repairInspect")}
             >
               {t("instance.completeFiles")}
             </button>

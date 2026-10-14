@@ -97,6 +97,28 @@
   gap: 5px;
   overflow-wrap: anywhere;
 }
+.ce-task-repair-details {
+  margin: 12px 7px 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ce-task-repair-details summary {
+  color: var(--ce-link, #2683eb);
+  cursor: pointer;
+}
+.ce-task-repair-details ul {
+  max-height: 240px;
+  overflow: auto;
+  padding-left: 20px;
+}
+.ce-task-repair-details li {
+  padding: 5px 0;
+}
+.ce-task-repair-details small {
+  display: block;
+  color: var(--ce-muted-text, #8e99a8);
+  font-size: inherit;
+}
 .ce-task-empty {
   text-align: center;
   padding: 35px;

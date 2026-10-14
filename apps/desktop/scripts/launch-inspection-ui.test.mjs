@@ -50,6 +50,7 @@ function dialog(extra = {}) {
     onManageJava(major) {
       navigation.push(major);
     },
+    onTaskStart() {},
     ...extra,
   });
   return {

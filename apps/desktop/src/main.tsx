@@ -186,6 +186,7 @@ const resourceWrites = new Set([
   "resource_install_recover",
   "instance_metadata_update",
   "instance_reset_start",
+  "instance_repair_start",
   "instance_reset_recover",
   "instance_rename_start",
   "instance_rename_recover",
@@ -204,6 +205,7 @@ const rootCommands = new Set([
   "java_download_start",
   "launch_game",
   "inspect_instance",
+  "instance_repair_start",
   "open_folder",
   "instance_resources",
   "local_resource_info_export",
@@ -3059,6 +3061,7 @@ function App() {
                 id={inspectionTarget.id}
                 scopeKey={`${rootKey}:${data.settings.revision || ""}`}
                 api={rootApi}
+                revision={data.settings.revision || ""}
                 native={native}
                 disabled={
                   !!busy ||
@@ -3090,6 +3093,19 @@ function App() {
                   setTab("settings");
                   setSettingsPage("java");
                   setScreen("home");
+                }}
+                onTaskStart={(id, reveal) => {
+                  // Submission owns the task even after this modal closes.
+                  // Only its original navigation may open the task page.
+                  tasks.track(id);
+                  if (
+                    reveal &&
+                    contextKey.current === inspectionTarget.rootKey &&
+                    viewContext.current.selected === inspectionTarget.id &&
+                    taskNavigation.current.epoch === inspectionTarget.epoch
+                  )
+                    void showInstanceTask(id);
+                  else void tasks.refresh();
                 }}
               />
             )}
