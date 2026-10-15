@@ -34,6 +34,7 @@ impl Fixture {
             self.0.join("project"),
             "root-generic".into(),
             self.0.join("root"),
+            "generic-instance".into(),
             java,
             vec!["fake-access-token".into()],
             self.0.join("root"),
@@ -154,6 +155,7 @@ fn helper_handoff_continues_logs_and_reopen_detects_owned_root() {
     assert!(status.busy && status.game_running && status.supervisor_running);
     assert_eq!(status.pid, Some(started.pid));
     assert_eq!(status.root_id, "root-generic");
+    assert_eq!(status.instance_id.as_deref(), Some("generic-instance"));
     assert_eq!(status.session_id, started.session_id);
     let marker =
         fs::read_to_string(f.0.join("project/.pcl-rust/game-monitor/active.json")).unwrap();
@@ -166,6 +168,7 @@ fn helper_handoff_continues_logs_and_reopen_detects_owned_root() {
     let ended = wait_idle(&f.0.join("project"));
     assert_eq!(ended.exit_code, Some(0));
     assert_eq!(ended.session_id, started.session_id);
+    assert_eq!(ended.instance_id, status.instance_id);
     let log = fs::read_to_string(started.log_path).unwrap();
     assert!(!log.contains("fake-access-token"));
     assert!(log.contains("before [REDACTED] after\n"));
@@ -224,8 +227,9 @@ fn arbitrary_log_path_and_symlink_log_refuse_before_game_execution() {
 
 fn wire(request: protocol::MonitorRequest) -> Vec<u8> {
     serde_json::to_vec(
-        &serde_json::json!({"schema_version":1,"project":request.project,
+        &serde_json::json!({"schema_version":2,"project":request.project,
         "root_id":request.root_id,"root_path":request.root_path,"java":request.java,
+        "instance_id":request.instance_id,
         "args":request.args,"game_dir":request.game_dir,"log_path":request.log_path,
         "redactions":request.redactions}),
     )
@@ -393,6 +397,7 @@ fn marker_phase_exchange_during_fd_capture_and_final_recheck_reads_fresh_state()
             &project,
             "root-generic".into(),
             root.clone(),
+            "generic-instance".into(),
             root.join(".pcl-linux/logs/generic.log"),
         )
         .unwrap();
@@ -431,7 +436,7 @@ fn marker_phase_exchange_during_fd_capture_and_final_recheck_reads_fresh_state()
 #[test]
 fn marker_retry_does_not_hide_inplace_unknown_different_session_or_binding_edits() {
     use std::os::unix::process::CommandExt;
-    for case in 0..5 {
+    for case in 0..7 {
         let f = Fixture::new();
         let project = f.0.join("project");
         let root = f.0.join("root");
@@ -439,6 +444,7 @@ fn marker_retry_does_not_hide_inplace_unknown_different_session_or_binding_edits
             &project,
             "root-generic".into(),
             root.clone(),
+            "generic-instance".into(),
             root.join(".pcl-linux/logs/generic.log"),
         )
         .unwrap();
@@ -460,6 +466,13 @@ fn marker_retry_does_not_hide_inplace_unknown_different_session_or_binding_edits
         }
         if case == 4 {
             replacement["phase"] = "starting".into();
+        }
+        if case == 5 {
+            replacement["instance_id"] = "different-instance".into();
+        }
+        if case == 6 {
+            replacement["schema_version"] = serde_json::json!(1);
+            replacement.as_object_mut().unwrap().remove("instance_id");
         }
         let bytes = if case == 1 {
             b"unknown retained content".to_vec()
@@ -546,7 +559,7 @@ fn relocation_alias_keeps_live_process_and_future_schema_guards() {
         serde_json::to_value(process::identity(std::process::id()).unwrap().unwrap()).unwrap();
     fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(read_status(&current).unwrap().unwrap().busy);
-    value["schema_version"] = serde_json::json!(2);
+    value["schema_version"] = serde_json::json!(3);
     let bytes = serde_json::to_vec(&value).unwrap();
     fs::write(&marker, &bytes).unwrap();
     assert!(read_status(&current).is_err());
@@ -565,5 +578,262 @@ fn relocation_alias_to_another_project_or_missing_path_is_rejected() {
         fs::write(&marker, &bytes).unwrap();
         assert!(read_status(&current).is_err());
         assert_eq!(fs::read(&marker).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn completed_marker_identity_is_explicit_for_v2_and_absent_for_unmodified_v1() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let scope = crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+    let path = scope.path().join("active.json");
+    for instance in [None, Some("captured-instance")] {
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();
+        marker["exit_code"] = 2.into();
+        if let Some(instance) = instance {
+            marker["schema_version"] = 2.into();
+            marker["instance_id"] = instance.into();
+        }
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let status = read_status(&project).unwrap().unwrap();
+        assert!(!status.busy);
+        assert_eq!(status.phase, "failed");
+        assert_eq!(status.instance_id.as_deref(), instance);
+        assert_eq!(status.root_path, f.0.join("root").display().to_string());
+        assert_eq!(
+            status.log_path,
+            f.0.join("root/.pcl-linux/logs/generic.log")
+                .display()
+                .to_string()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn unsupported_or_invalid_explicit_identity_is_retained_and_never_replaced_on_start() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let root = f.0.join("root");
+    let scope = crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+    let path = scope.path().join("active.json");
+    for (schema, instance) in [
+        (2, None),
+        (2, Some("")),
+        (2, Some("..")),
+        (2, Some("../foreign")),
+        (2, Some("control\ncharacter")),
+        (1, Some("unrecognized-extension")),
+        (3, Some("future-instance")),
+    ] {
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();
+        marker["schema_version"] = schema.into();
+        if let Some(instance) = instance {
+            marker["instance_id"] = instance.into();
+        }
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(
+            read_status(&project).is_err(),
+            "schema {schema}, instance {instance:?}"
+        );
+        assert!(state::Session::start(
+            &project,
+            "root-generic".into(),
+            root.clone(),
+            "new-instance".into(),
+            root.join(".pcl-linux/logs/new.log")
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn invalid_request_instance_refuses_before_any_helper_or_marker_is_created() {
+    let f = Fixture::new();
+    for instance in ["", "..", "../foreign", "control\ncharacter"] {
+        let mut request = f.request(f.0.join("never-executed-java"));
+        request.instance_id = instance.into();
+        assert!(protocol::spawn_with_helper(&f.0.join("never-executed-helper"), request).is_err());
+        assert!(!f.0.join("project/.pcl-rust").exists());
+    }
+}
+
+#[test]
+fn admitted_retirement_persists_without_inventing_legacy_identity_or_removing_the_log() {
+    for instance in [None, Some("captured-instance")] {
+        let f = Fixture::new();
+        let project = f.0.join("project");
+        let scope =
+            crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+        let path = scope.path().join("active.json");
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();
+        if let Some(instance) = instance {
+            marker["schema_version"] = 2.into();
+            marker["instance_id"] = instance.into();
+        }
+        fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        let log = f.0.join("root/.pcl-linux/logs/generic.log");
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        fs::write(&log, b"retained old log").unwrap();
+        let previous = read_status(&project).unwrap().unwrap();
+        retire_completed(&project, &previous.revision).unwrap();
+        let retired = read_status(&project).unwrap().unwrap();
+        assert_eq!(retired.phase, "retired");
+        assert!(!retired.busy);
+        assert_eq!(retired.session_id, previous.session_id);
+        assert_eq!(retired.instance_id.as_deref(), instance);
+        assert_eq!(retired.root_id, previous.root_id);
+        assert_eq!(retired.root_path, previous.root_path);
+        assert_eq!(retired.log_path, previous.log_path);
+        assert_eq!(retired.exit_code, previous.exit_code);
+        assert_ne!(retired.revision, previous.revision);
+        assert_eq!(fs::read(&log).unwrap(), b"retained old log");
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["schema_version"], 2);
+        assert_eq!(
+            saved.get("instance_id").and_then(serde_json::Value::as_str),
+            instance
+        );
+        // A repeated retirement is read-only, and a future admitted helper can
+        // replace the tombstone with its own complete explicit identity.
+        retire_completed(&project, &retired.revision).unwrap();
+        assert_eq!(
+            read_status(&project).unwrap().unwrap().revision,
+            retired.revision
+        );
+        let _session = state::Session::start(
+            &project,
+            "root-generic".into(),
+            f.0.join("root"),
+            "next-instance".into(),
+            f.0.join("root/.pcl-linux/logs/next.log"),
+        )
+        .unwrap();
+        assert_eq!(
+            read_status(&project)
+                .unwrap()
+                .unwrap()
+                .instance_id
+                .as_deref(),
+            Some("next-instance")
+        );
+        assert_eq!(fs::read(&log).unwrap(), b"retained old log");
+    }
+}
+
+#[test]
+fn retirement_rejects_stale_live_unknown_and_lifetime_owned_records_without_touching_bytes() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let scope = crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+    let path = scope.path().join("active.json");
+    let completed = relocation_marker(&f, &project, "failed");
+    fs::write(&path, &completed).unwrap();
+    let previous = read_status(&project).unwrap().unwrap();
+    assert!(retire_completed(&project, "stale").is_err());
+    assert_eq!(fs::read(&path).unwrap(), completed);
+    {
+        let _guard = scope
+            .folder
+            .as_ref()
+            .unwrap()
+            .lock(".monitor.lock")
+            .unwrap();
+        assert!(retire_completed(&project, &previous.revision).is_err());
+        assert_eq!(fs::read(&path).unwrap(), completed);
+    }
+    let mut live: serde_json::Value = serde_json::from_slice(&completed).unwrap();
+    live["monitor"] =
+        serde_json::to_value(process::identity(std::process::id()).unwrap().unwrap()).unwrap();
+    let live = serde_json::to_vec(&live).unwrap();
+    fs::write(&path, &live).unwrap();
+    let observed = read_status(&project).unwrap().unwrap();
+    assert!(observed.busy);
+    assert!(retire_completed(&project, &observed.revision).is_err());
+    assert_eq!(fs::read(&path).unwrap(), live);
+    let unknown = b"unknown retained format";
+    fs::write(&path, unknown).unwrap();
+    assert!(retire_completed(&project, &previous.revision).is_err());
+    assert_eq!(fs::read(&path).unwrap(), unknown);
+}
+
+#[test]
+fn retirement_publication_failure_and_external_replacement_leave_original_or_competing_bytes() {
+    for replace in [false, true] {
+        let f = Fixture::new();
+        let project = f.0.join("project");
+        let scope =
+            crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+        let path = scope.path().join("active.json");
+        let original = relocation_marker(&f, &project, "failed");
+        fs::write(&path, &original).unwrap();
+        let previous = read_status(&project).unwrap().unwrap();
+        let competing = b"external retained bytes";
+        let result = state::retire_completed_observed(&project, &previous.revision, || {
+            assert!(
+                scope
+                    .folder
+                    .as_ref()
+                    .unwrap()
+                    .lock(".monitor.lock")
+                    .is_err(),
+                "publication must still own the helper lifetime lock"
+            );
+            if replace {
+                let staged = path.with_file_name("external.json");
+                fs::write(&staged, competing).unwrap();
+                fs::rename(staged, &path).unwrap();
+                Ok(())
+            } else {
+                Err("synthetic publication failure".into())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            if replace {
+                competing.to_vec()
+            } else {
+                original
+            }
+        );
+    }
+}
+
+#[test]
+fn retirement_exchange_during_marker_read_is_a_recognized_identity_preserving_transition() {
+    for instance in [None, Some("captured-instance")] {
+        let f = Fixture::new();
+        let project = f.0.join("project");
+        let scope =
+            crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+        let path = scope.path().join("active.json");
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();
+        if let Some(instance) = instance {
+            marker["schema_version"] = 2.into();
+            marker["instance_id"] = instance.into();
+        }
+        fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        let previous = read_status(&project).unwrap().unwrap();
+        let mut exchanged = false;
+        let current = state::read_status_observed(&project, &mut |point| {
+            if point == state::ReadPoint::Opened && !exchanged {
+                exchanged = true;
+                retire_completed(&project, &previous.revision).unwrap();
+            }
+        })
+        .unwrap()
+        .unwrap();
+        assert!(exchanged);
+        assert_eq!(current.phase, "retired");
+        assert_eq!(current.instance_id.as_deref(), instance);
+        assert_eq!(current.session_id, previous.session_id);
     }
 }

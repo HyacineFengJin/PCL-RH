@@ -1,6 +1,9 @@
 //! One independent durable marker and lifetime lock per project. Reading state
 //! never creates directories. A damaged/unknown marker is retained and returns an
 //! error so admission can conservatively block launch and writes until repaired.
+//! Beginning an admitted new attempt may explicitly retire its completed marker;
+//! this durable phase fences old failure context across GUI restarts, while the
+//! captured log and optional legacy identity remain untouched.
 use super::process::{self, Identity};
 use crate::launcher_local::filesystem::{
     optional_snapshot, revision, Dir, Scope, Snapshot, Stamp, WriteLock,
@@ -26,6 +29,7 @@ pub(super) enum Phase {
     Running,
     Exited,
     Failed,
+    Retired,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +38,8 @@ pub(super) struct Marker {
     project: PathBuf,
     root_id: String,
     root_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
     log_path: PathBuf,
     monitor: Identity,
     game: Option<Identity>,
@@ -47,6 +53,7 @@ pub struct MonitorStatus {
     pub session_id: String,
     pub root_id: String,
     pub root_path: String,
+    pub instance_id: Option<String>,
     pub log_path: String,
     pub pid: Option<u32>,
     pub monitor_pid: u32,
@@ -61,7 +68,18 @@ pub struct MonitorStatus {
 fn parse(project: &Path, snapshot: &Snapshot) -> Result<Marker, String> {
     let marker: Marker = serde_json::from_slice(&snapshot.header)
         .map_err(|_| "游戏监控状态无效，已保留文件；暂停启动和文件操作")?;
-    if marker.schema_version != 1
+    // Version 1 predates explicit instance identity. Accept its original shape
+    // without guessing from the log name or silently upgrading persisted bytes.
+    // Version 2 launch records bind one validated instance to this session/root.
+    // Explicit retirement can retain a legacy None identity without inventing
+    // one; that exception never permits an identity-free version-2 launch.
+    let supported_identity = match (marker.schema_version, marker.instance_id.as_deref()) {
+        (1, None) => marker.phase != Phase::Retired,
+        (2, Some(instance)) => validate_instance_id(instance).is_ok(),
+        (2, None) => marker.phase == Phase::Retired,
+        _ => false,
+    };
+    if !supported_identity
         || !project_matches(&marker.project, project)
         || marker.root_id.is_empty()
         || marker.root_id.len() > 128
@@ -98,6 +116,7 @@ fn status(marker: &Marker, revision: String) -> Result<MonitorStatus, String> {
         session_id: process::session_id(&marker.monitor),
         root_id: marker.root_id.clone(),
         root_path: marker.root_path.display().to_string(),
+        instance_id: marker.instance_id.clone(),
         log_path: marker.log_path.display().to_string(),
         pid: marker.game.as_ref().map(|game| game.pid),
         monitor_pid: marker.monitor.pid,
@@ -109,6 +128,7 @@ fn status(marker: &Marker, revision: String) -> Result<MonitorStatus, String> {
             Phase::Running => "running",
             Phase::Exited => "exited",
             Phase::Failed => "failed",
+            Phase::Retired => "retired",
         }
         .into(),
         started_at: marker.started_at,
@@ -176,12 +196,25 @@ fn capture_marker(
     }))
 }
 fn progresses(previous: &Marker, current: &Marker) -> bool {
-    previous.project == current.project
+    let same_binding = previous.project == current.project
         && previous.root_id == current.root_id
         && previous.root_path == current.root_path
+        && previous.instance_id == current.instance_id
         && previous.log_path == current.log_path
         && previous.monitor == current.monitor
-        && previous.started_at == current.started_at
+        && previous.started_at == current.started_at;
+    if !same_binding {
+        return false;
+    }
+    // A GUI retires only under the helper's lifetime lock and after observing
+    // both process identities gone. This is the sole schema-1→2 transition and
+    // retains every captured value, including the absent legacy instance ID.
+    if current.phase == Phase::Retired && previous.phase != Phase::Retired {
+        return current.schema_version == 2
+            && previous.game == current.game
+            && previous.exit_code == current.exit_code;
+    }
+    previous.schema_version == current.schema_version
         && previous.exit_code.is_none()
         && match (previous.phase, current.phase) {
             (Phase::Starting, Phase::Running | Phase::Exited) => {
@@ -221,8 +254,9 @@ pub(super) fn read_status_observed(
         return Ok(None);
     };
     let mut previous: Option<(Marker, Snapshot)> = None;
-    // One helper publishes starting→running→finished. Four complete bounded
-    // reads cover both legitimate replacements; repeated churn remains blocked.
+    // One helper publishes starting→running→finished, then an admitted GUI may
+    // retire it. Four complete bounded reads cover those legitimate exchanges;
+    // repeated churn remains blocked.
     for _ in 0..4 {
         let Some(snapshot) = capture_marker(folder, observed)? else {
             scope.recheck()?;
@@ -265,6 +299,45 @@ pub fn stop_monitor(project: &Path, expected_revision: &str) -> Result<(), Strin
         libc::SIGKILL,
     )
 }
+/// A new preparation has passed its admission checks. Retire only the exact
+/// observed record while owning the helper's lifetime lock. A stale revision,
+/// unknown format, live identity, or publication conflict leaves its bytes for
+/// inspection and prevents the new preparation from becoming current.
+pub fn retire_completed(project: &Path, expected_revision: &str) -> Result<(), String> {
+    retire_completed_observed(project, expected_revision, || Ok(()))
+}
+pub(super) fn retire_completed_observed(
+    project: &Path,
+    expected_revision: &str,
+    before_publish: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let scope = Scope::open(project, "game-monitor")?;
+    let folder = scope.folder.as_ref().ok_or("待退役的游戏监控记录已消失")?;
+    let _lock = folder.lock(".monitor.lock")?;
+    let snapshot = Snapshot::open(folder, NAME, LIMIT)?;
+    let mut marker = parse(project, &snapshot)?;
+    if revision(&scope.path().join(NAME), &snapshot)? != expected_revision {
+        return Err("游戏监控记录已变化，请刷新后重新启动".into());
+    }
+    if status(&marker, String::new())?.busy {
+        return Err("独立监控的游戏仍在运行，不能退役其记录".into());
+    }
+    if marker.phase == Phase::Retired {
+        scope.recheck()?;
+        return snapshot.recheck(folder, NAME);
+    }
+    // An interrupted helper can leave Starting/Running after both identities
+    // have died. Retirement only removes its claim to current context; it never
+    // fabricates a successful exit or changes its log/exit information.
+    marker.schema_version = 2;
+    marker.phase = Phase::Retired;
+    let bytes = serde_json::to_vec(&marker).map_err(|_| "无法保存游戏监控退役状态")?;
+    before_publish()?;
+    scope.recheck()?;
+    snapshot.recheck(folder, NAME)?;
+    folder.replace(NAME, Some(&snapshot), &bytes, LIMIT)?;
+    scope.recheck()
+}
 pub(super) struct Session {
     scope: Scope,
     _lock: WriteLock,
@@ -276,8 +349,10 @@ impl Session {
         project: &Path,
         root_id: String,
         root_path: PathBuf,
+        instance_id: String,
         log_path: PathBuf,
     ) -> Result<Self, String> {
+        validate_instance_id(&instance_id)?;
         let scope = Scope::create(project, "game-monitor")?;
         let folder = scope.folder.as_ref().unwrap();
         let lock = folder.lock(".monitor.lock")?;
@@ -288,10 +363,11 @@ impl Session {
             }
         }
         let marker = Marker {
-            schema_version: 1,
+            schema_version: 2,
             project: project.to_owned(),
             root_id,
             root_path,
+            instance_id: Some(instance_id),
             log_path,
             monitor: process::identity(std::process::id())?.ok_or("监控进程身份不可用")?,
             game: None,
@@ -370,6 +446,10 @@ pub(super) fn validate_log_path(root: &Path, path: &Path) -> Result<(), String> 
         return Err("游戏日志文件类型无效".into());
     }
     Ok(())
+}
+pub(super) fn validate_instance_id(instance: &str) -> Result<(), String> {
+    crate::launcher_local::filesystem::component(instance)
+        .map_err(|_| "游戏监控实例 ID 无效".into())
 }
 /// Only captured-root launch logs can be opened. Existing regular logs are
 /// appended; creation never overwrites a competing new file or follows links.

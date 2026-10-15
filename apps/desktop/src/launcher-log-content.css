@@ -1,0 +1,80 @@
+.launcher-log-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: calc(100dvh - 128px);
+  margin: 8px 10px 10px;
+  color: var(--ce-text, #38424f);
+}
+.launcher-log-search {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.launcher-log-query {
+  display: grid;
+  flex: 1 1 220px;
+  gap: 5px;
+  min-width: 0;
+  font-size: 13px;
+}
+.launcher-log-query .ce-field {
+  min-width: 0;
+}
+.launcher-log-case {
+  min-height: 28px;
+  flex: 0 1 auto;
+  font-size: 13px;
+}
+.launcher-log-case input {
+  flex-shrink: 0;
+}
+.launcher-log-search-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.launcher-log-search-actions .ce-button {
+  min-width: 64px;
+  width: auto;
+  padding: 0 10px;
+}
+.launcher-log-search-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 9px 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  flex-shrink: 0;
+}
+.launcher-log-text.log-view {
+  margin: 0;
+  min-width: 0;
+  min-height: 96px;
+  flex: 1 1 auto;
+  border-color: var(--ce-border, #d2deed);
+}
+.launcher-log-text mark {
+  background: #f8e5a5;
+  color: #3b3315;
+  border-radius: 2px;
+}
+.launcher-log-text mark.is-current {
+  background: #2078da;
+  color: #fff;
+  outline: 1px solid #0957ad;
+}
+:root[data-launcher-theme="dark"] .launcher-log-text mark {
+  background: #725b25;
+  color: #ffedb4;
+}
+:root[data-launcher-theme="dark"] .launcher-log-text mark.is-current {
+  background: #285d9a;
+  color: #fff;
+  outline-color: #9ac9ff;
+}

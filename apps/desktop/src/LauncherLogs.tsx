@@ -13,6 +13,7 @@ import {
   type LauncherLogRestoreOutcome,
 } from "./launcherTypes";
 import { LauncherCard as Card } from "./LauncherSettingsControls";
+import { LauncherLogContent } from "./LauncherLogContent";
 
 export type LauncherLogInitialSelection = {
   name: string;
@@ -21,6 +22,12 @@ export type LauncherLogInitialSelection = {
 type AppliedInitialSelection = LauncherLogInitialSelection & {
   api: Api;
   scopeKey: string;
+};
+type LoadedLogContent = {
+  text: string;
+  api: Api;
+  scopeKey: string;
+  readToken: number;
 };
 function sameInitialSelection(
   applied: AppliedInitialSelection | null,
@@ -75,7 +82,7 @@ export function LauncherLogs({
   const [logs, setLogs] = useState<LauncherLogRow[]>([]);
   const [recovery, setRecovery] = useState<LauncherLogRecoveryRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
-  const [content, setContent] = useState<string | null>(null);
+  const [content, setContent] = useState<LoadedLogContent | null>(null);
   const [error, setError] = useState("");
   const [missingLog, setMissingLog] = useState<string | null>(null);
   const [listOwner, setListOwner] = useState<{
@@ -224,7 +231,7 @@ export function LauncherLogs({
       api<string>("launcher_read_log", { name: row.name })
         .then((text) => {
           if (active(scope) && currentIntent() && reading.current === token)
-            setContent(text);
+            setContent({ text, api, scopeKey: scope, readToken: token });
         })
         .catch((e) => {
           if (active(scope) && currentIntent() && reading.current === token)
@@ -422,11 +429,18 @@ export function LauncherLogs({
           </button>
         </div>
       </Card>
-      {content !== null && (
-        <Card title={tr.t("logs.content")} collapse>
-          <pre className="log-view">{content}</pre>
-        </Card>
-      )}
+      {content !== null &&
+        content.api === api &&
+        content.scopeKey === scopeKey && (
+          <Card title={tr.t("logs.content")} collapse>
+            <LauncherLogContent
+              key={content.readToken}
+              text={content.text}
+              language={language}
+              region={region}
+            />
+          </Card>
+        )}
       {!!recovery.length && (
         <Card title={tr.t("logs.recovery")} collapse>
           {recovery.map((row) => (

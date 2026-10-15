@@ -1678,6 +1678,7 @@ fn launch_game(
                 s.project.clone(),
                 root.id.clone(),
                 PathBuf::from(&root.path),
+                id.clone(),
                 plan.java,
                 plan.args,
                 plan.game_dir,

@@ -3,6 +3,10 @@
 //! reads and adoption share the session lock with beginning a launch, so an old
 //! terminal read cannot overwrite a later preparation. Workers carry a launch
 //! generation; their status, stop and window effects expire with that generation.
+//! Historical terminal recovery is allowed before a local attempt starts. After
+//! admission, its old durable marker is explicitly retired. Even if preparation
+//! fails before publishing a helper, the old marker cannot reclaim log/status
+//! after another GUI restart.
 use crate::{launcher_game_monitor, RunStatus, Shared};
 use std::{
     path::PathBuf,
@@ -21,6 +25,11 @@ struct Session {
     attached: bool,
     stop_requested: bool,
     supervisor: Option<String>,
+    binding: Option<MonitorBinding>,
+    terminal_revision: Option<String>,
+    // Only unbound history is retired; a helper this GUI actually observes
+    // running may always publish its own final result afterward.
+    unattached_history_retired: bool,
 }
 impl MonitorRuntime {
     fn lock(&self) -> MutexGuard<'_, Session> {
@@ -37,9 +46,32 @@ struct Observation {
     monitor_pid: u32,
     root_id: String,
     root_path: String,
+    instance_id: Option<String>,
     log_path: String,
+    terminal: bool,
+    retired: bool,
     exit_code: Option<i32>,
     revision: String,
+}
+/// These captured values are immutable for a helper's lifetime. The instance ID
+/// is meaningful only with this exact root and supervisor; matching names in a
+/// different root or a log filename never establish the identity of an attempt.
+#[derive(Clone, PartialEq, Eq)]
+struct MonitorBinding {
+    root_id: String,
+    root_path: String,
+    instance_id: Option<String>,
+    log_path: String,
+}
+impl From<&Observation> for MonitorBinding {
+    fn from(monitor: &Observation) -> Self {
+        Self {
+            root_id: monitor.root_id.clone(),
+            root_path: monitor.root_path.clone(),
+            instance_id: monitor.instance_id.clone(),
+            log_path: monitor.log_path.clone(),
+        }
+    }
 }
 fn observe(shared: &Shared) -> Result<Option<Observation>, String> {
     Ok(
@@ -51,7 +83,10 @@ fn observe(shared: &Shared) -> Result<Option<Observation>, String> {
             monitor_pid: monitor.monitor_pid,
             root_id: monitor.root_id,
             root_path: monitor.root_path,
+            instance_id: monitor.instance_id,
             log_path: monitor.log_path,
+            terminal: matches!(monitor.phase.as_str(), "exited" | "failed"),
+            retired: monitor.phase == "retired",
             exit_code: monitor.exit_code,
             revision: monitor.revision,
         }),
@@ -74,8 +109,50 @@ fn refresh_from(
         return Ok(()); // This generation has not published its helper handshake.
     }
     match read() {
-        Ok(Some(monitor)) if monitor.busy || session.attached => {
+        Ok(Some(monitor)) => {
+            if monitor.retired && !monitor.busy {
+                // Another GUI may retire a finished helper this GUI last saw
+                // running. Retired history cannot become a new failure result.
+                return if session.attached || session.supervisor.is_some() {
+                    retire_history_locked(shared, session)
+                } else {
+                    Ok(())
+                };
+            }
             let replaced = session.supervisor.as_deref() != Some(monitor.session_id.as_str());
+            let binding = MonitorBinding::from(&monitor);
+            if !replaced {
+                if session
+                    .binding
+                    .as_ref()
+                    .is_some_and(|seen| *seen != binding)
+                    || session
+                        .terminal_revision
+                        .as_deref()
+                        .is_some_and(|seen| seen != monitor.revision)
+                {
+                    if !session.attached && session.terminal_revision.is_some() {
+                        return retire_history_locked(shared, session);
+                    }
+                    return fail_locked(
+                        shared,
+                        session,
+                        "独立游戏监控的已绑定记录被外部修改，已保留文件；请检查运行状态".into(),
+                    );
+                }
+                if !session.attached
+                    && session.terminal_revision.as_deref() == Some(monitor.revision.as_str())
+                {
+                    // A successful manual stop is a GUI intent. Reapplying the
+                    // same signal-exit marker would erase its stopped outcome.
+                    return Ok(());
+                }
+            }
+            let recover_terminal = monitor.terminal
+                && (!session.unattached_history_retired || session.supervisor.is_some());
+            if !monitor.busy && !session.attached && !recover_terminal {
+                return Ok(());
+            }
             if replaced {
                 // Another GUI may launch the next helper before this GUI reads
                 // the preceding terminal marker. Its identity is a new generation.
@@ -87,16 +164,23 @@ fn refresh_from(
                 shared.stop.store(false, Ordering::SeqCst);
             }
             session.supervisor = Some(monitor.session_id.clone());
+            session.binding = Some(binding);
+            session.terminal_revision = (!monitor.busy).then(|| monitor.revision.clone());
             let stopped = !monitor.busy && session.stop_requested;
             if !monitor.busy {
                 session.stop_requested = false;
             }
             let mut run = shared.status.lock().unwrap();
-            let version = if !replaced && run.root_id.as_deref() == Some(&monitor.root_id) {
-                run.version.clone()
-            } else {
-                None
-            };
+            // Only explicit persisted identity may be recovered. A live legacy
+            // helper can retain the instance from this GUI's own acknowledged
+            // launch; reopening a version-1 marker always leaves it unknown.
+            let version = monitor.instance_id.clone().or_else(|| {
+                (!replaced
+                    && run.root_id.as_deref() == Some(monitor.root_id.as_str())
+                    && run.root_path.as_deref() == Some(monitor.root_path.as_str()))
+                .then(|| run.version.clone())
+                .flatten()
+            });
             *run = RunStatus {
                 stage: if monitor.busy {
                     "running"
@@ -139,9 +223,32 @@ fn refresh_from(
             session,
             "独立监控记录消失，请检查运行中的游戏；暂不允许启动或修改实例".into(),
         ),
+        Ok(None) if session.terminal_revision.is_some() => retire_history_locked(shared, session),
         Ok(_) => Ok(()),
         Err(error) => fail_locked(shared, session, error),
     }
+}
+/// A completed process cannot become busy because its history file moved. Drop
+/// that history's report/log binding and fence readers, while leaving file bytes
+/// alone. Unknown formats still take fail_locked: they may hide a new live game.
+fn retire_history_locked(shared: &Shared, session: &mut Session) -> Result<(), String> {
+    session.generation = session
+        .generation
+        .checked_add(1)
+        .ok_or("启动代次已达上限，请重新打开启动器")?;
+    session.attached = false;
+    session.supervisor = None;
+    session.binding = None;
+    session.terminal_revision = None;
+    session.unattached_history_retired = true;
+    session.stop_requested = false;
+    *shared.status.lock().unwrap() = RunStatus {
+        stage: "idle".into(),
+        message: "已完成的游戏监控记录已变化，先前失败上下文已失效".into(),
+        ..Default::default()
+    };
+    *shared.log.lock().unwrap() = None;
+    Ok(())
 }
 fn fail_locked(shared: &Shared, session: &mut Session, error: String) -> Result<(), String> {
     let mut run = shared.status.lock().unwrap();
@@ -220,6 +327,15 @@ pub(super) fn verify_failure(
 /// Caller holds operations. Account edits take status while starting auth, so
 /// their admission check and publication of `preparing` share that same lock.
 pub fn begin_preparation(shared: &Shared, next: RunStatus) -> Result<Generation, String> {
+    begin_preparation_with(shared, next, |revision| {
+        launcher_game_monitor::retire_completed(&shared.project, revision)
+    })
+}
+fn begin_preparation_with(
+    shared: &Shared,
+    next: RunStatus,
+    retire: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<Generation, String> {
     let mut session = shared.monitor.lock();
     refresh_locked(shared, &mut session)?;
     if session.attached {
@@ -235,12 +351,22 @@ pub fn begin_preparation(shared: &Shared, next: RunStatus) -> Result<Generation,
     if shared.accounts.busy() {
         return Err("请先完成或取消微软登录".into());
     }
-    session.generation = session
+    let next_generation = session
         .generation
         .checked_add(1)
         .ok_or("启动代次已达上限，请重新打开启动器")?;
+    if let Some(revision) = &session.terminal_revision {
+        // Publication is the commit boundary: do not retire history before all
+        // admission checks pass, or publish preparing if retirement fails. The
+        // lifecycle lock/revision/process recheck belongs to the monitor service.
+        retire(revision)?;
+    }
+    session.generation = next_generation;
     session.stop_requested = false;
     session.supervisor = None;
+    session.binding = None;
+    session.terminal_revision = None;
+    session.unattached_history_retired = true;
     shared.stop.store(false, Ordering::SeqCst);
     *run = next;
     // Preparing can fail before a monitor creates its log. The preceding
@@ -294,6 +420,10 @@ fn stop_running(shared: &Shared, session: &mut Session) -> Result<(), String> {
         .supervisor
         .as_deref()
         .is_some_and(|id| id != monitor.session_id)
+        || session
+            .binding
+            .as_ref()
+            .is_some_and(|seen| *seen != MonitorBinding::from(&monitor))
     {
         refresh_from(shared, session, || Ok(Some(monitor)))?;
         return Err("运行会话已变化，请刷新后停止".into());
@@ -341,9 +471,23 @@ fn adopt_with(
     }
     session.attached = true;
     session.supervisor = Some(supervisor);
+    session.terminal_revision = None;
+    let log_path = log.display().to_string();
     *shared.log.lock().unwrap() = Some(log);
     {
         let mut run = shared.status.lock().unwrap();
+        // Pin the acknowledged launch's captured identity before the first
+        // refresh, including any external replacement in that narrow interval.
+        session.binding =
+            run.root_id
+                .as_ref()
+                .zip(run.root_path.as_ref())
+                .map(|(root_id, root_path)| MonitorBinding {
+                    root_id: root_id.clone(),
+                    root_path: root_path.clone(),
+                    instance_id: run.version.clone(),
+                    log_path,
+                });
         run.stage = "running".into();
         run.message = "游戏进程已启动，正在加载".into();
         run.pid = Some(pid);

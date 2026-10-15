@@ -27,6 +27,7 @@ pub struct MonitorRequest {
     pub project: PathBuf,
     pub root_id: String,
     pub root_path: PathBuf,
+    pub instance_id: String,
     pub java: PathBuf,
     pub args: Vec<String>,
     pub game_dir: PathBuf,
@@ -40,6 +41,7 @@ struct WireRequest {
     project: PathBuf,
     root_id: String,
     root_path: PathBuf,
+    instance_id: String,
     java: PathBuf,
     args: Vec<String>,
     game_dir: PathBuf,
@@ -52,6 +54,7 @@ impl MonitorRequest {
         project: PathBuf,
         root_id: String,
         root_path: PathBuf,
+        instance_id: String,
         java: PathBuf,
         args: Vec<String>,
         game_dir: PathBuf,
@@ -62,6 +65,7 @@ impl MonitorRequest {
             project,
             root_id,
             root_path,
+            instance_id,
             java,
             args,
             game_dir,
@@ -103,16 +107,18 @@ fn validate(request: &MonitorRequest) -> Result<(), String> {
         return Err("游戏监控启动参数超出安全范围".into());
     }
     state::validate_log_path(&request.root_path, &request.log_path)?;
+    state::validate_instance_id(&request.instance_id)?;
     let _ = Redactor::new(request.redactions.clone())?;
     Ok(())
 }
 impl From<MonitorRequest> for WireRequest {
     fn from(request: MonitorRequest) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             project: request.project,
             root_id: request.root_id,
             root_path: request.root_path,
+            instance_id: request.instance_id,
             java: request.java,
             args: request.args,
             game_dir: request.game_dir,
@@ -124,13 +130,14 @@ impl From<MonitorRequest> for WireRequest {
 impl TryFrom<WireRequest> for MonitorRequest {
     type Error = String;
     fn try_from(wire: WireRequest) -> Result<Self, String> {
-        if wire.schema_version != 1 {
+        if wire.schema_version != 2 {
             return Err("不支持的游戏监控协议".into());
         }
         Self::new(
             wire.project,
             wire.root_id,
             wire.root_path,
+            wire.instance_id,
             wire.java,
             wire.args,
             wire.game_dir,
@@ -398,6 +405,7 @@ fn helper() -> Result<(), String> {
         &request.project,
         request.root_id,
         request.root_path.clone(),
+        request.instance_id,
         request.log_path.clone(),
     )?;
     let log = Arc::new(Mutex::new(state::open_launch_log(

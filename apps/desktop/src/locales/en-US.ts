@@ -362,6 +362,24 @@ const messages = {
   "logs.currentSuffix": " (current)",
   "logs.refresh": "Refresh log list",
   "logs.content": "Log content",
+  "logs.searchLabel": "Find in log",
+  "logs.searchPlaceholder": "Enter text (literal match)",
+  "logs.searchCaseSensitive": "Match case",
+  "logs.searchPrevious": "Previous",
+  "logs.searchNext": "Next",
+  "logs.searchClear": "Clear",
+  "logs.searchPreviousShortcut": "Previous match (Shift+Enter)",
+  "logs.searchNextShortcut": "Next match (Enter)",
+  "logs.searchClearShortcut": "Clear search (Escape)",
+  "logs.searchIdle": "Search the loaded log",
+  "logs.searchNoMatches": "No matches",
+  "logs.searchPosition": "Match {current} of {count}",
+  "logs.searchMatchLimit":
+    "At least {minimum} matches; only the first {limit} are highlighted and navigable.",
+  "logs.searchQueryTruncated":
+    "Search text was shortened to at most {limit} characters.",
+  "logs.searchScope":
+    "Searches the log content currently loaded, up to {limit} search characters. Click the log above to reload it.",
   "logs.recovery": "Recoverable historical logs",
   "logs.count": "{count} logs",
   "logs.retainedNeedsReview":

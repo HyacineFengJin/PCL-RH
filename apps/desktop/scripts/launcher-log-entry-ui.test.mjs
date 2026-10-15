@@ -251,7 +251,58 @@ const selected = (ui) =>
       value.props?.className === "extra-log-row" && value.props["aria-pressed"],
   ).map((value) => value.key);
 const logContent = (ui) =>
-  elements(ui.tree, (value) => value.type === "pre").map(content);
+  elements(ui.tree, (value) => value.type?.name === "LauncherLogContent").map(
+    (value) => value.props.text,
+  );
+
+test("each accepted re-read remounts local search even when log text is identical", async () => {
+  const f = fixture({ initialLog: desired() });
+  f.lists[0].resolve([row("failed.log")]);
+  await f.ui.flush();
+  f.reads[0].resolve("same synthetic content");
+  await f.ui.flush();
+  const first = elements(
+    f.ui.tree,
+    (value) => value.type?.name === "LauncherLogContent",
+  )[0];
+  logButton(f.ui, "failed.log").props.onClick();
+  await f.ui.flush();
+  assert.deepEqual(logContent(f.ui), []);
+  f.reads[1].resolve("same synthetic content");
+  await f.ui.flush();
+  const second = elements(
+    f.ui.tree,
+    (value) => value.type?.name === "LauncherLogContent",
+  )[0];
+  assert.notEqual(second.key, first.key);
+  assert.equal(second.props.text, first.props.text);
+  assert.equal(second.props.api, undefined);
+  f.ui.close();
+});
+
+test("a root change hides loaded content before reset effects rerender", async () => {
+  const f = fixture({ initialLog: desired() });
+  f.lists[0].resolve([row("failed.log")]);
+  await f.ui.flush();
+  f.reads[0].resolve("old root synthetic text");
+  await f.ui.flush();
+  f.ui.replace({ scopeKey: "root-b:/synthetic/root-b" });
+  assert.deepEqual(logContent(f.ui), []);
+  await f.ui.flush();
+  f.ui.close();
+});
+
+test("an API replacement hides loaded content before reset effects rerender", async () => {
+  const f = fixture({ initialLog: desired() });
+  f.lists[0].resolve([row("failed.log")]);
+  await f.ui.flush();
+  f.reads[0].resolve("old API synthetic text");
+  await f.ui.flush();
+  f.ui.replace({ api: service().api });
+  assert.deepEqual(logContent(f.ui), []);
+  await f.ui.flush();
+  f.ui.close();
+});
 
 test("failure entry waits for rows and reads/exports the exact named log", async () => {
   const f = fixture({ initialLog: desired() });
