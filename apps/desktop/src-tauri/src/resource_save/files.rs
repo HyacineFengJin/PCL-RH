@@ -3,7 +3,6 @@
 //! without replacement. A published file is retained on durability uncertainty.
 use super::*;
 use crate::modrinth_install::provider;
-use sha2::{Digest, Sha512};
 use std::{
     ffi::CString,
     fs::{File, Metadata},
@@ -269,6 +268,7 @@ pub(super) struct VerifiedAnonymous {
     identity: Identity,
     size: u64,
     stamp: FileStamp,
+    pub(super) sha512: String,
 }
 type FileStamp = (u64, u64, u64, u64, u32, i64, i64, i64, i64);
 fn stamp(metadata: &Metadata) -> FileStamp {
@@ -295,7 +295,8 @@ pub(super) fn verify_anonymous(
     }
     file.seek(SeekFrom::Start(0))
         .map_err(|error| error.to_string())?;
-    let mut hash = Sha512::new();
+    let expected = super::authority::expected_digest(plan)?;
+    let mut hash = expected.hasher();
     let mut bytes = 0u64;
     let mut buffer = [0; 64 * 1024];
     loop {
@@ -313,11 +314,11 @@ pub(super) fn verify_anonymous(
         hash.update(&buffer[..count]);
     }
     if bytes != plan.size
-        || format!("{:x}", hash.finalize()) != plan.sha512
         || stamp(&file.metadata().map_err(|error| error.to_string())?) != stamp(&before)
     {
-        return Err("保存暂存文件大小或SHA512复核失败".into());
+        return Err("保存暂存文件大小或身份复核失败".into());
     }
+    let sha512 = hash.verify(&expected)?;
     file.sync_all()
         .map_err(|_| "无法同步已校验的保存暂存文件")?;
     Ok(VerifiedAnonymous {
@@ -325,5 +326,6 @@ pub(super) fn verify_anonymous(
         identity: Identity::of(&before),
         size: plan.size,
         stamp: stamp(&before),
+        sha512,
     })
 }

@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: pcl-media: http://pcl-media.localhost https://pcl-media.localhost https://cdn.modrinth.com https://github.com https://avatars.githubusercontent.com; connect-src ipc: http://ipc.localhost; font-src 'self' data:; media-src 'self' pcl-media: http://pcl-media.localhost https://pcl-media.localhost"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: pcl-media: http://pcl-media.localhost https://pcl-media.localhost https://cdn.modrinth.com https://media.forgecdn.net https://mediafilez.forgecdn.net https://www.mcmod.cn https://i.mcmod.cn https://github.com https://avatars.githubusercontent.com; connect-src ipc: http://ipc.localhost; font-src 'self' data:; media-src 'self' pcl-media: http://pcl-media.localhost https://pcl-media.localhost"
     }
   },
   "bundle": {

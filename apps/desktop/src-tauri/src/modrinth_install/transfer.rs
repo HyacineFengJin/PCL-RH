@@ -1,7 +1,6 @@
 //! Anonymous network files live only as owned descriptors until resource batch
 //! publication. Any error/cancellation drops them; no named partial file exists.
 use super::{provider::HttpProvider, target::Dir, *};
-use sha2::{Digest, Sha512};
 use std::{
     collections::VecDeque,
     future::{poll_fn, Future},
@@ -98,11 +97,31 @@ pub(crate) async fn response_into_file(
     expected_sha512: &str,
     destination: &mut File,
     cancel: &AtomicBool,
+    received: impl FnMut(u64),
+) -> Result<()> {
+    response_into_file_digest(
+        provider,
+        request,
+        expected_size,
+        crate::resource_digest::ExpectedDigest::Sha512(expected_sha512),
+        destination,
+        cancel,
+        received,
+    )
+    .await
+}
+pub(crate) async fn response_into_file_digest(
+    provider: &HttpProvider<'_>,
+    request: reqwest::RequestBuilder,
+    expected_size: u64,
+    expected_digest: crate::resource_digest::ExpectedDigest<'_>,
+    destination: &mut File,
+    cancel: &AtomicBool,
     mut received: impl FnMut(u64),
 ) -> Result<()> {
-    provider::sha512(expected_sha512)?;
+    expected_digest.validate()?;
     if expected_size == 0 || expected_size > MAX_FILE_BYTES {
-        return Err("Modrinth文件大小无效或超过限制".into());
+        return Err("资源文件大小无效或超过限制".into());
     }
     // Payload pacing consumes wall time, so limited transfers receive a larger
     // bounded total deadline. DNS/headers and stalled reads keep short limits.
@@ -123,28 +142,35 @@ pub(crate) async fn response_into_file(
         request.send(),
     )
     .await?
-    .map_err(|_| "Modrinth文件请求失败")?;
+    .map_err(|_| "资源文件请求失败")?;
     if !response.status().is_success() {
         return Err(format!(
-            "Modrinth文件HTTP {}（不接受重定向）",
+            "资源文件HTTP {}（不接受重定向）",
             response.status().as_u16()
         ));
+    }
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .is_some_and(|encoding| encoding.as_bytes() != b"identity")
+    {
+        return Err("资源文件返回了未请求的压缩编码".into());
     }
     if response
         .content_length()
         .is_some_and(|size| size != expected_size)
     {
-        return Err("Modrinth响应大小与官方文件数据不符".into());
+        return Err("资源响应大小与官方文件数据不符".into());
     }
     let mut bytes = 0u64;
-    let mut digest = Sha512::new();
+    let mut digest = expected_digest.hasher();
     while let Some(chunk) = provider::cancellable(
         cancel,
         deadline.min(Instant::now() + Duration::from_secs(60)),
         response.chunk(),
     )
     .await?
-    .map_err(|_| "Modrinth文件读取失败")?
+    .map_err(|_| "资源文件读取失败")?
     {
         // Count received bytes even when an overlong body is rejected. Cached
         // files and disk copies never contribute to this network counter.
@@ -155,7 +181,7 @@ pub(crate) async fn response_into_file(
             .checked_add(chunk.len() as u64)
             .ok_or("资源文件长度超出范围")?;
         if next > expected_size {
-            return Err("Modrinth文件实际大小超过官方声明，暂存内容已丢弃".into());
+            return Err("资源文件实际大小超过官方声明，暂存内容已丢弃".into());
         }
         for slice in chunk.chunks(pcl_network::DOWNLOAD_SLICE_BYTES) {
             provider::cancellable(
@@ -175,9 +201,10 @@ pub(crate) async fn response_into_file(
         bytes = next;
     }
     target::cancelled(cancel)?;
-    if bytes != expected_size || format!("{:x}", digest.finalize()) != expected_sha512 {
-        return Err("Modrinth文件大小或SHA512校验失败，暂存内容已丢弃".into());
+    if bytes != expected_size {
+        return Err("资源文件大小校验失败，暂存内容已丢弃".into());
     }
+    digest.verify(&expected_digest)?;
     destination.sync_all().map_err(|e| e.to_string())?;
     destination
         .seek(SeekFrom::Start(0))

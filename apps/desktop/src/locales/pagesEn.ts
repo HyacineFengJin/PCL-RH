@@ -526,7 +526,8 @@ const messages = {
   "resource.downloadFile": "Download file",
   "resource.install": "Install to instance",
   "resource.noFilteredVersions": "No versions match these filters",
-  "resource.versionsTruncated": "Only the latest 4000 versions are shown.",
+  "resource.versionsTruncated":
+    "Only a portion of the latest versions is shown.",
   "instance.nameInvalid": "Enter a valid instance name",
   "resource.packUnavailable":
     "Modpack installation is unavailable; no instance was created",

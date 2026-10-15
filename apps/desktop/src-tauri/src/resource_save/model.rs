@@ -1,8 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum SaveSource {
+    #[default]
+    Modrinth,
+    CurseForge,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SaveRequest {
+    #[serde(default)]
+    pub source: SaveSource,
     pub project_id: String,
     pub version_id: String,
     /// An explicit exact filename from the official version, including when it
@@ -17,6 +26,10 @@ pub struct SavePlan {
     pub file_name: String,
     pub size: u64,
     pub sha512: String,
+    /// CurseForge publishes SHA1 rather than SHA512. An empty SHA512 is never
+    /// treated as verified; source selects the required official algorithm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha1: Option<String>,
     /// Hash of the selected official metadata. No frontend URL grants authority.
     pub revision: String,
 }

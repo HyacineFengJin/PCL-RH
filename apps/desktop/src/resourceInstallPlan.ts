@@ -9,6 +9,7 @@ export type ResourceInstallTarget = Pick<
 /** Only provider identifiers cross the command boundary. URLs, hashes, resource
  * kinds and compatibility facts are resolved again by the backend. */
 export type ResourceInstallRequest = {
+  source?: "Modrinth" | "CurseForge";
   project_id: string;
   version_id: string;
   file_name: string | null;
@@ -48,6 +49,8 @@ export type ResourceInstallPlan = {
 export function resourceInstallRequest(
   request: ResourceInstallRequest,
 ): ResourceInstallRequest {
+  if (request.source === "CurseForge")
+    throw new Error(t("community.curseforgeDownloadOnly"));
   return {
     project_id: request.project_id,
     version_id: request.version_id,

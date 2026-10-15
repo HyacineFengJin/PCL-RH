@@ -28,9 +28,11 @@ import { InstallSelection, installNameError } from "./InstallSelection";
 import type { InstallOptions } from "./InstallSelection";
 import type { ResourceSummary } from "./ResourceDetails";
 import type { ResourceBrowseRequest } from "./resourceBrowse";
+import { communityAliases, communityIcon } from "./communityResources";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 import "./community-loading.css";
+import "./community-resources.css";
 
 import { idleDownload, type DownloadStatus } from "./taskTypes";
 export { idleDownload } from "./taskTypes";
@@ -411,18 +413,6 @@ export function DownloadPanel({
   );
 }
 
-type ModrinthHit = {
-  project_id: string;
-  title: string;
-  description: string;
-  icon_url: string | null;
-  categories: string[];
-  display_categories: string[];
-  versions: string[];
-  downloads: number;
-  date_modified: string;
-};
-
 // Filter values are provider/UI protocol IDs. Only their rendered labels
 // change language; translating the values would change request routing.
 const resourceLabelKeys: Record<string, MessageKey> = {
@@ -447,7 +437,7 @@ const filterLabel = (value: string) =>
             ? t("ui.downloads")
             : value;
 
-function CommunityCatalog({
+export function CommunityCatalog({
   api,
   label,
   query,
@@ -483,56 +473,88 @@ function CommunityCatalog({
     loader: compatibility?.loader,
     sort: query.trim() ? "relevance" : "downloads",
   });
-  const [hits, setHits] = useState<ModrinthHit[]>([]);
+  const catalogOwner = useRef({ api, label, request });
+  if (
+    catalogOwner.current.api !== api ||
+    catalogOwner.current.label !== label ||
+    catalogOwner.current.request !== request
+  )
+    catalogOwner.current = { api, label, request };
+  const renderedCatalogOwner = catalogOwner.current;
+  const [result, setResult] = useState<{
+    owner: object;
+    hits: ResourceSummary[];
+    warnings: string[];
+  } | null>(null);
+  const hits = result?.owner === renderedCatalogOwner ? result.hits : [];
+  const warnings =
+    result?.owner === renderedCatalogOwner ? result.warnings : [];
+  const attributions = [
+    ...new Set(
+      hits
+        .map((hit) => hit.attribution)
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ];
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const apiRef = useRef(api);
-  apiRef.current = api;
+  const encyclopedia = source === "MC百科";
+  const encyclopediaSupported = ["模组", "整合包"].includes(label);
+  const projectType = (
+    {
+      模组: "mod",
+      整合包: "modpack",
+      数据包: "datapack",
+      资源包: "resourcepack",
+      光影包: "shader",
+    } as Record<string, string>
+  )[label];
   useEffect(() => {
     if (label === "世界") return;
     let disposed = false;
     setLoading(true);
     setError("");
-    apiRef
-      .current<{ hits: ModrinthHit[] }>("modrinth_search", {
-        ...request,
-        projectType: {
-          模组: "mod",
-          整合包: "modpack",
-          数据包: "datapack",
-          资源包: "resourcepack",
-          光影包: "shader",
-        }[label],
-      })
+    api<{ hits: ResourceSummary[]; warnings: string[] }>("community_search", {
+      ...request,
+      projectType,
+    })
       .then((result) => {
-        if (!disposed) setHits(result.hits);
+        if (!disposed && catalogOwner.current === renderedCatalogOwner)
+          setResult({
+            owner: renderedCatalogOwner,
+            hits: result.hits,
+            warnings: result.warnings ?? [],
+          });
       })
       .catch((reason) => {
-        if (!disposed) {
+        if (!disposed && catalogOwner.current === renderedCatalogOwner) {
           setError(String(reason));
-          setHits([]);
+          setResult(null);
         }
       })
       .finally(() => {
-        if (!disposed) setLoading(false);
+        if (!disposed && catalogOwner.current === renderedCatalogOwner)
+          setLoading(false);
       });
     return () => {
       disposed = true;
     };
-  }, [label, request]);
+  }, [renderedCatalogOwner, projectType]);
   function search() {
     setRequest({
       query,
       source,
-      sort:
-        sort === "更新时间"
+      sort: encyclopedia
+        ? undefined
+        : sort === "更新时间"
           ? "updated"
           : sort === "默认" && query.trim()
             ? "relevance"
             : "downloads",
-      version: version === "任意" ? undefined : version,
-      loader: loader === "任意" ? undefined : loader.toLowerCase(),
-      tag: tag === "全部" ? undefined : tag,
+      version: encyclopedia || version === "任意" ? undefined : version,
+      loader:
+        encyclopedia || loader === "任意" ? undefined : loader.toLowerCase(),
+      tag: encyclopedia || tag === "全部" ? undefined : tag,
     });
   }
   const availableVersions = [
@@ -569,18 +591,17 @@ function CommunityCatalog({
         .filter((value) => !loaderNames[value]),
     ),
   ];
-  const downloads = (value: number) =>
-    formatNumber(value, { notation: "compact", maximumFractionDigits: 1 });
-  const updated = (value: string) => formatRelativeDate(value);
-  function safeIcon(value: string | null) {
-    try {
-      const url = new URL(value || "");
-      return url.protocol === "https:" && url.hostname === "cdn.modrinth.com"
-        ? url.href
-        : undefined;
-    } catch {
-      return undefined;
-    }
+  const downloads = (value?: number) =>
+    value === undefined
+      ? "—"
+      : formatNumber(value, { notation: "compact", maximumFractionDigits: 1 });
+  const updated = (value?: string) => (value ? formatRelativeDate(value) : "—");
+  function showDetails(hit: ResourceSummary) {
+    if (catalogOwner.current !== renderedCatalogOwner) return;
+    onResourceDetails({
+      ...hit,
+      project_type: hit.project_type ?? projectType,
+    });
   }
 
   return (
@@ -610,13 +631,23 @@ function CommunityCatalog({
           <CeSelect
             className="ce-field"
             value={source}
-            onChange={(e) => setSource(e.target.value)}
+            onChange={(e) => {
+              setSource(e.target.value);
+              if (e.target.value === "MC百科") {
+                setVersion("任意");
+                setLoader("任意");
+                setTag("全部");
+                setSort("默认");
+              }
+            }}
           >
-            {["全部", "Modrinth", "CurseForge"].map((v) => (
-              <option key={v} value={v} disabled={v === "CurseForge"}>
-                {v === "CurseForge"
-                  ? t("download.curseforgeUnavailable")
-                  : filterLabel(v)}
+            {["全部", "Modrinth", "CurseForge", "MC百科"].map((v) => (
+              <option
+                key={v}
+                value={v}
+                disabled={v === "MC百科" && !encyclopediaSupported}
+              >
+                {filterLabel(v)}
               </option>
             ))}
           </CeSelect>
@@ -626,6 +657,7 @@ function CommunityCatalog({
           <CeSelect
             className="ce-field"
             value={tag}
+            disabled={encyclopedia}
             onChange={(e) => setTag(e.target.value)}
           >
             <option value="全部">{t("ui.all")}</option>
@@ -641,6 +673,7 @@ function CommunityCatalog({
           <CeSelect
             className="ce-field"
             value={sort}
+            disabled={encyclopedia}
             onChange={(e) => setSort(e.target.value)}
           >
             {["默认", "下载量", "更新时间"].map((v) => (
@@ -670,6 +703,7 @@ function CommunityCatalog({
           <CeSelect
             className="ce-field"
             value={version}
+            disabled={encyclopedia}
             onChange={(e) => setVersion(e.target.value)}
           >
             <option value="任意">{t("ui.any")}</option>
@@ -683,6 +717,7 @@ function CommunityCatalog({
           <CeSelect
             className="ce-field"
             value={loader}
+            disabled={encyclopedia}
             onChange={(e) => setLoader(e.target.value)}
           >
             {["任意", "Fabric", "Forge", "NeoForge", "Quilt"].map((v) => (
@@ -693,6 +728,29 @@ function CommunityCatalog({
           </CeSelect>
         </label>
       </section>
+      {encyclopedia && (
+        <p className="ce-community-note" role="status">
+          {t("community.mcmodFilters")}
+        </p>
+      )}
+      {!encyclopedia &&
+        source === "全部" &&
+        (version !== "任意" ||
+          loader !== "任意" ||
+          tag !== "全部" ||
+          sort !== "默认") && (
+          <p className="ce-community-note">{t("community.mcmodFallback")}</p>
+        )}
+      {!loading && warnings.length > 0 && (
+        <div className="ce-community-warnings" role="status">
+          <TriangleAlert size={15} aria-hidden="true" />
+          <div>
+            {warnings.map((warning, index) => (
+              <p key={`${index}:${warning}`}>{warning}</p>
+            ))}
+          </div>
+        </div>
+      )}
       <section
         className={
           loading ? "ce-community-loading" : "ce-card ce-community-results"
@@ -739,45 +797,22 @@ function CommunityCatalog({
               releases.length > 1
                 ? `${releases[0]} – ${releases[releases.length - 1]}`
                 : releases[0] || hit.versions[0] || "";
-            const icon = safeIcon(hit.icon_url);
+            const icon = communityIcon(hit.icon_url);
             return (
               <article
                 className="ce-mod-row"
-                key={hit.project_id}
+                key={
+                  hit.identity_key ??
+                  `${hit.source ?? "Modrinth"}:${hit.project_id}`
+                }
                 role="button"
                 tabIndex={0}
                 aria-label={t("ui.viewDetails", { name: hit.title })}
-                onClick={() =>
-                  onResourceDetails({
-                    ...hit,
-                    source: "Modrinth",
-                    project_type: (
-                      {
-                        模组: "mod",
-                        整合包: "modpack",
-                        数据包: "datapack",
-                        资源包: "resourcepack",
-                        光影包: "shader",
-                      } as Record<string, string>
-                    )[label],
-                  })
-                }
+                onClick={() => showDetails(hit)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    onResourceDetails({
-                      ...hit,
-                      source: "Modrinth",
-                      project_type: (
-                        {
-                          模组: "mod",
-                          整合包: "modpack",
-                          数据包: "datapack",
-                          资源包: "resourcepack",
-                          光影包: "shader",
-                        } as Record<string, string>
-                      )[label],
-                    });
+                    showDetails(hit);
                   }
                 }}
               >
@@ -794,7 +829,19 @@ function CommunityCatalog({
                   </span>
                 )}
                 <div className="ce-mod-body">
-                  <div className="ce-mod-title">{hit.title}</div>
+                  <div className="ce-mod-heading">
+                    <div className="ce-mod-title">{hit.title}</div>
+                    <span className="ce-community-badges">
+                      {communityAliases(hit).map((alias) => (
+                        <span
+                          className="ce-community-badge"
+                          key={`${alias.source}:${alias.project_id ?? alias.url}`}
+                        >
+                          {alias.source}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
                   <div className="ce-mod-description">
                     {hit.display_categories
                       .filter((value) => !loaderNames[value])
@@ -819,13 +866,19 @@ function CommunityCatalog({
                       <Download size={13} />
                       {downloads(hit.downloads)}
                     </span>
-                    <span title={formatDate(new Date(hit.date_modified))}>
+                    <span
+                      title={
+                        hit.date_modified
+                          ? formatDate(new Date(hit.date_modified))
+                          : undefined
+                      }
+                    >
                       <ArrowUpToLine size={13} />
                       {updated(hit.date_modified)}
                     </span>
                     <span>
                       <Globe size={13} />
-                      Modrinth
+                      {hit.source ?? "Modrinth"}
                     </span>
                   </div>
                 </div>
@@ -834,6 +887,9 @@ function CommunityCatalog({
           })
         )}
       </section>
+      {!loading && attributions.length > 0 && (
+        <p className="ce-community-note">{attributions.join(" · ")}</p>
+      )}
     </>
   );
 }

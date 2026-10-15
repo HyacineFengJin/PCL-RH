@@ -20,6 +20,95 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+fn curseforge_save(
+    body: &[u8],
+    supplied: &[u8],
+    change_final: bool,
+) -> (Result<SaveResult>, Fixture) {
+    let fixture = Fixture::new();
+    let target = files::SaveTarget::capture(&fixture.project, &fixture.target()).unwrap();
+    let fake = Fake::new(body);
+    let mut plan = fake.plan();
+    plan.request.source = SaveSource::CurseForge;
+    plan.request.project_id = "123".into();
+    plan.request.version_id = "456".into();
+    plan.sha512.clear();
+    plan.sha1 = Some(format!("{:x}", sha1::Sha1::digest(body)));
+    let cancel = AtomicBool::new(false);
+    let provider = transport(&cancel, 0);
+    let metadata = AtomicU64::new(0);
+    let calls = AtomicUsize::new(0);
+    let (url, worker) = server(supplied, Duration::ZERO);
+    let resolve = |request: SaveRequest| {
+        let mut next = plan.clone();
+        assert_eq!(request, plan.request);
+        if calls.fetch_add(1, Ordering::SeqCst) > 0 && change_final {
+            next.revision.push('0');
+        }
+        let file = fake.version.files[0].clone();
+        Box::pin(async move { Ok(authority::Authority { plan: next, file }) })
+            as FutureAuthority<'_>
+    };
+    let request_file = |_: &ApiFile| Ok(provider.client.get(&url));
+    let session = SaveSession {
+        http: &provider,
+        resolve: &resolve,
+        request_file: &request_file,
+        metadata_bytes: &metadata,
+    };
+    let result = run(save_with(
+        &session,
+        &target,
+        plan.request.clone(),
+        &plan.revision,
+        &cancel,
+        |_| {},
+        &mut || Ok(()),
+    ));
+    worker.join().unwrap();
+    fixture.assert_untouched_project();
+    (result, fixture)
+}
+
+#[test]
+fn curseforge_sha1_save_publishes_verified_bytes_and_returns_computed_sha512() {
+    let body = b"synthetic CF payload";
+    let (result, fixture) = curseforge_save(body, body, false);
+    let result = result.unwrap();
+    assert_eq!(fs::read(fixture.target()).unwrap(), body);
+    assert_eq!(result.sha512, sha(body));
+}
+
+#[test]
+fn curseforge_same_size_wrong_sha1_leaves_no_partial_file() {
+    let (result, fixture) = curseforge_save(b"abc", b"abd", false);
+    assert!(result.unwrap_err().contains("校验失败"));
+    assert_eq!(fs::read_dir(&fixture.folder).unwrap().count(), 0);
+}
+
+#[test]
+fn curseforge_changed_final_authority_discards_verified_staging() {
+    let (result, fixture) = curseforge_save(b"abc", b"abc", true);
+    assert!(result.unwrap_err().contains("官方文件信息已变化"));
+    assert_eq!(fs::read_dir(&fixture.folder).unwrap().count(), 0);
+}
+
+#[test]
+fn provider_and_digest_namespaces_cannot_be_interchanged() {
+    let fake = Fake::new(b"abc");
+    let mut plan = fake.plan();
+    plan.request.source = SaveSource::CurseForge;
+    assert!(authority::expected_digest(&plan).is_err());
+    assert!(run(authority::resolve(&fake, plan.request.clone())).is_err());
+    plan.request.project_id = "123".into();
+    plan.request.version_id = "456".into();
+    plan.sha512.clear();
+    plan.sha1 = Some(format!("{:x}", sha1::Sha1::digest(b"abc")));
+    assert!(authority::expected_digest(&plan).is_ok());
+    plan.request.source = SaveSource::Modrinth;
+    assert!(authority::expected_digest(&plan).is_err());
+}
 fn run<F: std::future::Future>(future: F) -> F::Output {
     tauri::async_runtime::block_on(future)
 }
@@ -104,6 +193,7 @@ impl Fake {
     }
     fn request(&self) -> SaveRequest {
         SaveRequest {
+            source: crate::resource_save::SaveSource::Modrinth,
             project_id: self.project.id.clone(),
             version_id: self.version.id.clone(),
             file_name: self.version.files[0].filename.clone(),

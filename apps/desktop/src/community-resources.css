@@ -1,0 +1,76 @@
+/* Community metadata stays compact and uses launcher theme tokens so a
+   partial provider failure can coexist with the successfully loaded rows. */
+.ce-mod-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.ce-mod-heading .ce-mod-title {
+  min-width: 0;
+}
+.ce-community-badges,
+.rd-source-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.ce-community-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--ce-border, #d4e5fc);
+  border-radius: 5px;
+  background: var(--ce-tinted-surface, #edf5ff);
+  color: var(--ce-muted-text, #708296);
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.rd-source-links {
+  margin-top: 10px;
+}
+.rd-source-links button {
+  cursor: pointer;
+}
+.rd-source-links button:hover,
+.rd-source-links .is-current {
+  color: var(--ce-link, #2078da);
+  border-color: currentColor;
+}
+.rd-source-links .is-current {
+  cursor: default;
+  opacity: 1;
+}
+.ce-community-note,
+.ce-community-warnings {
+  color: var(--ce-muted-text, #708296);
+  font-size: 12px;
+  line-height: 19px;
+  overflow-wrap: anywhere;
+}
+.ce-community-note {
+  margin: -2px 3px 10px;
+}
+.ce-community-warnings {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 11px;
+  margin-bottom: 10px;
+  border: 1px solid var(--ce-border, #d4e5fc);
+  border-radius: 5px;
+  background: var(--ce-tinted-surface, #edf5ff);
+}
+.ce-community-warnings > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.ce-community-warnings p {
+  margin: 0;
+}

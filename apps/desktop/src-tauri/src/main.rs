@@ -2,6 +2,11 @@ mod account_appearance;
 mod account_commands;
 mod accounts;
 mod code_runner;
+mod community_catalog;
+mod community_curseforge;
+mod community_details;
+mod community_identity;
+mod community_mcmod;
 mod config;
 mod downloads;
 mod editing;
@@ -54,6 +59,7 @@ mod local_resource_info_commands;
 mod modrinth_install;
 mod platform;
 mod resource_details;
+mod resource_digest;
 mod resource_install_commands;
 mod resource_ops;
 mod resource_save;
@@ -1990,6 +1996,8 @@ fn main() {
             ui_catalog::loader_catalog,
             ui_catalog::loader_candidates,
             resource_details::resource_details,
+            community_catalog::community_search,
+            community_details::community_details,
             resource_details::resource_dependencies,
             resource_details::resource_open_link,
             ui_catalog::upstream_contributors,

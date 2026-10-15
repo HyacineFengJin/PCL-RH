@@ -6,6 +6,14 @@ const messages = {
   ...experimental,
   ...pages,
   ...app,
+  "community.mcmodFilters":
+    "MC百科支持模组与整合包的名称搜索，不支持版本、加载器、标签或排序筛选。",
+  "community.mcmodFallback": "筛选仅应用于支持的来源；MC百科不参与兼容性筛选。",
+  "community.mcmodReference": "百科提供资料；选择文件来源查看下载。",
+  "community.curseforgeDownloadOnly":
+    "CurseForge 文件可下载保存，暂不支持直接安装到实例。",
+  "community.sourceSwitch": "切换到 {source}",
+  "community.sourceOpen": "打开 {source}",
   "common.unavailable": "此功能尚未开放",
   "common.effectUnavailable": "此运行效果尚未接通",
   "common.previewReadonly": "预览未连接启动器设置，修改不会保存",

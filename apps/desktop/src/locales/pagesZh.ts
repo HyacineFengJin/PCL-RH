@@ -480,7 +480,7 @@ const messages = {
   "resource.downloadFile": "下载文件",
   "resource.install": "安装到实例",
   "resource.noFilteredVersions": "没有符合筛选条件的版本",
-  "resource.versionsTruncated": "版本较多，当前显示最新的 4000 个版本。",
+  "resource.versionsTruncated": "版本较多，当前仅显示部分最新版本。",
   "instance.nameInvalid": "请输入有效的实例名称",
   "resource.packUnavailable": "整合包安装尚未开放，未创建实例",
   "resourceInstall.desktop": "资源安装需要在桌面应用中操作",

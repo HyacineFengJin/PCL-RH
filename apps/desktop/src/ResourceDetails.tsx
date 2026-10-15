@@ -22,7 +22,15 @@ import { InstanceImport } from "./InstanceImport";
 import { ResourceFavorite } from "./LauncherFavorites";
 import { LauncherNavigationContext } from "./useLauncherPreferences";
 import type { ResourceInstallRequest } from "./resourceInstallPlan";
+import {
+  communityAliases,
+  communityIcon,
+  communitySource,
+  mcmodResourceUrl,
+  type CommunitySourceAlias,
+} from "./communityResources";
 import "./resource-details.css";
+import "./community-resources.css";
 
 export type ResourceSummary = {
   project_id: string;
@@ -36,6 +44,10 @@ export type ResourceSummary = {
   date_modified?: string;
   project_type?: string;
   source?: string;
+  url?: string;
+  identity_key?: string;
+  sources?: CommunitySourceAlias[];
+  attribution?: string;
   file_name?: string;
   local_version?: string;
   local_path?: string;
@@ -72,6 +84,9 @@ type Details = {
   project: Project;
   versions: Version[];
   versions_truncated: boolean;
+  sources?: CommunitySourceAlias[];
+  identity_key?: string;
+  attribution?: string;
 };
 type Dependencies = {
   version_id: string;
@@ -201,14 +216,7 @@ function ProjectIcon({
 }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [url]);
-  let safe = false;
-  try {
-    const parsed = new URL(url ?? "");
-    safe =
-      parsed.protocol === "https:" && parsed.hostname === "cdn.modrinth.com";
-  } catch {
-    /* Missing icons use the neutral resource symbol. */
-  }
+  let safe = Boolean(communityIcon(url));
   safe ||=
     local &&
     !!url &&
@@ -277,20 +285,48 @@ export function ResourceDetails({
   const saveAvailable = useContext(
     LauncherNavigationContext,
   ).standaloneSaveAvailable;
-  const [details, setDetails] = useState<Details | null>(null);
+  const [detailResult, setDetailResult] = useState<{
+    owner: object;
+    data: Details;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const source =
+    communitySource(resource.source ?? "Modrinth") ??
+    resource.source ??
+    "Modrinth";
+  const detailContextKey = JSON.stringify([
+    scopeKey,
+    source,
+    resource.project_id,
+    resource.project_type,
+    retry,
+  ]);
+  // Source IDs can collide, and the same project can recur after changing root.
+  // The owner retires data and stored handlers during render, before effect
+  // cleanup. Selections and asynchronous replies must carry this exact owner.
+  const detailOwner = useRef({ api, key: detailContextKey });
+  if (
+    detailOwner.current.api !== api ||
+    detailOwner.current.key !== detailContextKey
+  )
+    detailOwner.current = { api, key: detailContextKey };
+  const renderedDetailOwner = detailOwner.current;
+  const details =
+    detailResult?.owner === renderedDetailOwner ? detailResult.data : null;
   const [dependencyRetry, setDependencyRetry] = useState(0);
   // These sentinels identify filters, not display text. Translate at render so
   // locale changes preserve the selected filter and memoized version groups.
   const [gameFilter, setGameFilter] = useState("全部");
   const [loaderFilter, setLoaderFilter] = useState("全部");
   const [expanded, setExpanded] = useState<string[]>([]);
-  const [selected, setSelected] = useState<{
+  const [selection, setSelected] = useState<{
+    owner: object;
     version: Version;
     title: string;
   } | null>(null);
+  const selected = selection?.owner === renderedDetailOwner ? selection : null;
   const [selectedOpen, setSelectedOpen] = useState(true);
   const [fileChoice, setFileChoice] = useState<{
     version: string;
@@ -310,19 +346,27 @@ export function ResourceDetails({
   const [dependencyOpen, setDependencyOpen] = useState<Record<string, boolean>>(
     {},
   );
-  const [packChoice, setPackChoice] = useState<Version | null>(null);
+  const [packSelection, setPackChoice] = useState<{
+    owner: object;
+    version: Version;
+  } | null>(null);
+  const packChoice =
+    packSelection?.owner === renderedDetailOwner ? packSelection.version : null;
   const [instanceName, setInstanceName] = useState("");
   const requestIdentity = useRef("");
   const requestGeneration = useRef(0);
   const dependencyRequests = useRef(new Set<string>());
   const selectedCard = useRef<HTMLElement>(null);
   const installButton = useRef<HTMLButtonElement>(null);
-  const source = resource.source ?? "Modrinth";
   const local = source.toLowerCase() === "local";
   const modrinth =
     source.toLowerCase() === "modrinth" && Boolean(resource.project_id);
+  const curseforge = source === "CurseForge" && Boolean(resource.project_id);
+  const encyclopedia = source === "MC百科";
+  const downloadable = modrinth || curseforge;
   const pack =
     (details?.project.project_type ?? resource.project_type) === "modpack";
+  const installPack = pack && modrinth;
   const installable =
     modrinth &&
     ["mod", "resourcepack", "shader"].includes(
@@ -404,15 +448,55 @@ export function ResourceDetails({
     }));
   const providerUrl =
     project?.url ??
+    resource.url ??
     (modrinth
       ? `https://modrinth.com/${resource.project_type === "modpack" ? "modpack" : resource.project_type === "resourcepack" ? "resourcepack" : resource.project_type === "shader" ? "shader" : "mod"}/${encodeURIComponent(resource.project_id)}`
       : "");
+  // Encyclopedia details re-read the complete related-links section and can
+  // retire a search snapshot after detecting an identity conflict. Provider
+  // details only describe their own primary project, so those retain the
+  // previously verified search links until encyclopedia evidence replaces it.
+  const aliases =
+    encyclopedia && details
+      ? communityAliases({
+          ...resource,
+          source,
+          url: providerUrl,
+          sources: details.sources ?? project?.sources ?? [],
+        })
+      : communityAliases(
+          { ...resource, source, url: providerUrl },
+          details?.sources,
+          project?.sources,
+        );
+  const encyclopediaUrl = mcmodResourceUrl(title, aliases);
+  const favoriteProject = aliases.find(
+    (alias) => alias.source === "Modrinth" && alias.project_id,
+  )?.project_id;
+  function changeSource(alias: CommunitySourceAlias) {
+    if (detailOwner.current !== renderedDetailOwner) return;
+    if (!alias.project_id) {
+      void openLink(alias.url);
+      return;
+    }
+    onResourceDetails({
+      ...resource,
+      project_id: alias.project_id,
+      source: alias.source,
+      url: alias.url,
+      title,
+      project_type: project?.project_type ?? resource.project_type,
+      identity_key:
+        details?.identity_key ?? project?.identity_key ?? resource.identity_key,
+      sources: aliases,
+    });
+  }
 
   useEffect(() => {
     const identity = `${source}:${resource.project_id}:${++requestGeneration.current}`;
     requestIdentity.current = identity;
     dependencyRequests.current = new Set();
-    setDetails(null);
+    setDetailResult(null);
     setError("");
     setExpanded([]);
     setDependencies({});
@@ -424,16 +508,21 @@ export function ResourceDetails({
     setPackChoice(null);
     setGameFilter("全部");
     setLoaderFilter("全部");
-    if (!modrinth) {
+    if (local || !communitySource(source) || !resource.project_id) {
       setLoading(false);
       return;
     }
     let live = true;
     setLoading(true);
-    api<Details>("resource_details", { projectId: resource.project_id })
+    api<Details>("community_details", {
+      source,
+      projectId: resource.project_id,
+      projectType: resource.project_type,
+    })
       .then((next) => {
-        if (!live) return;
-        setDetails(next);
+        if (!live || detailOwner.current !== renderedDetailOwner) return;
+        setDetailResult({ owner: renderedDetailOwner, data: next });
+        const nextPack = next.project.project_type === "modpack";
         const groupList = versionGroups(
           next.versions,
           next.project.loaders.length > 1,
@@ -445,12 +534,12 @@ export function ResourceDetails({
         )
           setExpanded(
             (
-              pack
+              nextPack
                 ? groupList[0]
                 : groupList.find((group) => stableGame(group.game))
             )
               ? [
-                  (pack
+                  (nextPack
                     ? groupList[0]
                     : groupList.find((group) => stableGame(group.game)))!.id,
                 ]
@@ -458,16 +547,18 @@ export function ResourceDetails({
           );
       })
       .catch((e) => {
-        if (live) setError(String(e));
+        if (live && detailOwner.current === renderedDetailOwner)
+          setError(String(e));
       })
       .finally(() => {
-        if (live) setLoading(false);
+        if (live && detailOwner.current === renderedDetailOwner)
+          setLoading(false);
       });
     return () => {
       live = false;
       if (requestIdentity.current === identity) requestIdentity.current = "";
     };
-  }, [api, resource.project_id, source, modrinth, retry]);
+  }, [renderedDetailOwner]);
 
   const visibleDependencyVersions = unique(
     [
@@ -504,20 +595,34 @@ export function ResourceDetails({
       }));
       api<Dependencies>("resource_dependencies", { versionId })
         .then((data) => {
-          if (requestIdentity.current === identity)
+          if (
+            requestIdentity.current === identity &&
+            detailOwner.current === renderedDetailOwner
+          )
             setDependencies((state) => ({ ...state, [versionId]: { data } }));
         })
         .catch((e) => {
-          if (requestIdentity.current === identity)
+          if (
+            requestIdentity.current === identity &&
+            detailOwner.current === renderedDetailOwner
+          )
             setDependencies((state) => ({
               ...state,
               [versionId]: { error: String(e) },
             }));
         });
     }
-  }, [api, dependencyKey, details, modrinth, dependencyRetry]);
+  }, [
+    api,
+    dependencyKey,
+    details,
+    modrinth,
+    dependencyRetry,
+    renderedDetailOwner,
+  ]);
 
   async function openLink(url: string) {
+    if (detailOwner.current !== renderedDetailOwner) return;
     if (!url) {
       onNotify(t("resource.providerUnavailable", { source }));
       return;
@@ -525,23 +630,27 @@ export function ResourceDetails({
     try {
       await api("resource_open_link", { url });
     } catch (e) {
-      onNotify(String(e));
+      if (detailOwner.current === renderedDetailOwner) onNotify(String(e));
     }
   }
   async function copy(value: string, label: string) {
+    if (detailOwner.current !== renderedDetailOwner) return;
     if (!value) {
       onNotify(t("resource.sourceUnmatched"));
       return;
     }
     try {
       await navigator.clipboard.writeText(value);
-      onNotify(t("resource.copied", { label }));
+      if (detailOwner.current === renderedDetailOwner)
+        onNotify(t("resource.copied", { label }));
     } catch {
-      onNotify(t("resource.clipboardError"));
+      if (detailOwner.current === renderedDetailOwner)
+        onNotify(t("resource.clipboardError"));
     }
   }
   function chooseVersion(version: Version, groupTitle: string) {
-    setSelected({ version, title: groupTitle });
+    if (detailOwner.current !== renderedDetailOwner) return;
+    setSelected({ owner: renderedDetailOwner, version, title: groupTitle });
     if (selected?.version.id !== version.id) setFileChoice(null);
     setInstallChoice(null);
     setSaveChoice(null);
@@ -553,20 +662,23 @@ export function ResourceDetails({
           .trim()
           .slice(0, 100),
       );
-      setPackChoice(version);
+      setPackChoice({ owner: renderedDetailOwner, version });
     } else {
-      window.requestAnimationFrame(() =>
+      window.requestAnimationFrame(() => {
+        if (detailOwner.current !== renderedDetailOwner) return;
         selectedCard.current?.scrollIntoView({
           block: "nearest",
           behavior: "smooth",
-        }),
-      );
+        });
+      });
     }
   }
   function versionRow(version: Version, groupTitle: string) {
-    const dependencyCount = version.dependencies.filter(
-      (dependency) => dependency.dependency_type === "required",
-    ).length;
+    const dependencyCount = modrinth
+      ? version.dependencies.filter(
+          (dependency) => dependency.dependency_type === "required",
+        ).length
+      : 0;
     return (
       <button
         className={`rd-version-row ${selected?.version.id === version.id ? "is-selected" : ""}`}
@@ -603,6 +715,7 @@ export function ResourceDetails({
     );
   }
   function dependencySections(version: Version, context: string) {
+    if (!modrinth) return null;
     const state = dependencies[version.id];
     const references =
       state?.data?.dependencies ??
@@ -645,7 +758,11 @@ export function ResourceDetails({
                     disabled={!dependency.project?.project_id}
                     onClick={() => {
                       const project = dependency.project;
-                      if (!project?.project_id) return;
+                      if (
+                        !project?.project_id ||
+                        detailOwner.current !== renderedDetailOwner
+                      )
+                        return;
                       // Browsing uses the resolved provider identity. It is
                       // independent of required/optional installation choices.
                       onResourceDetails({
@@ -795,7 +912,7 @@ export function ResourceDetails({
             <Globe size={15} />
             {source === "local" ? t("resource.sourcePage") : source}
           </button>
-          <button onClick={() => openLink("https://www.mcmod.cn/")}>
+          <button onClick={() => openLink(encyclopediaUrl)}>
             <Globe size={15} />
             {t("resource.mcmod")}
           </button>
@@ -811,17 +928,52 @@ export function ResourceDetails({
             <Languages size={15} />
             {t("resource.translate")}
           </button>
-          <ResourceFavorite
-            projectId={project?.project_id || resource.project_id}
-            supported={
-              modrinth &&
-              ["mod", "resourcepack", "shader", "modpack"].includes(
+          {favoriteProject && (
+            <ResourceFavorite
+              projectId={favoriteProject}
+              supported={["mod", "resourcepack", "shader", "modpack"].includes(
                 project?.project_type || resource.project_type || "",
-              )
-            }
-            contextKey={contextKey}
-          />
+              )}
+              contextKey={contextKey}
+            />
+          )}
         </div>
+        {aliases.length > 1 && (
+          <div className="rd-source-links">
+            {aliases.map((alias) => {
+              const current =
+                alias.source === source &&
+                alias.project_id === resource.project_id;
+              return (
+                <button
+                  key={`${alias.source}:${alias.project_id ?? alias.url}`}
+                  className={`ce-community-badge ${current ? "is-current" : ""}`}
+                  disabled={current}
+                  aria-current={current ? "page" : undefined}
+                  title={t(
+                    alias.project_id
+                      ? "community.sourceSwitch"
+                      : "community.sourceOpen",
+                    { source: alias.source },
+                  )}
+                  onClick={() => changeSource(alias)}
+                >
+                  <Globe size={12} />
+                  {alias.source}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {(details?.attribution ??
+          project?.attribution ??
+          resource.attribution) && (
+          <p className="rd-inline-status">
+            {details?.attribution ??
+              project?.attribution ??
+              resource.attribution}
+          </p>
+        )}
       </section>
       {local ? (
         <>
@@ -879,40 +1031,42 @@ export function ResourceDetails({
         </>
       ) : (
         <>
-          <section
-            className={`ce-card rd-filters ${pack ? "rd-pack-filters" : ""}`}
-          >
-            <div className="rd-filter-row">
-              {!pack && <span>{t("resource.instanceFilter")}</span>}
-              {["全部", ...filters].map((value) => (
-                <button
-                  key={value}
-                  className={gameFilter === value ? "is-active" : ""}
-                  onClick={() => setGameFilter(value)}
-                >
-                  {value === "全部"
-                    ? t("ui.all")
-                    : value === "快照版"
-                      ? t("download.snapshot")
-                      : value}
-                </button>
-              ))}
-            </div>
-            {!pack && (
+          {!encyclopedia && (
+            <section
+              className={`ce-card rd-filters ${pack ? "rd-pack-filters" : ""}`}
+            >
               <div className="rd-filter-row">
-                <span>{t("resource.loaderFilter")}</span>
-                {["全部", ...unique(loaders)].map((value) => (
+                {!pack && <span>{t("resource.instanceFilter")}</span>}
+                {["全部", ...filters].map((value) => (
                   <button
                     key={value}
-                    className={loaderFilter === value ? "is-active" : ""}
-                    onClick={() => setLoaderFilter(value)}
+                    className={gameFilter === value ? "is-active" : ""}
+                    onClick={() => setGameFilter(value)}
                   >
-                    {value === "全部" ? t("ui.all") : loaderName(value)}
+                    {value === "全部"
+                      ? t("ui.all")
+                      : value === "快照版"
+                        ? t("download.snapshot")
+                        : value}
                   </button>
                 ))}
               </div>
-            )}
-          </section>
+              {!pack && (
+                <div className="rd-filter-row">
+                  <span>{t("resource.loaderFilter")}</span>
+                  {["全部", ...unique(loaders)].map((value) => (
+                    <button
+                      key={value}
+                      className={loaderFilter === value ? "is-active" : ""}
+                      onClick={() => setLoaderFilter(value)}
+                    >
+                      {value === "全部" ? t("ui.all") : loaderName(value)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
           {loading && (
             <section className="ce-card rd-state" role="status">
               <LoaderCircle size={18} className="spin" />
@@ -931,11 +1085,21 @@ export function ResourceDetails({
               </button>
             </section>
           )}
-          {!modrinth && (
+          {!communitySource(source) && (
             <section className="ce-card rd-state">
               <p>{t("resource.providerUnavailable", { source })}</p>
               <small>{t("resource.providerHelp")}</small>
             </section>
+          )}
+          {encyclopedia && !loading && !error && (
+            <section className="ce-card rd-state">
+              <p>{t("community.mcmodReference")}</p>
+            </section>
+          )}
+          {curseforge && (
+            <p className="rd-inline-status">
+              {t("community.curseforgeDownloadOnly")}
+            </p>
           )}
           {selected && (
             <section
@@ -1008,12 +1172,14 @@ export function ResourceDetails({
                         <button
                           className="ce-button"
                           disabled={!native}
-                          onClick={() =>
+                          onClick={() => {
+                            if (detailOwner.current !== renderedDetailOwner)
+                              return;
                             onPorter({
                               title: project?.title || resource.title,
                               url: `https://modrinth.com/mod/${selected.version.project_id}/version/${selected.version.id}`,
-                            })
-                          }
+                            });
+                          }}
                         >
                           {t("experimental.porterCreateFromResource")}
                         </button>
@@ -1021,7 +1187,7 @@ export function ResourceDetails({
                     <button
                       className="ce-button primary"
                       disabled={
-                        pack
+                        installPack
                           ? !native ||
                             disabled ||
                             !modrinth ||
@@ -1030,16 +1196,16 @@ export function ResourceDetails({
                           : !native ||
                             !saveAvailable ||
                             saveDisabled ||
-                            !modrinth ||
+                            !downloadable ||
                             !selectedFile
                       }
                       title={
-                        !pack && (!native || !saveAvailable)
+                        !installPack && (!native || !saveAvailable)
                           ? t("resource.downloadUnavailable")
                           : undefined
                       }
                       onClick={() => {
-                        if (pack) {
+                        if (installPack) {
                           chooseVersion(selected.version, selected.title);
                           return;
                         }
@@ -1049,7 +1215,7 @@ export function ResourceDetails({
                           !admission.current.native ||
                           admission.current.saveDisabled ||
                           !saveAvailable ||
-                          !modrinth ||
+                          !downloadable ||
                           !selectedFile
                         )
                           return;
@@ -1057,6 +1223,9 @@ export function ResourceDetails({
                         setSaveChoice({
                           context: renderedInstallationContext,
                           request: {
+                            ...(curseforge
+                              ? { source: "CurseForge" as const }
+                              : {}),
                             project_id: selected.version.project_id,
                             version_id: selected.version.id,
                             file_name: selectedFile.filename,
@@ -1065,7 +1234,7 @@ export function ResourceDetails({
                       }}
                     >
                       <Download size={15} />
-                      {pack
+                      {installPack
                         ? t("resource.installPack")
                         : t("resource.downloadFile")}
                     </button>
@@ -1114,9 +1283,11 @@ export function ResourceDetails({
           {shownGroups.map((group) => {
             const open = expanded.includes(group.id);
             const first = group.versions[0];
-            const hasDependencies = first?.dependencies.some((dependency) =>
-              ["required", "optional"].includes(dependency.dependency_type),
-            );
+            const hasDependencies =
+              modrinth &&
+              first?.dependencies.some((dependency) =>
+                ["required", "optional"].includes(dependency.dependency_type),
+              );
             return (
               <section className="ce-card rd-version-group" key={group.id}>
                 <button
@@ -1158,11 +1329,15 @@ export function ResourceDetails({
               </section>
             );
           })}
-          {details && !loading && !error && !shownGroups.length && (
-            <section className="ce-card rd-state">
-              <p>{t("resource.noFilteredVersions")}</p>
-            </section>
-          )}
+          {!encyclopedia &&
+            details &&
+            !loading &&
+            !error &&
+            !shownGroups.length && (
+              <section className="ce-card rd-state">
+                <p>{t("resource.noFilteredVersions")}</p>
+              </section>
+            )}
           {details?.versions_truncated && (
             <p className="rd-inline-status">
               {t("resource.versionsTruncated")}
@@ -1201,7 +1376,7 @@ export function ResourceDetails({
           onNotify={onNotify}
         />
       )}
-      {packChoice && selectedFile && (
+      {modrinth && packChoice && selectedFile && (
         <InstanceImport
           key={contextKey}
           api={api}

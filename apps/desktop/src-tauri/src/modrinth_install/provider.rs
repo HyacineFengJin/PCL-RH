@@ -210,7 +210,7 @@ pub(crate) trait Provider: Sync {
 /// Keep the complete HTTP future inside the cancellation race, including DNS,
 /// TLS and headers. Returning drops the losing future and closes its transfer.
 /// The caller uses Tauri's existing Tokio runtime; this owns no worker thread.
-pub(super) async fn cancellable<F: Future>(
+pub(crate) async fn cancellable<F: Future>(
     cancel: &AtomicBool,
     deadline: Instant,
     future: F,

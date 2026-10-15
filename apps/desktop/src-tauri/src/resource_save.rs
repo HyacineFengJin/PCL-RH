@@ -1,4 +1,4 @@
-//! Standalone official Modrinth Save. Preparation binds one explicitly selected
+//! Standalone official resource Save. Preparation binds one explicitly selected
 //! file; transfer and final authority checks use that opaque revision. Anonymous
 //! staging belongs to the chosen filesystem, then a task-owned cancellation
 //! gate precedes no-replacement publication. No instance or cache is touched.
@@ -16,7 +16,7 @@ use crate::modrinth_install::{
     transfer,
 };
 pub(crate) use files::SaveTarget as CapturedSaveTarget;
-pub use model::{CommitGate, SavePlan, SaveProgress, SaveRequest, SaveResult};
+pub use model::{CommitGate, SavePlan, SaveProgress, SaveRequest, SaveResult, SaveSource};
 use pcl_network::DownloadScheduler;
 use std::{
     path::Path,
@@ -73,11 +73,26 @@ pub(crate) async fn save_captured(
     authority::validate_request(&request)?;
     target.recheck()?;
     let provider = HttpProvider::new(cancel)?.with_download_policy(scheduler);
+    let source = request.source;
+    let curseforge = (source == SaveSource::CurseForge)
+        .then(|| crate::community_curseforge::CurseforgeClient::new(pcl_network::snapshot()))
+        .transpose()?;
     let metadata_bytes = AtomicU64::new(0);
     let resolve = |request| {
         let provider = &provider;
         let metadata_bytes = &metadata_bytes;
+        let curseforge = &curseforge;
         Box::pin(async move {
+            if let Some(curseforge) = curseforge {
+                // Cancellation owns the entire metadata future, including its
+                // final recheck. A stopped task cannot continue API work.
+                return crate::modrinth_install::provider::cancellable(
+                    cancel,
+                    std::time::Instant::now() + std::time::Duration::from_secs(45),
+                    authority::resolve_curseforge(curseforge, request),
+                )
+                .await?;
+            }
             let session = provider.renewed_metadata_session();
             let result = authority::resolve(&session, request).await;
             metadata_bytes.fetch_add(
@@ -88,7 +103,10 @@ pub(crate) async fn save_captured(
         }) as FutureAuthority<'_>
     };
     let request_file = |file: &ApiFile| {
-        let url = crate::modrinth_install::provider::cdn_url(&file.url)?;
+        let url = match source {
+            SaveSource::Modrinth => crate::modrinth_install::provider::cdn_url(&file.url)?,
+            SaveSource::CurseForge => crate::community_curseforge::download_url(&file.url)?,
+        };
         Ok(provider
             .client
             .get(url)
@@ -145,7 +163,7 @@ async fn save_with(
         .await
         .map_err(normalize_cancel)?;
     if authority.plan.revision != revision {
-        return Err("Modrinth官方文件信息已变化，请重新确认保存".into());
+        return Err("官方文件信息已变化，请重新确认保存".into());
     }
     let plan = &authority.plan;
     progress(
@@ -160,11 +178,11 @@ async fn save_with(
     cancelled(cancel)?;
     let mut file = target.anonymous()?;
     let mut bytes_done = 0u64;
-    transfer::response_into_file(
+    transfer::response_into_file_digest(
         session.http,
         (session.request_file)(&authority.file)?,
         plan.size,
-        &plan.sha512,
+        authority::expected_digest(plan)?,
         &mut file,
         cancel,
         |amount| {
@@ -192,7 +210,7 @@ async fn save_with(
     let file = files::verify_anonymous(file, plan, cancel)?;
     let final_authority = (session.resolve)(request).await.map_err(normalize_cancel)?;
     if final_authority.plan.revision != revision {
-        return Err("下载期间Modrinth官方文件信息已变化；暂存文件已丢弃，请重新确认".into());
+        return Err("下载期间官方文件信息已变化；暂存文件已丢弃，请重新确认".into());
     }
     let network_bytes = session.network_bytes();
     target.recheck()?;
@@ -222,7 +240,7 @@ async fn save_with(
         path: target.path.display().to_string(),
         file_name: target.file_name.clone(),
         size: plan.size,
-        sha512: plan.sha512.clone(),
+        sha512: file.sha512.clone(),
         network_bytes,
         warning,
     })

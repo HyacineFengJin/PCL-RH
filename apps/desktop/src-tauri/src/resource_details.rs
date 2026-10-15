@@ -11,7 +11,12 @@ fn valid_id(value: &str) -> bool {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    pcl_network::async_client()
+    client_with(&pcl_network::snapshot())
+}
+
+fn client_with(network: &pcl_network::ClientFactory) -> Result<reqwest::Client, String> {
+    network
+        .async_client()
         .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
@@ -126,6 +131,35 @@ fn normalize_project(project: ApiProject) -> ResourceProject {
         source: "Modrinth",
         url,
     }
+}
+
+/// Resolve an encyclopedia's explicit project link. Provider-confirmed slug
+/// equality is required; search text never grants project equivalence.
+pub(crate) async fn project_for_link(
+    raw: &str,
+    network: &pcl_network::ClientFactory,
+) -> Result<serde_json::Value, String> {
+    let canonical =
+        crate::community_identity::canonical_project_url(raw).ok_or("Modrinth 项目链接无效")?;
+    let url = reqwest::Url::parse(&canonical).map_err(|_| "Modrinth 项目链接无效")?;
+    if url.host_str() != Some("modrinth.com") {
+        return Err("Modrinth 项目链接来源不符".into());
+    }
+    let segments: Vec<_> = url
+        .path_segments()
+        .ok_or("Modrinth 项目链接无效")?
+        .collect();
+    let [kind, slug] = segments.as_slice() else {
+        return Err("Modrinth 项目链接无效".into());
+    };
+    let project: ApiProject = get(&client_with(network)?, &format!("project/{slug}"), &[]).await?;
+    if !valid_id(&project.id)
+        || (project.id != *slug && project.slug.as_deref() != Some(*slug))
+        || project.project_type != *kind
+    {
+        return Err("Modrinth 项目与百科链接不一致".into());
+    }
+    serde_json::to_value(normalize_project(project)).map_err(|_| "无法读取 Modrinth 项目".into())
 }
 
 /// Bookmarks fetch only this project endpoint. The renderer supplies a stable
@@ -369,7 +403,10 @@ fn allowed_link(value: &str) -> Result<reqwest::Url, String> {
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.port().is_some()
-        || !matches!(parsed.host_str(), Some("modrinth.com" | "www.mcmod.cn"))
+        || !matches!(
+            parsed.host_str(),
+            Some("modrinth.com" | "www.mcmod.cn" | "search.mcmod.cn" | "www.curseforge.com")
+        )
     {
         return Err("不支持的资源链接".into());
     }

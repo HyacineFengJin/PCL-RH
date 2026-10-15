@@ -123,6 +123,14 @@ ZIP 导出的 `Scanner` 与资源信息的 `Binding` 继续使用各自的描述
 
 `instance_delete/filesystem.rs` 负责目录描述符、内容树快照、锁、移动与空目录清理；主模块负责依赖检查、计划、日志状态和删除/恢复。文件事务回归分别在 `instance_import/tests.rs` 和 `instance_delete/tests.rs`；bootstrap、旧资料及外部重建的组合行为在 `main.rs` 的应用集成用例中。桌面命令在大型归档/内容树的只读校验期间释放 `operations`，返回方案或准入任务前再检查占用、目录绑定和待恢复状态。
 
+## 社区来源与项目身份
+
+`community_catalog` 编排来源搜索、部分失败和百科取证；`community_identity` 只用提供方 ID 与明确项目链接建立关系。名称、作者和跨站相同 slug 不构成匹配证据。关系组件含多个同站项目时拒绝跨站归并，避免百科宽泛词条合并分支。版本筛选下百科仅作为证据，不能增加未过滤的结果。
+
+`community_mcmod` 只解析公开搜索／列表、标题和相关链接区域，不执行页面脚本。详情取证有请求、并发、时间和缓存预算；HTML 改版或响应异常时保留其他来源。`community_curseforge` 使用固定官方 API、敏感请求头、有限分页和独立错误。`community_details` 通过精确官方 slug 查询把百科链接解析为真实 ID；有歧义时保留资料入口。前端 `communityResources` 分开处理项目身份、来源别名与图标域名，来源切换退役旧详情与保存操作。
+
+`resource_save` 按来源重新读取精确文件权限与元数据。CurseForge 的 SHA-1 与 Modrinth 的 SHA-512 由 `resource_digest` 明确区分，不将一种校验值冒充另一种。下载和落盘复核都校验官方摘要；本地 SHA-512 另行计算用于保存回执。保存继续使用已捕获目录、匿名暂存、最终元数据重验和无覆盖发布。CurseForge 尚不进入 Modrinth 的依赖安装／更新事务或整合包解析。
+
 ## 整合包与 Modrinth 资源安装
 
 整合包入口由 `instance_commands.rs` 与 `InstanceImport.tsx` 共享。PCL 导出 ZIP 保留原 DTO 和事务；其他格式由 `instance_import/mrpack.rs` 与 `formats.rs` 归一为客户端有效输出。`archive.rs` 限制 ZIP 索引、路径和解压容量，所有归档条目都校验；适配器只选择游戏内容，不导入启动器资料。完整目录包合并原核心继承，其余格式根据清单重建受支持组件。CurseForge 的远程文件编号当前作为明确阻止项，不能静默遗漏。

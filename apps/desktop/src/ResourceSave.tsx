@@ -20,6 +20,7 @@ type SavePreview = {
     file_name: string;
     size: number;
     sha512: string;
+    sha1?: string | null;
     revision: string;
   };
 };
@@ -33,13 +34,16 @@ function matchesSelection(
     !!preview.preferencesRevision &&
     preview.target.startsWith("/") &&
     !!plan.revision &&
+    (plan.request.source ?? "Modrinth") === (request.source ?? "Modrinth") &&
     plan.request.project_id === request.project_id &&
     plan.request.version_id === request.version_id &&
     plan.request.file_name === request.file_name &&
     plan.file_name === request.file_name &&
     Number.isSafeInteger(plan.size) &&
     plan.size >= 0 &&
-    /^[0-9a-f]{128}$/i.test(plan.sha512)
+    (request.source === "CurseForge"
+      ? plan.sha512 === "" && /^[0-9a-f]{40}$/i.test(plan.sha1 ?? "")
+      : /^[0-9a-f]{128}$/i.test(plan.sha512))
   );
 }
 
@@ -70,6 +74,7 @@ export function ResourceSave({
 }) {
   const identity = JSON.stringify([
     contextKey,
+    request.source ?? "Modrinth",
     request.project_id,
     request.version_id,
     request.file_name,
@@ -117,6 +122,7 @@ export function ResourceSave({
     try {
       const preview = await api<SavePreview | null>("resource_save_prepare", {
         request: {
+          ...(request.source ? { source: request.source } : {}),
           project_id: request.project_id,
           version_id: request.version_id,
           file_name: request.file_name,
@@ -233,7 +239,11 @@ export function ResourceSave({
             <p>
               {t("save.size")}: {instanceOperationSize(preview.plan.size)}
             </p>
-            <p>SHA512: {preview.plan.sha512}</p>
+            <p>
+              {request.source === "CurseForge"
+                ? `SHA1: ${preview.plan.sha1}`
+                : `SHA512: ${preview.plan.sha512}`}
+            </p>
             <p>
               {t("save.target")}: {preview.target}
             </p>

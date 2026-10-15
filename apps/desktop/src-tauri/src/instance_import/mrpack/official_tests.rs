@@ -150,6 +150,7 @@ impl Provider for Metadata {
 }
 fn request() -> SaveRequest {
     SaveRequest {
+        source: crate::resource_save::SaveSource::Modrinth,
         project_id: "Project1".into(),
         version_id: "Version1".into(),
         file_name: "example.mrpack".into(),

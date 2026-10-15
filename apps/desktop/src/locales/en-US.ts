@@ -7,6 +7,16 @@ const messages = {
   ...experimental,
   ...pages,
   ...app,
+  "community.mcmodFilters":
+    "MC百科 supports mod and modpack name searches without version, loader, tag or sort filters.",
+  "community.mcmodFallback":
+    "Filters apply to supported sources; MC百科 does not provide compatibility filtering.",
+  "community.mcmodReference":
+    "MC百科 provides project information. Select a file source to download.",
+  "community.curseforgeDownloadOnly":
+    "CurseForge files can be saved; direct installation into an instance is not yet available.",
+  "community.sourceSwitch": "Switch to {source}",
+  "community.sourceOpen": "Open {source}",
   "common.unavailable": "This feature is unavailable",
   "common.effectUnavailable": "This effect is not connected",
   "common.previewReadonly":

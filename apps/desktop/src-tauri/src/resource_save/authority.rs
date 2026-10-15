@@ -10,9 +10,76 @@ pub(crate) struct Authority {
     pub file: ApiFile,
 }
 pub(super) fn validate_request(request: &SaveRequest) -> Result<()> {
-    provider::id(&request.project_id)?;
-    provider::id(&request.version_id)?;
+    match request.source {
+        SaveSource::Modrinth => {
+            provider::id(&request.project_id)?;
+            provider::id(&request.version_id)?;
+        }
+        SaveSource::CurseForge => {
+            for value in [&request.project_id, &request.version_id] {
+                if !value
+                    .parse::<u32>()
+                    .is_ok_and(|id| id > 0 && id.to_string() == *value)
+                {
+                    return Err("CurseForge 项目或文件 ID 无效".into());
+                }
+            }
+        }
+    }
     provider::file_name(&request.file_name)
+}
+
+pub(super) fn expected_digest(
+    plan: &SavePlan,
+) -> Result<crate::resource_digest::ExpectedDigest<'_>> {
+    use crate::resource_digest::ExpectedDigest;
+    let expected = match plan.request.source {
+        SaveSource::Modrinth if plan.sha1.is_none() => ExpectedDigest::Sha512(&plan.sha512),
+        SaveSource::CurseForge if plan.sha512.is_empty() => {
+            ExpectedDigest::Sha1(plan.sha1.as_deref().ok_or("CurseForge 缺少 SHA1 校验值")?)
+        }
+        _ => return Err("保存文件的来源与校验算法不匹配".into()),
+    };
+    expected.validate()?;
+    Ok(expected)
+}
+
+pub(super) async fn resolve_curseforge(
+    provider: &crate::community_curseforge::CurseforgeClient,
+    request: SaveRequest,
+) -> Result<Authority> {
+    validate_request(&request)?;
+    if request.source != SaveSource::CurseForge {
+        return Err("保存文件的来源不匹配".into());
+    }
+    let selected = provider
+        .download(&request.project_id, &request.version_id, &request.file_name)
+        .await?;
+    let file = ApiFile {
+        filename: selected.name,
+        size: selected.size,
+        url: selected.url,
+        primary: true,
+        hashes: provider::Hashes {
+            sha512: String::new(),
+            sha1: Some(selected.sha1.clone()),
+        },
+        file_type: None,
+    };
+    let token = serde_json::to_vec(&(&request, &selected.title, &selected.version, &file))
+        .map_err(|_| "无法生成文件保存确认")?;
+    let plan = SavePlan {
+        request,
+        project_title: selected.title,
+        version_name: selected.version,
+        file_name: file.filename.clone(),
+        size: file.size,
+        sha512: String::new(),
+        sha1: Some(selected.sha1),
+        revision: format!("save-v1:{:x}", Sha512::digest(token)),
+    };
+    expected_digest(&plan)?;
+    Ok(Authority { plan, file })
 }
 pub(super) async fn resolve(
     provider: &(impl Provider + ?Sized),
@@ -38,6 +105,9 @@ async fn resolve_for(
     project_type: Option<&str>,
 ) -> Result<Authority> {
     validate_request(&request)?;
+    if request.source != SaveSource::Modrinth {
+        return Err("所选文件不属于 Modrinth，不能用于该安装流程".into());
+    }
     let (project, version) = tokio::try_join!(
         provider.project(&request.project_id),
         provider.version(&request.version_id)
@@ -77,6 +147,7 @@ async fn resolve_for(
             file_name: file.filename.clone(),
             size: file.size,
             sha512: file.hashes.sha512.clone(),
+            sha1: None,
             revision: format!("save-v1:{:x}", Sha512::digest(token)),
         },
         file,
@@ -85,8 +156,16 @@ async fn resolve_for(
 pub(super) async fn prepare(request: SaveRequest, cancel: &AtomicBool) -> Result<SavePlan> {
     cancelled(cancel)?;
     validate_request(&request)?;
-    let provider = HttpProvider::new(cancel)?;
-    let authority = resolve(&provider, request).await?;
+    let authority = match request.source {
+        SaveSource::Modrinth => resolve(&HttpProvider::new(cancel)?, request).await?,
+        SaveSource::CurseForge => {
+            resolve_curseforge(
+                &crate::community_curseforge::CurseforgeClient::new(pcl_network::snapshot())?,
+                request,
+            )
+            .await?
+        }
+    };
     cancelled(cancel)?;
     Ok(authority.plan)
 }

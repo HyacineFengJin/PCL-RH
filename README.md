@@ -10,10 +10,10 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 
 - Minecraft 原版版本目录、搜索、自定义实例名称，以及 Fabric、Forge、NeoForge 自动安装。
 - 最多 4 项并行下载、同目录任务队列、逐项取消与未完成文件清理，完整文件缓存复用及 SHA-1 校验。
-- 模组加载器安装包目录，以及 Modrinth 模组、整合包、数据包、资源包和光影包搜索、版本详情与依赖浏览。
+- 模组加载器目录与 Modrinth 资源搜索；新增 CurseForge 官方目录接入、MC 百科模组／整合包资料搜索，按明确来源链接归并同一项目。CurseForge 服务待开放。
 - Modrinth 模组、资源包和光影安装，必要依赖规划、SHA-512 校验和相同内容复用。
 - 本地 Modrinth 模组正式版更新、前置替换确认、禁用状态保留与更新撤销。
-- Modrinth 版本文件独立另存、命名格式和本次会话的保存目录复用。
+- Modrinth 版本文件独立另存、命名格式和本次会话的保存目录复用；CurseForge 服务启用后可保存作者允许分发的文件，使用官方 SHA-1 校验。
 - 社区资源收藏夹与文件夹管理，已识别本地 Mod 的批量收藏，以及资源信息 JSON 导出。
 - 游戏版本扫描、搜索、选择与实例设置。
 - 实例描述、内置图标、列表分类与收藏管理，以及可恢复的物理实例重命名。
@@ -92,6 +92,8 @@ Windows and macOS adaptation has started in the portable core. Complete desktop 
 Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances.
 
 Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Prism and complete game directories. Single-layer launcher archives are also recognized, including the exact HMCL bundled-package layout. Supported packs install under a custom instance name with optional-file choices, checked downloads and recoverable publication. CurseForge manifests are recognized, but packs requiring remote CurseForge file IDs cannot yet be completed automatically; custom launch commands and unsupported loader layouts are reported before installation.
+
+Community search supports Modrinth and MC百科 project information, with a CurseForge official API integration awaiting service activation. Explicit project links group verified cross-site matches; names alone never merge forks. CurseForge supports standalone checked downloads when the service is enabled; direct installation and CurseForge manifest completion remain unavailable.
 
 Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Modrinth modpacks can also be downloaded directly from version details, reviewed with a custom instance name and optional-file choices, and installed as new instances. Some legacy layouts and OptiFine/LabyMod installation are not yet available.
 

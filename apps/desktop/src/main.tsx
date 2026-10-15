@@ -599,7 +599,7 @@ async function api<T>(
     return (preview!.loader_candidates?.[
       `${args?.loader}:${args?.minecraft}`
     ] || []) as T;
-  if (command === "resource_details") {
+  if (command === "resource_details" || command === "community_details") {
     const item = preview!.resource_details?.[String(args?.projectId)];
     if (!item) throw new Error("此资源的详情预览数据尚未准备");
     return item as T;
@@ -613,7 +613,7 @@ async function api<T>(
   if (command === "upstream_contributors")
     return (preview!.contributors || []) as T;
   if (command === "project_feedback") return [] as T;
-  if (command === "modrinth_search") {
+  if (command === "modrinth_search" || command === "community_search") {
     const catalogs = preview!.modrinth as Record<string, unknown> | undefined;
     return (
       catalogs?.hits

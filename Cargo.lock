@@ -2917,6 +2917,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "dom_query",
  "fastnbt",
  "flate2",
  "gdk",
