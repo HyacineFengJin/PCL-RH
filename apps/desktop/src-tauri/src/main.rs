@@ -16,6 +16,8 @@ mod instance_commands;
 mod instance_delete;
 mod instance_export;
 mod instance_import;
+mod instance_log_commands;
+mod instance_logs;
 mod instance_meta;
 mod instance_rename;
 mod instance_rename_refs;
@@ -2004,6 +2006,8 @@ fn main() {
             ui_catalog::upstream_contributors,
             ui_catalog::project_feedback,
             launcher_log_commands::launcher_logs,
+            instance_log_commands::instance_logs,
+            instance_log_commands::instance_read_log,
             launcher_log_commands::launcher_read_log,
             launcher_log_commands::launcher_prepare_log_export,
             launcher_log_commands::launcher_export_logs,

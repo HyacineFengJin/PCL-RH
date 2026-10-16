@@ -103,6 +103,7 @@ import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
 import { LaunchInspection } from "./LaunchInspection";
 import { LaunchFailure, type FailureRunStatus } from "./LaunchFailure";
+import { InstanceLogs } from "./InstanceLogs";
 import { ContextMenu } from "./ContextMenu";
 import { useDownloadTasks } from "./useDownloadTasks";
 import {
@@ -206,6 +207,8 @@ const rootCommands = new Set([
   "java_download_start",
   "launch_game",
   "inspect_instance",
+  "instance_logs",
+  "instance_read_log",
   "launch_failure_report",
   "instance_repair_start",
   "open_folder",
@@ -974,6 +977,11 @@ function App() {
     id: string;
     epoch: number;
   } | null>(null);
+  const [instanceLogsTarget, setInstanceLogsTarget] = useState<{
+    rootKey: string;
+    id: string;
+    epoch: number;
+  } | null>(null);
   const failureRun: FailureRunStatus | null =
     data?.status.stage === "error"
       ? {
@@ -1281,6 +1289,9 @@ function App() {
   }
   const navigationEpoch = taskNavigation.current.epoch;
   useEffect(() => {
+    setInstanceLogsTarget((current) =>
+      current?.epoch === navigationEpoch ? current : null,
+    );
     setInspectionTarget((current) =>
       current?.epoch === navigationEpoch ? current : null,
     );
@@ -1726,6 +1737,16 @@ function App() {
     !!data?.import_recovery_error ||
     !!data?.delete_recovery_error ||
     !!data?.resource_install_recovery_error;
+  // Reading a stable log is useful while the game is running. Only preparation,
+  // directory/file changes and shutdown prevent this separate read-only entry.
+  const instanceLogsDisabled =
+    data?.status.stage === "preparing" ||
+    downloadBusy ||
+    resourceBusy ||
+    rootWorking ||
+    !rootAvailable ||
+    instanceRecoveryBlocked ||
+    tasks.closing;
   archiveAdmission.current = {
     blocked: !!busy || downloadBusy || resourceBusy || rootWorking,
     packBlocked: !!busy || resourceBusy || rootWorking,
@@ -1845,6 +1866,18 @@ function App() {
     )
       return;
     setFailureTarget({ rootKey, epoch: navigationEpoch, key: failureKey });
+  }
+  function showInstanceLogs() {
+    if (
+      !native ||
+      !selected ||
+      instanceLogsDisabled ||
+      contextKey.current !== rootKey ||
+      viewContext.current.selected !== selected.id ||
+      taskNavigation.current.epoch !== navigationEpoch
+    )
+      return;
+    setInstanceLogsTarget({ rootKey, id: selected.id, epoch: navigationEpoch });
   }
   function instanceSettings() {
     if (!selected || !data) return;
@@ -2505,6 +2538,7 @@ function App() {
                               downloadBusy ||
                               resourceBusy ||
                               !!inspectionTarget ||
+                              !!instanceLogsTarget ||
                               !!failureTarget ||
                               rootWorking ||
                               !rootAvailable ||
@@ -2867,6 +2901,8 @@ function App() {
                       onOpen={open}
                       onTestLaunch={launch}
                       onInspect={inspect}
+                      onLogs={showInstanceLogs}
+                      logsDisabled={instanceLogsDisabled}
                       onNotify={notify}
                       onMetadataChange={(id: string, meta: MetaView) => {
                         if (contextKey.current !== rootKey) return;
@@ -3174,6 +3210,28 @@ function App() {
                   setTab("settings");
                   setSettingsPage("logs");
                 }}
+              />
+            )}
+          {data &&
+            instanceLogsTarget &&
+            instanceLogsTarget.rootKey === rootKey &&
+            instanceLogsTarget.id === selected?.id &&
+            instanceLogsTarget.epoch === navigationEpoch && (
+              <InstanceLogs
+                key={`${instanceLogsTarget.rootKey}:${instanceLogsTarget.id}:${instanceLogsTarget.epoch}`}
+                id={instanceLogsTarget.id}
+                scopeKey={`${rootKey}:${instanceLogsTarget.epoch}`}
+                revision={data.settings.revision || ""}
+                api={rootApi}
+                native={native}
+                disabled={instanceLogsDisabled}
+                language={launcher.prefs.localization.language}
+                region={launcher.prefs.localization.region}
+                onClose={() =>
+                  setInstanceLogsTarget((current) =>
+                    current === instanceLogsTarget ? null : current,
+                  )
+                }
               />
             )}
           {data &&

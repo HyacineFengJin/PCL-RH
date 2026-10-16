@@ -309,6 +309,8 @@ export function InstancePanel({
   onSave,
   onOpen,
   onInspect,
+  onLogs,
+  logsDisabled,
   onTestLaunch,
   onNotify,
   onResourceDetails,
@@ -326,6 +328,8 @@ export function InstancePanel({
   onSave: (s: Settings) => Promise<void>;
   onOpen: (kind: string) => void;
   onInspect: () => void;
+  onLogs: () => void;
+  logsDisabled: boolean;
   onTestLaunch: () => void;
   onNotify: (s: string) => void;
   onResourceDetails?: (resource: LocalResourceDetails) => void;
@@ -919,6 +923,13 @@ export function InstancePanel({
               onClick={onInspect}
             >
               {t("inspection.open")}
+            </button>
+            <button
+              className="ce-button"
+              disabled={!native || logsDisabled}
+              onClick={onLogs}
+            >
+              {t("instanceLogs.open")}
             </button>
             <button
               className="ce-button"
