@@ -98,6 +98,13 @@ impl Desktop {
                 "game-logs.zip",
             ),
             "export_log_text" => ("导出游戏日志", true, "log", vec!["log", "txt"], "game.log"),
+            "export_instance_log_text" => (
+                "导出当前日志文本",
+                true,
+                "txt",
+                vec!["txt"],
+                "instance-log.excerpt.txt",
+            ),
             "title_image" => (
                 "选择标题图片",
                 false,

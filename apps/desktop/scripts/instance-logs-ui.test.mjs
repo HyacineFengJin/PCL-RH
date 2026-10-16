@@ -1,4 +1,4 @@
-/** Real instance-log hooks and handlers, with synthetic list/read replies only.
+/** Real instance-log hooks and handlers, with synthetic list/read/export replies.
  * No native application, game, account or actual game-root/log access is used. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -50,6 +50,7 @@ function fileContent(extra = {}) {
     name: "latest.log",
     text: "Synthetic current log\nSecond line",
     truncated: false,
+    content_revision: "content-a",
     ...extra,
   };
 }
@@ -109,11 +110,36 @@ function logContent(ui) {
     (node) => node.type?.name === "LauncherLogContent",
   )[0];
 }
+function exportButton(ui) {
+  return elements(
+    ui.tree,
+    (node) =>
+      node.type === "button" &&
+      node.props.className === "ce-button ce-instance-logs-export",
+  )[0];
+}
 async function listed(extra = {}, response = listing()) {
   const fixture = dialog(extra);
   fixture.requests[0].resolve(response);
   await fixture.ui.flush();
   return fixture;
+}
+async function loaded(response = fileContent(), extra = {}) {
+  const fixture = await listed(extra);
+  file(fixture.ui).props.onClick();
+  fixture.requests[1].resolve(response);
+  await fixture.ui.flush();
+  return fixture;
+}
+
+function exported(extra = {}) {
+  return {
+    status: "complete",
+    path: "/synthetic/chosen/log.txt",
+    count: 1,
+    warning: null,
+    ...extra,
+  };
 }
 
 test("mount lists once and never reads or selects the latest file automatically", async () => {
@@ -676,6 +702,11 @@ test("all instance-log messages exist in Chinese and English", () => {
     "title",
     "close",
     "refresh",
+    "export",
+    "exporting",
+    "exported",
+    "exportFailed",
+    "exportUnavailable",
     "desktopOnly",
     "disabled",
     "loading",
@@ -699,4 +730,349 @@ test("all instance-log messages exist in Chinese and English", () => {
     assert.notEqual(english.t(key), key);
   }
   ui.close();
+});
+
+test("export requires a successfully loaded nonempty text and native content receipt", async () => {
+  for (const response of [
+    fileContent({ text: "" }),
+    fileContent({ content_revision: undefined }),
+    fileContent({ content_revision: "" }),
+  ]) {
+    const { ui, calls, requests } = await listed();
+    assert.equal(exportButton(ui), undefined);
+    file(ui).props.onClick();
+    await ui.flush();
+    assert.equal(exportButton(ui).props.disabled, true);
+    exportButton(ui).props.onClick();
+    requests[1].resolve(response);
+    await ui.flush();
+    assert.equal(exportButton(ui).props.disabled, true);
+    exportButton(ui).props.onClick();
+    assert.equal(calls.length, 2);
+    assert.equal(logContent(ui).props.text, response.text);
+    ui.close();
+  }
+  const { ui, calls, requests } = await listed();
+  file(ui).props.onClick();
+  requests[1].reject(new Error("Synthetic unreadable file"));
+  await ui.flush();
+  assert.equal(exportButton(ui).props.disabled, true);
+  exportButton(ui).props.onClick();
+  assert.equal(calls.length, 2);
+  ui.close();
+});
+
+test("export binds all native receipts and never resends text or rereads a gzip file", async () => {
+  const { ui, calls, requests } = await listed();
+  file(ui, "archive.log.gz").props.onClick();
+  requests[1].resolve(
+    fileContent({
+      name: "archive.log.gz",
+      text: "Synthetic decoded, redacted tail",
+      content_revision: "gzip-content-receipt",
+      truncated: true,
+    }),
+  );
+  await ui.flush();
+  assert.equal(exportButton(ui).props.disabled, false);
+  assert.ok(content(ui.tree).includes(ui.i18n.t("instanceLogs.textTruncated")));
+  exportButton(ui).props.onClick();
+  assert.deepEqual(calls[2], {
+    command: "instance_export_log",
+    args: {
+      id: "sample",
+      kind: "game",
+      name: "archive.log.gz",
+      revision: "archive-a",
+      listingRevision: "listing-a",
+      contentRevision: "gzip-content-receipt",
+    },
+  });
+  requests[2].resolve(exported());
+  await ui.flush();
+  assert.equal(calls.length, 3);
+  assert.equal(logContent(ui).props.text, "Synthetic decoded, redacted tail");
+  ui.close();
+});
+
+test("completed export preserves content and search, with a compact path receipt and warning", async () => {
+  const { ui, requests } = await loaded();
+  const searchKey = logContent(ui).key;
+  exportButton(ui).props.onClick();
+  requests[2].resolve(exported({ warning: "Synthetic durability notice" }));
+  await ui.flush();
+  assert.ok(content(ui.tree).includes(ui.i18n.t("instanceLogs.exported")));
+  assert.ok(content(ui.tree).includes("Synthetic durability notice"));
+  assert.equal(
+    elements(ui.tree, (node) => node.props?.title === exported().path).length,
+    1,
+  );
+  assert.equal(logContent(ui).props.text, fileContent().text);
+  assert.equal(logContent(ui).key, searchKey);
+  assert.equal(exportButton(ui).props.disabled, false);
+  assert.equal(modal(ui).props["aria-busy"], false);
+  ui.close();
+});
+
+test("cancel is silent and retryable; unavailable and failed saves preserve the selected text", async () => {
+  const { ui, calls, requests } = await loaded();
+  exportButton(ui).props.onClick();
+  requests[2].resolve(exported({ status: "cancelled", path: null, count: 0 }));
+  await ui.flush();
+  assert.ok(!content(ui.tree).includes(ui.i18n.t("instanceLogs.exported")));
+  assert.ok(!content(ui.tree).includes(ui.i18n.t("instanceLogs.exportFailed")));
+  assert.equal(exportButton(ui).props.disabled, false);
+  exportButton(ui).props.onClick();
+  requests[3].resolve(
+    exported({
+      status: "unavailable",
+      path: null,
+      count: 0,
+      warning: "Synthetic unavailable reason",
+    }),
+  );
+  await ui.flush();
+  assert.ok(
+    content(ui.tree).includes(ui.i18n.t("instanceLogs.exportUnavailable")),
+  );
+  assert.ok(content(ui.tree).includes("Synthetic unavailable reason"));
+  exportButton(ui).props.onClick();
+  requests[4].reject(new Error("Synthetic destination failure"));
+  await ui.flush();
+  assert.ok(content(ui.tree).includes(ui.i18n.t("instanceLogs.exportFailed")));
+  assert.ok(content(ui.tree).includes("Synthetic destination failure"));
+  assert.ok(!content(ui.tree).includes("Synthetic unavailable reason"));
+  assert.equal(exportButton(ui).props.disabled, false);
+  assert.equal(logContent(ui).props.text, fileContent().text);
+  assert.equal(calls.length, 5);
+  ui.close();
+});
+
+test("one busy claim prevents duplicate choosers while file reads and refresh remain available", async () => {
+  const { ui, calls, requests } = await loaded();
+  const save = exportButton(ui).props.onClick;
+  save();
+  save();
+  await ui.flush();
+  assert.equal(exportButton(ui).props.disabled, true);
+  assert.ok(
+    content(exportButton(ui)).includes(ui.i18n.t("instanceLogs.exporting")),
+  );
+  assert.equal(modal(ui).props["aria-busy"], true);
+  exportButton(ui).props.onClick();
+  assert.equal(calls.length, 3);
+  assert.equal(button(ui, "instanceLogs.refresh").props.disabled, false);
+  file(ui, "crash-report.txt", "crash").props.onClick();
+  requests[3].resolve(
+    fileContent({
+      kind: "crash",
+      name: "crash-report.txt",
+      text: "Current crash",
+    }),
+  );
+  await ui.flush();
+  assert.equal(logContent(ui).props.text, "Current crash");
+  assert.equal(exportButton(ui).props.disabled, true);
+  exportButton(ui).props.onClick();
+  assert.equal(calls.length, 4);
+  requests[2].resolve(exported({ warning: "Retired completion warning" }));
+  await ui.flush();
+  assert.equal(exportButton(ui).props.disabled, false);
+  assert.ok(!content(ui.tree).includes("Retired completion warning"));
+  exportButton(ui).props.onClick();
+  assert.equal(calls.length, 5);
+  assert.equal(calls[4].args.kind, "crash");
+  requests[4].resolve(exported({ status: "cancelled" }));
+  await ui.flush();
+  ui.close();
+});
+
+test("reread, another selection and refresh immediately retire saved export handlers and late results", async () => {
+  for (const change of ["reread", "selection", "refresh"]) {
+    for (const outcome of ["complete", "error"]) {
+      const { ui, calls, requests } = await loaded();
+      const oldSave = exportButton(ui).props.onClick;
+      oldSave();
+      if (change === "refresh")
+        button(ui, "instanceLogs.refresh").props.onClick();
+      else
+        file(
+          ui,
+          change === "selection" ? "archive.log.gz" : "latest.log",
+        ).props.onClick();
+      oldSave();
+      assert.equal(calls.length, 4);
+      if (change === "refresh") {
+        requests[3].resolve(listing({ revision: "listing-b" }));
+        await ui.flush();
+        file(ui).props.onClick();
+        requests[4].resolve(fileContent({ text: "Current refreshed text" }));
+      } else {
+        requests[3].resolve(
+          fileContent({
+            name: change === "selection" ? "archive.log.gz" : "latest.log",
+            text: "Current selected text",
+            content_revision: "content-b",
+          }),
+        );
+      }
+      await ui.flush();
+      const selectedText = logContent(ui).props.text;
+      oldSave();
+      assert.equal(exportButton(ui).props.disabled, true);
+      const before = calls.length;
+      exportButton(ui).props.onClick();
+      assert.equal(calls.length, before);
+      if (outcome === "error")
+        requests[2].reject(new Error("Retired save failure"));
+      else requests[2].resolve(exported({ warning: "Retired save warning" }));
+      await ui.flush();
+      oldSave();
+      assert.equal(calls.length, before);
+      assert.equal(exportButton(ui).props.disabled, false);
+      assert.equal(logContent(ui).props.text, selectedText);
+      assert.ok(!content(ui.tree).includes("Retired save"));
+      assert.ok(!content(ui.tree).includes(ui.i18n.t("instanceLogs.exported")));
+      ui.close();
+    }
+  }
+});
+
+test("published reread retires a previous export callback before React commits", async () => {
+  const { ui, calls, requests } = await loaded();
+  const oldSave = exportButton(ui).props.onClick;
+  file(ui).props.onClick();
+  requests[2].resolve(fileContent({ text: "Published new text" }));
+  await new Promise((done) => setImmediate(done));
+  oldSave();
+  assert.equal(calls.length, 3);
+  await ui.flush();
+  assert.equal(logContent(ui).props.text, "Published new text");
+  assert.equal(exportButton(ui).props.disabled, false);
+  ui.close();
+});
+
+test("instance, root/navigation and settings changes retain export busy until the old request settles", async () => {
+  for (const change of [
+    { id: "other-instance" },
+    { scopeKey: "synthetic-root-b:instances:2" },
+    { revision: "settings-b" },
+  ]) {
+    for (const outcome of ["complete", "error"]) {
+      const { ui, calls, requests } = await loaded();
+      const oldSave = exportButton(ui).props.onClick;
+      oldSave();
+      ui.replace(change);
+      oldSave();
+      assert.equal(calls.length, 4);
+      const id = change.id || "sample";
+      requests[3].resolve(listing({ id }));
+      await ui.flush();
+      file(ui).props.onClick();
+      requests[4].resolve(fileContent({ id, text: "Current scope text" }));
+      await ui.flush();
+      assert.equal(exportButton(ui).props.disabled, true);
+      exportButton(ui).props.onClick();
+      assert.equal(calls.length, 5);
+      if (outcome === "error")
+        requests[2].reject(new Error("Retired scope save failure"));
+      else requests[2].resolve(exported({ warning: "Retired scope warning" }));
+      await ui.flush();
+      oldSave();
+      assert.equal(calls.length, 5);
+      assert.equal(exportButton(ui).props.disabled, false);
+      assert.equal(logContent(ui).props.text, "Current scope text");
+      assert.ok(!content(ui.tree).includes("Retired scope"));
+      assert.ok(!content(ui.tree).includes(ui.i18n.t("instanceLogs.exported")));
+      ui.close();
+    }
+  }
+});
+
+test("API replacement retires the old export callback and result without releasing its busy claim early", async () => {
+  const { ui, calls, requests } = await loaded();
+  const oldSave = exportButton(ui).props.onClick;
+  oldSave();
+  const replacements = [],
+    replacementCalls = [];
+  ui.replace({
+    api: async (command, args) => {
+      replacementCalls.push({ command, args });
+      const request = deferred();
+      replacements.push(request);
+      return request.promise;
+    },
+  });
+  oldSave();
+  replacements[0].resolve(listing());
+  await ui.flush();
+  file(ui).props.onClick();
+  replacements[1].resolve(fileContent({ text: "Current API text" }));
+  await ui.flush();
+  assert.equal(exportButton(ui).props.disabled, true);
+  exportButton(ui).props.onClick();
+  assert.equal(replacementCalls.length, 2);
+  requests[2].reject(new Error("Retired API save failure"));
+  await ui.flush();
+  oldSave();
+  assert.equal(calls.length, 3);
+  assert.equal(exportButton(ui).props.disabled, false);
+  assert.ok(!content(ui.tree).includes("Retired API save failure"));
+  assert.equal(logContent(ui).props.text, "Current API text");
+  exportButton(ui).props.onClick();
+  assert.equal(replacementCalls[2].command, "instance_export_log");
+  replacements[2].resolve(exported({ status: "cancelled" }));
+  await ui.flush();
+  ui.close();
+});
+
+test("disable and preview transitions permanently retire export handlers and notices", async () => {
+  for (const flag of ["disabled", "native"]) {
+    const { ui, calls, requests } = await loaded();
+    const oldSave = exportButton(ui).props.onClick;
+    oldSave();
+    ui.replace({ [flag]: flag === "disabled" });
+    oldSave();
+    assert.equal(logContent(ui), undefined);
+    ui.replace({ [flag]: flag === "native" });
+    oldSave();
+    requests[3].resolve(listing());
+    await ui.flush();
+    file(ui).props.onClick();
+    requests[4].resolve(fileContent({ text: "Current enabled text" }));
+    await ui.flush();
+    assert.equal(exportButton(ui).props.disabled, true);
+    requests[2].resolve(exported({ warning: "Retired disabled warning" }));
+    await ui.flush();
+    oldSave();
+    assert.equal(calls.length, 5);
+    assert.equal(exportButton(ui).props.disabled, false);
+    assert.ok(!content(ui.tree).includes("Retired disabled warning"));
+    assert.ok(!content(ui.tree).includes(ui.i18n.t("instanceLogs.exported")));
+    ui.close();
+  }
+});
+
+test("close and unmount retire pending export results and saved chooser callbacks", async () => {
+  for (const mode of ["close", "unmount"]) {
+    for (const outcome of ["complete", "error"]) {
+      const fixture = await loaded(),
+        { ui, calls, requests } = fixture;
+      const oldSave = exportButton(ui).props.onClick;
+      oldSave();
+      if (mode === "close") button(ui, "instanceLogs.close").props.onClick();
+      else ui.close();
+      oldSave();
+      if (outcome === "error")
+        requests[2].reject(new Error("Retired closed save failure"));
+      else requests[2].resolve(exported({ warning: "Retired closed warning" }));
+      await ui.flush();
+      oldSave();
+      assert.equal(calls.length, 3);
+      assert.equal(fixture.closes, mode === "close" ? 1 : 0);
+      assert.ok(!content(ui.tree).includes("Retired closed"));
+      assert.ok(!content(ui.tree).includes(ui.i18n.t("instanceLogs.exported")));
+      ui.close();
+    }
+  }
 });

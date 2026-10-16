@@ -11,6 +11,12 @@ const messages = {
   "instanceLogs.title": "Game logs · {name}",
   "instanceLogs.close": "Close",
   "instanceLogs.refresh": "Refresh",
+  "instanceLogs.export": "Export current text",
+  "instanceLogs.exporting": "Exporting…",
+  "instanceLogs.exported": "Exported",
+  "instanceLogs.exportFailed": "Export failed",
+  "instanceLogs.exportUnavailable":
+    "This text cannot be exported. Read it again and retry.",
   "instanceLogs.desktopOnly": "Open the desktop launcher to view game logs.",
   "instanceLogs.disabled": "Game logs will be available after this operation.",
   "instanceLogs.loading": "Loading log list…",
@@ -28,7 +34,8 @@ const messages = {
   "instanceLogs.selectFile": "Select a file to view its content",
   "instanceLogs.emptyFile": "This file is empty.",
   "instanceLogs.listTruncated": "Only some files are listed.",
-  "instanceLogs.textTruncated": "Showing the end of this long file.",
+  "instanceLogs.textTruncated":
+    "Export includes only the currently loaded end of the file.",
   "community.mcmodFilters":
     "MC百科 supports mod and modpack name searches without version, loader, tag or sort filters.",
   "community.mcmodFallback":

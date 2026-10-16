@@ -1,8 +1,10 @@
-//! Explicit, read-only game-log selection. A listing binds configuration and
+//! Explicit game-log selection and export. A listing binds configuration and
 //! directory identities, while each row separately binds its file stamp. Thus
-//! an unrelated log append cannot retire every row. No current-failure inference,
-//! file creation, recovery, export or arbitrary path is part of this service.
+//! an unrelated log append cannot retire every row. No source mutation, recovery,
+//! current-failure inference or arbitrary source path is part of this service.
+//! Export reuses the verified, redacted read carrier and a native chosen file.
 mod binding;
+pub(super) mod export;
 mod reader;
 #[cfg(test)]
 mod tests;
@@ -11,7 +13,10 @@ use crate::{config::GameRoot, launcher_local::filesystem::Stamp, Shared};
 use binding::{Binding, Selected};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{path::Path, sync::atomic::Ordering};
+use std::{
+    path::Path,
+    sync::{atomic::Ordering, MutexGuard},
+};
 
 pub(super) const CHANGED: &str = "游戏日志或实例目录已变化，请刷新列表后重新选择日志";
 const MAX_ROWS: usize = 512;
@@ -63,6 +68,7 @@ pub(super) struct LogContent {
     pub name: String,
     pub text: String,
     pub truncated: bool,
+    pub content_revision: String,
 }
 
 fn digest(value: &impl Serialize) -> Result<String, String> {
@@ -97,6 +103,7 @@ struct Capture {
     root: GameRoot,
     settings_revision: String,
     close_generation: u64,
+    tasks_revision: u64,
     binding: Binding,
     revision: String,
 }
@@ -114,24 +121,37 @@ fn capture(shared: &Shared, root_id: &str, id: &str) -> Result<Capture, String> 
     let binding = Binding::capture(Path::new(&settings.root), id)?;
     ready(shared, &root)?;
     let close_generation = shared.close_generation.load(Ordering::SeqCst);
+    let tasks_revision = shared.tasks.revision();
     let revision = digest(&(
         &root,
         &settings.revision,
         close_generation,
+        tasks_revision,
         binding.signature()?,
     ))?;
     Ok(Capture {
         root,
         settings_revision: settings.revision,
         close_generation,
+        tasks_revision,
         binding,
         revision,
     })
 }
 fn verify(shared: &Shared, captured: &Capture, selected: Option<&Selected>) -> Result<(), String> {
     let _operation = shared.operations.lock().unwrap();
+    verify_locked(shared, captured, selected)
+}
+/// Caller owns operations. Export returns that guard from its final authorize
+/// callback so no writer is admitted between this check and file publication.
+fn verify_locked(
+    shared: &Shared,
+    captured: &Capture,
+    selected: Option<&Selected>,
+) -> Result<(), String> {
     if shared.closing.load(Ordering::SeqCst)
         || shared.close_generation.load(Ordering::SeqCst) != captured.close_generation
+        || shared.tasks.revision() != captured.tasks_revision
         || shared.config.checked_snapshot()?.revision != captured.settings_revision
         || shared.config.resolve(Some(&captured.root.id))? != captured.root
     {
@@ -143,6 +163,20 @@ fn verify(shared: &Shared, captured: &Capture, selected: Option<&Selected>) -> R
         selected.verify(&captured.binding)?;
     }
     Ok(())
+}
+
+struct PreparedRead {
+    captured: Capture,
+    selected: Selected,
+    content: LogContent,
+}
+impl PreparedRead {
+    fn authorize<'a>(&self, shared: &'a Shared) -> Result<MutexGuard<'a, ()>, String> {
+        let guard = shared.operations.lock().unwrap();
+        verify_locked(shared, &self.captured, Some(&self.selected))
+            .map_err(|_| CHANGED.to_string())?;
+        Ok(guard)
+    }
 }
 
 pub(super) fn list(shared: &Shared, root_id: &str, id: &str) -> Result<LogListing, String> {
@@ -244,6 +278,31 @@ fn read_with(
     load: impl FnOnce(&mut Selected) -> Result<reader::TextTail, String>,
     redact: impl FnOnce(&str) -> String,
 ) -> Result<LogContent, String> {
+    prepare_read_with(
+        shared,
+        root_id,
+        id,
+        kind,
+        name,
+        revision,
+        listing_revision,
+        load,
+        redact,
+    )
+    .map(|prepared| prepared.content)
+}
+#[allow(clippy::too_many_arguments)]
+fn prepare_read_with(
+    shared: &Shared,
+    root_id: &str,
+    id: &str,
+    kind: LogKind,
+    name: &str,
+    revision: &str,
+    listing_revision: &str,
+    load: impl FnOnce(&mut Selected) -> Result<reader::TextTail, String>,
+    redact: impl FnOnce(&str) -> String,
+) -> Result<PreparedRead, String> {
     binding::valid_name(kind, name)?;
     if revision.len() != 64 || listing_revision.len() != 64 {
         return Err(CHANGED.into());
@@ -256,20 +315,35 @@ fn read_with(
     if row_revision(&captured.revision, kind, name, &selected.stamp)? != revision {
         return Err(CHANGED.into());
     }
-    let result = (|| {
+    let result: Result<LogContent, String> = (|| {
         captured.binding.validate_json()?;
         let tail = load(&mut selected)?;
         // Only the currently loaded text is passed to the existing account
         // redactor. Retain a bounded Unicode suffix if replacement expanded it.
         let safe = reader::bound_redacted(redact(&tail.text), tail.truncated);
+        let content_revision = digest(&(
+            "instance-log-content-v1",
+            listing_revision,
+            revision,
+            id,
+            kind,
+            name,
+            &safe.text,
+            safe.truncated,
+        ))?;
         Ok(LogContent {
             id: id.into(),
             kind,
             name: name.into(),
             text: safe.text,
             truncated: safe.truncated,
+            content_revision,
         })
     })();
     verify(shared, &captured, Some(&selected)).map_err(|_| CHANGED.to_string())?;
-    result
+    Ok(PreparedRead {
+        captured,
+        selected,
+        content: result?,
+    })
 }

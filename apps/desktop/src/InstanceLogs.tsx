@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { FileText, LoaderCircle, RotateCcw, X } from "lucide-react";
+import { Download, FileText, LoaderCircle, RotateCcw, X } from "lucide-react";
 import { createTranslator } from "./i18n";
 import { LauncherLogContent } from "./LauncherLogContent";
 import type { LauncherLocale } from "./launcherTypes";
 import type {
   InstanceLogContent,
   InstanceLogEntry,
+  InstanceLogExportResponse,
   InstanceLogKind,
   InstanceLogListing,
 } from "./instanceLogTypes";
@@ -44,12 +45,19 @@ type ReadingState = {
 };
 type ListRequest = { scope: Scope };
 type ReadRequest = { scope: Scope; listing: InstanceLogListing };
+type ExportState = {
+  reading: ReadingState;
+  result?: InstanceLogExportResponse;
+  error?: string;
+};
 const kinds: InstanceLogKind[] = ["game", "crash"];
 
 /** A listing never chooses a file. Every explicit file click starts a new read
  * and search child, including rereads of identical text. Scope changes retire
  * requests during render; publication also retires saved row handlers before
  * React commits. Refresh removes the previous listing, selection and content.
+ * Export handlers and notices belong to one successful read. An admitted native
+ * save keeps its busy claim until completion, even after that read is retired.
  */
 export function InstanceLogs({
   id,
@@ -77,8 +85,12 @@ export function InstanceLogs({
   const readRequest = useRef<ReadRequest | null>(null);
   const serial = useRef(0);
   const latestListing = useRef<ListingState | null>(null);
+  const latestReading = useRef<ReadingState | null>(null);
+  const exportRequest = useRef<object | null>(null);
   const [listingState, setListing] = useState<ListingState | null>(null);
   const [readingState, setReading] = useState<ReadingState | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportState, setExportState] = useState<ExportState | null>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const callbacks = useRef({ onClose });
   callbacks.current = { onClose };
@@ -94,6 +106,7 @@ export function InstanceLogs({
     listRequest.current = null;
     readRequest.current = null;
     latestListing.current = null;
+    latestReading.current = null;
   }
   const scope = owner.current;
   const current = () =>
@@ -103,13 +116,18 @@ export function InstanceLogs({
     latestListing.current = next;
     setListing(next);
   };
+  const publishReading = (next: ReadingState | null) => {
+    latestReading.current = next;
+    setReading(next);
+    setExportState(null);
+  };
   function close() {
     if (!current()) return;
     closed.current = true;
     listRequest.current = null;
     readRequest.current = null;
     publishListing(null);
-    setReading(null);
+    publishReading(null);
     callbacks.current.onClose();
   }
   async function refresh() {
@@ -117,7 +135,7 @@ export function InstanceLogs({
     const request = { scope };
     listRequest.current = request;
     readRequest.current = null;
-    setReading(null);
+    publishReading(null);
     publishListing({ scope, status: "loading" });
     const owns = () => allowed() && listRequest.current === request;
     try {
@@ -152,7 +170,7 @@ export function InstanceLogs({
     const request = { scope, listing };
     readRequest.current = request;
     const selection = { scope, listing, entry, serial: ++serial.current };
-    setReading({ ...selection, status: "loading" });
+    publishReading({ ...selection, status: "loading" });
     const owns = () =>
       allowed() &&
       readRequest.current === request &&
@@ -172,16 +190,60 @@ export function InstanceLogs({
         content.name !== entry.name
       )
         throw new Error(tr.t("instanceLogs.wrongFile"));
-      setReading({ ...selection, status: "ready", content });
+      publishReading({ ...selection, status: "ready", content });
     } catch (error) {
       if (owns())
-        setReading({
+        publishReading({
           ...selection,
           status: "error",
           error: tr.serviceError(error),
         });
     } finally {
       if (readRequest.current === request) readRequest.current = null;
+    }
+  }
+  function exportable(
+    source: ReadingState,
+  ): source is ReadingState & { content: InstanceLogContent } {
+    return (
+      allowed() &&
+      latestReading.current === source &&
+      latestListing.current?.listing === source.listing &&
+      source.status === "ready" &&
+      !!source.content?.text &&
+      typeof source.content.content_revision === "string" &&
+      source.content.content_revision !== ""
+    );
+  }
+  async function exportText(source: ReadingState) {
+    if (!exportable(source) || exportRequest.current) return;
+    const request = {};
+    exportRequest.current = request;
+    setExporting(true);
+    setExportState(null);
+    const owns = () => exportable(source) && exportRequest.current === request;
+    try {
+      const result = await scope.api<InstanceLogExportResponse>(
+        "instance_export_log",
+        {
+          id: scope.id,
+          kind: source.entry.kind,
+          name: source.entry.name,
+          revision: source.entry.revision,
+          listingRevision: source.listing.revision,
+          contentRevision: source.content.content_revision,
+        },
+      );
+      if (owns() && result.status !== "cancelled")
+        setExportState({ reading: source, result });
+    } catch (error) {
+      if (owns())
+        setExportState({ reading: source, error: tr.serviceError(error) });
+    } finally {
+      if (exportRequest.current === request) {
+        exportRequest.current = null;
+        if (live.current) setExporting(false);
+      }
     }
   }
   useEffect(() => {
@@ -192,6 +254,7 @@ export function InstanceLogs({
       listRequest.current = null;
       readRequest.current = null;
       latestListing.current = null;
+      latestReading.current = null;
     };
   }, []);
   useEffect(() => {
@@ -212,6 +275,7 @@ export function InstanceLogs({
       ? readingState
       : null;
   const loading = readable && (!displayed || displayed.status === "loading");
+  const exportNotice = exportState?.reading === reading ? exportState : null;
   const size = (bytes: number) =>
     bytes < 1024
       ? `${tr.formatNumber(bytes)} B`
@@ -231,7 +295,7 @@ export function InstanceLogs({
         role="dialog"
         aria-modal="true"
         aria-labelledby="instance-logs-title"
-        aria-busy={loading || reading?.status === "loading"}
+        aria-busy={loading || reading?.status === "loading" || exporting}
         tabIndex={-1}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -358,9 +422,32 @@ export function InstanceLogs({
               >
                 {reading ? (
                   <>
-                    <h3 className="ce-instance-logs-selected">
-                      {reading.entry.name}
-                    </h3>
+                    <div className="ce-instance-logs-reader-heading">
+                      <h3 className="ce-instance-logs-selected">
+                        {reading.entry.name}
+                      </h3>
+                      <button
+                        className="ce-button ce-instance-logs-export"
+                        type="button"
+                        disabled={exporting || !exportable(reading)}
+                        onClick={() => void exportText(reading)}
+                      >
+                        {exporting ? (
+                          <LoaderCircle
+                            className="spin"
+                            size={15}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <Download size={15} aria-hidden="true" />
+                        )}
+                        {tr.t(
+                          exporting
+                            ? "instanceLogs.exporting"
+                            : "instanceLogs.export",
+                        )}
+                      </button>
+                    </div>
                     {reading.status === "loading" ? (
                       <p className="ce-instance-logs-state" role="status">
                         <LoaderCircle
@@ -377,6 +464,30 @@ export function InstanceLogs({
                       </div>
                     ) : reading.content ? (
                       <>
+                        {exportNotice && (
+                          <p
+                            className={`ce-instance-logs-note ce-instance-logs-export-notice${exportNotice.error ? " is-error" : ""}`}
+                            role={exportNotice.error ? "alert" : "status"}
+                          >
+                            <span
+                              title={exportNotice.result?.path ?? undefined}
+                            >
+                              {tr.t(
+                                exportNotice.error
+                                  ? "instanceLogs.exportFailed"
+                                  : exportNotice.result?.status === "complete"
+                                    ? "instanceLogs.exported"
+                                    : "instanceLogs.exportUnavailable",
+                              )}
+                            </span>
+                            {exportNotice.error && (
+                              <span>{exportNotice.error}</span>
+                            )}
+                            {exportNotice.result?.warning && (
+                              <span>{exportNotice.result.warning}</span>
+                            )}
+                          </p>
+                        )}
                         {reading.content.truncated && (
                           <p className="ce-instance-logs-note" role="status">
                             {tr.t("instanceLogs.textTruncated")}

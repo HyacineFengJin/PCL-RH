@@ -209,6 +209,7 @@ const rootCommands = new Set([
   "inspect_instance",
   "instance_logs",
   "instance_read_log",
+  "instance_export_log",
   "launch_failure_report",
   "instance_repair_start",
   "open_folder",

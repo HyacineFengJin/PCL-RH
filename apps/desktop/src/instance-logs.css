@@ -135,13 +135,40 @@
 .ce-instance-logs-reader {
   overflow: auto;
 }
-.ce-instance-logs-selected {
+.ce-instance-logs-reader-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   flex: none;
-  margin: 0;
+  min-width: 0;
   padding: 9px 10px 0;
+}
+.ce-instance-logs-selected {
+  flex: 1;
+  min-width: 100px;
+  margin: 0;
   overflow-wrap: anywhere;
   font-size: 13px;
   font-weight: 400;
+}
+.ce-instance-logs-export.ce-button {
+  flex: none;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.ce-instance-logs-export-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 72px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.ce-instance-logs-export-notice.is-error {
+  color: var(--ce-danger-text, #bc7368);
 }
 .ce-instance-logs-modal .launcher-log-content {
   flex: 1;
@@ -168,7 +195,9 @@
   margin: 5px 0;
 }
 .ce-instance-logs-modal .launcher-log-text.log-view {
-  min-height: 80px;
+  /* Short windows still need room for the file heading and export notices.
+     Let the text viewport shrink instead of extending below its reader. */
+  min-height: 24px;
   max-height: none;
   padding: 10px;
 }

@@ -1,6 +1,6 @@
-/** Read-only instance logs use separate list and file revisions. A row is only
- * readable against the exact listing that supplied it; the native service owns
- * directory/file identity checks, gzip decoding and bounded, redacted text. */
+/** Instance logs bind listings, files and viewed text separately. A row is only
+ * readable against its original listing; native owns identity checks, gzip
+ * decoding and bounded, redacted text. Export sends that text's receipt. */
 export type InstanceLogKind = "game" | "crash";
 export type InstanceLogEntry = {
   kind: InstanceLogKind;
@@ -24,4 +24,12 @@ export type InstanceLogContent = {
   name: string;
   text: string;
   truncated: boolean;
+  /** Native receipt for this exact bounded, redacted text. */
+  content_revision: string;
+};
+export type InstanceLogExportResponse = {
+  status: "cancelled" | "complete" | "unavailable";
+  path: string | null;
+  count: number;
+  warning: string | null;
 };

@@ -2008,6 +2008,7 @@ fn main() {
             launcher_log_commands::launcher_logs,
             instance_log_commands::instance_logs,
             instance_log_commands::instance_read_log,
+            instance_log_commands::instance_export_log,
             launcher_log_commands::launcher_read_log,
             launcher_log_commands::launcher_prepare_log_export,
             launcher_log_commands::launcher_export_logs,

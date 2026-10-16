@@ -126,6 +126,9 @@ impl Binding {
     pub fn is_shared(&self) -> bool {
         !self.scope.is_isolated()
     }
+    pub fn root_identity(&self) -> Result<(u64, u64), String> {
+        self.root.identity()
+    }
     pub fn folder(&self, kind: LogKind) -> Option<&Dir> {
         match kind {
             LogKind::Game => self.game.as_ref(),

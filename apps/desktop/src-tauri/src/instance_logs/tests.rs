@@ -1,5 +1,8 @@
 //! Synthetic directories only. These tests never launch Java/a game, read an
-//! actual account, run recovery, export a file, or invoke a desktop operation.
+//! actual account, run recovery, or invoke a desktop operation. Export tests
+//! publish only to disposable synthetic destination directories.
+#[path = "export_tests.rs"]
+mod export_tests;
 use super::*;
 use crate::integration_tests::Fixture;
 use flate2::{write::GzEncoder, Compression};
