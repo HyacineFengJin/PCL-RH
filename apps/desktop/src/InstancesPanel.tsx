@@ -320,6 +320,7 @@ export function InstancePanel({
   native,
   onTaskStart,
   occupiedNames = [],
+  resourceRefreshKey = "",
 }: {
   instance: Instance;
   section: string;
@@ -339,6 +340,7 @@ export function InstancePanel({
   native: boolean;
   onTaskStart: (id: string) => void;
   occupiedNames?: string[];
+  resourceRefreshKey?: string;
 }) {
   const rootScope = settings.root_id || settings.root;
   const metadataScope = useRef<MetadataScope>({
@@ -1447,7 +1449,7 @@ export function InstancePanel({
       mutationDisabled={mutationDisabled}
       instance={instance}
       scopeKey={rootScope}
-      generation={settings.revision || ""}
+      generation={JSON.stringify([settings.revision || "", resourceRefreshKey])}
       native={native}
       onTaskStart={onTaskStart}
     />

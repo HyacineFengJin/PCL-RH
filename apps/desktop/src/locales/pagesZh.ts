@@ -520,8 +520,7 @@ const messages = {
   "local.deleting": "正在删除资源…",
   "local.empty": "尚未安装资源",
   "local.installHelp": "你可以从已经下载好的文件安装资源。",
-  "local.isolationHelp":
-    "如果你已经安装了资源，可能是实例隔离设置有误，请在设置中调整实例隔离选项。",
+  "local.refreshHelp": "在文件夹中添加资源后，点击「刷新」重新读取。",
   "local.searchPlaceholder": "搜索资源：名称 / 描述 / 标签",
   "local.search": "搜索资源",
   "local.updatable": "可更新",

@@ -138,7 +138,16 @@ export function ResourcePanel({
     workingRef = useRef(false),
     removalDialog = useRef<HTMLDivElement>(null),
     currentIdentity = useRef({ id, section, api, scopeKey, generation });
-  currentIdentity.current = { id, section, api, scopeKey, generation };
+  // Returning to equal IDs creates a new owner; earlier saved actions stay retired.
+  if (
+    currentIdentity.current.id !== id ||
+    currentIdentity.current.section !== section ||
+    currentIdentity.current.api !== api ||
+    currentIdentity.current.scopeKey !== scopeKey ||
+    currentIdentity.current.generation !== generation
+  )
+    currentIdentity.current = { id, section, api, scopeKey, generation };
+  const renderedIdentity = currentIdentity.current;
   const admission = useRef({ disabled, mutationDisabled });
   admission.current = { disabled, mutationDisabled };
   const writableKind = ["mods", "resourcepacks", "shaderpacks"].includes(
@@ -148,11 +157,7 @@ export function ResourcePanel({
     return (
       alive.current &&
       scopeGeneration.current === scope &&
-      currentIdentity.current.id === id &&
-      currentIdentity.current.section === section &&
-      currentIdentity.current.api === api &&
-      currentIdentity.current.scopeKey === scopeKey &&
-      currentIdentity.current.generation === generation
+      currentIdentity.current === renderedIdentity
     );
   }
   async function readResources(scope: number, clearSelection = true) {
@@ -401,10 +406,33 @@ export function ResourcePanel({
     });
   }
   function refreshResources() {
-    if (workingRef.current) return;
+    if (!isCurrent(scopeGeneration.current) || workingRef.current || loading)
+      return;
     setActionError("");
     void readResources(scopeGeneration.current);
   }
+  const browseButton = (
+    <button
+      className="ce-button"
+      disabled={!browseRequest || !navigation.browseResources}
+      title={!browseRequest ? t("local.infoKinds") : undefined}
+      onClick={() => {
+        if (isCurrent(scopeGeneration.current) && browseRequest)
+          navigation.browseResources?.(browseRequest);
+      }}
+    >
+      {t("local.downloadNew")}
+    </button>
+  );
+  const refreshButton = (
+    <button
+      className="ce-button"
+      disabled={loading || !!working}
+      onClick={refreshResources}
+    >
+      {t("ui.refresh")}
+    </button>
+  );
   const selectedWritable = !!filesFor(selectedEntries),
     selectedUpdatable =
       section === "mods" &&
@@ -446,13 +474,6 @@ export function ResourcePanel({
                 {t("local.recover")}
               </button>
             )}
-            <button
-              className="ce-button"
-              onClick={refreshResources}
-              disabled={!!working || loading}
-            >
-              {t("ui.refresh")}
-            </button>
           </div>
         )}
         {section === "mods" && (
@@ -473,17 +494,8 @@ export function ResourcePanel({
         >
           {t("local.installFile")}
         </button>
-        <button
-          className="ce-button"
-          disabled={!browseRequest || !navigation.browseResources}
-          title={!browseRequest ? t("local.infoKinds") : undefined}
-          onClick={() => {
-            if (isCurrent(scopeGeneration.current) && browseRequest)
-              navigation.browseResources?.(browseRequest);
-          }}
-        >
-          {t("local.downloadNew")}
-        </button>
+        {browseButton}
+        {refreshButton}
         <button
           className="ce-button"
           disabled={loading || !!error || !filtered.length}
@@ -634,21 +646,25 @@ export function ResourcePanel({
             <p>
               {t("local.installHelp")}
               <br />
-              {t("local.isolationHelp")}
+              {t("local.refreshHelp")}
             </p>
-            <div className="ce-actions">
-              <button
-                className="ce-button primary"
-                disabled={writesDisabled}
-                title={!writableKind ? t("common.unavailable") : undefined}
-                onClick={importResources}
-              >
-                {t("local.installFile")}
-              </button>
-              <button className="ce-button" onClick={() => onOpen(section)}>
-                {t("common.openFolder")}
-              </button>
-            </div>
+            {!latestRemoval && (
+              <div className="ce-actions">
+                <button
+                  className="ce-button primary"
+                  disabled={writesDisabled}
+                  title={!writableKind ? t("common.unavailable") : undefined}
+                  onClick={importResources}
+                >
+                  {t("local.installFile")}
+                </button>
+                {browseButton}
+                <button className="ce-button" onClick={() => onOpen(section)}>
+                  {t("common.openFolder")}
+                </button>
+                {refreshButton}
+              </div>
+            )}
           </section>
         </div>
         {removalConfirmation}

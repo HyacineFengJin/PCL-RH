@@ -98,6 +98,7 @@ import {
   taskHasFloatingEntry,
   taskIsActive,
   taskNeedsBootstrap,
+  taskNeedsResourceScan,
 } from "./taskLifecycle";
 import { InstanceImport } from "./InstanceImport";
 import { InstanceTrash } from "./InstanceTrash";
@@ -913,17 +914,24 @@ function App() {
     taskView.pendingLimit;
   const aggregateStatus = taskAggregate(downloadStatuses);
   const speed = useAggregateDownloadSpeed(downloadStatuses);
-  const terminalRefresh = React.useRef<string | null>(null);
+  const terminalRefresh = React.useRef(false);
+  const terminalRead = React.useRef<number | null>(null);
+  const [resourceScanGeneration, setResourceScanGeneration] = useState(0);
+  function flushTerminalRefresh() {
+    if (
+      terminalRefresh.current &&
+      !rootWorkingRef.current &&
+      terminalRead.current === null
+    )
+      void load();
+  }
   function handleTaskTerminal(next: DownloadStatus) {
+    if (taskNeedsResourceScan(next, viewContext.current.rootId))
+      setResourceScanGeneration((current) => current + 1);
     if (!taskNeedsBootstrap(next, viewContext.current.rootId)) return;
-    const key = viewContext.current.rootKey;
-    if (terminalRefresh.current === key) return;
-    terminalRefresh.current = key;
-    void Promise.resolve().then(() => {
-      if (terminalRefresh.current !== key) return;
-      terminalRefresh.current = null;
-      if (contextKey.current === key) void load();
-    });
+    if (terminalRefresh.current) return;
+    terminalRefresh.current = true;
+    void Promise.resolve().then(flushTerminalRefresh);
   }
   const [accountType, setAccountType] = useState("");
   const [appearanceId, setAppearanceId] = useState<string | null>(null);
@@ -1509,11 +1517,23 @@ function App() {
   async function load() {
     if (rootWorkingRef.current) return;
     const request = ++stateRequest.current;
+    // Keep terminal intent attached to its read until it settles. A root
+    // operation can retire that response while its chooser is still open.
+    if (terminalRefresh.current) {
+      terminalRefresh.current = false;
+      terminalRead.current = request;
+    }
     try {
       const next = await api<State>("bootstrap");
       if (request === stateRequest.current) applyState(next);
     } catch (e) {
       if (request === stateRequest.current) setError(String(e));
+    } finally {
+      if (terminalRead.current === request) {
+        terminalRead.current = null;
+        if (request !== stateRequest.current) terminalRefresh.current = true;
+      }
+      flushTerminalRefresh();
     }
   }
   async function rootAction(command: string, args: Record<string, unknown>) {
@@ -1533,6 +1553,7 @@ function App() {
     } finally {
       rootWorkingRef.current = false;
       setRootWorking(false);
+      flushTerminalRefresh();
     }
   }
   async function addRoot() {
@@ -1564,6 +1585,7 @@ function App() {
     } finally {
       rootWorkingRef.current = false;
       setRootWorking(false);
+      flushTerminalRefresh();
     }
   }
   useEffect(() => {
@@ -2889,6 +2911,7 @@ function App() {
                   ) : screen === "instance" && selected ? (
                     <InstancePanel
                       key={`${rootKey}:${selected.id}`}
+                      resourceRefreshKey={`${rootKey}:${resourceScanGeneration}`}
                       instance={selected}
                       section={instancePage}
                       settings={data.settings}

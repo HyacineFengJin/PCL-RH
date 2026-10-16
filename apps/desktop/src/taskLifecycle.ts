@@ -20,6 +20,24 @@ export function taskDisplayName(status: DownloadStatus): string {
 export function taskHasFloatingEntry(status: DownloadStatus): boolean {
   return taskIsActive(status) || status.stage === "error";
 }
+/** Resource lists change at a writer's terminal boundary, including partial
+ * failure/cancellation, without invalidating scans on every progress poll. */
+export function taskNeedsResourceScan(
+  task: DownloadStatus,
+  currentRoot: string | null,
+): boolean {
+  return (
+    !!currentRoot &&
+    task.root_id === currentRoot &&
+    taskIsTerminal(task) &&
+    [
+      "resource_download",
+      "resource_update",
+      "resource_update_restore",
+      "resource_operation",
+    ].includes(task.kind || "")
+  );
+}
 /** Global registry/recovery mutations refresh the current bootstrap projection
  * even when the writer targeted another root; file-only launcher jobs do not. */
 export function taskNeedsBootstrap(

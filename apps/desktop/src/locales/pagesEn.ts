@@ -576,8 +576,7 @@ const messages = {
   "local.empty": "No resources installed",
   "local.installHelp":
     "Install resources from files you have already downloaded.",
-  "local.isolationHelp":
-    "If resources are already installed, check the instance isolation setting.",
+  "local.refreshHelp": "After adding files to the folder, click Refresh.",
   "local.searchPlaceholder": "Search resources: name / description / tags",
   "local.search": "Search resources",
   "local.updatable": "Updates available",

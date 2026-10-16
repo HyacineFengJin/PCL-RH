@@ -351,6 +351,8 @@ test("a delayed bootstrap cannot resurrect a removed directory or its old instan
     });
   const environment = {
     rootWorkingRef: { current: false },
+    terminalRefresh: { current: false },
+    terminalRead: { current: null },
     stateRequest: { current: 0 },
     rootDialog: null,
     viewContext: {
@@ -373,7 +375,13 @@ test("a delayed bootstrap cannot resurrect a removed directory or its old instan
     notify() {},
   };
   const handlers = functions(
-    ["normalizedState", "applyState", "load", "rootAction"],
+    [
+      "normalizedState",
+      "applyState",
+      "load",
+      "rootAction",
+      "flushTerminalRefresh",
+    ],
     environment,
   );
   const loading = handlers.load();
