@@ -3,7 +3,7 @@
 //! chooser or writer admission is held during bulk reads. Fingerprints match the
 //! resource row format, while SHA256 detects content edits between confirmation.
 use crate::launcher_local::filesystem::{check_file, component, Dir, Stamp};
-use pcl_core::content_scope::{automatic_scope, ContentScope, MarkerState};
+use pcl_core::content_scope::{resolve_scope, ContentScope, IsolationPolicy, MarkerState};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::CString,
@@ -165,9 +165,12 @@ fn marker(folder: &Dir, name: &str) -> Result<Option<Marker>, String> {
         mode: stat.st_mode,
     }))
 }
-fn isolation_snapshot(folder: &Dir) -> Result<(ContentScope, Vec<Option<Marker>>), String> {
+fn isolation_snapshot(
+    folder: &Dir,
+    policy: IsolationPolicy,
+) -> Result<(ContentScope, Vec<Option<Marker>>), String> {
     let mut markers = Vec::new();
-    let scope = automatic_scope(|name| {
+    let scope = resolve_scope(policy, |name| {
         let found = marker(folder, name)?;
         let state = match found.as_ref().map(|m| m.mode & libc::S_IFMT) {
             None => MarkerState::Missing,
@@ -188,6 +191,7 @@ pub(super) struct Binding {
     kind: String,
     json: Pinned,
     markers: Vec<Option<Marker>>,
+    policy: IsolationPolicy,
 }
 impl Binding {
     pub fn capture(
@@ -196,6 +200,7 @@ impl Binding {
         kind: &str,
         budget: &mut Budget,
         closing: &AtomicBool,
+        policy: IsolationPolicy,
     ) -> Result<Self, String> {
         pcl_core::identifier(id)?;
         if !matches!(kind, "mods" | "resourcepacks" | "shaderpacks") {
@@ -217,7 +222,7 @@ impl Binding {
         if !data.is_object() {
             return Err("实例元数据格式无效".into());
         }
-        let (scope, markers) = isolation_snapshot(&instance)?;
+        let (scope, markers) = isolation_snapshot(&instance, policy)?;
         let folder = if scope.is_isolated() {
             instance.child(kind)?
         } else {
@@ -232,6 +237,7 @@ impl Binding {
             kind: kind.into(),
             json,
             markers,
+            policy,
         };
         bound.check()?;
         Ok(bound)
@@ -245,7 +251,7 @@ impl Binding {
             return Err("游戏或实例目录已变化，请刷新后重新导出".into());
         }
         self.json.check(&instance, &format!("{}.json", self.id))?;
-        let (scope, markers) = isolation_snapshot(&instance)?;
+        let (scope, markers) = isolation_snapshot(&instance, self.policy)?;
         if markers != self.markers {
             return Err("实例隔离配置已变化，请刷新后重新导出".into());
         }

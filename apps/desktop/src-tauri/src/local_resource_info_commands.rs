@@ -34,12 +34,20 @@ pub async fn local_resource_info_export(
             return Err("启动器正在关闭".into());
         }
         pcl_core::identifier(&id)?;
-        shared.config.resolve(root_id.as_deref())?
+        shared.config.isolation_settings(root_id.as_deref())?
     };
     let worker = shared.clone();
-    let captured = initial.path.clone();
+    let captured = initial.registered_path.clone();
+    let policy = initial.policy(&id);
     let prepared = tauri::async_runtime::spawn_blocking(move || {
-        info::prepare(Path::new(&captured), &id, &kind, &files, &worker.closing)
+        info::prepare_with_isolation(
+            Path::new(&captured),
+            &id,
+            &kind,
+            &files,
+            &worker.closing,
+            policy,
+        )
     })
     .await
     .map_err(|_| "资源信息读取任务意外退出".to_string())??;
@@ -66,8 +74,8 @@ pub async fn local_resource_info_export(
                 if shared.closing.load(Ordering::SeqCst) {
                     return Err("启动器正在关闭".into());
                 }
-                let current = shared.config.resolve(Some(&initial.id))?;
-                if current.path != initial.path {
+                let current = shared.config.isolation_settings(Some(&initial.root.id))?;
+                if current.revision != initial.revision || current.root != initial.root {
                     return Err("所选游戏目录已变化，请重新导出".into());
                 }
                 prepared.check()?;

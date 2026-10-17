@@ -63,7 +63,8 @@ mod fixtures {
                 &before.revision,
                 patch(serde_json::json!({
                     "game_launch": {
-                        "window": {"mode": "custom", "width": 1920, "height": 1080}
+                        "window": {"mode": "custom", "width": 1920, "height": 1080},
+                        "window_title": "你好 Minecraft 🦀"
                     }
                 })),
             )
@@ -88,6 +89,14 @@ mod fixtures {
             }
         );
         assert_eq!(after.preferences.game_launch.ip, IpPreference::Ipv6);
+        assert_eq!(
+            after.preferences.game_launch.window_title,
+            "你好 Minecraft 🦀"
+        );
+        assert_eq!(
+            fixture.store().snapshot().preferences.game_launch,
+            after.preferences.game_launch
+        );
         assert_eq!(after.preferences.appearance, before.preferences.appearance);
         let export = store.export_settings(&after.revision).unwrap();
         let mut old_export: serde_json::Value = serde_json::from_slice(&export).unwrap();
@@ -128,6 +137,15 @@ mod fixtures {
                 }))
             )
             .is_err());
+        for title in ["bad\ntitle".to_owned(), "🦀".repeat(257)] {
+            assert!(store
+                .update(
+                    &before.revision,
+                    patch(serde_json::json!({"game_launch":{"window_title":title}}))
+                )
+                .is_err());
+            assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        }
         assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
         let mut invalid: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         invalid["preferences"]["game_launch"]["window"] =

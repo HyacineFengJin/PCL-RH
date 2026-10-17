@@ -1799,10 +1799,18 @@ function App() {
     setData((d) =>
       d && currentSubmission(d.settings) ? { ...d, settings: saved } : d,
     );
-    if (contextKey.current === targetKey)
+    if (contextKey.current === targetKey) {
       setDraft((current) =>
         current && currentSubmission(current) ? saved : current,
       );
+      const isolationChanged =
+        settings.isolation !== data?.settings.isolation ||
+        JSON.stringify(settings.isolation_overrides || {}) !==
+          JSON.stringify(data?.settings.isolation_overrides || {});
+      // A policy save changes directory ownership as well as controls. Reload
+      // the root's scan so counts and rows describe the same content scope.
+      if (isolationChanged) await load();
+    }
   }
   async function pick(id: string) {
     if (!data || rootWorking) return;

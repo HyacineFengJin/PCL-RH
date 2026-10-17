@@ -428,7 +428,7 @@ macro_rules! patch {
         }
     }
 }
-patch!(GameLaunchPatch => LaunchOptions { window: WindowSize, ip: IpPreference });
+patch!(GameLaunchPatch => LaunchOptions { window: WindowSize, ip: IpPreference, window_title: String });
 patch!(AppearancePatch => AppearancePreferences {
     opacity_percent: u8, theme: Theme, light_palette: Palette, dark_palette: Palette,
     show_logo: bool, lock_window_size: bool, launch_tips: bool,

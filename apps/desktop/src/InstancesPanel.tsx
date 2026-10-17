@@ -1,3 +1,4 @@
+import { GameTitleField, IsolationField } from "./GameIdentityFields";
 import { CeSelect } from "./CeSelect";
 import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useRef, useState } from "react";
@@ -951,7 +952,7 @@ export function InstancePanel({
             <InstanceDelete
               id={instance.id}
               api={api}
-              scopeKey={rootScope}
+              scopeKey={`${rootScope}:${settings.revision || ""}`}
               native={native}
               disabled={
                 disabled ||
@@ -1257,32 +1258,27 @@ export function InstancePanel({
         <section className="ce-card">
           <h2 className="ce-card-title">{t("instance.launchOptions")}</h2>
           <div className="instance-launch-fields">
-            <label className="ce-row">
-              <span>{t("instance.isolation")}</span>
-              <CeSelect
-                className="ce-field"
-                value={instance.isolated ? "on" : "off"}
-                disabled
-                title={t("settings.autoIsolation")}
-              >
-                <option value="on">{t("ui.on")}</option>
-                <option value="off">{t("ui.off")}</option>
-              </CeSelect>
-            </label>
-            <label className="ce-row">
-              <span>{t("instance.windowTitle")}</span>
-              <CeSelect
-                className="ce-field"
-                disabled
-                title={t("common.unavailable")}
-              >
-                <option>{t("ui.followGlobal")}</option>
-              </CeSelect>
-            </label>
-            <label className="ce-check">
-              <input type="checkbox" disabled title={t("common.unavailable")} />
-              {t("instance.defaultTitle")}
-            </label>
+            <IsolationField
+              settings={settings}
+              instanceId={instance.id}
+              onSave={onSave}
+              scope={`${rootScope}:${settings.root}:${settings.revision}:${instance.id}:${section}`}
+              disabled={!native || disabled || !!mutationDisabled}
+              onNotify={onNotify}
+            />
+            <GameTitleField
+              value={settings.window_title_overrides?.[instance.id]}
+              inherited
+              scope={`${rootScope}:${settings.root}:${settings.revision}:${instance.id}:${section}`}
+              disabled={!native || disabled || !!mutationDisabled}
+              onNotify={onNotify}
+              onSave={async (title) => {
+                const titles = { ...settings.window_title_overrides };
+                if (title === undefined) delete titles[instance.id];
+                else titles[instance.id] = title;
+                await onSave({ ...settings, window_title_overrides: titles });
+              }}
+            />
             <label className="ce-row">
               <span>{t("instance.customInfo")}</span>
               <input
@@ -1423,14 +1419,21 @@ export function InstancePanel({
       </>
     );
   }
-  if (section === "server") return <ServerPanel id={instance.id} api={api} />;
+  if (section === "server")
+    return (
+      <ServerPanel
+        id={instance.id}
+        api={api}
+        generation={`${rootScope}:${settings.revision || ""}`}
+      />
+    );
   if (section === "modify" || section === "export")
     return (
       <InstanceOperations
         instance={instance}
         section={section}
         api={api}
-        scopeKey={rootScope}
+        scopeKey={`${rootScope}:${settings.revision || ""}`}
         native={native}
         busy={disabled || !!mutationDisabled}
         onTaskStart={onTaskStart}
@@ -1448,7 +1451,7 @@ export function InstancePanel({
       disabled={disabled}
       mutationDisabled={mutationDisabled}
       instance={instance}
-      scopeKey={rootScope}
+      scopeKey={`${rootScope}:${settings.revision || ""}`}
       generation={JSON.stringify([settings.revision || "", resourceRefreshKey])}
       native={native}
       onTaskStart={onTaskStart}
@@ -1456,12 +1459,21 @@ export function InstancePanel({
   );
 }
 type ServerEntry = { name: string; ip: string; icon?: string };
-function ServerPanel({ id, api }: { id: string; api: Api }) {
+function ServerPanel({
+  id,
+  api,
+  generation,
+}: {
+  id: string;
+  api: Api;
+  generation: string;
+}) {
   const [servers, setServers] = useState<ServerEntry[]>([]),
     [error, setError] = useState(""),
     [refresh, setRefresh] = useState(0);
   useEffect(() => {
     let live = true;
+    setServers([]);
     setError("");
     api<ServerEntry[]>("instance_servers", { id })
       .then((v) => {
@@ -1473,7 +1485,7 @@ function ServerPanel({ id, api }: { id: string; api: Api }) {
     return () => {
       live = false;
     };
-  }, [id, api, refresh]);
+  }, [id, api, refresh, generation]);
   return (
     <div className="ce-server-panel">
       <section className="ce-card">

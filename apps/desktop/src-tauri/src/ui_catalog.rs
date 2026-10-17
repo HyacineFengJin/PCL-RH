@@ -399,11 +399,22 @@ pub async fn instance_servers(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<Vec<Server>, String> {
-    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
+    let shared = state.inner().clone();
+    let captured = shared.config.isolation_settings(root_id.as_deref())?;
+    let policy = captured.policy(&id);
+    let root = PathBuf::from(&captured.root.path);
     tauri::async_runtime::spawn_blocking(move || {
-        let base = ui_data::resource_dir(&root, &id, "server")?;
+        let base = ui_data::resource_dir_with_isolation(&root, &id, "server", policy)?;
         let path = base.join("servers.dat");
         if !path.exists() {
+            if shared
+                .config
+                .isolation_settings(Some(&captured.root.id))?
+                .revision
+                != captured.revision
+            {
+                return Err("实例隔离设置已变化，请重新读取服务器列表".into());
+            }
             return Ok(Vec::new());
         }
         let path = path.canonicalize().map_err(|e| e.to_string())?;
@@ -419,7 +430,7 @@ pub async fn instance_servers(
         if bytes.len() > 8 * 1024 * 1024 {
             return Err("服务器列表过大".into());
         }
-        if bytes.starts_with(&[0x1f, 0x8b]) {
+        let result = if bytes.starts_with(&[0x1f, 0x8b]) {
             let mut data = Vec::new();
             flate2::read::GzDecoder::new(bytes.as_slice())
                 .take(8 * 1024 * 1024 + 1)
@@ -431,7 +442,19 @@ pub async fn instance_servers(
             decode_servers(&data)
         } else {
             decode_servers(&bytes)
+        };
+        if ui_data::resource_dir_with_isolation(&root, &id, "server", policy)? != base {
+            return Err("实例内容目录已变化，请重新读取服务器列表".into());
         }
+        if shared
+            .config
+            .isolation_settings(Some(&captured.root.id))?
+            .revision
+            != captured.revision
+        {
+            return Err("实例隔离设置已变化，请重新读取服务器列表".into());
+        }
+        result
     })
     .await
     .map_err(|e| e.to_string())?

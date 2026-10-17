@@ -230,11 +230,13 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
     // alias is retargeted while this read is running.
     let canonical = Path::new(&settings.root).canonicalize().ok();
     let scan_path = canonical.as_deref().unwrap_or(Path::new(&settings.root));
-    let (instances, mut scan_issues, scan_error) = match pcl_core::scan_instances_report(scan_path)
-    {
-        Ok(report) => (report.instances, report.issues, None),
-        Err(error) => (Vec::new(), Vec::new(), Some(error)),
-    };
+    let (instances, mut scan_issues, scan_error) =
+        match pcl_core::scan_instances_report_with_isolation(scan_path, |id| {
+            settings.resolved_isolation(id)
+        }) {
+            Ok(report) => (report.instances, report.issues, None),
+            Err(error) => (Vec::new(), Vec::new(), Some(error)),
+        };
     // Deleted names remain reserved. An external recreation must not acquire
     // retained metadata or become a target of stale selection/confirmation.
     let reservations = instance_delete::reserved_names(scan_path);
@@ -413,15 +415,13 @@ fn update_instance_metadata(
         return Err("请在游戏退出后修改实例信息".into());
     }
     pcl_core::identifier(id)?;
-    let root = s.config.resolve(root_id)?;
-    ensure_instance_files_ready(s, &root)?;
+    let captured = s.config.isolation_settings(root_id)?;
+    let root = &captured.root;
+    ensure_instance_files_ready(s, root)?;
     instance_delete::ensure_name_available(Path::new(&root.path), id)?;
-    if !pcl_core::scan_instances_report(Path::new(&root.path))?
-        .instances
-        .iter()
-        .any(|instance| instance.id == id)
-    {
-        return Err("未找到可读取的所选实例，请重新读取列表".into());
+    pcl_core::scan_instance_with_isolation(Path::new(&root.path), id, captured.policy(id))?;
+    if s.config.isolation_settings(Some(&root.id))?.revision != captured.revision {
+        return Err("实例设置已变化，请重新读取列表".into());
     }
     s.instance_metadata
         .patch(&root.id, Path::new(&root.path), id, revision, patch)
@@ -452,14 +452,12 @@ async fn instance_metadata_read(
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         pcl_core::identifier(&id)?;
-        let root = s.config.resolve(root_id.as_deref())?;
+        let captured = s.config.isolation_settings(root_id.as_deref())?;
+        let root = &captured.root;
         instance_delete::ensure_name_available(Path::new(&root.path), &id)?;
-        if !pcl_core::scan_instances_report(Path::new(&root.path))?
-            .instances
-            .iter()
-            .any(|instance| instance.id == id)
-        {
-            return Err("未找到可读取的所选实例".into());
+        pcl_core::scan_instance_with_isolation(Path::new(&root.path), &id, captured.policy(&id))?;
+        if s.config.isolation_settings(Some(&root.id))?.revision != captured.revision {
+            return Err("实例设置已变化，请重新读取列表".into());
         }
         if let Some(warning) = s.instance_metadata.warning() {
             return Err(warning);
@@ -481,6 +479,28 @@ async fn bootstrap(state: State<'_, Arc<Shared>>) -> Result<Bootstrap, String> {
 fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<Settings, String> {
     let _operation = state.operations.lock().unwrap();
     require_reference_write(&state)?;
+    save_game_settings(&state, settings)
+}
+
+/// Caller holds operations. Directory policy is shared by every file service.
+/// Unlike a future title,
+/// changing it while a worker owns an old directory would split that ownership.
+fn save_game_settings(state: &Shared, settings: Settings) -> Result<Settings, String> {
+    let before = state.config.snapshot();
+    if settings.isolation != before.isolation
+        || settings.isolation_overrides != before.isolation_overrides
+    {
+        require_instance_job(state)?;
+        if !state.tasks.active_all().is_empty() {
+            return Err("请等待所有文件任务结束后再切换实例隔离".into());
+        }
+        for root in state.config.roots().into_iter().filter(|r| r.available) {
+            let root = state.config.resolve(Some(&root.id))?;
+            ensure_instance_files_ready(state, &root)?;
+            resource_ops::ensure_ready(Path::new(&root.path))?;
+            instance_reset::ensure_ready(Path::new(&root.path))?;
+        }
+    }
     state.config.save(settings)?;
     Ok(state.config.snapshot())
 }
@@ -1046,7 +1066,14 @@ async fn instance_export_plan(
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
         ensure_instance_files_ready(&s, &root)?;
-        instance_export::prepare(Path::new(&root.path), &id, request)
+        let captured = s.config.isolation_settings(Some(&root.id))?;
+        instance_export::prepare_with_isolation(
+            Path::new(&root.path),
+            &id,
+            request,
+            captured.policy(&id),
+            &captured.revision,
+        )
     })
     .await
     .map_err(|_| "检查导出文件的任务意外退出".to_string())?
@@ -1067,12 +1094,18 @@ async fn instance_export_start(
         resource_ops::ensure_ready(Path::new(&root.path))?;
         instance_reset::ensure_ready(Path::new(&root.path))?;
         ensure_instance_files_ready(&s, &root)?;
-        let checked =
-            instance_export::prepare(Path::new(&root.path), &plan.instance_id, plan.request)?;
+        let captured = s.config.isolation_settings(Some(&root.id))?;
+        let checked = instance_export::prepare_with_isolation(
+            Path::new(&root.path),
+            &plan.instance_id,
+            plan.request,
+            captured.policy(&plan.instance_id),
+            &captured.revision,
+        )?;
         if checked.revision != plan.revision {
             return Err("导出内容或选项已改变，请重新检查".to_string());
         }
-        Ok((root, checked))
+        Ok((captured, checked))
     })
     .await
     .map_err(|_| "检查导出方案的任务意外退出".to_string())??;
@@ -1107,15 +1140,15 @@ async fn instance_export_start(
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = s.operations.lock().unwrap();
         require_instance_job(&s)?;
-        let current = s.config.resolve(Some(&root.id))?;
-        ensure_instance_files_ready(&s, &current)?;
-        if current.path != root.path {
-            return Err("游戏目录位置已改变，请重新导出".into());
+        let current = s.config.isolation_settings(Some(&root.root.id))?;
+        ensure_instance_files_ready(&s, &current.root)?;
+        if current.revision != root.revision || current.root.path != root.root.path {
+            return Err("游戏目录或实例设置已改变，请重新导出".into());
         }
         let task = s.tasks.admit(
             tasks::TaskTarget {
-                root_id: root.id,
-                root_path: root.path,
+                root_id: root.root.id.clone(),
+                root_path: root.root.path.clone(),
                 instance_id: Some(checked.instance_id.clone()),
             },
             tasks::TaskKind::InstanceExport,
@@ -1128,9 +1161,27 @@ async fn instance_export_start(
             .spawn(move || {
                 let cancel = task.cancellation_token();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    instance_export::execute(checked, &destination, &cancel, |p| {
-                        worker.downloads.progress(&task, p)
-                    })
+                    let instance_id = checked.instance_id.clone();
+                    instance_export::execute_with_guard(
+                        checked,
+                        &destination,
+                        &cancel,
+                        |p| worker.downloads.progress(&task, p),
+                        || {
+                            let operation = worker.operations.lock().unwrap();
+                            if worker.closing.load(Ordering::SeqCst) {
+                                return Err("启动器正在关闭".into());
+                            }
+                            let current = worker.config.isolation_settings(Some(&root.root.id))?;
+                            if current.revision != root.revision
+                                || current.root.path != root.root.path
+                                || current.policy(&instance_id) != root.policy(&instance_id)
+                            {
+                                return Err("实例设置已改变，请重新导出".into());
+                            }
+                            Ok(operation)
+                        },
+                    )
                 }))
                 .unwrap_or_else(|_| {
                     Err("取消清理失败：导出任务意外退出，请检查保存目录中的临时文件".into())
@@ -1180,7 +1231,14 @@ async fn instance_export_config_save(
         let root = s.config.resolve(root_id.as_deref())?;
         // Validate the exact choices before retaining them for this instance.
         ensure_instance_files_ready(&s, &root)?;
-        instance_export::prepare(Path::new(&root.path), &id, request.clone())?;
+        let captured = s.config.isolation_settings(Some(&root.id))?;
+        instance_export::prepare_with_isolation(
+            Path::new(&root.path),
+            &id,
+            request.clone(),
+            captured.policy(&id),
+            &captured.revision,
+        )?;
         export_presets::save(&s.project, &root.id, Path::new(&root.path), &id, request)
     })
     .await
@@ -1218,11 +1276,16 @@ fn admit_resource(
     id: &str,
     root_id: Option<&str>,
     expected_path: Option<&str>,
-) -> Result<(GameRoot, tasks::TaskHandle), String> {
+    expected_revision: Option<&str>,
+) -> Result<(config::IsolationSettings, tasks::TaskHandle), String> {
     let _operation = s.operations.lock().unwrap();
     require_resource_write(s)?;
     pcl_core::identifier(id)?;
-    let root = s.config.resolve(root_id)?;
+    let captured = s.config.isolation_settings(root_id)?;
+    if expected_revision.is_some_and(|r| r != captured.revision) {
+        return Err("实例设置已变化，请重新选择资源文件".into());
+    }
+    let root = &captured.root;
     ensure_instance_files_ready(s, &root)?;
     instance_delete::ensure_name_available(Path::new(&root.path), id)?;
     if expected_path.is_some_and(|path| path != root.path) {
@@ -1236,11 +1299,12 @@ fn admit_resource(
         },
         tasks::TaskKind::ResourceOperation,
     )?;
-    Ok((root, task))
+    Ok((captured, task))
 }
 
 async fn run_resource_request(
-    root: GameRoot,
+    shared: Arc<Shared>,
+    captured: config::IsolationSettings,
     id: String,
     kind: String,
     request: ResourceRequest,
@@ -1248,7 +1312,19 @@ async fn run_resource_request(
 ) -> Result<resource_ops::MutationResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cancel = task.cancellation_token();
+        let policy = captured.policy(&id);
         let mut commit = || {
+            let _operation = shared.operations.lock().unwrap();
+            if shared.closing.load(Ordering::SeqCst) {
+                return Err("启动器正在关闭".into());
+            }
+            let current = shared.config.isolation_settings(Some(&captured.root.id))?;
+            if current.revision != captured.revision
+                || current.root.path != captured.root.path
+                || current.policy(&id) != policy
+            {
+                return Err("实例设置已改变，已取消资源操作".into());
+            }
             task.begin_finishing();
             if cancel.load(Ordering::SeqCst) {
                 Err("资源操作已取消".into())
@@ -1270,28 +1346,32 @@ async fn run_resource_request(
             });
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let root = Path::new(&root.path);
+            let root = Path::new(&captured.root.path);
             match request {
-                ResourceRequest::SetEnabled { files, enabled } => resource_ops::set_enabled(
+                ResourceRequest::SetEnabled { files, enabled } => {
+                    resource_ops::set_enabled_with_isolation(
+                        root,
+                        &id,
+                        &kind,
+                        &files,
+                        enabled,
+                        &cancel,
+                        &mut commit,
+                        &mut progress,
+                        policy,
+                    )
+                }
+                ResourceRequest::Remove(files) => resource_ops::remove_with_isolation(
                     root,
                     &id,
                     &kind,
                     &files,
-                    enabled,
                     &cancel,
                     &mut commit,
                     &mut progress,
+                    policy,
                 ),
-                ResourceRequest::Remove(files) => resource_ops::remove(
-                    root,
-                    &id,
-                    &kind,
-                    &files,
-                    &cancel,
-                    &mut commit,
-                    &mut progress,
-                ),
-                ResourceRequest::Import(sources) => resource_ops::import_files(
+                ResourceRequest::Import(sources) => resource_ops::import_files_with_isolation(
                     root,
                     &id,
                     &kind,
@@ -1299,8 +1379,9 @@ async fn run_resource_request(
                     &cancel,
                     &mut commit,
                     &mut progress,
+                    policy,
                 ),
-                ResourceRequest::Restore(operation) => resource_ops::restore(
+                ResourceRequest::Restore(operation) => resource_ops::restore_with_isolation(
                     root,
                     &id,
                     &kind,
@@ -1308,6 +1389,7 @@ async fn run_resource_request(
                     &cancel,
                     &mut commit,
                     &mut progress,
+                    policy,
                 ),
                 ResourceRequest::Recover => {
                     commit()?;
@@ -1348,9 +1430,10 @@ async fn resource_set_enabled(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<resource_ops::MutationResult, String> {
-    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
+    let (captured, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None, None)?;
     run_resource_request(
-        root,
+        state.inner().clone(),
+        captured,
         id,
         kind,
         ResourceRequest::SetEnabled { files, enabled },
@@ -1367,8 +1450,16 @@ async fn resource_remove(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<resource_ops::MutationResult, String> {
-    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
-    run_resource_request(root, id, kind, ResourceRequest::Remove(files), task).await
+    let (captured, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None, None)?;
+    run_resource_request(
+        state.inner().clone(),
+        captured,
+        id,
+        kind,
+        ResourceRequest::Remove(files),
+        task,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1379,8 +1470,16 @@ async fn resource_restore(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<resource_ops::MutationResult, String> {
-    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
-    run_resource_request(root, id, kind, ResourceRequest::Restore(operation_id), task).await
+    let (captured, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None, None)?;
+    run_resource_request(
+        state.inner().clone(),
+        captured,
+        id,
+        kind,
+        ResourceRequest::Restore(operation_id),
+        task,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1390,8 +1489,16 @@ async fn resource_recover(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<resource_ops::MutationResult, String> {
-    let (root, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None)?;
-    run_resource_request(root, id, kind, ResourceRequest::Recover, task).await
+    let (captured, task) = admit_resource(state.inner(), &id, root_id.as_deref(), None, None)?;
+    run_resource_request(
+        state.inner().clone(),
+        captured,
+        id,
+        kind,
+        ResourceRequest::Recover,
+        task,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1401,9 +1508,24 @@ async fn resource_removed(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<Vec<resource_ops::RemovedOperation>, String> {
-    let root = state.config.resolve(root_id.as_deref())?;
+    let shared = state.inner().clone();
+    let captured = shared.config.isolation_settings(root_id.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
-        resource_ops::removed(Path::new(&root.path), &id, &kind)
+        let result = resource_ops::removed_with_isolation(
+            Path::new(&captured.root.path),
+            &id,
+            &kind,
+            captured.policy(&id),
+        )?;
+        if shared
+            .config
+            .isolation_settings(Some(&captured.root.id))?
+            .revision
+            != captured.revision
+        {
+            return Err("实例设置已变化，请刷新资源列表".into());
+        }
+        Ok(result)
     })
     .await
     .map_err(|_| "读取可恢复资源失败".to_owned())?
@@ -1432,11 +1554,11 @@ async fn resource_import(
         if state.tasks.active().is_some() {
             return Err("请在当前文件操作结束后安装资源".into());
         }
-        state.config.resolve(root_id.as_deref())?
+        state.config.isolation_settings(root_id.as_deref())?
     };
     let choice = state
         .desktop
-        .pick_resource_files(window, PathBuf::from(&initial.path), &kind)
+        .pick_resource_files(window, PathBuf::from(&initial.root.path), &kind)
         .await?;
     if choice.status != "selected" {
         return Ok(ResourceImportResult {
@@ -1446,9 +1568,22 @@ async fn resource_import(
             message: choice.message,
         });
     }
-    let (root, task) = admit_resource(state.inner(), &id, Some(&initial.id), Some(&initial.path))?;
-    let result =
-        run_resource_request(root, id, kind, ResourceRequest::Import(choice.paths), task).await?;
+    let (captured, task) = admit_resource(
+        state.inner(),
+        &id,
+        Some(&initial.root.id),
+        Some(&initial.root.path),
+        Some(&initial.revision),
+    )?;
+    let result = run_resource_request(
+        state.inner().clone(),
+        captured,
+        id,
+        kind,
+        ResourceRequest::Import(choice.paths),
+        task,
+    )
+    .await?;
     Ok(ResourceImportResult {
         status: "complete",
         changed: result.changed,
@@ -1577,6 +1712,20 @@ fn captured_launch_preferences(
     view.preferences.validate()?;
     Ok(view.preferences)
 }
+fn captured_game_options(
+    settings: &Settings,
+    root: &GameRoot,
+    preferences: &launcher_prefs::LauncherPreferences,
+    id: &str,
+) -> Result<pcl_core::launch_options::LaunchOptions, String> {
+    let mut options = preferences.game_launch.clone();
+    options.isolation = root.resolved_isolation(id, settings.isolation);
+    if let Some(title) = root.window_title_overrides.get(id) {
+        options.window_title = title.clone();
+    }
+    options.validate()?;
+    Ok(options)
+}
 #[cfg(test)]
 fn update(s: &Shared, stage: &str, message: String, pid: Option<u32>, exit_code: Option<i32>) {
     let mut st = s.status.lock().unwrap();
@@ -1600,6 +1749,7 @@ fn launch_game(
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     let launcher_policy = captured_launch_preferences(&state)?;
+    let game_options = captured_game_options(&cfg, &root, &launcher_policy, &id)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
     instance_reset::ensure_ready(Path::new(&root.path))?;
     ensure_instance_files_ready(&state, &root)?;
@@ -1652,7 +1802,7 @@ fn launch_game(
                     memory,
                     java_service::effective_choice(&cfg, &root, &id),
                     &cfg.java_paths,
-                    &launcher_policy.game_launch,
+                    &game_options,
                 )?,
                 None => pcl_core::build_launch_plan_with_options(
                     Path::new(&root.path),
@@ -1662,7 +1812,7 @@ fn launch_game(
                     memory,
                     java_service::effective_choice(&cfg, &root, &id),
                     &cfg.java_paths,
-                    &launcher_policy.game_launch,
+                    &game_options,
                 )?,
             };
             if s.stop.load(Ordering::SeqCst) {
@@ -1789,7 +1939,8 @@ fn open_folder(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<(), String> {
-    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
+    let captured = state.config.isolation_settings(root_id.as_deref())?;
+    let root = PathBuf::from(&captured.root.path);
     let path = match kind.as_str() {
         "game" => root.clone(),
         "instance" => {
@@ -1799,12 +1950,23 @@ fn open_folder(
         }
         "logs" => root.join(".pcl-linux/logs"),
         "mods" | "saves" | "screenshots" | "resourcepacks" | "shaderpacks" | "litematics"
-        | "server" => ui_data::resource_dir(&root, &id.ok_or("未选择版本")?, &kind)?,
+        | "server" => {
+            let id = id.ok_or("未选择版本")?;
+            ui_data::resource_dir_with_isolation(&root, &id, &kind, captured.policy(&id))?
+        }
         _ => return Err("未知目录类型".into()),
     };
     let path = path.canonicalize().map_err(|e| e.to_string())?;
     if !path.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
         return Err("目录超出游戏目录".into());
+    }
+    if state
+        .config
+        .isolation_settings(Some(&captured.root.id))?
+        .revision
+        != captured.revision
+    {
+        return Err("实例设置已变化，请重新打开目录".into());
     }
     Command::new("xdg-open")
         .arg(path)
@@ -2132,6 +2294,8 @@ mod integration_tests {
 
     #[path = "content_scope.rs"]
     mod content_scope;
+    #[path = "game_options.rs"]
+    mod game_options;
     #[path = "resource_updates.rs"]
     mod resource_updates;
     #[path = "root_removal.rs"]
@@ -2583,7 +2747,7 @@ mod integration_tests {
             .iter()
             .any(|issue| issue.id == id && issue.message.contains("保留")));
         assert!(instance_context(&state.config, Some(&root.id), &id).is_err());
-        assert!(admit_resource(&state, &id, Some(&root.id), None).is_err());
+        assert!(admit_resource(&state, &id, Some(&root.id), None, None).is_err());
         let mut entry = instance_delete::history(path, &fixture.0, &root.id)
             .unwrap()
             .remove(0);
@@ -2628,14 +2792,22 @@ mod integration_tests {
         let (root, id) = rename_fixture(&state);
         let path = Path::new(&root.path);
         let file = fixture.0.join(".pcl-rust/settings.json");
-        let mut legacy: serde_json::Value =
-            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
-        legacy["schema_version"] = 2.into();
-        legacy.as_object_mut().unwrap().remove("java");
-        legacy.as_object_mut().unwrap().remove("java_paths");
-        for root in legacy["roots"].as_array_mut().unwrap() {
-            root.as_object_mut().unwrap().remove("java_overrides");
-        }
+        let current: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        // V2 has a frozen field layout. Construct that original document rather
+        // than retaining fields added to the current schema by later features.
+        let legacy = serde_json::json!({
+            "schema_version": 2,
+            "active_root_id": current["active_root_id"],
+            "player": current["player"],
+            "memory_gib": current["memory_gib"],
+            "roots": current["roots"].as_array().unwrap().iter().map(|registered| {
+                serde_json::json!({
+                    "id": registered["id"], "name": registered["name"],
+                    "path": registered["path"], "selected": registered["selected"],
+                    "overrides": registered["overrides"],
+                })
+            }).collect::<Vec<_>>(),
+        });
         let before = serde_json::to_vec_pretty(&legacy).unwrap();
         fs::write(&file, &before).unwrap();
         let checked = instance_delete::prepare(path, &fixture.0, &root.id, &id).unwrap();
@@ -2668,6 +2840,15 @@ mod integration_tests {
             serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         assert_eq!(migrated["schema_version"], 3);
         assert_eq!(migrated["memory_gib"], 14);
+        assert_eq!(migrated["isolation"], "automatic");
+        assert_eq!(
+            migrated["roots"][0]["isolation_overrides"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            migrated["roots"][0]["window_title_overrides"],
+            serde_json::json!({})
+        );
         let backups: Vec<_> = fs::read_dir(fixture.0.join(".pcl-rust"))
             .unwrap()
             .filter_map(|entry| {
@@ -3242,22 +3423,22 @@ mod integration_tests {
         let state = Arc::new(fixture.shared());
         let first = state.config.resolve(None).unwrap();
         let second = fixture.second(&state.config);
-        let (bound, task) = admit_resource(&state, "Same", Some(&first.id), None).unwrap();
-        assert_eq!(bound.id, first.id);
+        let (bound, task) = admit_resource(&state, "Same", Some(&first.id), None, None).unwrap();
+        assert_eq!(bound.root.id, first.id);
         state.config.select(&second.id).unwrap();
-        assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
+        assert!(admit_resource(&state, "Same", Some(&second.id), None, None).is_err());
         assert!(require_root_unused(&state, &first.id).is_err());
         // This legacy mutation keeps a global lease until it is migrated to
         // explicit queue scopes; registry changes wait alongside other writers.
         assert!(require_root_unused(&state, &second.id).is_err());
         state.tasks.cancel(task.id()).unwrap();
         assert!(state.tasks.active().is_some());
-        assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
+        assert!(admit_resource(&state, "Same", Some(&second.id), None, None).is_err());
         task.finish(TaskOutcome::Failed("cancelled".into()));
         assert!(state.tasks.active().is_none());
         assert!(require_root_unused(&state, &first.id).is_ok());
         assert!(require_root_unused(&state, &second.id).is_ok());
-        let (_, task) = admit_resource(&state, "Same", Some(&second.id), None).unwrap();
+        let (_, task) = admit_resource(&state, "Same", Some(&second.id), None, None).unwrap();
         task.finish(TaskOutcome::Complete {
             result: None,
             message: "done".into(),
@@ -3268,7 +3449,7 @@ mod integration_tests {
             root_id: Some(first.id),
             ..Default::default()
         };
-        assert!(admit_resource(&state, "Same", Some(&second.id), None).is_err());
+        assert!(admit_resource(&state, "Same", Some(&second.id), None, None).is_err());
         assert!(state.tasks.active().is_none());
     }
 
@@ -3290,10 +3471,14 @@ mod integration_tests {
         let initial = state.config.resolve(Some(&registered.id)).unwrap();
         fs::remove_file(&alias).unwrap();
         symlink(&second, &alias).unwrap();
-        assert!(admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path)).is_err());
+        assert!(
+            admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path), None).is_err()
+        );
         assert!(state.tasks.active().is_none());
         state.config.remove(&registered.id).unwrap();
-        assert!(admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path)).is_err());
+        assert!(
+            admit_resource(&state, "Same", Some(&initial.id), Some(&initial.path), None).is_err()
+        );
         assert!(state.tasks.active().is_none());
     }
 

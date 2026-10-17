@@ -981,3 +981,41 @@ fn pending_recovery_carrier_is_refused_without_repair_or_log_reads() {
     assert!(error.contains("实例重置目录含未知记录"));
     assert_eq!(tree(&f.fixture.0), before);
 }
+
+#[test]
+fn explicit_isolation_controls_log_sources_and_policy_roundtrip_retires_old_listing() {
+    use pcl_core::content_scope::IsolationPolicy;
+    let f = LogsFixture::new();
+    fs::create_dir(f.instance().join("config")).unwrap();
+    f.write(LogKind::Game, "latest.log", b"shared log");
+    f.write_at(&f.instance(), LogKind::Game, "latest.log", b"isolated log");
+    let set_policy = |policy| {
+        let mut settings = f.shared.config.snapshot();
+        settings.isolation = policy;
+        f.shared.config.save(settings).unwrap();
+    };
+    set_policy(IsolationPolicy::Shared);
+    let before = f.list();
+    assert!(before.shared);
+    assert_eq!(
+        f.read(&before, &before.entries[0]).unwrap().text,
+        "shared log"
+    );
+    set_policy(IsolationPolicy::Isolated);
+    let isolated = f.list();
+    assert!(!isolated.shared);
+    assert_eq!(
+        f.read(&isolated, &isolated.entries[0]).unwrap().text,
+        "isolated log"
+    );
+    assert!(f.read(&before, &before.entries[0]).is_err());
+    set_policy(IsolationPolicy::Shared);
+    let current = f.list();
+    assert!(current.shared);
+    assert_ne!(before.revision, current.revision);
+    assert!(f.read(&before, &before.entries[0]).is_err());
+    assert_eq!(
+        f.read(&current, &current.entries[0]).unwrap().text,
+        "shared log"
+    );
+}

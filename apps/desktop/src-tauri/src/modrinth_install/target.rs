@@ -284,6 +284,8 @@ struct ResourceView {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct TargetSnapshot {
+    pub(crate) isolation: pcl_core::content_scope::IsolationPolicy,
+    pub(crate) settings_revision: String,
     pub root_id: String,
     pub instance_id: String,
     pub minecraft_version: String,
@@ -301,7 +303,8 @@ pub struct TargetSnapshot {
 impl TargetSnapshot {
     pub(super) fn heap_bytes(&self) -> usize {
         use super::confirmation::allocation::*;
-        text(&self.root_id)
+        text(&self.settings_revision)
+            + text(&self.root_id)
             + text(&self.instance_id)
             + text(&self.minecraft_version)
             + text(&self.loader)
@@ -321,7 +324,9 @@ impl TargetSnapshot {
     /// inode. A previously absent resource directory may be safely created by
     /// an earlier admitted publisher; an existing one keeps its physical key.
     pub(super) fn permits_inventory_extension(&self, current: &Self) -> bool {
-        self.root_id == current.root_id
+        self.isolation == current.isolation
+            && self.settings_revision == current.settings_revision
+            && self.root_id == current.root_id
             && self.instance_id == current.instance_id
             && self.root == current.root
             && self.project == current.project
@@ -381,12 +386,32 @@ fn profiles(root: &Dir, id: &str, cancel: &AtomicBool) -> Result<Vec<Profile>> {
     }
     Ok(profiles)
 }
+#[cfg(test)]
 pub(super) fn capture(
     root: &Path,
     project: &Path,
     root_id: &str,
     id: &str,
     cancel: &AtomicBool,
+) -> Result<TargetSnapshot> {
+    capture_with_isolation(
+        root,
+        project,
+        root_id,
+        id,
+        cancel,
+        pcl_core::content_scope::IsolationPolicy::Automatic,
+        "",
+    )
+}
+pub(super) fn capture_with_isolation(
+    root: &Path,
+    project: &Path,
+    root_id: &str,
+    id: &str,
+    cancel: &AtomicBool,
+    isolation: pcl_core::content_scope::IsolationPolicy,
+    settings_revision: &str,
 ) -> Result<TargetSnapshot> {
     cancelled(cancel)?;
     provider::file_name(id)?;
@@ -403,7 +428,8 @@ pub(super) fn capture(
     let root = Dir::open(&root_path)?;
     let project_dir = Dir::open(&project)?;
     let initial_profiles = profiles(&root, id, cancel)?;
-    let instance = pcl_core::scan_instance(&root_path, id)?.ok_or("未找到所选实例")?;
+    let instance = pcl_core::scan_instance_with_isolation(&root_path, id, isolation)?
+        .ok_or("未找到所选实例")?;
     if profiles(&root, id, cancel)? != initial_profiles {
         return Err("实例JSON在读取期间变化，请重新检查".into());
     }
@@ -482,6 +508,8 @@ pub(super) fn capture(
         shader_engines: vec![],
     };
     let target = TargetSnapshot {
+        isolation,
+        settings_revision: settings_revision.into(),
         root_id: root_id.into(),
         instance_id: id.into(),
         minecraft_version: instance.minecraft_version,
@@ -504,12 +532,14 @@ pub(super) fn capture(
     Ok(target)
 }
 pub(super) fn check(expected: &TargetSnapshot, cancel: &AtomicBool) -> Result<()> {
-    let current = capture(
+    let current = capture_with_isolation(
         &expected.root,
         &expected.project,
         &expected.root_id,
         &expected.instance_id,
         cancel,
+        expected.isolation,
+        &expected.settings_revision,
     )?;
     let views_match = expected.views.iter().all(|(kind, old)| {
         current

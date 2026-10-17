@@ -3,6 +3,13 @@ import app from "./appZh";
 import pages from "./pagesZh";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 const messages = {
+  "community.previousPage": "上一页",
+  "community.nextPage": "下一页",
+  "community.currentPage": "第 {page} 页",
+  "community.pagination": "资源列表分页",
+  "community.searchPending": "搜索内容已更改，请点击搜索。",
+  "community.pageDuplicates": "本页项目已在之前加载的页面显示，可继续翻页。",
+  "community.invalidPage": "资源分页响应无效，请重试。",
   ...experimental,
   ...pages,
   ...app,

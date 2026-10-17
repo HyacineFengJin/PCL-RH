@@ -58,6 +58,8 @@ impl Fixture {
             selected: None,
             overrides: Default::default(),
             java_overrides: Default::default(),
+            isolation_overrides: Default::default(),
+            window_title_overrides: Default::default(),
         };
         Self {
             _directory: directory,

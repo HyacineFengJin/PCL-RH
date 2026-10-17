@@ -34,6 +34,8 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
             height: 720,
         },
         ip: IpPreference::Ipv6,
+        window_title: "自定义测试 🦀".into(),
+        ..Default::default()
     };
     for conditional in [false, true] {
         let mut data = json!({
@@ -71,6 +73,13 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
             &[],
         )
         .unwrap();
+        assert!(!default
+            .args
+            .iter()
+            .any(|arg| arg.starts_with("-javaagent:")));
+        if !conditional {
+            assert!(!fixture.path().join(".pcl-rust/game-title-agent").exists());
+        }
         if conditional {
             assert!(!default
                 .args
@@ -105,6 +114,16 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
         assert!(plan.args[..main].contains(&"-Xmx14G".into()));
         assert!(plan.args[..main].contains(&"-Djava.net.preferIPv4Stack=false".into()));
         assert!(plan.args[..main].contains(&"-Djava.net.preferIPv6Addresses=true".into()));
+        assert_eq!(
+            plan.args
+                .iter()
+                .filter(|arg| arg.starts_with("-javaagent:"))
+                .count(),
+            1
+        );
+        assert!(plan.args[..main]
+            .iter()
+            .any(|arg| arg.starts_with("-javaagent:")));
         assert!(plan.args[main + 1..]
             .windows(2)
             .any(|pair| pair == ["--width", "1280"]));

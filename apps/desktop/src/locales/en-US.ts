@@ -4,6 +4,14 @@ import pages from "./pagesEn";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 import type zhCN from "./zh-CN";
 const messages = {
+  "community.previousPage": "Previous page",
+  "community.nextPage": "Next page",
+  "community.currentPage": "Page {page}",
+  "community.pagination": "Resource pages",
+  "community.searchPending": "Search text changed. Click Search to continue.",
+  "community.pageDuplicates":
+    "These projects already appeared on earlier loaded pages. You can keep browsing.",
+  "community.invalidPage": "Invalid resource page response. Please retry.",
   ...experimental,
   ...pages,
   ...app,

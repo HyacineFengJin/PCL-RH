@@ -1,7 +1,10 @@
 //! Settings v3 with registered roots and an active-root UI projection.
 //! Transport revisions reject stale saves. V2 upgrades are deferred while a
 //! rename journal binds its original bytes, then backed up before the next write.
-use pcl_core::java::JavaSelection;
+//! Content policies and title overrides share the same root/instance identity
+//! and revision as launch settings. Saving them never relocates game content;
+//! deleted-instance references remain reserved until their existing recovery.
+use pcl_core::{content_scope::IsolationPolicy, java::JavaSelection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -29,6 +32,8 @@ pub struct Settings {
     pub root: String,
     pub player: String,
     pub memory_gib: u32,
+    #[serde(default)]
+    pub isolation: IsolationPolicy,
     pub selected: Option<String>,
     #[serde(default)]
     pub overrides: BTreeMap<String, u32>,
@@ -38,6 +43,19 @@ pub struct Settings {
     pub java_paths: Vec<String>,
     #[serde(default)]
     pub java_overrides: BTreeMap<String, JavaSelection>,
+    #[serde(default)]
+    pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
+    #[serde(default)]
+    pub window_title_overrides: BTreeMap<String, String>,
+}
+
+impl Settings {
+    pub fn resolved_isolation(&self, id: &str) -> IsolationPolicy {
+        self.isolation_overrides
+            .get(id)
+            .copied()
+            .unwrap_or(self.isolation)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,6 +69,33 @@ pub struct GameRoot {
     pub overrides: BTreeMap<String, u32>,
     #[serde(default)]
     pub java_overrides: BTreeMap<String, JavaSelection>,
+    #[serde(default)]
+    pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
+    #[serde(default)]
+    pub window_title_overrides: BTreeMap<String, String>,
+}
+
+impl GameRoot {
+    pub fn resolved_isolation(&self, id: &str, global: IsolationPolicy) -> IsolationPolicy {
+        self.isolation_overrides.get(id).copied().unwrap_or(global)
+    }
+}
+
+/// One checked policy and registered-root snapshot. Consumers carry this value
+/// through slow work and compare its revision before publishing a result.
+#[derive(Clone)]
+pub(crate) struct IsolationSettings {
+    pub revision: String,
+    pub global: IsolationPolicy,
+    /// Keep the original spelling for descriptor-relative nofollow checks.
+    /// Canonicalization alone must not authorize a replaced root symlink.
+    pub registered_path: String,
+    pub root: GameRoot,
+}
+impl IsolationSettings {
+    pub fn policy(&self, id: &str) -> IsolationPolicy {
+        self.root.resolved_isolation(id, self.global)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +106,8 @@ pub struct RootSummary {
     pub selected: Option<String>,
     pub overrides: BTreeMap<String, u32>,
     pub java_overrides: BTreeMap<String, JavaSelection>,
+    pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
+    pub window_title_overrides: BTreeMap<String, String>,
     pub available: bool,
     pub error: Option<String>,
 }
@@ -72,6 +119,8 @@ struct Persisted {
     active_root_id: String,
     player: String,
     memory_gib: u32,
+    #[serde(default)]
+    isolation: IsolationPolicy,
     roots: Vec<GameRoot>,
     #[serde(default)]
     java: JavaSelection,
@@ -106,6 +155,7 @@ impl VersionTwo {
             active_root_id: self.active_root_id,
             player: self.player,
             memory_gib: self.memory_gib,
+            isolation: IsolationPolicy::Automatic,
             roots: self
                 .roots
                 .into_iter()
@@ -116,6 +166,8 @@ impl VersionTwo {
                     selected: root.selected,
                     overrides: root.overrides,
                     java_overrides: BTreeMap::new(),
+                    isolation_overrides: BTreeMap::new(),
+                    window_title_overrides: BTreeMap::new(),
                 })
                 .collect(),
             java: JavaSelection::Auto,
@@ -211,6 +263,7 @@ fn defaults(project: &Path) -> Persisted {
         active_root_id: "root-default".into(),
         player: "Player".into(),
         memory_gib: 6,
+        isolation: IsolationPolicy::Automatic,
         roots: vec![GameRoot {
             id: "root-default".into(),
             name: root_name(&path),
@@ -218,6 +271,8 @@ fn defaults(project: &Path) -> Persisted {
             selected: None,
             overrides: BTreeMap::new(),
             java_overrides: BTreeMap::new(),
+            isolation_overrides: BTreeMap::new(),
+            window_title_overrides: BTreeMap::new(),
         }],
         java: JavaSelection::Auto,
         java_paths: vec![],
@@ -254,7 +309,11 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
     if let Some(selected) = &root.selected {
         pcl_core::identifier(selected)?;
     }
-    if root.overrides.len() > 4096 || root.java_overrides.len() > 4096 {
+    if root.overrides.len() > 4096
+        || root.java_overrides.len() > 4096
+        || root.isolation_overrides.len() > 4096
+        || root.window_title_overrides.len() > 4096
+    {
         return Err("实例设置超过 4096 条上限".into());
     }
     for (id, memory) in &root.overrides {
@@ -266,6 +325,13 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
     for (id, selection) in &root.java_overrides {
         pcl_core::identifier(id)?;
         validate_java(selection)?;
+    }
+    for id in root.isolation_overrides.keys() {
+        pcl_core::identifier(id)?;
+    }
+    for (id, title) in &root.window_title_overrides {
+        pcl_core::identifier(id)?;
+        pcl_core::game_title::validate(title)?;
     }
     Ok(())
 }
@@ -379,6 +445,7 @@ fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), Strin
                     active_root_id: "root-legacy".into(),
                     player: old.player,
                     memory_gib: old.memory_gib,
+                    isolation: IsolationPolicy::Automatic,
                     roots: vec![GameRoot {
                         id: "root-legacy".into(),
                         name: root_name(Path::new(&old.root)),
@@ -386,6 +453,8 @@ fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), Strin
                         selected: old.selected,
                         overrides: old.overrides,
                         java_overrides: BTreeMap::new(),
+                        isolation_overrides: BTreeMap::new(),
+                        window_title_overrides: BTreeMap::new(),
                     }],
                     java: JavaSelection::Auto,
                     java_paths: vec![],
@@ -685,6 +754,54 @@ impl ConfigStore {
         Ok(root)
     }
 
+    /// Capture global and per-instance policy from the same revision. A caller
+    /// may address an inactive registered root; browsing another root never
+    /// substitutes its override map. Filesystem checks run outside the mutex.
+    pub(crate) fn isolation_settings(
+        &self,
+        root_id: Option<&str>,
+    ) -> Result<IsolationSettings, String> {
+        let (mut captured, expected_disk) = {
+            let current = self.lock();
+            if let Some(reason) = &current.blocked {
+                return Err(reason.clone());
+            }
+            let id = root_id.unwrap_or(&current.config.active_root_id);
+            let root = current
+                .config
+                .roots
+                .iter()
+                .find(|root| root.id == id)
+                .cloned()
+                .ok_or("游戏目录未注册或已移除")?;
+            (
+                IsolationSettings {
+                    revision: current.revision.clone(),
+                    global: current.config.isolation,
+                    registered_path: root.path.clone(),
+                    root,
+                },
+                current.disk.clone(),
+            )
+        };
+        captured.root.path = canonical_root(&captured.root.path)?
+            .to_str()
+            .ok_or("游戏目录路径不是有效的 UTF-8")?
+            .into();
+        let (disk, _) = crate::instance_rename_refs::store_snapshot(
+            self.project()?,
+            "settings.json",
+            2 * 1024 * 1024,
+        )?;
+        if !expected_disk.compatible(&disk) {
+            return Err("设置文件已由外部修改，请重新打开启动器后再操作实例".into());
+        }
+        if self.lock().revision != captured.revision {
+            return Err("设置已更新，请重新读取实例隔离设置".into());
+        }
+        Ok(captured)
+    }
+
     /// Canonical aliases reuse the registered id and do not switch the active root.
     pub fn register(&self, path: String, name: Option<String>) -> Result<GameRoot, String> {
         let canonical = canonical_root(&path)?;
@@ -697,6 +814,8 @@ impl ConfigStore {
             selected: None,
             overrides: BTreeMap::new(),
             java_overrides: BTreeMap::new(),
+            isolation_overrides: BTreeMap::new(),
+            window_title_overrides: BTreeMap::new(),
         };
         validate_root_values(&root)?;
         loop {
@@ -836,10 +955,13 @@ impl ConfigStore {
         let mut next = current.config.clone();
         next.player = settings.player;
         next.memory_gib = settings.memory_gib;
+        next.isolation = settings.isolation;
         next.roots[index].selected = settings.selected;
         next.roots[index].overrides = settings.overrides;
         next.java = settings.java;
         next.roots[index].java_overrides = settings.java_overrides;
+        next.roots[index].isolation_overrides = settings.isolation_overrides;
+        next.roots[index].window_title_overrides = settings.window_title_overrides;
         let selections: Vec<_> = std::iter::once(&next.java)
             .chain(next.roots[index].java_overrides.values())
             .cloned()
@@ -939,6 +1061,8 @@ impl ConfigStore {
         if root.selected.as_deref() == Some(id)
             || root.overrides.contains_key(id)
             || root.java_overrides.contains_key(id)
+            || root.isolation_overrides.contains_key(id)
+            || root.window_title_overrides.contains_key(id)
         {
             return Err("此名称仍有保存的实例设置，请使用新的实例名称".into());
         }
@@ -1083,9 +1207,11 @@ pub(crate) fn rename_bytes(
     }
     if selected.overrides.contains_key(new)
         || selected.java_overrides.contains_key(new)
+        || selected.isolation_overrides.contains_key(new)
+        || selected.window_title_overrides.contains_key(new)
         || selected.selected.as_deref() == Some(new)
     {
-        return Err("目标名称已有选择、内存或 Java 配置，请选择其他名称".into());
+        return Err("目标名称已有选择、内存、Java、隔离或窗口标题配置，请选择其他名称".into());
     }
     let mut changed = false;
     if selected.selected.as_deref() == Some(old) {
@@ -1098,6 +1224,14 @@ pub(crate) fn rename_bytes(
     }
     if let Some(java) = selected.java_overrides.remove(old) {
         selected.java_overrides.insert(new.into(), java);
+        changed = true;
+    }
+    if let Some(isolation) = selected.isolation_overrides.remove(old) {
+        selected.isolation_overrides.insert(new.into(), isolation);
+        changed = true;
+    }
+    if let Some(title) = selected.window_title_overrides.remove(old) {
+        selected.window_title_overrides.insert(new.into(), title);
         changed = true;
     }
     if !changed {
@@ -1122,11 +1256,14 @@ fn project_settings(config: &Persisted, revision: &str) -> Settings {
         root: root.path.clone(),
         player: config.player.clone(),
         memory_gib: config.memory_gib,
+        isolation: config.isolation,
         selected: root.selected.clone(),
         overrides: root.overrides.clone(),
         java: config.java.clone(),
         java_paths: config.java_paths.clone(),
         java_overrides: root.java_overrides.clone(),
+        isolation_overrides: root.isolation_overrides.clone(),
+        window_title_overrides: root.window_title_overrides.clone(),
     }
 }
 
@@ -1142,6 +1279,8 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
                 selected: root.selected,
                 overrides: root.overrides,
                 java_overrides: root.java_overrides,
+                isolation_overrides: root.isolation_overrides,
+                window_title_overrides: root.window_title_overrides,
                 available: error.is_none(),
                 error,
             }

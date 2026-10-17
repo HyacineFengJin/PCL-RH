@@ -32,6 +32,7 @@ struct CapturedInspection {
     id: String,
     root: GameRoot,
     settings_revision: String,
+    isolation: pcl_core::content_scope::IsolationPolicy,
     preferences_revision: String,
     tasks_revision: u64,
     close_generation: u64,
@@ -161,6 +162,7 @@ fn capture(shared: &Shared, id: &str, root_id: Option<&str>) -> Result<CapturedI
     Ok(CapturedInspection {
         id: id.into(),
         java: java_service::effective_choice(&settings, &root, id).clone(),
+        isolation: root.resolved_isolation(id, settings.isolation),
         extra_java_paths: settings.java_paths,
         settings_revision: settings.revision,
         preferences_revision: preferences.revision,
@@ -228,12 +230,13 @@ pub(super) fn inspect(
     root_id: Option<&str>,
 ) -> Result<Inspection, String> {
     inspect_with(shared, id, root_id, |captured| {
-        pcl_core::inspection::inspect_instance(
+        pcl_core::inspection::inspect_instance_with_isolation(
             Path::new(&captured.root.path),
             &shared.project,
             &captured.id,
             &captured.java,
             &captured.extra_java_paths,
+            captured.isolation,
         )
     })
 }

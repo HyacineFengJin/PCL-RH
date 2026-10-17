@@ -114,11 +114,19 @@ fn capture(shared: &Shared, root_id: &str, id: &str) -> Result<Capture, String> 
     if settings.root_id != root_id {
         return Err(CHANGED.into());
     }
-    let root = shared.config.resolve(Some(root_id))?;
+    let isolation = shared.config.isolation_settings(Some(root_id))?;
+    if isolation.revision != settings.revision {
+        return Err(CHANGED.into());
+    }
+    let root = isolation.root.clone();
     // resolve() supplies the launcher's canonical root projection. Walk the
     // original registered path without following links as well: canonicalizing
     // first must not authorize a newly substituted root/ancestor symlink.
-    let binding = Binding::capture(Path::new(&settings.root), id)?;
+    let binding = Binding::capture_with_isolation(
+        Path::new(&isolation.registered_path),
+        id,
+        isolation.policy(id),
+    )?;
     ready(shared, &root)?;
     let close_generation = shared.close_generation.load(Ordering::SeqCst);
     let tasks_revision = shared.tasks.revision();

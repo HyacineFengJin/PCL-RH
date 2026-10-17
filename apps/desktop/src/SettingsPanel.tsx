@@ -5,6 +5,7 @@ import { ArrowRight, ChevronDown } from "lucide-react";
 import "./settings-panel.css";
 import { Collapse } from "./Collapse";
 import { JavaPanel } from "./JavaPanel";
+import { GameTitleField, IsolationField } from "./GameIdentityFields";
 import { GameLaunchFields } from "./GameLaunchFields";
 import type {
   LauncherPreferenceView,
@@ -157,15 +158,32 @@ export function SettingsPanel({
       <section className="ce-card">
         <h2 className="ce-card-title">{t("instance.launchOptions")}</h2>
         <div className="ce-settings-fields">
-          <Field
-            dropdown
-            label={t("settings.isolation")}
-            value={t("settings.autoIsolation")}
+          <IsolationField
+            settings={settings}
+            onSave={onSave}
+            scope={`${settings.root_id}:${settings.root}:${settings.revision}:${section}`}
+            disabled={!native || disabled || !!downloadDisabled}
+            onNotify={onNotify}
           />
-          <Field
-            dropdown
-            label={t("settings.windowTitle")}
-            value={t("common.default")}
+          <GameTitleField
+            value={
+              launcherPreferences?.preferences.game_launch?.window_title || ""
+            }
+            scope={`${settings.root_id}:${settings.root}:${launcherPreferences?.revision}:${section}`}
+            disabled={
+              !native ||
+              disabled ||
+              launcherBusy ||
+              !onLauncherPatch ||
+              !launcherPreferences?.revision ||
+              !!launcherPreferences.warning
+            }
+            onNotify={onNotify}
+            onSave={async (title) => {
+              await onLauncherPatch?.({
+                game_launch: { window_title: title || "" },
+              });
+            }}
           />
           <Field label={t("settings.customInfo")} value="PCL CE" />
           <label className="ce-settings-row">

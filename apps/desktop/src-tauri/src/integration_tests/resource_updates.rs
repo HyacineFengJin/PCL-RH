@@ -10,10 +10,20 @@ fn mod_update_publication_and_async_undo_stay_bound_to_the_admitted_root() {
     let (first, id) = rename_fixture(&state);
     let second = fixture.second(&state.config);
     state.config.select(&second.id).unwrap();
+    let captured = state.config.isolation_settings(Some(&first.id)).unwrap();
+    // rename_fixture returned its root before saving instance settings; native
+    // update admission instead captures the current root and policy together.
+    let first = captured.root.clone();
     // The provider fixture uses real loopback HTTP bodies and anonymous verified
     // descriptors. Publication then traverses the production task/commit gates.
-    let batch =
-        modrinth_install::test_update_batch(Path::new(&first.path), &state.project, &first.id, &id);
+    let batch = modrinth_install::test_update_batch(
+        Path::new(&first.path),
+        &state.project,
+        &first.id,
+        &id,
+        captured.policy(&id),
+        &captured.revision,
+    );
     let network_bytes = batch.network_bytes;
     assert!(network_bytes > 0);
     let instance = Path::new(&first.path).join("versions").join(&id);
@@ -180,4 +190,60 @@ fn interrupted_mod_update_exposes_root_recovery_without_instance_json() {
         b"external recovery evidence"
     );
     assert!(state.config.resolve(Some(&first.id)).is_ok());
+}
+
+#[test]
+fn prepared_mod_update_is_retired_when_isolation_changes_away_and_back_before_publication() {
+    use pcl_core::content_scope::IsolationPolicy;
+    let fixture = Fixture::new();
+    let state = Arc::new(fixture.shared());
+    let (registered, id) = rename_fixture(&state);
+    let captured = state
+        .config
+        .isolation_settings(Some(&registered.id))
+        .unwrap();
+    let root = captured.root.clone();
+    let batch = modrinth_install::test_update_batch(
+        Path::new(&root.path),
+        &state.project,
+        &root.id,
+        &id,
+        captured.policy(&id),
+        &captured.revision,
+    );
+    let mods = Path::new(&root.path)
+        .join("versions")
+        .join(&id)
+        .join("mods");
+    let before = fs::read(mods.join("old.jar")).unwrap();
+    for policy in [IsolationPolicy::Shared, IsolationPolicy::Automatic] {
+        let mut settings = state.config.snapshot();
+        settings.isolation = policy;
+        state.config.save(settings).unwrap();
+    }
+    let current = state.config.isolation_settings(Some(&root.id)).unwrap();
+    assert_eq!(current.root, root);
+    assert_eq!(current.policy(&id), captured.policy(&id));
+    assert_ne!(current.revision, captured.revision);
+    let task = state
+        .tasks
+        .admit(
+            TaskTarget {
+                root_id: root.id.clone(),
+                root_path: root.path.clone(),
+                instance_id: Some(id.clone()),
+            },
+            TaskKind::ResourceUpdate,
+        )
+        .unwrap();
+    let error =
+        resource_update_commands::publish_batch(&state, &root, &id, batch, &task).unwrap_err();
+    assert!(error.contains("实例隔离设置已变化"), "{error}");
+    task.finish(TaskOutcome::Error(error));
+    assert_eq!(fs::read(mods.join("old.jar")).unwrap(), before);
+    assert!(!mods.join("new.jar").exists());
+    assert!(resource_ops::updates_history(Path::new(&root.path), &id)
+        .unwrap()
+        .is_empty());
+    resource_ops::ensure_ready(Path::new(&root.path)).unwrap();
 }

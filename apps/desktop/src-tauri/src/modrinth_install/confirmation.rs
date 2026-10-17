@@ -232,6 +232,21 @@ fn known(plan: &InstallPlan, file: &LocalFile) -> bool {
 }
 
 impl ConfirmedInstall {
+    pub(crate) fn require_isolation(
+        &self,
+        isolation: pcl_core::content_scope::IsolationPolicy,
+        revision: &str,
+    ) -> Result<()> {
+        // Empty revision belongs only to synthetic/legacy API fixtures. Native
+        // preparation always captures the complete configuration generation.
+        if self.original.target.isolation != isolation
+            || (!self.original.target.settings_revision.is_empty()
+                && self.original.target.settings_revision != revision)
+        {
+            return Err("实例隔离设置已变化，请重新检查资源方案".into());
+        }
+        Ok(())
+    }
     pub fn request(&self) -> &InstallRequest {
         &self.request
     }
@@ -244,12 +259,14 @@ impl ConfirmedInstall {
     }
     pub(super) fn capture_target(&self, cancel: &AtomicBool) -> Result<TargetSnapshot> {
         let old = &self.original;
-        let current = target::capture(
+        let current = target::capture_with_isolation(
             &old.target.root,
             &old.target.project,
             &old.root_id,
             &old.instance_id,
             cancel,
+            old.target.isolation,
+            &old.target.settings_revision,
         )?;
         if !old.target.permits_inventory_extension(&current) {
             return Err("排队期间目标实例或原库存已变化，请重新检查方案".into());

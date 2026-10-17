@@ -46,9 +46,15 @@ pub enum IpPreference {
 pub struct LaunchOptions {
     pub window: WindowSize,
     pub ip: IpPreference,
+    pub window_title: String,
+    /// Captured from the registered game's settings. It is not a second copy
+    /// of that policy in launcher preference exports.
+    #[serde(skip)]
+    pub isolation: crate::content_scope::IsolationPolicy,
 }
 impl LaunchOptions {
     pub fn validate(&self) -> Result<(), String> {
+        crate::game_title::validate(&self.window_title)?;
         if let WindowSize::Custom { width, height } = self.window {
             if !(320..=16384).contains(&width) || !(240..=16384).contains(&height) {
                 return Err("Window width must be 320–16384 and height 240–16384 pixels".into());

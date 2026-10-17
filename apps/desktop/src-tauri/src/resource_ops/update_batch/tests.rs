@@ -1030,3 +1030,31 @@ fn update_pending_blocks_legacy_import_before_creating_missing_resource_dirs() {
     super::super::recover_verified_batches(&f.root).unwrap();
     f.clean();
 }
+
+#[test]
+fn explicit_shared_update_and_undo_keep_journal_paths_despite_automatic_isolated_markers() {
+    let f = Fixture::new(true, false);
+    let input = f.file("mods", "added.jar", b"shared explicit content");
+    let result = update_verified_batch_with_isolation(
+        &f.root,
+        "test",
+        &mut [input],
+        &[],
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {},
+        IsolationPolicy::Shared,
+    )
+    .unwrap();
+    assert!(f.root.join("mods/added.jar").is_file());
+    assert!(!f.root.join("versions/test/mods/added.jar").exists());
+    let undo = result.undo_id.unwrap();
+    restore_update(&f.root, "test", &undo, &AtomicBool::new(false), &mut || {
+        Ok(())
+    })
+    .unwrap();
+    assert!(!f.root.join("mods/added.jar").exists());
+    assert!(!f.root.join("versions/test/mods").exists());
+    assert!(f.root.join("versions/test/config").is_dir());
+    f.clean();
+}

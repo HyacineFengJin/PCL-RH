@@ -51,6 +51,7 @@ struct SearchRequest {
     loader: Option<String>,
     sort: String,
     tag: Option<String>,
+    page: u32,
 }
 
 impl SearchRequest {
@@ -97,6 +98,7 @@ impl SearchRequest {
             loader: active_filter(loader)?.map(|value| value.to_ascii_lowercase()),
             sort: sort.into(),
             tag: active_filter(tag)?,
+            page: 1,
         })
     }
 
@@ -181,8 +183,11 @@ pub async fn community_search(
     loader: Option<String>,
     sort: Option<String>,
     tag: Option<String>,
+    page: Option<u32>,
 ) -> Result<Value, String> {
-    let request = SearchRequest::parse(query, project_type, source, version, loader, sort, tag)?;
+    let mut request =
+        SearchRequest::parse(query, project_type, source, version, loader, sort, tag)?;
+    request.page = checked_page(page)?;
     search_catalog(request, pcl_network::snapshot()).await
 }
 
@@ -191,7 +196,7 @@ async fn search_catalog(
     network: Arc<pcl_network::ClientFactory>,
 ) -> Result<Value, String> {
     let mut warnings = Vec::new();
-    let encyclopedia_use = match request.encyclopedia_use() {
+    let mut encyclopedia_use = match request.encyclopedia_use() {
         Ok(mode) => mode,
         Err(reason) => {
             if request.source != RequestedSource::All {
@@ -201,6 +206,12 @@ async fn search_catalog(
             EncyclopediaUse::Skip
         }
     };
+    let cf_enabled = source_page_allowed(&request, CommunitySource::Curseforge, &mut warnings)?;
+    if encyclopedia_use != EncyclopediaUse::Skip
+        && !source_page_allowed(&request, CommunitySource::Mcmod, &mut warnings)?
+    {
+        encyclopedia_use = EncyclopediaUse::Skip;
+    }
     if encyclopedia_use == EncyclopediaUse::EvidenceOnly {
         warnings.push("MC百科仅核对来源关联，列表只展示通过所选筛选的下载来源项目".into());
     }
@@ -208,20 +219,26 @@ async fn search_catalog(
         if !request.includes(CommunitySource::Modrinth) {
             return None;
         }
-        Some(SourceBatch {
-            source: CommunitySource::Modrinth,
-            evidence_only: false,
-            result: search_modrinth(&request, &network).await,
-        })
+        let result = search_modrinth(&request, &network).await;
+        let has_more = result.as_ref().is_ok_and(|page| page.has_more);
+        Some((
+            SourceBatch {
+                source: CommunitySource::Modrinth,
+                evidence_only: false,
+                result: result.map(|page| page.rows),
+            },
+            has_more,
+            false,
+        ))
     };
     let cf = async {
-        if !request.includes(CommunitySource::Curseforge) {
+        if !cf_enabled {
             return None;
         }
         let result = tokio::time::timeout(Duration::from_secs(20), async {
             let client = CurseforgeClient::new(network.clone())?;
             let values = client
-                .search(
+                .search_page(
                     &request.query,
                     request.kind,
                     request.version.as_deref(),
@@ -232,17 +249,28 @@ async fn search_catalog(
                         &request.sort
                     }),
                     request.tag.as_deref(),
+                    (request.page as usize - 1) * 50,
                 )
                 .await?;
-            provider_rows(CommunitySource::Curseforge, request.kind, values)
+            Ok::<_, String>(ProviderPage {
+                rows: provider_rows(CommunitySource::Curseforge, request.kind, values.hits)?,
+                has_more: values.has_more,
+                limited: values.limited,
+            })
         })
         .await
         .unwrap_or_else(|_| Err("CurseForge 检索超过 20 秒上限".into()));
-        Some(SourceBatch {
-            source: CommunitySource::Curseforge,
-            evidence_only: false,
-            result,
-        })
+        let has_more = result.as_ref().is_ok_and(|page| page.has_more);
+        let limited = result.as_ref().is_ok_and(|page| page.limited);
+        Some((
+            SourceBatch {
+                source: CommunitySource::Curseforge,
+                evidence_only: false,
+                result: result.map(|page| page.rows),
+            },
+            has_more,
+            limited,
+        ))
     };
     let encyclopedia = async {
         if encyclopedia_use == EncyclopediaUse::Skip {
@@ -250,7 +278,9 @@ async fn search_catalog(
         }
         let result = async {
             let client = Arc::new(McmodClient::new(network.clone())?);
-            let page = client.search(&request.query, 1, request.kind).await?;
+            let page = client
+                .search(&request.query, request.page, request.kind)
+                .await?;
             Ok::<_, String>((client, page))
         }
         .await;
@@ -258,10 +288,32 @@ async fn search_catalog(
     };
     // Each source uses the exact same immutable network policy snapshot.
     let (mr, cf, encyclopedia) = tokio::join!(mr, cf, encyclopedia);
-    let mut batches: Vec<_> = [mr, cf].into_iter().flatten().collect();
+    let mut has_more = false;
+    let mut batches = Vec::new();
+    for (batch, more, limited) in [mr, cf].into_iter().flatten() {
+        has_more |= more;
+        if limited {
+            warnings.insert(
+                0,
+                "CurseForge API 最多浏览前 10,000 个结果，请缩小搜索范围".into(),
+            );
+        }
+        batches.push(batch);
+    }
     if let Some(result) = encyclopedia {
         let result = match result {
             Ok((client, page)) => {
+                // Evidence-only encyclopedia rows cannot extend a filtered
+                // download catalog after its actual providers have ended.
+                if encyclopedia_use == EncyclopediaUse::Visible {
+                    has_more |= page.has_more && request.page < 100;
+                }
+                if page.has_more && request.page == 100 {
+                    warnings.insert(
+                        0,
+                        "MC百科已达到支持的 100 页浏览范围，请缩小搜索范围".into(),
+                    );
+                }
                 let details = if request.query.is_empty() {
                     BTreeMap::new()
                 } else {
@@ -279,13 +331,74 @@ async fn search_catalog(
             result,
         });
     }
-    assemble_results(batches, warnings, request.source)
+    finish_page(batches, warnings, request.source, request.page, has_more)
+}
+
+fn finish_page(
+    batches: Vec<SourceBatch>,
+    mut warnings: Vec<String>,
+    source: RequestedSource,
+    page: u32,
+    has_more: bool,
+) -> Result<Value, String> {
+    if page == u32::MAX && has_more {
+        warnings.insert(0, "社区资源页码达到参数范围上限，请缩小搜索范围".into());
+    }
+    let mut result = assemble_results(batches, warnings, source)?;
+    result["pagination"] = json!({ "page": page, "has_next": has_more && page < u32::MAX });
+    Ok(result)
+}
+
+fn checked_page(page: Option<u32>) -> Result<u32, String> {
+    let page = page.unwrap_or(1);
+    if page == 0 {
+        return Err("社区资源页码必须大于零".into());
+    }
+    Ok(page)
+}
+
+struct ProviderPage {
+    rows: Vec<CatalogRow>,
+    has_more: bool,
+    limited: bool,
+}
+
+fn provider_offset(page: u32, size: u64) -> Result<u64, String> {
+    page.checked_sub(1)
+        .and_then(|page| u64::from(page).checked_mul(size))
+        .ok_or_else(|| "社区来源分页偏移超出支持范围".into())
+}
+
+fn source_page_allowed(
+    request: &SearchRequest,
+    source: CommunitySource,
+    warnings: &mut Vec<String>,
+) -> Result<bool, String> {
+    if !request.includes(source) {
+        return Ok(false);
+    }
+    let (maximum, message) = match source {
+        CommunitySource::Curseforge => (
+            200,
+            "CurseForge API 最多浏览前 10,000 个结果，请缩小搜索范围",
+        ),
+        CommunitySource::Mcmod => (100, "MC百科仅支持前 100 页浏览，请缩小搜索范围"),
+        CommunitySource::Modrinth => (u32::MAX, ""),
+    };
+    if request.page <= maximum {
+        return Ok(true);
+    }
+    if request.source != RequestedSource::All {
+        return Err(message.into());
+    }
+    warnings.push(message.into());
+    Ok(false)
 }
 
 async fn search_modrinth(
     request: &SearchRequest,
     network: &pcl_network::ClientFactory,
-) -> Result<Vec<CatalogRow>, String> {
+) -> Result<ProviderPage, String> {
     let client = network
         .async_client()
         .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
@@ -300,6 +413,7 @@ async fn search_modrinth(
     } else {
         &request.sort
     };
+    let offset = provider_offset(request.page, 30)?.to_string();
     let mut response = client
         .get("https://api.modrinth.com/v2/search")
         .query(&[
@@ -307,6 +421,7 @@ async fn search_modrinth(
             ("facets", facets.as_str()),
             ("index", index),
             ("limit", "30"),
+            ("offset", offset.as_str()),
         ])
         .send()
         .await
@@ -336,11 +451,31 @@ async fn search_modrinth(
     }
     let result: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Modrinth 目录格式无效：{error}"))?;
+    modrinth_page(result, request.kind, request.page)
+}
+
+fn modrinth_page(result: Value, kind: ProjectKind, page: u32) -> Result<ProviderPage, String> {
     let hits = result
         .get("hits")
         .and_then(Value::as_array)
         .ok_or("Modrinth 目录缺少项目列表")?;
-    provider_rows(CommunitySource::Modrinth, request.kind, hits.clone())
+    let offset = provider_offset(page, 30)?;
+    let total = result["total_hits"]
+        .as_u64()
+        .ok_or("Modrinth 目录缺少分页总数")?;
+    let returned = hits.len() as u64;
+    if result["offset"].as_u64() != Some(offset)
+        || result["limit"].as_u64() != Some(30)
+        || returned > total.saturating_sub(offset)
+        || (returned == 0 && total > offset)
+    {
+        return Err("Modrinth 分页响应无效".into());
+    }
+    Ok(ProviderPage {
+        rows: provider_rows(CommunitySource::Modrinth, kind, hits.clone())?,
+        has_more: offset + returned < total,
+        limited: false,
+    })
 }
 
 fn modrinth_facets(request: &SearchRequest) -> String {

@@ -186,3 +186,120 @@ fn one_bad_instance_does_not_hide_a_good_selection_or_allow_unsafe_identifiers()
         assert!(inspect(root, id).is_err());
     }
 }
+
+#[test]
+fn explicit_isolation_policies_agree_between_scan_inspection_and_real_launch_arguments() {
+    for markers in [false, true] {
+        for policy in [
+            IsolationPolicy::Automatic,
+            IsolationPolicy::Shared,
+            IsolationPolicy::Isolated,
+        ] {
+            let f = fixture();
+            let root = f.path().canonicalize().unwrap();
+            let version = root.join("versions/Example");
+            fs::create_dir(root.join("mods")).unwrap();
+            fs::write(root.join("mods/shared.jar"), b"shared").unwrap();
+            if markers {
+                fs::create_dir(version.join("mods")).unwrap();
+                fs::write(version.join("mods/one.jar"), b"isolated one").unwrap();
+                fs::write(version.join("mods/two.jar"), b"isolated two").unwrap();
+            }
+            let isolated = match policy {
+                IsolationPolicy::Automatic => markers,
+                IsolationPolicy::Shared => false,
+                IsolationPolicy::Isolated => true,
+            };
+            let expected = if isolated { version } else { root.clone() };
+            let java = java_fixture(&root, "");
+            let scanned = crate::scan_instance_with_isolation(&root, "Example", policy)
+                .unwrap()
+                .unwrap();
+            let report = crate::scan_instances_report_with_isolation(&root, |_| policy).unwrap();
+            assert_eq!(report.instances[0].isolated, isolated);
+            assert_eq!(scanned.isolated, isolated);
+            assert_eq!(
+                scanned.mod_count,
+                if isolated {
+                    usize::from(markers) * 2
+                } else {
+                    1
+                }
+            );
+            let inspection = crate::inspection::inspect_instance_with_isolation(
+                &root,
+                &root,
+                "Example",
+                &java,
+                &[],
+                policy,
+            )
+            .unwrap();
+            assert!(inspection.ready, "{:?}", inspection.issues);
+            assert_eq!(inspection.game_dir, expected.display().to_string());
+            let plan = crate::build_launch_plan_with_options(
+                &root,
+                &root,
+                "Example",
+                "Player",
+                14,
+                &java,
+                &[],
+                &LaunchOptions {
+                    isolation: policy,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(plan.game_dir, expected);
+            assert!(plan
+                .args
+                .windows(2)
+                .any(|a| a[0] == "--gameDir" && a[1] == expected.display().to_string()));
+        }
+    }
+}
+
+#[test]
+fn explicit_isolation_never_bypasses_all_marker_safety_checks() {
+    for policy in [IsolationPolicy::Shared, IsolationPolicy::Isolated] {
+        for marker in ISOLATION_MARKERS {
+            let f = fixture();
+            let root = f.path();
+            symlink("missing", root.join("versions/Example").join(marker)).unwrap();
+            let java = java_fixture(root, "");
+            let error = crate::build_launch_plan_with_options(
+                root,
+                root,
+                "Example",
+                "Player",
+                14,
+                &java,
+                &[],
+                &LaunchOptions {
+                    isolation: policy,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains(marker), "{error}");
+            assert!(!root.join("java-probes").exists());
+            assert!(crate::scan_instance_with_isolation(root, "Example", policy)
+                .unwrap_err()
+                .contains(marker));
+        }
+    }
+    assert_eq!(
+        serde_json::to_string(&IsolationPolicy::Automatic).unwrap(),
+        "\"automatic\""
+    );
+    assert_eq!(
+        serde_json::from_str::<IsolationPolicy>("\"shared\"").unwrap(),
+        IsolationPolicy::Shared
+    );
+    assert_eq!(
+        serde_json::from_str::<IsolationPolicy>("\"isolated\"").unwrap(),
+        IsolationPolicy::Isolated
+    );
+    assert!(serde_json::from_str::<IsolationPolicy>("\"inherit\"").is_err());
+}

@@ -102,32 +102,52 @@ pub struct VerifiedUpdateBatch {
     pub network_bytes: u64,
 }
 
-pub async fn check_updates(
+pub async fn check_updates_with_isolation(
     root: &Path,
     project: &Path,
     root_id: &str,
     id: &str,
     cancel: &AtomicBool,
+    isolation: pcl_core::content_scope::IsolationPolicy,
+    settings_revision: &str,
 ) -> Result<UpdateCheck> {
-    let target = target::capture(root, project, root_id, id, cancel)?;
+    let target = target::capture_with_isolation(
+        root,
+        project,
+        root_id,
+        id,
+        cancel,
+        isolation,
+        settings_revision,
+    )?;
     let provider = HttpProvider::new(cancel)?;
     let result = check::check(&provider, &target, cancel).await?;
     target::check(&target, cancel)?;
     Ok(result)
 }
-pub async fn prepare_update(
+pub async fn prepare_update_with_isolation(
     root: &Path,
     project: &Path,
     root_id: &str,
     id: &str,
     selected: Vec<ResourceFile>,
     cancel: &AtomicBool,
+    isolation: pcl_core::content_scope::IsolationPolicy,
+    settings_revision: &str,
 ) -> Result<UpdatePlan> {
-    let target = target::capture(root, project, root_id, id, cancel)?;
+    let target = target::capture_with_isolation(
+        root,
+        project,
+        root_id,
+        id,
+        cancel,
+        isolation,
+        settings_revision,
+    )?;
     let provider = HttpProvider::new(cancel)?;
     prepare_with(&provider, target, selected, cancel).await
 }
-pub async fn download_update_request_with_policy(
+pub async fn download_update_request_with_policy_and_isolation(
     root: &Path,
     project: &Path,
     root_id: &str,
@@ -137,8 +157,18 @@ pub async fn download_update_request_with_policy(
     scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
     report: impl Fn(DownloadProgress),
+    isolation: pcl_core::content_scope::IsolationPolicy,
+    settings_revision: &str,
 ) -> Result<VerifiedUpdateBatch> {
-    let target = target::capture(root, project, root_id, id, cancel)?;
+    let target = target::capture_with_isolation(
+        root,
+        project,
+        root_id,
+        id,
+        cancel,
+        isolation,
+        settings_revision,
+    )?;
     let provider = HttpProvider::new(cancel)?.with_download_policy(scheduler);
     let prepared = prepare_with(&provider, target, selected, cancel).await;
     report(DownloadProgress {
@@ -160,6 +190,14 @@ pub async fn download_update_request_with_policy(
         files: batch.files,
         network_bytes: batch.network_bytes,
     })
+}
+pub(crate) fn update_isolation(
+    plan: &UpdatePlan,
+) -> (pcl_core::content_scope::IsolationPolicy, &str) {
+    (
+        plan.transfer.target.isolation,
+        &plan.transfer.target.settings_revision,
+    )
 }
 pub fn recheck_update_target(plan: &UpdatePlan, cancel: &AtomicBool) -> Result<()> {
     target::check(&plan.transfer.target, cancel)

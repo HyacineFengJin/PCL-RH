@@ -10,6 +10,7 @@
 //! it keeps outputs and finishes owned staging cleanup. Any conflict retains
 //! the journal and reports Error, even when the cancellation flag is set.
 use super::{safe_name, token_for, MutationResult};
+use pcl_core::content_scope::IsolationPolicy;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -96,9 +97,20 @@ struct Scope {
     instance_id: String,
     profile_token: String,
     destinations: BTreeMap<String, Destination>,
+    #[serde(default)]
+    policy: IsolationPolicy,
 }
 impl Scope {
+    #[cfg(test)]
     fn capture(root: &Path, id: &str, kinds: &BTreeSet<String>) -> Result<(Self, Dir)> {
+        Self::capture_with_isolation(root, id, kinds, IsolationPolicy::Automatic)
+    }
+    fn capture_with_isolation(
+        root: &Path,
+        id: &str,
+        kinds: &BTreeSet<String>,
+        policy: IsolationPolicy,
+    ) -> Result<(Self, Dir)> {
         pcl_core::identifier(id)?;
         safe_name(id)?;
         let root = root.canonicalize().map_err(error)?;
@@ -108,7 +120,7 @@ impl Scope {
         let profile_token = token_for(&instance.regular(&format!("{id}.json"))?)?;
         let mut destinations = BTreeMap::new();
         for kind in kinds {
-            let target = crate::ui_data::resource_dir(&root, id, kind)?;
+            let target = crate::ui_data::resource_dir_with_isolation(&root, id, kind, policy)?;
             let relative = target
                 .strip_prefix(&root)
                 .map_err(|_| "资源目录超出游戏目录")?
@@ -139,6 +151,7 @@ impl Scope {
             instance_id: id.into(),
             profile_token,
             destinations,
+            policy,
         };
         scope.live(&root_dir, false)?;
         Ok((scope, root_dir))
@@ -165,7 +178,13 @@ impl Scope {
         }
         for (kind, d) in &self.destinations {
             let expected = self.root.join(&d.relative);
-            if crate::ui_data::resource_dir(&self.root, &self.instance_id, kind)? != expected {
+            if crate::ui_data::resource_dir_with_isolation(
+                &self.root,
+                &self.instance_id,
+                kind,
+                self.policy,
+            )? != expected
+            {
                 return Err("实例资源隔离目录已经变化".into());
             }
             let actual = root
@@ -651,6 +670,7 @@ fn recover_one(operation: &Dir, j: &Journal) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn import_verified_batch(
     root: &Path,
     id: &str,
@@ -659,10 +679,29 @@ pub(super) fn import_verified_batch(
     commit: &mut dyn FnMut() -> Result<()>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult> {
+    import_verified_batch_with_isolation(
+        root,
+        id,
+        files,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+pub(super) fn import_verified_batch_with_isolation(
+    root: &Path,
+    id: &str,
+    files: &mut [VerifiedImport],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<()>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult> {
     check(cancel)?;
     let tokens = source_tokens(files, cancel)?;
     let kinds = files.iter().map(|f| f.kind.clone()).collect();
-    let (scope, root_dir) = Scope::capture(root, id, &kinds)?;
+    let (scope, root_dir) = Scope::capture_with_isolation(root, id, &kinds, policy)?;
     let _history_lock = crate::instance_rename_refs::root_history_lock(&scope.root)?;
     super::ensure_local_resources_ready(&scope.root)?;
     ensure_ready(&scope.root)?;

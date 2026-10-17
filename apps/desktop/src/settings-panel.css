@@ -311,3 +311,23 @@
     gap: 15px;
   }
 }
+
+.ce-game-field-hint {
+  margin: 0;
+  color: var(--ce-muted-text, #7b8997);
+  font-size: 12px;
+}
+.ce-game-title-input {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.ce-game-title-input .ce-field {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.ce-game-title-input .ce-button {
+  width: auto;
+  white-space: nowrap;
+}

@@ -78,6 +78,7 @@ pub fn supported(kind: &str, files: &[ResourceFile]) -> bool {
             }
         })
 }
+#[cfg(test)]
 pub fn prepare(
     root: &Path,
     id: &str,
@@ -85,11 +86,29 @@ pub fn prepare(
     selected: &[ResourceFile],
     closing: &AtomicBool,
 ) -> Result<Prepared, String> {
+    prepare_with_isolation(
+        root,
+        id,
+        kind,
+        selected,
+        closing,
+        pcl_core::content_scope::IsolationPolicy::Automatic,
+    )
+}
+
+pub fn prepare_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    selected: &[ResourceFile],
+    closing: &AtomicBool,
+    policy: pcl_core::content_scope::IsolationPolicy,
+) -> Result<Prepared, String> {
     if !supported(kind, selected) || selected.len() > 128 {
         return Err("请选择最多 128 个有指纹的模组、资源包或光影文件".into());
     }
     let mut budget = Budget::new();
-    let binding = Binding::capture(root, id, kind, &mut budget, closing)?;
+    let binding = Binding::capture(root, id, kind, &mut budget, closing, policy)?;
     let mut seen = HashSet::new();
     let mut sources = Vec::new();
     let mut rows = Vec::new();

@@ -29,6 +29,7 @@ import type { InstallOptions } from "./InstallSelection";
 import type { ResourceSummary } from "./ResourceDetails";
 import type { ResourceBrowseRequest } from "./resourceBrowse";
 import { communityAliases, communityIcon } from "./communityResources";
+import { CommunityPages, type CommunityPage } from "./communityPagination";
 import grassIcon from "./assets/game-icons/grass.png";
 import commandIcon from "./assets/game-icons/command.png";
 import "./community-loading.css";
@@ -330,6 +331,7 @@ export function DownloadPanel({
           ) : community ? (
             <CommunityCatalog
               api={api}
+              scopeKey={rootId ?? "preview"}
               key={`${section}:${compatibility?.section === section ? compatibility.sequence : "default"}`}
               compatibility={
                 compatibility?.section === section ? compatibility : undefined
@@ -444,9 +446,11 @@ export function CommunityCatalog({
   setQuery,
   onResourceDetails,
   compatibility,
+  scopeKey = "default",
 }: {
   api: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   label: string;
+  scopeKey?: string;
   compatibility?: ResourceBrowseRequest;
   query: string;
   setQuery: (value: string) => void;
@@ -467,28 +471,76 @@ export function CommunityCatalog({
         }[compatibility.loader] || "任意"
       : "任意",
   );
-  const [request, setRequest] = useState<Record<string, unknown>>({
+  const [submittedQuery, setSubmittedQuery] = useState(query);
+  const [searchRevision, setSearchRevision] = useState(0);
+  const [retryRevision, setRetryRevision] = useState(0);
+  const context = {
+    api,
+    label,
+    scopeKey,
     query,
-    version: compatibility?.version,
-    loader: compatibility?.loader,
-    sort: query.trim() ? "relevance" : "downloads",
-  });
-  const catalogOwner = useRef({ api, label, request });
+    submittedQuery,
+    source,
+    tag,
+    sort,
+    version,
+    loader,
+    searchRevision,
+  };
+  const queryOwner = useRef(context);
   if (
-    catalogOwner.current.api !== api ||
-    catalogOwner.current.label !== label ||
-    catalogOwner.current.request !== request
+    (Object.keys(context) as (keyof typeof context)[]).some(
+      (key) => context[key] !== queryOwner.current[key],
+    )
   )
-    catalogOwner.current = { api, label, request };
+    queryOwner.current = context;
+  const renderedQueryOwner = queryOwner.current;
+  const pages = useRef({
+    owner: renderedQueryOwner,
+    cache: new CommunityPages(),
+  });
+  if (pages.current.owner !== renderedQueryOwner)
+    pages.current = { owner: renderedQueryOwner, cache: new CommunityPages() };
+  const [pageState, setPageState] = useState({
+    owner: renderedQueryOwner,
+    page: 1,
+  });
+  // A context change is page one during render, before effects can dispatch an
+  // old page or revive handlers after a root/API/filter A → B → A round trip.
+  const page = pageState.owner === renderedQueryOwner ? pageState.page : 1;
+  const catalogOwner = useRef({
+    query: renderedQueryOwner,
+    page,
+    retryRevision,
+  });
+  if (
+    catalogOwner.current.query !== renderedQueryOwner ||
+    catalogOwner.current.page !== page ||
+    catalogOwner.current.retryRevision !== retryRevision
+  )
+    catalogOwner.current = { query: renderedQueryOwner, page, retryRevision };
   const renderedCatalogOwner = catalogOwner.current;
-  const [result, setResult] = useState<{
+  const resultsElement = useRef<HTMLElement | null>(null);
+  const pageScroll = useRef<{ query: object; page: number } | null>(null);
+  if (pageScroll.current?.query !== renderedQueryOwner)
+    pageScroll.current = null;
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+  const current = () =>
+    live.current && catalogOwner.current === renderedCatalogOwner;
+  const [status, setStatus] = useState<{
     owner: object;
-    hits: ResourceSummary[];
-    warnings: string[];
+    loading: boolean;
+    error: string;
   } | null>(null);
-  const hits = result?.owner === renderedCatalogOwner ? result.hits : [];
-  const warnings =
-    result?.owner === renderedCatalogOwner ? result.warnings : [];
+  const result = pages.current.cache.get(page);
+  const hits = pages.current.cache.visibleHits(page);
+  const warnings = result?.warnings ?? [];
   const attributions = [
     ...new Set(
       hits
@@ -496,8 +548,12 @@ export function CommunityCatalog({
         .filter((value): value is string => Boolean(value)),
     ),
   ];
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const pendingSearch = submittedQuery !== query;
+  const error = status?.owner === renderedCatalogOwner ? status.error : "";
+  const loading =
+    !pendingSearch &&
+    label !== "世界" &&
+    (status?.owner === renderedCatalogOwner ? status.loading : !result);
   const encyclopedia = source === "MC百科";
   const encyclopediaSupported = ["模组", "整合包"].includes(label);
   const projectType = (
@@ -510,40 +566,18 @@ export function CommunityCatalog({
     } as Record<string, string>
   )[label];
   useEffect(() => {
-    if (label === "世界") return;
+    if (label === "世界" || pendingSearch) return;
     let disposed = false;
-    setLoading(true);
-    setError("");
-    api<{ hits: ResourceSummary[]; warnings: string[] }>("community_search", {
-      ...request,
-      projectType,
-    })
-      .then((result) => {
-        if (!disposed && catalogOwner.current === renderedCatalogOwner)
-          setResult({
-            owner: renderedCatalogOwner,
-            hits: result.hits,
-            warnings: result.warnings ?? [],
-          });
-      })
-      .catch((reason) => {
-        if (!disposed && catalogOwner.current === renderedCatalogOwner) {
-          setError(String(reason));
-          setResult(null);
-        }
-      })
-      .finally(() => {
-        if (!disposed && catalogOwner.current === renderedCatalogOwner)
-          setLoading(false);
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [renderedCatalogOwner, projectType]);
-  function search() {
-    setRequest({
+    const cache = pages.current.cache;
+    if (cache.get(page)) {
+      setStatus({ owner: renderedCatalogOwner, loading: false, error: "" });
+      return;
+    }
+    setStatus({ owner: renderedCatalogOwner, loading: true, error: "" });
+    api<CommunityPage>("community_search", {
       query,
       source,
+      page,
       sort: encyclopedia
         ? undefined
         : sort === "更新时间"
@@ -555,7 +589,86 @@ export function CommunityCatalog({
       loader:
         encyclopedia || loader === "任意" ? undefined : loader.toLowerCase(),
       tag: encyclopedia || tag === "全部" ? undefined : tag,
+      projectType,
+    })
+      .then((result) => {
+        if (disposed || !current()) return;
+        if (
+          result.pagination &&
+          (result.pagination.page !== page ||
+            typeof result.pagination.has_next !== "boolean")
+        )
+          throw Error(t("community.invalidPage"));
+        cache.remember(page, { ...result, warnings: result.warnings ?? [] });
+        setStatus({ owner: renderedCatalogOwner, loading: false, error: "" });
+      })
+      .catch((reason) => {
+        if (!disposed && current())
+          setStatus({
+            owner: renderedCatalogOwner,
+            loading: false,
+            error: String(reason),
+          });
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [renderedCatalogOwner, projectType, pendingSearch]);
+  useEffect(() => {
+    const intent = pageScroll.current;
+    if (
+      !intent ||
+      intent.query !== renderedQueryOwner ||
+      intent.page !== page ||
+      !current() ||
+      loading ||
+      pendingSearch ||
+      error ||
+      !result
+    )
+      return;
+    pageScroll.current = null;
+    const section = resultsElement.current;
+    const main = section?.closest<HTMLElement>("main.content");
+    if (!section || !main) return;
+    // Explicit pagination positions only the launcher's main viewport after
+    // the target page is in the DOM. scrollIntoView could also move the window
+    // or other ancestors; automatic scrolling avoids an animation surviving a
+    // later query change. Focus stays on the user's pagination control.
+    const top = main.getBoundingClientRect().top + main.clientTop + 8;
+    main.scrollTo({
+      top: Math.max(
+        0,
+        main.scrollTop + section.getBoundingClientRect().top - top,
+      ),
+      behavior: "auto",
     });
+  }, [
+    renderedQueryOwner,
+    renderedCatalogOwner,
+    page,
+    loading,
+    pendingSearch,
+    error,
+    result,
+  ]);
+  function search() {
+    if (!current()) return;
+    setSubmittedQuery(query);
+    setSearchRevision((revision) => revision + 1);
+  }
+  function changePage(next: number) {
+    if (
+      !current() ||
+      loading ||
+      pendingSearch ||
+      next < 1 ||
+      next > 0xffffffff ||
+      (next > page && !result?.pagination?.has_next)
+    )
+      return;
+    pageScroll.current = { query: renderedQueryOwner, page: next };
+    setPageState({ owner: renderedQueryOwner, page: next });
   }
   const availableVersions = [
     ...new Set([
@@ -563,6 +676,7 @@ export function CommunityCatalog({
         .flatMap((hit) => hit.versions)
         .filter((value) => /^\d+\.\d+(\.\d+)?$/.test(value)),
       ...(compatibility?.version ? [compatibility.version] : []),
+      ...(version !== "任意" ? [version] : []),
     ]),
   ].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   const loaderNames: Record<string, string> = {
@@ -585,11 +699,12 @@ export function CommunityCatalog({
     management: t("nav.manage"),
   };
   const tags = [
-    ...new Set(
-      hits
+    ...new Set([
+      ...hits
         .flatMap((hit) => hit.display_categories)
         .filter((value) => !loaderNames[value]),
-    ),
+      ...(tag !== "全部" ? [tag] : []),
+    ]),
   ];
   const downloads = (value?: number) =>
     value === undefined
@@ -597,7 +712,7 @@ export function CommunityCatalog({
       : formatNumber(value, { notation: "compact", maximumFractionDigits: 1 });
   const updated = (value?: string) => (value ? formatRelativeDate(value) : "—");
   function showDetails(hit: ResourceSummary) {
-    if (catalogOwner.current !== renderedCatalogOwner) return;
+    if (!current()) return;
     onResourceDetails({
       ...hit,
       project_type: hit.project_type ?? projectType,
@@ -619,7 +734,9 @@ export function CommunityCatalog({
           placeholder={t("ui.searchType", { type: displayLabel })}
           aria-label={t("ui.searchType", { type: displayLabel })}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            if (current()) setQuery(e.target.value);
+          }}
         />
         <button className="ce-button" type="submit">
           {t("ui.search")}
@@ -632,6 +749,7 @@ export function CommunityCatalog({
             className="ce-field"
             value={source}
             onChange={(e) => {
+              if (!current()) return;
               setSource(e.target.value);
               if (e.target.value === "MC百科") {
                 setVersion("任意");
@@ -658,7 +776,9 @@ export function CommunityCatalog({
             className="ce-field"
             value={tag}
             disabled={encyclopedia}
-            onChange={(e) => setTag(e.target.value)}
+            onChange={(e) => {
+              if (current() && !encyclopedia) setTag(e.target.value);
+            }}
           >
             <option value="全部">{t("ui.all")}</option>
             {tags.map((value) => (
@@ -674,7 +794,9 @@ export function CommunityCatalog({
             className="ce-field"
             value={sort}
             disabled={encyclopedia}
-            onChange={(e) => setSort(e.target.value)}
+            onChange={(e) => {
+              if (current() && !encyclopedia) setSort(e.target.value);
+            }}
           >
             {["默认", "下载量", "更新时间"].map((v) => (
               <option key={v} value={v}>
@@ -687,13 +809,15 @@ export function CommunityCatalog({
           className="icon-button ce-filter-reset"
           aria-label={t("ui.resetFilters")}
           onClick={() => {
+            if (!current()) return;
             setQuery("");
             setSource("全部");
             setTag("全部");
             setSort("默认");
             setVersion("任意");
             setLoader("任意");
-            setRequest({ query: "", sort: "downloads" });
+            setSubmittedQuery("");
+            setSearchRevision((revision) => revision + 1);
           }}
         >
           <RefreshCw size={22} />
@@ -704,7 +828,9 @@ export function CommunityCatalog({
             className="ce-field"
             value={version}
             disabled={encyclopedia}
-            onChange={(e) => setVersion(e.target.value)}
+            onChange={(e) => {
+              if (current() && !encyclopedia) setVersion(e.target.value);
+            }}
           >
             <option value="任意">{t("ui.any")}</option>
             {availableVersions.map((value) => (
@@ -718,7 +844,9 @@ export function CommunityCatalog({
             className="ce-field"
             value={loader}
             disabled={encyclopedia}
-            onChange={(e) => setLoader(e.target.value)}
+            onChange={(e) => {
+              if (current() && !encyclopedia) setLoader(e.target.value);
+            }}
           >
             {["任意", "Fabric", "Forge", "NeoForge", "Quilt"].map((v) => (
               <option key={v} value={v}>
@@ -752,6 +880,7 @@ export function CommunityCatalog({
         </div>
       )}
       <section
+        ref={resultsElement}
         className={
           loading ? "ce-community-loading" : "ce-card ce-community-results"
         }
@@ -768,11 +897,21 @@ export function CommunityCatalog({
             <i aria-hidden="true" />
             <p>{t("download.loadingType", { type: displayLabel })}</p>
           </div>
+        ) : pendingSearch ? (
+          <div className="download-empty">
+            <Search size={24} />
+            <p>{t("community.searchPending")}</p>
+          </div>
         ) : error ? (
           <div className="download-empty" role="alert">
             <TriangleAlert size={24} />
             <p>{error}</p>
-            <button className="ce-button" onClick={search}>
+            <button
+              className="ce-button"
+              onClick={() => {
+                if (current()) setRetryRevision((revision) => revision + 1);
+              }}
+            >
               {t("ui.retry")}
             </button>
           </div>
@@ -780,9 +919,11 @@ export function CommunityCatalog({
           <div className="download-empty">
             <Search size={30} strokeWidth={1.3} />
             <p>
-              {label === "世界"
-                ? t("download.worldsUnavailable")
-                : t("download.noMatching", { type: displayLabel })}
+              {result?.hits.length
+                ? t("community.pageDuplicates")
+                : label === "世界"
+                  ? t("download.worldsUnavailable")
+                  : t("download.noMatching", { type: displayLabel })}
             </p>
           </div>
         ) : (
@@ -887,6 +1028,30 @@ export function CommunityCatalog({
           })
         )}
       </section>
+      {label !== "世界" && (
+        <nav
+          className="ce-card ce-community-pagination"
+          aria-label={t("community.pagination")}
+        >
+          <button
+            type="button"
+            className="ce-button"
+            disabled={loading || pendingSearch || page === 1}
+            onClick={() => changePage(page - 1)}
+          >
+            {t("community.previousPage")}
+          </button>
+          <span aria-live="polite">{t("community.currentPage", { page })}</span>
+          <button
+            type="button"
+            className="ce-button"
+            disabled={loading || pendingSearch || !result?.pagination?.has_next}
+            onClick={() => changePage(page + 1)}
+          >
+            {t("community.nextPage")}
+          </button>
+        </nav>
+      )}
       {!loading && attributions.length > 0 && (
         <p className="ce-community-note">{attributions.join(" · ")}</p>
       )}

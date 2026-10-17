@@ -104,6 +104,9 @@ fn legacy_migration_preserves_values_exact_path_and_original_backup_once() {
     assert_eq!(settings.root, exact);
     assert_eq!(settings.player, "Old_Player");
     assert_eq!(settings.memory_gib, 14);
+    assert_eq!(settings.isolation, IsolationPolicy::Automatic);
+    assert!(settings.isolation_overrides.is_empty());
+    assert!(settings.window_title_overrides.is_empty());
     assert_eq!(settings.selected.as_deref(), Some("Same Instance"));
     assert_eq!(
         settings.overrides,
@@ -571,4 +574,377 @@ fn removal_with_all_remaining_roots_offline_keeps_a_valid_registry_selection() {
     assert!(reloaded.roots().iter().all(|root| !root.available));
     assert!(!Path::new(&first.root).exists());
     assert!(!Path::new(&offline.path).exists());
+}
+
+#[test]
+fn old_version_three_defaults_isolation_without_rewriting_its_bytes() {
+    let fixture = Fixture::new();
+    let mut original = serde_json::to_value(defaults(&fixture.0)).unwrap();
+    original.as_object_mut().unwrap().remove("isolation");
+    for root in original["roots"].as_array_mut().unwrap() {
+        root.as_object_mut().unwrap().remove("isolation_overrides");
+        root.as_object_mut()
+            .unwrap()
+            .remove("window_title_overrides");
+    }
+    let bytes = serde_json::to_vec(&original).unwrap();
+    fixture.write(&bytes);
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let settings = store.snapshot();
+    assert_eq!(settings.isolation, IsolationPolicy::Automatic);
+    assert!(settings.isolation_overrides.is_empty());
+    assert!(settings.window_title_overrides.is_empty());
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(
+        store.isolation_settings(None).unwrap().policy("Example"),
+        IsolationPolicy::Automatic
+    );
+}
+
+#[test]
+fn isolation_and_title_overrides_are_root_scoped_and_survive_reload() {
+    let fixture = Fixture::new();
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let first = store.snapshot().root_id;
+    let second = store.register(fixture.root("second-policy"), None).unwrap();
+    let mut settings = store.snapshot();
+    settings.isolation = IsolationPolicy::Isolated;
+    settings
+        .isolation_overrides
+        .insert("Same".into(), IsolationPolicy::Shared);
+    settings
+        .window_title_overrides
+        .insert("Same".into(), "第一处 Minecraft".into());
+    store.save(settings).unwrap();
+    let mut settings = store.select(&second.id).unwrap();
+    settings
+        .isolation_overrides
+        .insert("Same".into(), IsolationPolicy::Automatic);
+    settings
+        .window_title_overrides
+        .insert("Same".into(), String::new());
+    store.save(settings).unwrap();
+    let first_policy = store.isolation_settings(Some(&first)).unwrap();
+    assert_eq!(first_policy.policy("Same"), IsolationPolicy::Shared);
+    assert_eq!(first_policy.policy("Other"), IsolationPolicy::Isolated);
+    assert_eq!(
+        first_policy.root.window_title_overrides["Same"],
+        "第一处 Minecraft"
+    );
+    let second_policy = store.isolation_settings(Some(&second.id)).unwrap();
+    assert_eq!(second_policy.policy("Same"), IsolationPolicy::Automatic);
+    assert_eq!(second_policy.policy("Other"), IsolationPolicy::Isolated);
+    assert_eq!(
+        second_policy.root.window_title_overrides.get("Same"),
+        Some(&String::new())
+    );
+    let summary = store.roots();
+    assert_eq!(
+        summary
+            .iter()
+            .find(|root| root.id == first)
+            .unwrap()
+            .isolation_overrides["Same"],
+        IsolationPolicy::Shared
+    );
+    assert_eq!(
+        summary
+            .iter()
+            .find(|root| root.id == second.id)
+            .unwrap()
+            .window_title_overrides
+            .get("Same"),
+        Some(&String::new())
+    );
+    let mut settings = store.snapshot();
+    settings.isolation_overrides.remove("Same");
+    settings.window_title_overrides.remove("Same");
+    store.save(settings).unwrap();
+    assert_eq!(
+        store.snapshot().resolved_isolation("Same"),
+        IsolationPolicy::Isolated
+    );
+    assert!(store
+        .snapshot()
+        .window_title_overrides
+        .get("Same")
+        .is_none());
+    let (reloaded, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    assert_eq!(
+        projection(reloaded.snapshot()),
+        projection(store.snapshot())
+    );
+    assert_eq!(
+        reloaded.registered(&first).unwrap(),
+        store.registered(&first).unwrap()
+    );
+}
+
+#[test]
+fn isolation_save_retires_revision_and_stale_save_cannot_restore_old_policy() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let stale = store.snapshot();
+    let mut next = stale.clone();
+    next.isolation = IsolationPolicy::Shared;
+    next.isolation_overrides
+        .insert("Example".into(), IsolationPolicy::Isolated);
+    next.window_title_overrides
+        .insert("Example".into(), "Custom".into());
+    store.save(next).unwrap();
+    let before = store.snapshot();
+    let bytes = fs::read(fixture.file()).unwrap();
+    assert_ne!(before.revision, stale.revision);
+    assert!(store.save(stale).is_err());
+    assert_eq!(store.snapshot(), before);
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+}
+
+#[test]
+fn isolation_capture_rejects_external_settings_edits_and_unavailable_roots() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    store.save(store.snapshot()).unwrap();
+    let root = store
+        .register(fixture.root("policy-offline"), None)
+        .unwrap();
+    fs::remove_dir(&root.path).unwrap();
+    assert!(store.isolation_settings(Some(&root.id)).is_err());
+    assert!(store.registered(&root.id).is_ok());
+    let mut external: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.file()).unwrap()).unwrap();
+    external["isolation"] = json!("isolated");
+    let bytes = serde_json::to_vec(&external).unwrap();
+    fixture.write(&bytes);
+    assert!(store.isolation_settings(None).is_err());
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+}
+
+#[test]
+fn rename_moves_isolation_and_title_only_with_the_selected_registered_root() {
+    let fixture = Fixture::new();
+    let mut config = defaults(&fixture.0);
+    config.isolation = IsolationPolicy::Isolated;
+    let root = &mut config.roots[0];
+    let first = root.id.clone();
+    let path = PathBuf::from(&root.path);
+    root.isolation_overrides
+        .insert("Old".into(), IsolationPolicy::Shared);
+    root.window_title_overrides
+        .insert("Old".into(), String::new());
+    root.isolation_overrides
+        .insert("Other".into(), IsolationPolicy::Automatic);
+    let mut other = root.clone();
+    other.id = "root-other".into();
+    other.path = fixture.root("rename-other");
+    config.roots.push(other.clone());
+    let renamed = rename_bytes(&encode(&config).unwrap(), &first, &path, "Old", "New").unwrap();
+    let (after, migration) = decode_settings(&renamed).unwrap();
+    assert!(migration.is_none());
+    assert_eq!(after.isolation, IsolationPolicy::Isolated);
+    assert_eq!(
+        after.roots[0].isolation_overrides["New"],
+        IsolationPolicy::Shared
+    );
+    assert_eq!(
+        after.roots[0].window_title_overrides.get("New"),
+        Some(&String::new())
+    );
+    assert!(!after.roots[0].isolation_overrides.contains_key("Old"));
+    assert!(!after.roots[0].window_title_overrides.contains_key("Old"));
+    assert_eq!(
+        after.roots[0].isolation_overrides["Other"],
+        IsolationPolicy::Automatic
+    );
+    assert_eq!(after.roots[1], other);
+    for title_collision in [false, true] {
+        let mut collision = config.clone();
+        if title_collision {
+            collision.roots[0]
+                .window_title_overrides
+                .insert("New".into(), String::new());
+        } else {
+            collision.roots[0]
+                .isolation_overrides
+                .insert("New".into(), IsolationPolicy::Automatic);
+        }
+        assert!(rename_bytes(&encode(&collision).unwrap(), &first, &path, "Old", "New").is_err());
+    }
+}
+
+#[test]
+fn version_two_rename_payload_keeps_its_exact_legacy_field_layout() {
+    let fixture = Fixture::new();
+    let root = fixture.root("rename-v2");
+    let original = json!({"schema_version":2,"active_root_id":"root-v2","player":"Player","memory_gib":6,
+        "roots":[{"id":"root-v2","name":"Game","path":root,"selected":"Old","overrides":{"Old":10}}]});
+    let bytes = serde_json::to_vec(&original).unwrap();
+    let renamed = rename_bytes(&bytes, "root-v2", Path::new(&root), "Old", "New").unwrap();
+    let mut expected = original;
+    expected["roots"][0]["selected"] = json!("New");
+    expected["roots"][0]["overrides"] = json!({"New":10});
+    let legacy: VersionTwo = serde_json::from_value(expected.clone()).unwrap();
+    assert_eq!(renamed, encode(&legacy).unwrap());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&renamed).unwrap(),
+        expected
+    );
+    let (normalized, _) = decode_settings(&renamed).unwrap();
+    assert_eq!(normalized.isolation, IsolationPolicy::Automatic);
+    assert!(normalized.roots[0].isolation_overrides.is_empty());
+    assert!(normalized.roots[0].window_title_overrides.is_empty());
+}
+
+#[test]
+fn retained_isolation_or_default_title_reserves_an_externally_removed_instance_name() {
+    for title_only in [false, true] {
+        let fixture = Fixture::new();
+        let (store, _) = ConfigStore::load(&fixture.0);
+        let mut settings = store.snapshot();
+        if title_only {
+            settings
+                .window_title_overrides
+                .insert("Reserved".into(), String::new());
+        } else {
+            settings
+                .isolation_overrides
+                .insert("Reserved".into(), IsolationPolicy::Automatic);
+        }
+        store.save(settings).unwrap();
+        let before = store.snapshot();
+        let bytes = fs::read(fixture.file()).unwrap();
+        check_delete_dependencies(&bytes, &before.root_id, Path::new(&before.root), "Reserved")
+            .unwrap();
+        assert!(store
+            .ensure_new_instance_name(&before.root_id, "Reserved")
+            .is_err());
+        assert!(store
+            .ensure_new_instance_name(&before.root_id, "Different")
+            .is_ok());
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn malformed_isolation_or_title_settings_are_preserved_and_block_writes() {
+    let fixture = Fixture::new();
+    let valid = serde_json::to_value(defaults(&fixture.0)).unwrap();
+    let mut cases = Vec::new();
+    let mut bad_global = valid.clone();
+    bad_global["isolation"] = json!("unknown");
+    cases.push(bad_global);
+    for overrides in [
+        json!({"Example":"inherit"}),
+        json!({"../Escape":"shared"}),
+        json!((0..4097)
+            .map(|n| (format!("Example{n}"), "automatic"))
+            .collect::<BTreeMap<_, _>>()),
+    ] {
+        let mut bad = valid.clone();
+        bad["roots"][0]["isolation_overrides"] = overrides;
+        cases.push(bad);
+    }
+    for titles in [
+        json!({"../Escape":"Title"}),
+        json!({"Example":"bad\nTitle"}),
+        json!({"Example":"界".repeat(257)}),
+        json!((0..4097)
+            .map(|n| (format!("Example{n}"), "Title"))
+            .collect::<BTreeMap<_, _>>()),
+    ] {
+        let mut bad = valid.clone();
+        bad["roots"][0]["window_title_overrides"] = titles;
+        cases.push(bad);
+    }
+    for value in cases {
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fixture.write(&bytes);
+        let (store, warning) = ConfigStore::load(&fixture.0);
+        assert!(warning.is_some());
+        assert!(store.save(store.snapshot()).is_err());
+        assert!(store.isolation_settings(None).is_err());
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn invalid_override_save_keeps_the_current_policy_revision_and_bytes() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let mut settings = store.snapshot();
+    settings.isolation = IsolationPolicy::Shared;
+    settings
+        .window_title_overrides
+        .insert("Example".into(), "界".repeat(256));
+    store.save(settings).unwrap();
+    let before = store.snapshot();
+    let bytes = fs::read(fixture.file()).unwrap();
+    for title in ["bad\0Title".to_string(), "界".repeat(257)] {
+        let mut invalid = before.clone();
+        invalid
+            .window_title_overrides
+            .insert("Example".into(), title);
+        assert!(store.save(invalid).is_err());
+        assert_eq!(store.snapshot(), before);
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    }
+    let mut invalid = before.clone();
+    invalid
+        .isolation_overrides
+        .insert("../Escape".into(), IsolationPolicy::Isolated);
+    assert!(store.save(invalid).is_err());
+    assert_eq!(store.snapshot(), before);
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+}
+
+#[test]
+fn changing_content_selection_and_title_keeps_both_existing_save_directories() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let root = PathBuf::from(store.snapshot().root);
+    let shared = root.join("saves/Shared World/level.dat");
+    let isolated = root.join("versions/Example/saves/Private World/level.dat");
+    fs::create_dir_all(shared.parent().unwrap()).unwrap();
+    fs::create_dir_all(isolated.parent().unwrap()).unwrap();
+    fs::write(&shared, b"shared world remains here").unwrap();
+    fs::write(&isolated, b"private world remains here").unwrap();
+    for policy in [
+        IsolationPolicy::Isolated,
+        IsolationPolicy::Shared,
+        IsolationPolicy::Automatic,
+    ] {
+        let mut settings = store.snapshot();
+        settings.isolation = policy;
+        settings
+            .isolation_overrides
+            .insert("Example".into(), policy);
+        settings
+            .window_title_overrides
+            .insert("Example".into(), "Only a title".into());
+        store.save(settings).unwrap();
+        assert_eq!(fs::read(&shared).unwrap(), b"shared world remains here");
+        assert_eq!(fs::read(&isolated).unwrap(), b"private world remains here");
+    }
+    assert!(!root.join(".pcl-linux").exists());
+}
+
+#[test]
+fn policy_capture_preserves_registered_path_for_nofollow_consumers() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let mut config = defaults(&fixture.0);
+    let canonical = fs::canonicalize(&config.roots[0].path).unwrap();
+    let alias = fixture.0.join("registered-alias");
+    symlink(&canonical, &alias).unwrap();
+    config.roots[0].path = alias.display().to_string();
+    fixture.write(&encode(&config).unwrap());
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let captured = store.isolation_settings(None).unwrap();
+    assert_eq!(captured.registered_path, alias.display().to_string());
+    assert_eq!(captured.root.path, canonical.display().to_string());
 }

@@ -36,10 +36,19 @@ pub(crate) use tests::test_install_plan;
 pub use transfer::{DownloadProgress, VerifiedBatch};
 #[cfg(test)]
 pub(crate) use updates::test_update_batch;
+pub(crate) use updates::update_isolation;
 pub use updates::{
-    check_updates, download_update_request_with_policy, prepare_update, recheck_update_target,
-    UpdateCheck, UpdatePlan, VerifiedUpdateBatch,
+    check_updates_with_isolation, download_update_request_with_policy_and_isolation,
+    prepare_update_with_isolation, recheck_update_target, UpdateCheck, UpdatePlan,
+    VerifiedUpdateBatch,
 };
+
+pub(crate) fn install_isolation(
+    plan: &InstallPlan,
+) -> (pcl_core::content_scope::IsolationPolicy, &str) {
+    (plan.target.isolation, &plan.target.settings_revision)
+}
+
 type Result<T> = std::result::Result<T, String>;
 pub const CANCELLED: &str = "资源下载已取消";
 const MAX_PROJECTS: usize = 64;
@@ -90,16 +99,26 @@ pub(crate) struct LocalFile {
 
 /// Prepare does local CPU/I/O and HTTP outside the application operations mutex.
 /// Command admission must capture and recheck its root binding around this work.
-pub async fn prepare(
+pub async fn prepare_with_isolation(
     root: &Path,
     project: &Path,
     root_id: &str,
     instance_id: &str,
     request: InstallRequest,
     cancel: &AtomicBool,
+    isolation: pcl_core::content_scope::IsolationPolicy,
+    settings_revision: &str,
 ) -> Result<InstallPlan> {
     request.validate()?;
-    let target = target::capture(root, project, root_id, instance_id, cancel)?;
+    let target = target::capture_with_isolation(
+        root,
+        project,
+        root_id,
+        instance_id,
+        cancel,
+        isolation,
+        settings_revision,
+    )?;
     let provider = provider::HttpProvider::new(cancel)?;
     plan::prepare(&provider, target, request, cancel).await
 }

@@ -32,6 +32,12 @@ pub struct CurseforgeClient {
     transport: Transport,
 }
 
+pub struct CurseforgeSearchPage {
+    pub hits: Vec<Value>,
+    pub has_more: bool,
+    pub limited: bool,
+}
+
 /// Trusted API metadata for the native file downloader. The API key never
 /// travels with this value and must never be attached to the CDN request.
 pub struct CurseforgeDownload {
@@ -56,6 +62,7 @@ impl CurseforgeClient {
         })
     }
 
+    #[cfg(test)]
     pub async fn search(
         &self,
         query: &str,
@@ -65,16 +72,42 @@ impl CurseforgeClient {
         sort: Option<&str>,
         tag: Option<&str>,
     ) -> Result<Vec<Value>, String> {
-        let query = search_query(query, kind, version, loader, sort, tag)?;
+        self.search_page(query, kind, version, loader, sort, tag, 0)
+            .await
+            .map(|page| page.hits)
+    }
+
+    /// Search offsets are provider offsets, before cross-provider grouping.
+    /// Validated pagination metadata, never normalized-card counts, decides
+    /// whether another source page exists.
+    pub async fn search_page(
+        &self,
+        query: &str,
+        kind: ProjectKind,
+        version: Option<&str>,
+        loader: Option<&str>,
+        sort: Option<&str>,
+        tag: Option<&str>,
+        index: usize,
+    ) -> Result<CurseforgeSearchPage, String> {
+        // Official API limit: index + pageSize <= 10,000.
+        if index > 10_000 - PAGE_SIZE || index % PAGE_SIZE != 0 {
+            return Err("CurseForge 搜索页码超出支持范围".into());
+        }
+        let mut query = search_query(query, kind, version, loader, sort, tag)?;
+        query.iter_mut().find(|(key, _)| *key == "index").unwrap().1 = index.to_string();
         tokio::time::timeout(OPERATION_TIMEOUT, async {
             let mut budget = Budget::new(1);
             let page: Page<Project> = self
                 .transport
                 .get("mods/search", &query, &mut budget)
                 .await?;
-            page.validate(0, PAGE_SIZE)?;
+            page.validate(index, PAGE_SIZE)?;
+            let has_more = index as u64 + (page.data.len() as u64) < page.pagination.total_count;
+            let limited = has_more && index + PAGE_SIZE == 10_000;
             let mut seen = BTreeSet::new();
-            page.data
+            let hits = page
+                .data
                 .into_iter()
                 .map(|project| {
                     if project.class_id != Some(class_id(kind)?) || !seen.insert(project.id) {
@@ -82,7 +115,12 @@ impl CurseforgeClient {
                     }
                     normalize_project(&project, true)
                 })
-                .collect()
+                .collect::<Result<_, String>>()?;
+            Ok(CurseforgeSearchPage {
+                hits,
+                has_more: has_more && !limited,
+                limited,
+            })
         })
         .await
         .map_err(|_| "CurseForge 检索超过总时间上限".to_owned())?

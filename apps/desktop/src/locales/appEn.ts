@@ -493,5 +493,11 @@ const messages = {
     "Version notification history is currently read-only; existing records are preserved.",
   "minecraftNotice.invalidResponse":
     "Minecraft version notifications returned invalid confirmation data.",
+  "settings.isolationOn": "Separate instance folders",
+  "settings.isolationOff": "Shared game folder",
+  "settings.isolationHint":
+    "Switching keeps existing files in their original folders.",
+  "settings.titleInvalid": "Use 1–256 characters without control characters.",
+  "settings.saveTitle": "Save title",
 } as const;
 export default messages;

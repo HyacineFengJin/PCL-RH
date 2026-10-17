@@ -15,6 +15,7 @@ use super::verified_batch::{
     filesystem::{self, Dir, Key, Owned},
 };
 use super::{MutationResult, VerifiedImport};
+use pcl_core::content_scope::IsolationPolicy;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -227,6 +228,7 @@ fn sources_unchanged(files: &[VerifiedImport], tokens: &[String]) -> Result<()> 
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn update_verified_batch(
     root: &Path,
     id: &str,
@@ -236,6 +238,27 @@ pub(super) fn update_verified_batch(
     commit: &mut dyn FnMut() -> Result<()>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult> {
+    update_verified_batch_with_isolation(
+        root,
+        id,
+        files,
+        replacements,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+pub(super) fn update_verified_batch_with_isolation(
+    root: &Path,
+    id: &str,
+    files: &mut [VerifiedImport],
+    replacements: &[Replacement],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<()>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult> {
     check(cancel)?;
     let tokens = validate_sources(files, replacements, cancel)?;
     let root = root.canonicalize().map_err(err)?;
@@ -243,7 +266,8 @@ pub(super) fn update_verified_batch(
     super::ensure_local_resources_ready(&root)?;
     super::verified_batch::ensure_ready(&root)?;
     ensure_ready(&root)?;
-    let (context, mut j) = scope::prepare(&root, id, files, replacements, cancel)?;
+    let (context, mut j) =
+        scope::prepare_with_isolation(&root, id, files, replacements, cancel, policy)?;
     if files.is_empty() {
         commit()?;
         check(cancel)?;

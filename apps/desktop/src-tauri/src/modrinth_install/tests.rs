@@ -952,3 +952,51 @@ fn official_public_provider_metadata_probe() {
         );
     });
 }
+
+#[test]
+fn explicit_isolation_binds_modrinth_inventory_and_configuration_generation() {
+    use pcl_core::content_scope::IsolationPolicy;
+    let f = Fixture::new();
+    fs::create_dir(f.root.join("mods")).unwrap();
+    fs::write(f.root.join("mods/shared.jar"), b"shared mod").unwrap();
+    f.local("mods", "isolated.jar", b"isolated mod");
+    let cancel = AtomicBool::new(false);
+    let capture = |policy, revision| {
+        target::capture_with_isolation(
+            &f.root,
+            &f.project,
+            "root-fixture",
+            "sample",
+            &cancel,
+            policy,
+            revision,
+        )
+        .unwrap()
+    };
+    let shared = capture(IsolationPolicy::Shared, "one");
+    assert_eq!(shared.local_files.len(), 1);
+    assert_eq!(shared.local_files[0].file_name, "shared.jar");
+    target::check(&shared, &cancel).unwrap();
+    let isolated = capture(IsolationPolicy::Isolated, "two");
+    assert_eq!(isolated.local_files.len(), 1);
+    assert_eq!(isolated.local_files[0].file_name, "isolated.jar");
+    assert!(!shared.permits_inventory_extension(&isolated));
+    let roundtrip = capture(IsolationPolicy::Shared, "three");
+    assert!(!shared.permits_inventory_extension(&roundtrip));
+    assert_ne!(
+        serde_json::to_vec(&shared).unwrap(),
+        serde_json::to_vec(&roundtrip).unwrap()
+    );
+    std::os::unix::fs::symlink("missing", f.root.join("versions/sample/config")).unwrap();
+    assert!(target::capture_with_isolation(
+        &f.root,
+        &f.project,
+        "root-fixture",
+        "sample",
+        &cancel,
+        IsolationPolicy::Shared,
+        "four"
+    )
+    .unwrap_err()
+    .contains("config"));
+}

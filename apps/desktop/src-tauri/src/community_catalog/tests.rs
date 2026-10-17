@@ -5,6 +5,112 @@ fn request(query: &str) -> SearchRequest {
     SearchRequest::parse(query.into(), None, None, None, None, None, None).unwrap()
 }
 
+#[test]
+fn page_bounds_preserve_legacy_first_page_without_a_shared_provider_page_cap() {
+    assert_eq!(checked_page(None).unwrap(), 1);
+    assert_eq!(checked_page(Some(100)).unwrap(), 100);
+    assert_eq!(checked_page(Some(101)).unwrap(), 101);
+    assert_eq!(checked_page(Some(u32::MAX)).unwrap(), u32::MAX);
+    assert!(checked_page(Some(0)).is_err());
+    assert_eq!(
+        provider_offset(u32::MAX, 30).unwrap(),
+        (u64::from(u32::MAX) - 1) * 30
+    );
+    assert!(provider_offset(0, 30).is_err());
+}
+
+#[test]
+fn modrinth_pagination_uses_validated_provider_count_before_grouping() {
+    let hit = provider_hit(CommunitySource::Modrinth, "Abcd1234", "example");
+    for (total, more) in [(31, false), (100, true)] {
+        let result = modrinth_page(
+            json!({"hits": [hit.clone()], "offset":30, "limit":30, "total_hits":total}),
+            ProjectKind::Mod,
+            2,
+        )
+        .unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.has_more, more);
+    }
+    let result = modrinth_page(
+        json!({"hits":[], "offset":60, "limit":30, "total_hits":31}),
+        ProjectKind::Mod,
+        3,
+    )
+    .unwrap();
+    assert!(!result.has_more);
+}
+
+#[test]
+fn modrinth_malformed_pagination_is_a_source_failure_not_a_guessed_last_page() {
+    let valid = json!({"hits": [provider_hit(CommunitySource::Modrinth, "Abcd1234", "example")], "offset":30, "limit":30, "total_hits":100});
+    for (field, value) in [
+        ("offset", json!(0)),
+        ("limit", json!(50)),
+        ("total_hits", json!(30)),
+        ("total_hits", Value::Null),
+        ("hits", json!([])),
+    ] {
+        let mut response = valid.clone();
+        response[field] = value;
+        assert!(
+            modrinth_page(response, ProjectKind::Mod, 2).is_err(),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn merged_pages_keep_provider_progress_and_partial_success_independent_from_card_count() {
+    for more in [false, true] {
+        let result = finish_page(
+            vec![
+                success(provider(CommunitySource::Modrinth, "Abcd1234", "example")),
+                success(encyclopedia("123", &["https://modrinth.com/mod/example"])),
+                failure(CommunitySource::Curseforge),
+            ],
+            Vec::new(),
+            RequestedSource::All,
+            2,
+            more,
+        )
+        .unwrap();
+        assert_eq!(hits(&result).len(), 1);
+        assert_eq!(hits(&result)[0]["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(result["pagination"], json!({"page":2, "has_next":more}));
+        assert_eq!(result["warnings"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn provider_limits_are_independent_and_modrinth_can_continue_beyond_page_one_hundred() {
+    let mut value = request("example");
+    value.page = 101;
+    let mut warnings = Vec::new();
+    assert!(source_page_allowed(&value, CommunitySource::Modrinth, &mut warnings).unwrap());
+    assert!(source_page_allowed(&value, CommunitySource::Curseforge, &mut warnings).unwrap());
+    assert!(!source_page_allowed(&value, CommunitySource::Mcmod, &mut warnings).unwrap());
+    value.page = 201;
+    assert!(!source_page_allowed(&value, CommunitySource::Curseforge, &mut warnings).unwrap());
+    assert_eq!(warnings.len(), 2);
+    value.source = RequestedSource::One(CommunitySource::Curseforge);
+    assert!(source_page_allowed(&value, CommunitySource::Curseforge, &mut warnings).is_err());
+    let result = finish_page(
+        vec![success(provider(
+            CommunitySource::Modrinth,
+            "Abcd1234",
+            "example",
+        ))],
+        Vec::new(),
+        RequestedSource::All,
+        100,
+        true,
+    )
+    .unwrap();
+    assert_eq!(result["pagination"]["has_next"], true);
+    assert!(result["warnings"].as_array().unwrap().is_empty());
+}
+
 fn provider_hit(source: CommunitySource, id: &str, slug: &str) -> Value {
     json!({
         "project_id": id, "slug": slug, "title": "Fixture Mod", "description": "Description",

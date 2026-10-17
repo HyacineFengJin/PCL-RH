@@ -1,6 +1,6 @@
 //! Local, snapshot-checked ZIP export. Callers authorize the captured root and
 //! serialize this task with game/launcher writers. No source file is changed.
-use pcl_core::content_scope::{automatic_scope, MarkerState};
+use pcl_core::content_scope::{resolve_scope, IsolationPolicy, MarkerState};
 use pcl_install::{InstallStep, Progress};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1241,14 +1241,25 @@ fn manifest(
     })).map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 pub fn prepare(root: &Path, id: &str, request: ExportRequest) -> Result<ExportPlan, String> {
+    prepare_with_isolation(root, id, request, IsolationPolicy::Automatic, "")
+}
+
+pub fn prepare_with_isolation(
+    root: &Path,
+    id: &str,
+    request: ExportRequest,
+    policy: IsolationPolicy,
+    settings_revision: &str,
+) -> Result<ExportPlan, String> {
     request.validate()?;
     component(id)?;
     let mut scanner = Scanner::new(Dir::open_absolute(root)?)?;
     let mut versions = BTreeMap::new();
     collect_version(&mut scanner, root, id, &mut BTreeSet::new(), &mut versions)?;
     let instance_dir = format!("versions/{id}");
-    let scope = automatic_scope(|marker| {
+    let scope = resolve_scope(policy, |marker| {
         Ok(match scanner.metadata(&join(&instance_dir, marker))? {
             None => MarkerState::Missing,
             Some(stamp) if stamp.is_dir() || stamp.is_file() => MarkerState::Present,
@@ -1281,7 +1292,10 @@ pub fn prepare(root: &Path, id: &str, request: ExportRequest) -> Result<ExportPl
     }
     let manifest = manifest(id, &request, &versions, isolated)?;
     let mut digest = Sha256::new();
-    digest.update(b"pcl-local-export-plan-v1\0");
+    digest.update(b"pcl-local-export-plan-v2\0");
+    digest.update(
+        serde_json::to_vec(&(policy, settings_revision)).map_err(|error| error.to_string())?,
+    );
     // Include the captured physical scope, but expose only its opaque hash.
     digest.update(root.as_os_str().as_bytes());
     digest.update(id.as_bytes());
@@ -1540,11 +1554,24 @@ fn destination_parent(plan: &ExportPlan, destination: &Path) -> Result<(Dir, Str
     Ok((parent, name.into()))
 }
 
+#[cfg(test)]
 pub fn execute(
     plan: ExportPlan,
     destination: &Path,
     cancel: &AtomicBool,
     callback: impl Fn(Progress) + Send + Sync,
+) -> Result<Value, String> {
+    execute_with_guard(plan, destination, cancel, callback, || Ok(()))
+}
+
+/// The desktop supplies the captured configuration authority after slow ZIP
+/// work. Its guard stays owned until the final destination link is published.
+pub fn execute_with_guard<G>(
+    plan: ExportPlan,
+    destination: &Path,
+    cancel: &AtomicBool,
+    callback: impl Fn(Progress) + Send + Sync,
+    authorize: impl Fn() -> Result<G, String>,
 ) -> Result<Value, String> {
     check_cancel(cancel)?;
     callback(progress(
@@ -1679,9 +1706,12 @@ pub fn execute(
         if current_parent.stamp()?.identity() != stage.parent.stamp()?.identity() {
             return Err("ZIP 目标目录已经变化".into());
         }
-        validate_snapshot(&plan, cancel, false, None::<&fn(Progress)>)?;
-        check_cancel(cancel)?;
-        stage.publish(&filename)?;
+        {
+            let _authority = authorize()?;
+            validate_snapshot(&plan, cancel, false, None::<&fn(Progress)>)?;
+            check_cancel(cancel)?;
+            stage.publish(&filename)?;
+        }
         let mut warnings = plan.warnings.clone();
         let warning = stage.parent.sync().err().map(|error| {
             // Publication already succeeded. Report its durability warning as

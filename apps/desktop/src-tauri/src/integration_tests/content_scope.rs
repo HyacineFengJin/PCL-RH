@@ -210,3 +210,195 @@ fn added_marker_invalidates_prepared_zip_and_metadata_without_rebinding_the_sour
         b"original shared mod"
     );
 }
+
+#[test]
+fn explicit_isolation_selects_the_same_resource_metadata_zip_and_mutation_sources() {
+    use pcl_core::content_scope::IsolationPolicy;
+    for policy in [IsolationPolicy::Shared, IsolationPolicy::Isolated] {
+        let f = ContentFixture::new();
+        let isolated = policy == IsolationPolicy::Isolated;
+        let version = f.root.join("versions/Example");
+        for base in [&f.root, &version] {
+            fs::create_dir(base.join("mods")).unwrap();
+            fs::write(
+                base.join("mods/example.jar"),
+                if base == &f.root {
+                    b"shared".as_slice()
+                } else {
+                    b"isolated content".as_slice()
+                },
+            )
+            .unwrap();
+        }
+        let selected = if isolated { &version } else { &f.root };
+        let other = if isolated { &f.root } else { &version };
+        assert_eq!(
+            ui_data::resource_dir_with_isolation(&f.root, "Example", "mods", policy).unwrap(),
+            selected.join("mods")
+        );
+        let information = local_resource_info::prepare_with_isolation(
+            &f.root,
+            "Example",
+            "mods",
+            &[f.selected(selected)],
+            &AtomicBool::new(false),
+            policy,
+        )
+        .unwrap();
+        information.rehash(&AtomicBool::new(false)).unwrap();
+        let doc: serde_json::Value = serde_json::from_slice(&information.bytes).unwrap();
+        assert_eq!(
+            doc["files"][0]["sizeBytes"],
+            fs::metadata(selected.join("mods/example.jar"))
+                .unwrap()
+                .len()
+        );
+        let plan = instance_export::prepare_with_isolation(
+            &f.root,
+            "Example",
+            f.request(),
+            policy,
+            "generation-one",
+        )
+        .unwrap();
+        let old_revision = plan.revision.clone();
+        let new = instance_export::prepare_with_isolation(
+            &f.root,
+            "Example",
+            f.request(),
+            policy,
+            "generation-two",
+        )
+        .unwrap();
+        assert_ne!(old_revision, new.revision);
+        instance_export::execute(plan, &f.destination, &AtomicBool::new(false), |_| {}).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(&f.destination).unwrap()).unwrap();
+        let path = if isolated {
+            ".minecraft/versions/Example/mods/example.jar"
+        } else {
+            ".minecraft/mods/example.jar"
+        };
+        let mut bytes = Vec::new();
+        zip.by_name(path).unwrap().read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, fs::read(selected.join("mods/example.jar")).unwrap());
+        let other_before = fs::read(other.join("mods/example.jar")).unwrap();
+        resource_ops::set_enabled_with_isolation(
+            &f.root,
+            "Example",
+            "mods",
+            &[f.selected(selected)],
+            false,
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+            &mut |_, _| {},
+            policy,
+        )
+        .unwrap();
+        assert!(selected.join("mods/example.jar.disabled").is_file());
+        assert_eq!(
+            fs::read(other.join("mods/example.jar")).unwrap(),
+            other_before
+        );
+    }
+}
+
+#[test]
+fn explicit_scope_rejects_unsafe_markers_in_every_resource_reader() {
+    use pcl_core::content_scope::IsolationPolicy;
+    for policy in [IsolationPolicy::Shared, IsolationPolicy::Isolated] {
+        let f = ContentFixture::new();
+        fs::create_dir(f.root.join("mods")).unwrap();
+        fs::write(f.root.join("mods/example.jar"), b"untouched").unwrap();
+        symlink("missing", f.root.join("versions/Example/config")).unwrap();
+        assert!(
+            ui_data::resource_dir_with_isolation(&f.root, "Example", "mods", policy)
+                .unwrap_err()
+                .contains("config")
+        );
+        assert!(instance_export::prepare_with_isolation(
+            &f.root,
+            "Example",
+            f.request(),
+            policy,
+            "rev"
+        )
+        .err()
+        .unwrap()
+        .contains("config"));
+        assert!(local_resource_info::prepare_with_isolation(
+            &f.root,
+            "Example",
+            "mods",
+            &[f.selected(&f.root)],
+            &AtomicBool::new(false),
+            policy
+        )
+        .err()
+        .unwrap()
+        .contains("config"));
+        assert!(resource_ops::remove_with_isolation(
+            &f.root,
+            "Example",
+            "mods",
+            &[f.selected(&f.root)],
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+            &mut |_, _| {},
+            policy
+        )
+        .unwrap_err()
+        .contains("config"));
+        assert_eq!(
+            fs::read(f.root.join("mods/example.jar")).unwrap(),
+            b"untouched"
+        );
+    }
+}
+
+#[test]
+fn retired_configuration_refuses_final_zip_publication_after_archiving_and_cleans_stage() {
+    use pcl_core::content_scope::IsolationPolicy;
+    let f = ContentFixture::new();
+    fs::create_dir(f.root.join("mods")).unwrap();
+    fs::write(f.root.join("mods/example.jar"), b"source remains intact").unwrap();
+    let plan = instance_export::prepare_with_isolation(
+        &f.root,
+        "Example",
+        f.request(),
+        IsolationPolicy::Shared,
+        "captured",
+    )
+    .unwrap();
+    let reached_finalize = AtomicBool::new(false);
+    let called_authority = AtomicBool::new(false);
+    let error = instance_export::execute_with_guard(
+        plan,
+        &f.destination,
+        &AtomicBool::new(false),
+        |p| {
+            if p.stage == "export-finalize" {
+                reached_finalize.store(true, Ordering::SeqCst);
+            }
+        },
+        || {
+            called_authority.store(true, Ordering::SeqCst);
+            assert!(reached_finalize.load(Ordering::SeqCst));
+            Err::<(), String>("configuration retired".into())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error, "configuration retired");
+    assert!(called_authority.load(Ordering::SeqCst));
+    assert!(!f.destination.exists());
+    assert!(!fs::read_dir(f.destination.parent().unwrap())
+        .unwrap()
+        .any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".pcl-export-")));
+    assert_eq!(
+        fs::read(f.root.join("mods/example.jar")).unwrap(),
+        b"source remains intact"
+    );
+}

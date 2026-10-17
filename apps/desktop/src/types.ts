@@ -15,17 +15,21 @@ export type Instance = {
   metadata?: InstanceMetadata;
   metadata_revision?: string;
 };
+export type IsolationPolicy = "automatic" | "shared" | "isolated";
 export type Settings = {
   revision?: string;
   root_id?: string | null;
   root: string;
   player: string;
   memory_gib: number;
+  isolation?: IsolationPolicy;
   selected: string | null;
   overrides: Record<string, number>;
   java?: JavaSelection;
   java_paths?: string[];
   java_overrides?: Record<string, JavaSelection>;
+  isolation_overrides?: Record<string, IsolationPolicy>;
+  window_title_overrides?: Record<string, string>;
 };
 export type JavaSelection = { mode: "auto" } | { mode: "manual"; path: string };
 export type JavaRuntime = {
@@ -50,6 +54,8 @@ export type RootSummary = {
   selected: string | null;
   overrides?: Record<string, number>;
   java_overrides?: Record<string, JavaSelection>;
+  isolation_overrides?: Record<string, IsolationPolicy>;
+  window_title_overrides?: Record<string, string>;
   available: boolean;
   error?: string | null;
 };
@@ -101,12 +107,12 @@ export type InstancePackPreview = {
   blockers: string[];
 };
 export type InstancePackImportPlan = InstanceImportBasePlan & {
-  format: "modrinth" | "curseforge" | "mcbbs" | "hmcl" | "multimc" | "ready_game";
+  format:
+    "modrinth" | "curseforge" | "mcbbs" | "hmcl" | "multimc" | "ready_game";
   installable: boolean;
   preview: InstancePackPreview;
 };
-export type InstanceImportPlan =
-  InstanceZipImportPlan | InstancePackImportPlan;
+export type InstanceImportPlan = InstanceZipImportPlan | InstancePackImportPlan;
 export type InstanceDeletePlan = {
   id: string;
   root_id: string;

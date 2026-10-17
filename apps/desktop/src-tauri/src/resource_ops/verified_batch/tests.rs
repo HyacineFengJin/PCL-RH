@@ -625,3 +625,73 @@ fn pending_batch_blocks_legacy_write_before_missing_target_creation() {
     super::super::recover_verified_batches(&f.root).unwrap();
     f.clean();
 }
+
+#[test]
+fn explicit_isolation_publishes_all_resource_kinds_in_the_captured_base() {
+    for policy in [IsolationPolicy::Shared, IsolationPolicy::Isolated] {
+        let f = Fixture::new(policy == IsolationPolicy::Shared, false);
+        let base = if policy == IsolationPolicy::Isolated {
+            f.root.join("versions/test")
+        } else {
+            f.root.clone()
+        };
+        let other = if policy == IsolationPolicy::Isolated {
+            f.root.clone()
+        } else {
+            f.root.join("versions/test")
+        };
+        let mut files = f.files();
+        import_verified_batch_with_isolation(
+            &f.root,
+            "test",
+            &mut files,
+            &AtomicBool::new(false),
+            &mut || Ok(()),
+            &mut |_, _| {},
+            policy,
+        )
+        .unwrap();
+        for file in &files {
+            assert!(base.join(&file.kind).join(&file.file_name).is_file());
+            assert!(!other.join(&file.kind).join(&file.file_name).exists());
+        }
+        f.clean();
+    }
+}
+
+#[test]
+fn explicit_shared_interrupted_batch_recovers_its_recorded_paths_with_isolated_markers() {
+    let f = Fixture::new(true, false);
+    let mut files = f.files();
+    let cancel = AtomicBool::new(false);
+    let tokens = source_tokens(&mut files, &cancel).unwrap();
+    let (scope, root) = Scope::capture_with_isolation(
+        &f.root,
+        "test",
+        &files.iter().map(|f| f.kind.clone()).collect(),
+        IsolationPolicy::Shared,
+    )
+    .unwrap();
+    let (operation, mut journal) = setup(&root, scope, &files).unwrap();
+    stage(
+        &operation,
+        &mut journal,
+        &mut files,
+        &tokens,
+        &cancel,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    journal.state = State::Prepared;
+    write_journal(&operation, &journal).unwrap();
+    first_publish(&operation, &mut journal);
+    assert!(f.root.join("mods/sample.jar").exists());
+    assert!(pcl_core::content_scope::inspect(&f.root, "test")
+        .unwrap()
+        .is_isolated());
+    recover_root(&f.root).unwrap();
+    assert!(!f.root.join("mods/sample.jar").exists());
+    assert!(f.root.join("versions/test/config").is_dir());
+    assert!(!f.root.join("versions/test/mods").exists());
+    f.clean();
+}

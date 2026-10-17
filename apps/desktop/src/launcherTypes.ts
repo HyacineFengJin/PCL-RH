@@ -112,6 +112,7 @@ export type LauncherPreferences = {
     window:
       { mode: "default" } | { mode: "custom"; width: number; height: number };
     ip: "default" | "ipv4" | "ipv6";
+    window_title?: string;
   };
 };
 

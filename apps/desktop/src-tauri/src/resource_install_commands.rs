@@ -79,6 +79,23 @@ pub(super) fn same_root(shared: &Shared, root: &GameRoot) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn verify_isolation(
+    shared: &Shared,
+    root: &GameRoot,
+    id: &str,
+    policy: pcl_core::content_scope::IsolationPolicy,
+    revision: &str,
+) -> Result<()> {
+    let current = shared.config.isolation_settings(Some(&root.id))?;
+    if current.root != *root
+        || current.policy(id) != policy
+        || (!revision.is_empty() && current.revision != revision)
+    {
+        return Err("实例隔离设置已变化，请重新检查资源方案".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn resource_install_plan(
     root_id: Option<String>,
@@ -88,27 +105,37 @@ pub async fn resource_install_plan(
 ) -> Result<modrinth_install::InstallPlan> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let root = {
+        let isolation = {
             let _operation = shared.operations.lock().unwrap();
             let root = capture_submission(&shared, root_id.as_deref(), &id)?;
             ready(&shared, &root, &id)?;
-            root
+            shared.config.isolation_settings(Some(&root.id))?
         };
+        let root = &isolation.root;
         // This confirmation read has no file writer. Start repeats the full
         // authoritative plan under its own admitted cancellation lifetime.
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let prepared_request = request.clone();
-        let plan = tauri::async_runtime::block_on(modrinth_install::prepare(
+        let plan = tauri::async_runtime::block_on(modrinth_install::prepare_with_isolation(
             Path::new(&root.path),
             &shared.project,
             &root.id,
             &id,
             request,
             &cancel,
+            isolation.policy(&id),
+            &isolation.revision,
         ))?;
         modrinth_install::recheck_target(&plan, &cancel)?;
         let _operation = shared.operations.lock().unwrap();
-        same_root(&shared, &root)?;
+        same_root(&shared, root)?;
+        verify_isolation(
+            &shared,
+            root,
+            &id,
+            isolation.policy(&id),
+            &isolation.revision,
+        )?;
         crate::require_network_submission(&shared)?;
         ready(&shared, &root, &id)?;
         shared
@@ -158,6 +185,8 @@ pub(super) fn start_request(
         &request,
         &revision,
     )?;
+    let isolation = shared.config.isolation_settings(Some(&root.id))?;
+    confirmed.require_isolation(isolation.policy(&id), &isolation.revision)?;
     let task = shared
         .tasks
         .admit_queued(
@@ -201,6 +230,8 @@ fn install_with_policy(
     download_policy: Arc<pcl_network::DownloadScheduler>,
 ) -> Result<Value> {
     let cancel = task.cancellation_token();
+    let isolation = shared.config.isolation_settings(Some(&root.id))?;
+    confirmed.require_isolation(isolation.policy(id), &isolation.revision)?;
     let project_id = confirmed.request().project_id.clone();
     task.update(tasks::TaskProgress {
         stage: tasks::TaskStage::Preparing,
@@ -254,6 +285,8 @@ fn install_with_policy(
         modrinth_install::recheck_target(&plan, &cancel)?;
         let _operation = shared.operations.lock().unwrap();
         same_root(shared, root)?;
+        let (policy, revision) = modrinth_install::install_isolation(&plan);
+        verify_isolation(shared, root, id, policy, revision)?;
         crate::ensure_instance_files_ready(shared, root)?;
         crate::instance_delete::ensure_name_available(Path::new(&root.path), id)?;
         crate::instance_reset::ensure_ready(Path::new(&root.path))?;
@@ -271,13 +304,14 @@ fn install_with_policy(
             message: "所需资源文件已存在并通过校验".into(),
         }
     } else {
-        resource_ops::import_verified_batch(
+        resource_ops::import_verified_batch_with_isolation(
             Path::new(&root.path),
             id,
             &mut files,
             &cancel,
             &mut commit,
             &mut |_, _| {},
+            modrinth_install::install_isolation(&plan).0,
         )?
     };
     let mut done = publication_progress(&plan, network_bytes);

@@ -262,9 +262,25 @@ pub(crate) fn resource_metadata_from_file(
     }))
 }
 
+#[cfg(test)]
 pub fn resource_dir(root: &Path, id: &str, kind: &str) -> Result<PathBuf, String> {
+    resource_dir_with_isolation(
+        root,
+        id,
+        kind,
+        pcl_core::content_scope::IsolationPolicy::Automatic,
+    )
+}
+
+pub fn resource_dir_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    policy: pcl_core::content_scope::IsolationPolicy,
+) -> Result<PathBuf, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let instance = pcl_core::scan_instance(&root, id)?.ok_or("未找到所选版本")?;
+    let instance =
+        pcl_core::scan_instance_with_isolation(&root, id, policy)?.ok_or("未找到所选版本")?;
     let scope = pcl_core::content_scope::ContentScope::from_isolated(instance.isolated);
     let base = root.join(scope.relative_base(id)?);
     let child = match kind {
@@ -300,15 +316,26 @@ pub async fn instance_resources(
     root_id: Option<String>,
     state: State<'_, Arc<Shared>>,
 ) -> Result<Vec<ResourceInfo>, String> {
-    let root = PathBuf::from(state.config.resolve(root_id.as_deref())?.path);
+    let shared = state.inner().clone();
+    let captured = shared.config.isolation_settings(root_id.as_deref())?;
+    let policy = captured.policy(&id);
+    let root = PathBuf::from(&captured.root.path);
     tauri::async_runtime::spawn_blocking(move || {
-        let folder = resource_dir(&root, &id, &kind)?;
+        let folder = resource_dir_with_isolation(&root, &id, &kind, policy)?;
         if !folder.exists() {
+            if shared
+                .config
+                .isolation_settings(Some(&captured.root.id))?
+                .revision
+                != captured.revision
+            {
+                return Err("实例隔离设置已变化，请重新读取资源列表".into());
+            }
             return Ok(Vec::new());
         }
         let root = root.canonicalize().map_err(|e| e.to_string())?;
         let mut entries = Vec::new();
-        for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+        for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if crate::resource_ops::is_stage_entry(&name) {
@@ -358,6 +385,17 @@ pub async fn instance_resources(
             entries.push(row);
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
+        if resource_dir_with_isolation(&root, &id, &kind, policy)? != folder {
+            return Err("实例内容目录已变化，请重新读取资源列表".into());
+        }
+        if shared
+            .config
+            .isolation_settings(Some(&captured.root.id))?
+            .revision
+            != captured.revision
+        {
+            return Err("实例隔离设置已变化，请重新读取资源列表".into());
+        }
         Ok(entries)
     })
     .await

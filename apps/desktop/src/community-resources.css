@@ -74,3 +74,16 @@
 .ce-community-warnings p {
   margin: 0;
 }
+.ce-community-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
+  margin-top: 10px;
+  padding: 10px;
+}
+.ce-community-pagination > span {
+  color: var(--ce-muted-text, #708296);
+  font-size: 13px;
+}

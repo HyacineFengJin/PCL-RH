@@ -398,3 +398,120 @@ test("a delayed bootstrap cannot resurrect a removed directory or its old instan
     [next.selected],
   );
 });
+
+function saveFixture(reply) {
+  const active = root("save-root");
+  const data = state([active], active);
+  data.settings = {
+    ...data.settings,
+    revision: "original-revision",
+    isolation: "automatic",
+    isolation_overrides: {},
+    window_title_overrides: {},
+  };
+  let current = structuredClone(data);
+  let draft = structuredClone(data.settings);
+  const contextKey = { current: `${active.id}:${active.path}` };
+  const loads = [];
+  const calls = [];
+  const { save } = functions(["save"], {
+    data,
+    rootId: active.id,
+    contextKey,
+    api: async (command, request) => {
+      calls.push({ command, request });
+      assert.equal(command, "save_settings");
+      return reply
+        ? reply(request.settings)
+        : { ...request.settings, revision: "saved-revision" };
+    },
+    setData: (update) => {
+      current = update(current);
+    },
+    setDraft: (update) => {
+      draft = update(draft);
+    },
+    load: async () => loads.push(contextKey.current),
+  });
+  return {
+    save,
+    settings: data.settings,
+    loads,
+    calls,
+    current: () => current,
+    draft: () => draft,
+    switchRoot(next) {
+      current = state([active, next], next);
+      current.settings.revision = "next-root-revision";
+      draft = structuredClone(current.settings);
+      contextKey.current = `${next.id}:${next.path}`;
+    },
+  };
+}
+
+test("successful global and instance isolation saves reload the root scan", async () => {
+  for (const change of [
+    { isolation: "isolated" },
+    { isolation_overrides: { Example: "shared" } },
+  ]) {
+    const fixture = saveFixture();
+    await fixture.save({ ...fixture.settings, ...change });
+    assert.deepEqual(fixture.loads, ["save-root:/synthetic/save-root"]);
+    assert.equal(fixture.current().settings.revision, "saved-revision");
+    assert.equal(fixture.draft().revision, "saved-revision");
+    for (const [key, value] of Object.entries(change))
+      assert.deepEqual(fixture.current().settings[key], value);
+  }
+});
+
+test("title and memory saves keep their ordinary path without reloading the scan", async () => {
+  for (const change of [
+    { window_title_overrides: { Example: "New title" } },
+    { memory_gib: 10 },
+  ]) {
+    const fixture = saveFixture();
+    await fixture.save({ ...fixture.settings, ...change });
+    assert.deepEqual(fixture.loads, []);
+    assert.equal(fixture.current().settings.revision, "saved-revision");
+    for (const [key, value] of Object.entries(change))
+      assert.deepEqual(fixture.current().settings[key], value);
+  }
+});
+
+test("a delayed isolation save cannot reload or replace a newly selected root", async () => {
+  let resolveSave;
+  const pending = new Promise((resolve) => {
+    resolveSave = resolve;
+  });
+  const fixture = saveFixture(() => pending);
+  const submitted = { ...fixture.settings, isolation: "isolated" };
+  const saving = fixture.save(submitted);
+  fixture.switchRoot(root("next-save-root"));
+  const selected = structuredClone(fixture.current());
+  const draft = structuredClone(fixture.draft());
+  resolveSave({ ...submitted, revision: "late-old-root-revision" });
+  await saving;
+  assert.deepEqual(fixture.current(), selected);
+  assert.deepEqual(fixture.draft(), draft);
+  assert.deepEqual(fixture.loads, []);
+});
+
+test("failed isolation saves leave the current scan and settings unchanged", async () => {
+  for (const change of [
+    { isolation: "shared" },
+    { isolation_overrides: { Example: "isolated" } },
+  ]) {
+    const fixture = saveFixture(async () => {
+      throw new Error("synthetic rejected save");
+    });
+    const original = structuredClone(fixture.current());
+    const draft = structuredClone(fixture.draft());
+    await assert.rejects(
+      fixture.save({ ...fixture.settings, ...change }),
+      /synthetic rejected save/,
+    );
+    assert.deepEqual(fixture.current(), original);
+    assert.deepEqual(fixture.draft(), draft);
+    assert.deepEqual(fixture.loads, []);
+  }
+});

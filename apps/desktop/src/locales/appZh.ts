@@ -441,5 +441,10 @@ const messages = {
   "minecraftNotice.unavailable": "Minecraft 版本提示服务当前不可用。",
   "minecraftNotice.storageBlocked": "版本提示记录暂不可写，已保留原有记录。",
   "minecraftNotice.invalidResponse": "Minecraft 版本提示返回了无效的确认数据。",
+  "settings.isolationOn": "隔离到各自的实例目录",
+  "settings.isolationOff": "共用游戏目录",
+  "settings.isolationHint": "切换不会移动已有文件；存档和模组仍保留在原目录。",
+  "settings.titleInvalid": "标题须为 1–256 个字符，不能包含控制字符。",
+  "settings.saveTitle": "保存标题",
 } as const;
 export default messages;

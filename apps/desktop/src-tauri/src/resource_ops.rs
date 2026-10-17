@@ -1,5 +1,6 @@
 //! Local resource mutations. The caller serializes writers and closes its
 //! cancellation window in `commit`; this module does not depend on Tauri.
+use pcl_core::content_scope::IsolationPolicy;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,6 +21,7 @@ pub use verified_batch::VerifiedImport;
 
 /// One recoverable transaction for all downloaded resource kinds. Inputs remain
 /// anonymous; the caller closes cancellation and rechecks its captured plan in commit.
+#[cfg(test)]
 pub fn import_verified_batch(
     root: &Path,
     id: &str,
@@ -28,7 +30,29 @@ pub fn import_verified_batch(
     commit: &mut dyn FnMut() -> Result<(), String>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult, String> {
-    verified_batch::import_verified_batch(root, id, files, cancel, commit, progress)
+    import_verified_batch_with_isolation(
+        root,
+        id,
+        files,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+
+pub fn import_verified_batch_with_isolation(
+    root: &Path,
+    id: &str,
+    files: &mut [VerifiedImport],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult, String> {
+    verified_batch::import_verified_batch_with_isolation(
+        root, id, files, cancel, commit, progress, policy,
+    )
 }
 pub fn ensure_verified_batches_ready(root: &Path) -> Result<(), String> {
     verified_batch::ensure_ready(root)?;
@@ -50,6 +74,7 @@ pub fn recover_verified_batches(root: &Path) -> Result<MutationResult, String> {
 }
 
 /// Replace verified anonymous downloads and preserve their original inodes for undo.
+#[cfg(test)]
 pub fn update_verified_batch(
     root: &Path,
     id: &str,
@@ -59,7 +84,38 @@ pub fn update_verified_batch(
     commit: &mut dyn FnMut() -> Result<(), String>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult, String> {
-    update_batch::update_verified_batch(root, id, files, replacements, cancel, commit, progress)
+    update_verified_batch_with_isolation(
+        root,
+        id,
+        files,
+        replacements,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+
+pub fn update_verified_batch_with_isolation(
+    root: &Path,
+    id: &str,
+    files: &mut [VerifiedImport],
+    replacements: &[Replacement],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult, String> {
+    update_batch::update_verified_batch_with_isolation(
+        root,
+        id,
+        files,
+        replacements,
+        cancel,
+        commit,
+        progress,
+        policy,
+    )
 }
 pub fn updates_history(root: &Path, id: &str) -> Result<Vec<UpdateHistory>, String> {
     update_batch::updates_history(root, id)
@@ -547,10 +603,21 @@ struct Context {
     relative: String,
     id: String,
     kind: String,
+    policy: Option<IsolationPolicy>,
 }
 
 impl Context {
+    #[cfg(test)]
     fn new(root: &Path, id: &str, kind: &str, write: bool) -> Result<Self, String> {
+        Self::new_with_isolation(root, id, kind, write, IsolationPolicy::Automatic)
+    }
+    fn new_with_isolation(
+        root: &Path,
+        id: &str,
+        kind: &str,
+        write: bool,
+        policy: IsolationPolicy,
+    ) -> Result<Self, String> {
         kind_ok(kind)?;
         safe_name(id)?;
         let root_path = root.canonicalize().map_err(|e| e.to_string())?;
@@ -560,7 +627,7 @@ impl Context {
         if write {
             ensure_verified_batches_ready(&root_path)?;
         }
-        let path = crate::ui_data::resource_dir(&root_path, id, kind)?;
+        let path = crate::ui_data::resource_dir_with_isolation(&root_path, id, kind, policy)?;
         let relative = relative_string(
             path.strip_prefix(&root_path)
                 .map_err(|_| "目录超出游戏目录".to_string())?,
@@ -587,9 +654,27 @@ impl Context {
             relative,
             id: id.to_owned(),
             kind: kind.to_owned(),
+            policy: Some(policy),
         })
     }
 
+    fn check_scope(&self) -> Result<(), String> {
+        if let Some(policy) = self.policy {
+            let scope =
+                pcl_core::content_scope::inspect_with_isolation(&self.root_path, &self.id, policy)?;
+            let path = self
+                .root_path
+                .join(scope.relative_base(&self.id)?)
+                .join(&self.kind);
+            if path != self.root_path.join(&self.relative) {
+                return Err("实例隔离目录已变化，请刷新后重试".into());
+            }
+        }
+        self.check()
+    }
+
+    // Rollback and recovery use only captured physical directory evidence;
+    // selection changes must never block restoration into the recorded base.
     fn check(&self) -> Result<(), String> {
         if !self.root.same(&Dir::open(&self.root_path)?)?
             || !self
@@ -1154,9 +1239,10 @@ fn transaction(
 ) -> Result<MutationResult, String> {
     let (source, target) = operation_dirs(context, &journal)?;
     let outcome = (|| {
-        context.check()?;
+        context.check_scope()?;
         cancellation(cancel)?;
         let verify_batch = || -> Result<(), String> {
+            context.check_scope()?;
             check_operation_dirs(context, &journal, Some(&stage), &source, &target)?;
             if !operation.same(&context.operation(&journal.operation_id)?)? {
                 return Err("资源恢复记录目录已变化".into());
@@ -1190,7 +1276,7 @@ fn transaction(
             rename_new(&stage, &item.stage_name, &target, &item.target_name)?;
             progress((index + 1) as u64, journal.items.len() as u64);
         }
-        context.check()?;
+        context.check_scope()?;
         if !operation.same(&context.operation(&journal.operation_id)?)? {
             return Err("资源恢复记录目录已变化".into());
         }
@@ -1247,6 +1333,7 @@ fn prepare(context: &Context, journal: &Journal) -> Result<(Dir, Dir), String> {
     Ok((operation, stage))
 }
 
+#[cfg(test)]
 pub fn set_enabled(
     root: &Path,
     id: &str,
@@ -1257,11 +1344,35 @@ pub fn set_enabled(
     commit: &mut dyn FnMut() -> Result<(), String>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult, String> {
+    set_enabled_with_isolation(
+        root,
+        id,
+        kind,
+        files,
+        enabled,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+
+pub fn set_enabled_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    files: &[ResourceFile],
+    enabled: bool,
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult, String> {
     if kind != "mods" {
         return Err("只有模组可以启用或禁用".into());
     }
     cancellation(cancel)?;
-    let context = Context::new(root, id, kind, true)?;
+    let context = Context::new_with_isolation(root, id, kind, true, policy)?;
     recover(&context)?;
     let mut items = checked_selection(&context, files)?;
     items.retain(|item| item.source_name.ends_with(".disabled") == enabled);
@@ -1304,6 +1415,7 @@ pub fn set_enabled(
     )
 }
 
+#[cfg(test)]
 pub fn remove(
     root: &Path,
     id: &str,
@@ -1313,8 +1425,30 @@ pub fn remove(
     commit: &mut dyn FnMut() -> Result<(), String>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult, String> {
+    remove_with_isolation(
+        root,
+        id,
+        kind,
+        files,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+
+pub fn remove_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    files: &[ResourceFile],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult, String> {
     cancellation(cancel)?;
-    let context = Context::new(root, id, kind, true)?;
+    let context = Context::new_with_isolation(root, id, kind, true, policy)?;
     recover(&context)?;
     let mut items = checked_selection(&context, files)?;
     for item in &mut items {
@@ -1369,6 +1503,7 @@ struct ImportSource {
     size: u64,
 }
 
+#[cfg(test)]
 pub fn import_files(
     root: &Path,
     id: &str,
@@ -1378,9 +1513,31 @@ pub fn import_files(
     commit: &mut dyn FnMut() -> Result<(), String>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult, String> {
+    import_files_with_isolation(
+        root,
+        id,
+        kind,
+        sources,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+
+pub fn import_files_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    sources: &[PathBuf],
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult, String> {
     check_count(sources.len())?;
     cancellation(cancel)?;
-    let context = Context::new(root, id, kind, true)?;
+    let context = Context::new_with_isolation(root, id, kind, true, policy)?;
     recover(&context)?;
     let mut imports = Vec::new();
     let mut names = BTreeSet::new();
@@ -1544,6 +1701,7 @@ pub fn import_files(
     )
 }
 
+#[cfg(test)]
 pub fn restore(
     root: &Path,
     id: &str,
@@ -1553,8 +1711,30 @@ pub fn restore(
     commit: &mut dyn FnMut() -> Result<(), String>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<MutationResult, String> {
+    restore_with_isolation(
+        root,
+        id,
+        kind,
+        operation_id,
+        cancel,
+        commit,
+        progress,
+        IsolationPolicy::Automatic,
+    )
+}
+
+pub fn restore_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    operation_id: &str,
+    cancel: &AtomicBool,
+    commit: &mut dyn FnMut() -> Result<(), String>,
+    progress: &mut dyn FnMut(u64, u64),
+    policy: IsolationPolicy,
+) -> Result<MutationResult, String> {
     cancellation(cancel)?;
-    let context = Context::new(root, id, kind, true)?;
+    let context = Context::new_with_isolation(root, id, kind, true, policy)?;
     recover(&context)?;
     let undo_dir = context.operation(operation_id)?;
     let undo = read_journal(&undo_dir, operation_id)?;
@@ -1585,14 +1765,23 @@ pub fn restore(
     )
 }
 
+#[cfg(test)]
 pub fn removed(root: &Path, id: &str, kind: &str) -> Result<Vec<RemovedOperation>, String> {
+    removed_with_isolation(root, id, kind, IsolationPolicy::Automatic)
+}
+pub fn removed_with_isolation(
+    root: &Path,
+    id: &str,
+    kind: &str,
+    policy: IsolationPolicy,
+) -> Result<Vec<RemovedOperation>, String> {
     kind_ok(kind)?;
-    let resource_path = crate::ui_data::resource_dir(root, id, kind)?;
+    let resource_path = crate::ui_data::resource_dir_with_isolation(root, id, kind, policy)?;
     if !resource_path.exists() {
         return Ok(Vec::new());
     }
-    let context = Context::new(root, id, kind, false)?;
-    context.check()?;
+    let context = Context::new_with_isolation(root, id, kind, false, policy)?;
+    context.check_scope()?;
     let Some(storage) = &context.storage else {
         return Ok(Vec::new());
     };
@@ -1645,6 +1834,7 @@ pub fn removed(root: &Path, id: &str, kind: &str) -> Result<Vec<RemovedOperation
         });
     }
     records.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(b.id.cmp(&a.id)));
+    context.check_scope()?;
     Ok(records)
 }
 
@@ -1710,8 +1900,54 @@ pub fn ensure_new_instance_name(root: &Path, id: &str) -> Result<(), String> {
 /// The caller must hold the same writer admission used for other mutations.
 pub fn recover_pending(root: &Path, id: &str, kind: &str) -> Result<(), String> {
     verified_batch::recover_pending(root, id)?;
-    let context = Context::new(root, id, kind, true)?;
-    recover(&context)
+    kind_ok(kind)?;
+    safe_name(id)?;
+    let root_path = root.canonicalize().map_err(|e| e.to_string())?;
+    let _history_lock = crate::instance_rename_refs::root_history_lock(&root_path)?;
+    let root = Dir::open(&root_path)?;
+    let Some(pcl) = root.optional_child(".pcl-linux")? else {
+        return Ok(());
+    };
+    let Some(storage) = pcl.optional_child("resource-operations")? else {
+        return Ok(());
+    };
+    let mut recorded = BTreeSet::new();
+    for name in storage.names()? {
+        if !valid_id(&name) {
+            return Err("资源操作目录含有未知记录".into());
+        }
+        let operation = storage.child(&name)?;
+        if operation.metadata("journal.json")?.is_none() {
+            continue;
+        }
+        let journal = read_journal(&operation, &name)?;
+        if journal.kind == kind
+            && (journal.instance_id == id || journal.resource_relative == kind)
+            && matches!(
+                journal.state,
+                JournalState::Prepared | JournalState::Committed
+            )
+        {
+            recorded.insert(journal.resource_relative);
+        }
+    }
+    // Recovery follows durable recorded paths. A later global or instance
+    // choice cannot send an old rollback into the newly selected directory.
+    for relative in recorded {
+        let context = Context {
+            _history_lock: None,
+            root_path: root_path.clone(),
+            root: Dir::open(&root_path)?,
+            resources: descend(&root, &relative, false)?,
+            storage: Some(root.child(".pcl-linux")?.child("resource-operations")?),
+            relative,
+            id: id.into(),
+            kind: kind.into(),
+            policy: None,
+        };
+        recover(&context)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2880,5 +3116,29 @@ mod tests {
             &mut progress
         )
         .is_err());
+    }
+    #[test]
+    fn interrupted_legacy_operation_recovers_recorded_shared_path_after_marker_change() {
+        let fixture = Fixture::new();
+        let interrupted = interrupted_disable(&fixture);
+        drop(interrupted);
+        let version = fixture.root().join("versions/shared");
+        fs::create_dir(version.join("mods")).unwrap();
+        fs::write(version.join("mods/a.jar"), b"isolated untouched").unwrap();
+        recover_pending(fixture.root(), "shared", "mods").unwrap();
+        assert_eq!(
+            fs::read(fixture.root().join("mods/a.jar")).unwrap(),
+            b"original a"
+        );
+        assert_eq!(
+            fs::read(fixture.root().join("mods/b.jar")).unwrap(),
+            b"original b"
+        );
+        assert!(!fixture.root().join("mods/a.jar.disabled").exists());
+        assert_eq!(
+            fs::read(version.join("mods/a.jar")).unwrap(),
+            b"isolated untouched"
+        );
+        ensure_ready(fixture.root()).unwrap();
     }
 }

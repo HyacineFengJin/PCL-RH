@@ -9,7 +9,7 @@ const ts = require("typescript");
 const source = fileURLToPath(new URL("../src/", import.meta.url));
 export { content, elements, deferred, button } from "./maker-test-harness.mjs";
 
-export function communityHarness(name, initial = {}) {
+export function communityHarness(name, initial = {}, options = {}) {
   const hooks = [],
     modules = new Map();
   let props = initial,
@@ -128,6 +128,9 @@ export function communityHarness(name, initial = {}) {
     dirty = false;
     effects = [];
     tree = component(props);
+    // DOM refs attach at commit before effects run. Tests can supply bounded
+    // geometry/scroll fakes without replacing the production event handlers.
+    options.mountRefs?.(tree);
     for (const effect of effects) effect();
   }
   render();

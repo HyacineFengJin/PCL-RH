@@ -711,3 +711,63 @@ async fn compressed_api_responses_are_rejected_before_parsing() {
         "CurseForge 返回了不支持的内容编码"
     );
 }
+
+#[tokio::test]
+async fn search_page_sends_provider_offset_and_uses_total_even_for_a_short_page() {
+    let fixture = Fixture::new(vec![
+        Reply::json(page(vec![project_value()], 50, 101)),
+        Reply::json(page(vec![project_value()], 100, 101)),
+    ]);
+    let first = fixture
+        .client()
+        .search_page("", ProjectKind::Mod, None, None, None, None, 50)
+        .await
+        .unwrap();
+    assert_eq!(first.hits.len(), 1);
+    assert!(first.has_more);
+    let last = fixture
+        .client()
+        .search_page("", ProjectKind::Mod, None, None, None, None, 100)
+        .await
+        .unwrap();
+    assert!(!last.has_more);
+    let requests = fixture.requests();
+    assert!(requests[0].lines().next().unwrap().contains("index=50"));
+    assert!(requests[1].lines().next().unwrap().contains("index=100"));
+}
+
+#[tokio::test]
+async fn search_page_rejects_wrong_server_offset_and_unsupported_offsets() {
+    let fixture = Fixture::new(vec![Reply::json(page(vec![project_value()], 0, 100))]);
+    assert!(fixture
+        .client()
+        .search_page("", ProjectKind::Mod, None, None, None, None, 50)
+        .await
+        .is_err());
+    assert_eq!(fixture.requests().len(), 1);
+    for index in [1, 10_000, usize::MAX] {
+        assert!(fixture
+            .client()
+            .search_page("", ProjectKind::Mod, None, None, None, None, index)
+            .await
+            .is_err());
+    }
+    assert_eq!(fixture.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn search_page_reports_the_official_ten_thousand_result_boundary() {
+    let fixture = Fixture::new(vec![Reply::json(page(vec![project_value()], 9950, 20_000))]);
+    let result = fixture
+        .client()
+        .search_page("", ProjectKind::Mod, None, None, None, None, 9950)
+        .await
+        .unwrap();
+    assert!(result.limited);
+    assert!(!result.has_more);
+    assert!(fixture.requests()[0]
+        .lines()
+        .next()
+        .unwrap()
+        .contains("index=9950"));
+}

@@ -30,7 +30,9 @@ export function communitySource(value?: string): CommunitySource | null {
   }
 }
 
-function aliasUrlKey(alias: CommunitySourceAlias): string | null {
+export function communityAliasUrlKey(
+  alias: CommunitySourceAlias,
+): string | null {
   try {
     const url = new URL(alias.url);
     const hosts = {
@@ -74,7 +76,7 @@ export function communityAliases(
     const key = `${alias.source}:${alias.project_id}`;
     const previous = identified.get(key);
     if (!previous || (!previous.url && alias.url)) identified.set(key, alias);
-    const urlKey = aliasUrlKey(alias);
+    const urlKey = communityAliasUrlKey(alias);
     if (urlKey) {
       const identities = urlIdentities.get(urlKey) ?? new Set<string>();
       identities.add(key);
@@ -84,7 +86,7 @@ export function communityAliases(
   const rendered = new Set<string>();
   const aliases: CommunitySourceAlias[] = [];
   for (const candidate of candidates) {
-    const urlKey = aliasUrlKey(candidate);
+    const urlKey = communityAliasUrlKey(candidate);
     const resolved = urlKey ? urlIdentities.get(urlKey) : undefined;
     // Ambiguous URL-only actions are redundant; keep each real ID separately
     // without assigning the search link to either project's identity.

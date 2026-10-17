@@ -23,16 +23,27 @@ pub async fn resource_update_check(
 ) -> Result<modrinth_install::UpdateCheck> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let root = capture(&shared, root_id.as_deref(), &id)?;
+        let isolation = capture_isolation(&shared, root_id.as_deref(), &id)?;
+        let root = &isolation.root;
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let result = tauri::async_runtime::block_on(modrinth_install::check_updates(
-            Path::new(&root.path),
-            &shared.project,
-            &root.id,
+        let result =
+            tauri::async_runtime::block_on(modrinth_install::check_updates_with_isolation(
+                Path::new(&root.path),
+                &shared.project,
+                &root.id,
+                &id,
+                &cancel,
+                isolation.policy(&id),
+                &isolation.revision,
+            ))?;
+        capture_again(&shared, root, &id)?;
+        resource_install_commands::verify_isolation(
+            &shared,
+            root,
             &id,
-            &cancel,
-        ))?;
-        capture_again(&shared, &root, &id)?;
+            isolation.policy(&id),
+            &isolation.revision,
+        )?;
         Ok(result)
     })
     .await
@@ -48,22 +59,43 @@ pub async fn resource_update_plan(
 ) -> Result<modrinth_install::UpdatePlan> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let root = capture(&shared, root_id.as_deref(), &id)?;
+        let isolation = capture_isolation(&shared, root_id.as_deref(), &id)?;
+        let root = &isolation.root;
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let plan = tauri::async_runtime::block_on(modrinth_install::prepare_update(
-            Path::new(&root.path),
-            &shared.project,
-            &root.id,
-            &id,
-            files,
-            &cancel,
-        ))?;
+        let plan =
+            tauri::async_runtime::block_on(modrinth_install::prepare_update_with_isolation(
+                Path::new(&root.path),
+                &shared.project,
+                &root.id,
+                &id,
+                files,
+                &cancel,
+                isolation.policy(&id),
+                &isolation.revision,
+            ))?;
         modrinth_install::recheck_update_target(&plan, &cancel)?;
-        capture_again(&shared, &root, &id)?;
+        capture_again(&shared, root, &id)?;
+        resource_install_commands::verify_isolation(
+            &shared,
+            root,
+            &id,
+            isolation.policy(&id),
+            &isolation.revision,
+        )?;
         Ok(plan)
     })
     .await
     .map_err(|_| "模组更新方案检查意外退出".to_string())?
+}
+
+fn capture_isolation(
+    shared: &Shared,
+    root_id: Option<&str>,
+    id: &str,
+) -> Result<crate::config::IsolationSettings> {
+    let _operation = shared.operations.lock().unwrap();
+    let root = resource_install_commands::capture(shared, root_id, id)?;
+    shared.config.isolation_settings(Some(&root.id))
 }
 
 fn capture(shared: &Shared, root_id: Option<&str>, id: &str) -> Result<GameRoot> {
@@ -106,6 +138,7 @@ pub(super) fn start_request(
 ) -> Result<Value> {
     let _operation = shared.operations.lock().unwrap();
     let root = resource_install_commands::capture(&shared, root_id, &id)?;
+    let isolation = shared.config.isolation_settings(Some(&root.id))?;
     if revision.is_empty() || revision.len() > 256 || files.is_empty() || files.len() > 128 {
         return Err("缺少有效的模组更新方案，请重新检查".into());
     }
@@ -125,6 +158,7 @@ pub(super) fn start_request(
                     &revision,
                     &task,
                     download_policy,
+                    &isolation,
                 )
             }))
             .unwrap_or_else(|_| Err("模组更新意外退出，请检查资源恢复记录".into()));
@@ -160,11 +194,19 @@ fn update_with_policy(
     revision: &str,
     task: &tasks::TaskHandle,
     download_policy: Arc<pcl_network::DownloadScheduler>,
+    isolation: &crate::config::IsolationSettings,
 ) -> Result<Value> {
+    resource_install_commands::verify_isolation(
+        shared,
+        root,
+        id,
+        isolation.policy(id),
+        &isolation.revision,
+    )?;
     let cancel = task.cancellation_token();
     task.update(progress(0, 0, 0, 0));
-    let batch =
-        tauri::async_runtime::block_on(modrinth_install::download_update_request_with_policy(
+    let batch = tauri::async_runtime::block_on(
+        modrinth_install::download_update_request_with_policy_and_isolation(
             Path::new(&root.path),
             &shared.project,
             &root.id,
@@ -174,7 +216,10 @@ fn update_with_policy(
             download_policy,
             &cancel,
             |p| transfer_progress(task, p),
-        ))?;
+            isolation.policy(id),
+            &isolation.revision,
+        ),
+    )?;
     publish_batch(shared, root, id, batch, task)
 }
 
@@ -228,6 +273,8 @@ pub(super) fn publish_batch(
         // original snapshot before replacement; the combined pending guard
         // would reject this task's own durable journal and must not run here.
         modrinth_install::recheck_update_target(&plan, &cancel)?;
+        let (policy, settings_revision) = modrinth_install::update_isolation(&plan);
+        resource_install_commands::verify_isolation(shared, root, id, policy, settings_revision)?;
         commit_scope(shared, root, id)?;
         task.update(progress(
             2,
@@ -237,7 +284,7 @@ pub(super) fn publish_batch(
         ));
         Ok(())
     };
-    let result = resource_ops::update_verified_batch(
+    let result = resource_ops::update_verified_batch_with_isolation(
         Path::new(&root.path),
         id,
         &mut files,
@@ -245,6 +292,7 @@ pub(super) fn publish_batch(
         &cancel,
         &mut commit,
         &mut |_, _| {},
+        modrinth_install::update_isolation(&plan).0,
     )?;
     task.update(progress(
         3,
@@ -302,6 +350,7 @@ pub(super) fn start_restore(
 ) -> Result<Value> {
     let _operation = shared.operations.lock().unwrap();
     let root = resource_install_commands::capture(&shared, root_id, &id)?;
+    let isolation = shared.config.isolation_settings(Some(&root.id))?;
     if undo_id.is_empty() || undo_id.len() > 256 {
         return Err("无效的模组更新恢复记录".into());
     }
@@ -319,6 +368,13 @@ pub(super) fn start_restore(
                     if cancel.load(Ordering::SeqCst) {
                         return Err(modrinth_install::CANCELLED.into());
                     }
+                    resource_install_commands::verify_isolation(
+                        &worker,
+                        &root,
+                        &id,
+                        isolation.policy(&id),
+                        &isolation.revision,
+                    )?;
                     commit_scope(&worker, &root, &id)?;
                     task.update(restore_progress(true));
                     Ok(())

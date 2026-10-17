@@ -3,7 +3,7 @@
 //! fixed log child directories and one validated basename can become inputs.
 use super::{digest, reader, LogKind, CHANGED};
 use crate::launcher_local::filesystem::{check_file, component, Dir, Stamp};
-use pcl_core::content_scope::{automatic_scope, ContentScope, MarkerState};
+use pcl_core::content_scope::{resolve_scope, ContentScope, IsolationPolicy, MarkerState};
 use serde::Serialize;
 use std::{
     ffi::CString,
@@ -29,9 +29,12 @@ struct Marker {
     inode: u64,
     mode: u32,
 }
-fn markers(instance: &Dir) -> Result<(ContentScope, Vec<Option<Marker>>), String> {
+fn markers(
+    instance: &Dir,
+    policy: IsolationPolicy,
+) -> Result<(ContentScope, Vec<Option<Marker>>), String> {
     let mut values = Vec::new();
-    let scope = automatic_scope(|name| {
+    let scope = resolve_scope(policy, |name| {
         let c = CString::new(name).unwrap();
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         let marker = if unsafe {
@@ -77,11 +80,16 @@ pub(super) struct Binding {
     json_stamp: Stamp,
     markers: Vec<Option<Marker>>,
     scope: ContentScope,
+    policy: IsolationPolicy,
     game: Option<Dir>,
     crash: Option<Dir>,
 }
 impl Binding {
-    pub fn capture(path: &Path, id: &str) -> Result<Self, String> {
+    pub fn capture_with_isolation(
+        path: &Path,
+        id: &str,
+        policy: IsolationPolicy,
+    ) -> Result<Self, String> {
         pcl_core::identifier(id)?;
         let root = Dir::absolute(path)?;
         let versions = root.child("versions")?;
@@ -93,7 +101,7 @@ impl Binding {
         if json_stamp.bytes > MAX_JSON_BYTES {
             return Err("实例元数据超过 1 MiB 上限".into());
         }
-        let (scope, markers) = markers(&instance)?;
+        let (scope, markers) = markers(&instance, policy)?;
         let base = if scope.is_isolated() {
             &instance
         } else {
@@ -111,6 +119,7 @@ impl Binding {
             json_stamp,
             markers,
             scope,
+            policy,
             game,
             crash,
         })
@@ -147,6 +156,7 @@ impl Binding {
             &self.json_stamp,
             &self.markers,
             self.is_shared(),
+            self.policy,
             self.game.as_ref().map(Dir::identity).transpose()?,
             self.crash.as_ref().map(Dir::identity).transpose()?,
         ))
@@ -192,7 +202,7 @@ impl Binding {
             &instance,
             &format!("{}.json", self.id),
         )?;
-        let (scope, markers) = markers(&instance)?;
+        let (scope, markers) = markers(&instance, self.policy)?;
         if scope != self.scope || markers != self.markers {
             return Err(CHANGED.into());
         }

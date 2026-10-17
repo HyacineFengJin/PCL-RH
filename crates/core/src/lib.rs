@@ -1,6 +1,7 @@
 //! Native launch planning for installed Mojang-format instances.
 pub mod content_scope;
 mod dependencies;
+pub mod game_title;
 pub mod inspection;
 pub mod java;
 pub mod launch_options;
@@ -312,6 +313,13 @@ pub fn scan_instances(root: &Path) -> Result<Vec<Instance>> {
 /// Keeps readable instances when another entry has damaged metadata. Failures
 /// at the root or versions boundary still fail the complete scan.
 pub fn scan_instances_report(root: &Path) -> Result<ScanReport> {
+    scan_instances_report_with_isolation(root, |_| content_scope::IsolationPolicy::Automatic)
+}
+
+pub fn scan_instances_report_with_isolation(
+    root: &Path,
+    policy: impl Fn(&str) -> content_scope::IsolationPolicy,
+) -> Result<ScanReport> {
     let root = fs::canonicalize(root).map_err(err)?;
     if !root.is_dir() {
         return Err(format!("Game root is not a directory: {}", root.display()));
@@ -340,7 +348,7 @@ pub fn scan_instances_report(root: &Path) -> Result<ScanReport> {
             });
             continue;
         };
-        match scan_instance_at_root(&root, id) {
+        match scan_instance_at_root(&root, id, policy(id)) {
             Ok(Some(instance)) => report.instances.push(instance),
             Ok(None) => {}
             Err(message) => report.issues.push(ScanIssue {
@@ -358,16 +366,28 @@ pub fn scan_instances_report(root: &Path) -> Result<ScanReport> {
 /// Read one selected instance without discarding its scan error or making it
 /// depend on every other instance in the game directory.
 pub fn scan_instance(root: &Path, id: &str) -> Result<Option<Instance>> {
+    scan_instance_with_isolation(root, id, content_scope::IsolationPolicy::Automatic)
+}
+
+pub fn scan_instance_with_isolation(
+    root: &Path,
+    id: &str,
+    policy: content_scope::IsolationPolicy,
+) -> Result<Option<Instance>> {
     identifier(id)?;
     let root = fs::canonicalize(root).map_err(err)?;
     if !root.is_dir() {
         return Err("Game root is not a directory".into());
     }
     safe_join(&root, "versions")?;
-    scan_instance_at_root(&root, id)
+    scan_instance_at_root(&root, id, policy)
 }
 
-fn scan_instance_at_root(root: &Path, id: &str) -> Result<Option<Instance>> {
+fn scan_instance_at_root(
+    root: &Path,
+    id: &str,
+    policy: content_scope::IsolationPolicy,
+) -> Result<Option<Instance>> {
     identifier(id)?;
     let version_folder = safe_join(root, format!("versions/{id}"))?;
     if !version_folder.is_dir() {
@@ -378,7 +398,7 @@ fn scan_instance_at_root(root: &Path, id: &str) -> Result<Option<Instance>> {
     }
     let data = metadata(root, id, &mut HashSet::new())?;
     let loader = loader_description(&data);
-    let content_scope = content_scope::inspect(root, id)?;
+    let content_scope = content_scope::inspect_with_isolation(root, id, policy)?;
     let isolated = content_scope.is_isolated();
     let folder = content_scope::verified_base(root, id, content_scope)?;
     let mods = safe_join(&folder, "mods")?;
@@ -691,7 +711,7 @@ fn build_launch_plan_inner(
     }
     let root = fs::canonicalize(root).map_err(err)?;
     let data = metadata(&root, id, &mut HashSet::new())?;
-    let game_scope = content_scope::inspect(&root, id)?;
+    let game_scope = content_scope::inspect_with_isolation(&root, id, options.isolation)?;
     let game_dir = content_scope::verified_base(&root, id, game_scope)?;
     let context = RuleContext::current()?;
     let dependencies = dependencies::resolve(&root, id, &data, &context)?;
@@ -827,6 +847,10 @@ fn build_launch_plan_inner(
         args.push(text(logging, "argument").replace("${path}", &path.display().to_string()));
     }
     options.apply_jvm(&mut args);
+    args.extend(crate::game_title::prepare_jvm_args(
+        project,
+        &options.window_title,
+    )?);
     let main = text(&data, "mainClass");
     if main.is_empty() {
         return Err("Version has no mainClass".into());
@@ -837,7 +861,7 @@ fn build_launch_plan_inner(
     args.extend(game_args);
     // Java probing and native preparation may take time. A newly added/removed
     // marker must fail preparation rather than silently switch its game data.
-    if content_scope::inspect(&root, id)? != game_scope {
+    if content_scope::inspect_with_isolation(&root, id, options.isolation)? != game_scope {
         return Err("实例隔离目录在准备期间变化，请重新启动".into());
     }
     let log_path = safe_join(&root, format!(".pcl-linux/logs/{id}.log"))?;

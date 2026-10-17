@@ -24,6 +24,8 @@ pub(crate) fn test_update_batch(
     project: &Path,
     root_id: &str,
     id: &str,
+    isolation: pcl_core::content_scope::IsolationPolicy,
+    settings_revision: &str,
 ) -> VerifiedUpdateBatch {
     let instance = root.join("versions").join(id);
     fs::create_dir_all(instance.join("mods")).unwrap();
@@ -118,7 +120,16 @@ pub(crate) fn test_update_batch(
         })
         .collect();
     let cancel = AtomicBool::new(false);
-    let target = target::capture(root, project, root_id, id, &cancel).unwrap();
+    let target = target::capture_with_isolation(
+        root,
+        project,
+        root_id,
+        id,
+        &cancel,
+        isolation,
+        settings_revision,
+    )
+    .unwrap();
     let plan = run(prepare_with(&fake, target, selected, &cancel)).unwrap();
     let http = provider::HttpProvider::new(&cancel).unwrap();
     let staging = target::Dir::open(project)
@@ -185,7 +196,14 @@ fn anonymous_mixed_kind_updates_and_undo_preserve_disabled_inodes_and_unrelated_
         b"preserved cache",
     )
     .unwrap();
-    let batch = test_update_batch(&fixture.root, &fixture.project, "root-fixture", "sample");
+    let batch = test_update_batch(
+        &fixture.root,
+        &fixture.project,
+        "root-fixture",
+        "sample",
+        pcl_core::content_scope::IsolationPolicy::Automatic,
+        "provider-fixture-revision",
+    );
     assert_eq!(batch.plan.replacements.len(), 2);
     assert_eq!(batch.plan.adds.len(), 1);
     assert_eq!(batch.plan.reuse.len(), 1);

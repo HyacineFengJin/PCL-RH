@@ -39,6 +39,7 @@ pub(super) struct Context {
     pub(super) operation: Option<Dir>,
     pub(super) operation_id: String,
     profile_token: Option<String>,
+    policy: Option<IsolationPolicy>,
 }
 impl Context {
     pub(super) fn base(root: &Path, id: &str) -> Result<Self> {
@@ -57,6 +58,7 @@ impl Context {
             operation: None,
             operation_id: String::new(),
             profile_token: None,
+            policy: None,
         })
     }
     pub(super) fn existing(root: &Path, id: &str, operation: &str) -> Result<Self> {
@@ -141,7 +143,16 @@ impl Context {
             } else {
                 self.path.join(kind)
             };
-            if crate::ui_data::resource_dir(&self.path, &self.id, kind)? != expected {
+            // Live preparations follow their captured policy. Undo/recovery
+            // follows each journal's recorded base, independent of new settings.
+            let policy = self.policy.unwrap_or(if b.isolated {
+                IsolationPolicy::Isolated
+            } else {
+                IsolationPolicy::Shared
+            });
+            if crate::ui_data::resource_dir_with_isolation(&self.path, &self.id, kind, policy)?
+                != expected
+            {
                 return Err("实例资源隔离规则已变化，拒绝更新或撤销".into());
             }
         }
@@ -280,6 +291,7 @@ pub(super) fn inventory(
     }
     Ok(result)
 }
+#[cfg(test)]
 pub(super) fn prepare(
     root: &Path,
     id: &str,
@@ -287,14 +299,32 @@ pub(super) fn prepare(
     replacements: &[Replacement],
     cancel: &AtomicBool,
 ) -> Result<(Context, Journal)> {
+    prepare_with_isolation(
+        root,
+        id,
+        files,
+        replacements,
+        cancel,
+        IsolationPolicy::Automatic,
+    )
+}
+pub(super) fn prepare_with_isolation(
+    root: &Path,
+    id: &str,
+    files: &[VerifiedImport],
+    replacements: &[Replacement],
+    cancel: &AtomicBool,
+    policy: IsolationPolicy,
+) -> Result<(Context, Journal)> {
     pcl_core::identifier(id)?;
     let mut context = Context::base(root, id)?;
+    context.policy = Some(policy);
     context.profile_token = Some(super::super::token_for(
         &context.instance.regular(&format!("{id}.json"))?,
     )?);
     let mut resources = BTreeMap::new();
     for kind in KINDS {
-        let path = crate::ui_data::resource_dir(root, id, kind)?;
+        let path = crate::ui_data::resource_dir_with_isolation(root, id, kind, policy)?;
         let isolated = if path == root.join(kind) {
             false
         } else if path == root.join("versions").join(id).join(kind) {
@@ -523,6 +553,7 @@ pub(super) fn contexts(root: &Path) -> Result<Vec<Context>> {
                 operation: Some(operation),
                 operation_id,
                 profile_token: None,
+                policy: None,
             });
         }
     }

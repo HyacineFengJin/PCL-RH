@@ -58,7 +58,25 @@ pub fn inspect_instance(
     choice: &java::JavaSelection,
     extra_java_paths: &[String],
 ) -> Result<LaunchInspection> {
-    inspect_with_java(root, id, |root, required, exact| {
+    inspect_instance_with_isolation(
+        root,
+        project,
+        id,
+        choice,
+        extra_java_paths,
+        content_scope::IsolationPolicy::Automatic,
+    )
+}
+
+pub fn inspect_instance_with_isolation(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    choice: &java::JavaSelection,
+    extra_java_paths: &[String],
+    policy: content_scope::IsolationPolicy,
+) -> Result<LaunchInspection> {
+    inspect_with_java_and_isolation(root, id, policy, |root, required, exact| {
         java::select(
             project,
             Some(root),
@@ -70,9 +88,24 @@ pub fn inspect_instance(
     })
 }
 
+#[cfg(test)]
 fn inspect_with_java(
     root: &Path,
     id: &str,
+    select_java: impl FnOnce(&Path, u32, bool) -> Result<PathBuf>,
+) -> Result<LaunchInspection> {
+    inspect_with_java_and_isolation(
+        root,
+        id,
+        content_scope::IsolationPolicy::Automatic,
+        select_java,
+    )
+}
+
+fn inspect_with_java_and_isolation(
+    root: &Path,
+    id: &str,
+    policy: content_scope::IsolationPolicy,
     select_java: impl FnOnce(&Path, u32, bool) -> Result<PathBuf>,
 ) -> Result<LaunchInspection> {
     identifier(id)?;
@@ -94,7 +127,7 @@ fn inspect_with_java(
         issues: Vec::new(),
         ready: false,
     };
-    let scope = content_scope::inspect(&root, id);
+    let scope = content_scope::inspect_with_isolation(&root, id, policy);
     match scope.as_ref() {
         Ok(scope) => match content_scope::verified_base(&root, id, *scope) {
             Ok(path) => report.game_dir = path.display().to_string(),
@@ -155,7 +188,7 @@ fn inspect_with_java(
     // Keep the captured content directory meaningful even if a marker changes
     // during the bounded Java probe. The report never redirects game data.
     if let Ok(scope) = scope {
-        match content_scope::inspect(&root, id) {
+        match content_scope::inspect_with_isolation(&root, id, policy) {
             Ok(current) if current != scope => {
                 report.issue("实例隔离目录在检查期间变化，请重新检查".into())
             }
