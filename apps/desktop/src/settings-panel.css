@@ -331,3 +331,29 @@
   width: auto;
   white-space: nowrap;
 }
+.ce-game-argument-field {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.ce-game-argument-editor {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.ce-game-argument-editor .ce-field {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+}
+.ce-game-argument-editor textarea.ce-field {
+  min-height: 75px;
+  resize: vertical;
+  font-family: ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace;
+  font-size: 12px;
+}
+.ce-game-argument-editor .ce-button {
+  width: auto;
+  white-space: nowrap;
+}

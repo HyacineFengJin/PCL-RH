@@ -257,7 +257,7 @@ const messages = {
   "instance.customInfo": "自定义信息",
   "instance.memory": "游戏内存",
   "instance.memoryWarning":
-    "你给游戏分配的内存过多，这可能引发游戏崩溃。建议优先考虑「自动分配」选项！",
+    "分配上限超过当前可用内存，可能导致性能下降或崩溃，请适当降低。",
   "instance.memoryAuto": "自动配置",
   "ui.custom": "自定义",
   "instance.memoryLabel": "实例内存 GiB",
@@ -269,7 +269,7 @@ const messages = {
   "instance.autoServer": "自动进入服务器",
   "server.actions": "快捷操作",
   "server.refreshHelp": "重新读取本地服务器列表；在线状态检测尚未开放",
-  "server.refresh": "刷新所有服务器",
+  "server.refresh": "刷新服务器列表",
   "server.add": "添加新服务器",
   "server.empty": "暂无服务器",
   "server.unchecked": "未检测状态",

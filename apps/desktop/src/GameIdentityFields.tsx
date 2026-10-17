@@ -6,6 +6,7 @@ import type { IsolationPolicy, Settings } from "./types";
 type SavedField = {
   scope: string;
   disabled: boolean;
+  busy?: boolean;
   onNotify: (message: string) => void;
 };
 
@@ -13,18 +14,34 @@ type SavedField = {
  * A fresh identity retires them immediately, before effect cleanup. Busy state
  * still belongs to the admitted save until it settles, so changing views cannot
  * admit a second write while the first callback is publishing settings. */
-function useFieldSave({ scope, disabled, onNotify }: SavedField) {
-  const identity = useRef({ scope, disabled });
+export function useGameFieldSave({
+  scope,
+  disabled,
+  busy = false,
+  onNotify,
+}: SavedField) {
+  const identity = useRef({ scope, disabled, busy });
   if (
     identity.current.scope !== scope ||
-    identity.current.disabled !== disabled
+    identity.current.disabled !== disabled ||
+    identity.current.busy !== busy
   )
-    identity.current = { scope, disabled };
+    identity.current = { scope, disabled, busy };
   const owner = identity.current;
+  // Parent preference writes set busy for their own IPC. Retire old events on
+  // that transition, but keep this admitted request's errors attached to its
+  // original editable page. Navigation or disabling still retires responses.
+  const responseIdentity = useRef({ scope, disabled });
+  if (
+    responseIdentity.current.scope !== scope ||
+    responseIdentity.current.disabled !== disabled
+  )
+    responseIdentity.current = { scope, disabled };
+  const responseOwner = responseIdentity.current;
   const live = useRef(true),
     working = useRef(false);
-  const current = useRef({ disabled, onNotify });
-  current.current = { disabled, onNotify };
+  const current = useRef({ disabled, busy, onNotify });
+  current.current = { disabled, busy, onNotify };
   const [saving, setSaving] = useState(false);
   useEffect(() => {
     live.current = true;
@@ -36,6 +53,7 @@ function useFieldSave({ scope, disabled, onNotify }: SavedField) {
     live.current &&
     identity.current === owner &&
     !current.current.disabled &&
+    !current.current.busy &&
     !working.current;
   const save = async (action: () => Promise<void>) => {
     if (!allowed()) return;
@@ -44,14 +62,14 @@ function useFieldSave({ scope, disabled, onNotify }: SavedField) {
     try {
       await action();
     } catch (error) {
-      if (live.current && identity.current === owner)
+      if (live.current && responseIdentity.current === responseOwner)
         current.current.onNotify(String(error));
     } finally {
       working.current = false;
       if (live.current) setSaving(false);
     }
   };
-  return { allowed, save, unavailable: disabled || saving };
+  return { allowed, save, unavailable: disabled || busy || saving };
 }
 
 export function IsolationField({
@@ -64,7 +82,7 @@ export function IsolationField({
   instanceId?: string;
   onSave: (settings: Settings) => Promise<void>;
 }) {
-  const { save, unavailable } = useFieldSave(props);
+  const { save, unavailable } = useGameFieldSave(props);
   const value = instanceId
     ? settings.isolation_overrides?.[instanceId] || "inherit"
     : settings.isolation || "automatic";
@@ -115,7 +133,7 @@ export function GameTitleField({
   inherited?: boolean;
   onSave: (title: string | undefined) => Promise<void>;
 }) {
-  const { allowed, save, unavailable } = useFieldSave(props);
+  const { allowed, save, unavailable } = useGameFieldSave(props);
   const [custom, setCustom] = useState(false);
   const [draft, setDraft] = useState(value || "");
   useEffect(() => {

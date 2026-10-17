@@ -138,7 +138,7 @@ fn queued_and_cancelled_other_root_workers_block_isolation_until_cleanup_finishe
 }
 
 #[test]
-fn title_and_memory_saves_keep_ordinary_behavior_during_game_and_file_work() {
+fn title_arguments_and_memory_saves_keep_ordinary_behavior_during_game_and_file_work() {
     for stage in ["preparing", "running", "file-task"] {
         let fixture = Fixture::new();
         let shared = fixture.shared();
@@ -164,10 +164,21 @@ fn title_and_memory_saves_keep_ordinary_behavior_during_game_and_file_work() {
         };
         let mut next = before.clone();
         next.memory_gib = 10;
+        next.argument_overrides.insert(
+            "Example".into(),
+            pcl_core::launch_options::LaunchArgumentOverrides {
+                jvm_args: Some("-Dexample=value".into()),
+                ..Default::default()
+            },
+        );
         next.window_title_overrides
             .insert("Example".into(), String::new());
         let saved = save(&shared, next).unwrap();
         assert_eq!(saved.memory_gib, 10);
+        assert_eq!(
+            saved.argument_overrides["Example"].jvm_args.as_deref(),
+            Some("-Dexample=value")
+        );
         assert_eq!(
             saved.window_title_overrides.get("Example"),
             Some(&String::new())
@@ -402,5 +413,125 @@ fn resource_chooser_revision_stays_retired_after_isolation_changes_away_and_back
         assert_eq!(captured.revision, returned.revision);
         assert_eq!(captured.policy("Example"), IsolationPolicy::Automatic);
         task.finish(TaskOutcome::Failed("fixture released".into()));
+    }
+}
+
+#[test]
+fn captured_arguments_distinguish_instance_clear_inherit_and_explicit_root() {
+    use pcl_core::launch_options::LaunchArgumentOverrides;
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let first = shared.config.snapshot().root_id;
+    let second = fixture.second(&shared.config);
+    let mut settings = shared.config.snapshot();
+    settings.argument_overrides.insert(
+        "Same".into(),
+        LaunchArgumentOverrides {
+            custom_info: Some("First info".into()),
+            jvm_args: Some(String::new()),
+            game_args: None,
+        },
+    );
+    save(&shared, settings).unwrap();
+    let mut settings = shared.config.select(&second.id).unwrap();
+    settings.argument_overrides.insert(
+        "Same".into(),
+        LaunchArgumentOverrides {
+            custom_info: None,
+            jvm_args: Some("-Dsecond=value".into()),
+            game_args: Some(String::new()),
+        },
+    );
+    let settings = save(&shared, settings).unwrap();
+    let view = shared.launcher_preferences.snapshot();
+    shared.launcher_preferences.update(&view.revision, serde_json::from_value(serde_json::json!({
+        "game_launch": {"custom_info":"Global info", "jvm_args":"-Dglobal=value", "game_args":"--demo"}
+    })).unwrap()).unwrap();
+    let preferences = captured_launch_preferences(&shared).unwrap();
+    let first_root = shared.config.resolve(Some(&first)).unwrap();
+    let second_root = shared.config.resolve(Some(&second.id)).unwrap();
+    let first_options =
+        captured_game_options(&settings, &first_root, &preferences, "Same").unwrap();
+    let second_options =
+        captured_game_options(&settings, &second_root, &preferences, "Same").unwrap();
+    assert_eq!(first_options.custom_info, "First info");
+    assert!(first_options.jvm_args.is_empty());
+    assert_eq!(first_options.game_args, "--demo");
+    assert_eq!(second_options.custom_info, "Global info");
+    assert_eq!(second_options.jvm_args, "-Dsecond=value");
+    assert!(second_options.game_args.is_empty());
+
+    let mut settings = shared.config.snapshot();
+    settings.argument_overrides.remove("Same");
+    let settings = save(&shared, settings).unwrap();
+    let inherited = captured_game_options(
+        &settings,
+        &shared.config.resolve(Some(&second.id)).unwrap(),
+        &preferences,
+        "Same",
+    )
+    .unwrap();
+    assert_eq!(inherited, preferences.game_launch);
+    assert!(second_options.game_args.is_empty());
+    assert_eq!(
+        shared.config.registered(&first).unwrap().argument_overrides,
+        first_root.argument_overrides
+    );
+
+    let mut invalid_root = first_root;
+    invalid_root.argument_overrides.insert(
+        "Same".into(),
+        LaunchArgumentOverrides {
+            jvm_args: Some("-Dprivate='private-value".into()),
+            ..Default::default()
+        },
+    );
+    let error = captured_game_options(&settings, &invalid_root, &preferences, "Same").unwrap_err();
+    assert!(!error.contains("private-value"));
+}
+
+#[test]
+fn instance_argument_saves_obey_existing_rename_and_recovery_reference_guards() {
+    use pcl_core::launch_options::LaunchArgumentOverrides;
+    for recovery in [false, true] {
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        let mut settings = persisted(&shared);
+        let root = shared.config.resolve(None).unwrap();
+        settings.argument_overrides.insert(
+            "Example".into(),
+            LaunchArgumentOverrides {
+                game_args: Some("--demo".into()),
+                ..Default::default()
+            },
+        );
+        let task = if recovery {
+            fs::write(
+                shared
+                    .project
+                    .join(".pcl-rust/instance-rename-pending.json"),
+                br#"{"schema_version":999,"retain":"pending recovery"}"#,
+            )
+            .unwrap();
+            None
+        } else {
+            Some(
+                shared
+                    .tasks
+                    .admit(
+                        TaskTarget {
+                            root_id: root.id,
+                            root_path: root.path,
+                            instance_id: Some("Example".into()),
+                        },
+                        TaskKind::InstanceRename,
+                    )
+                    .unwrap(),
+            )
+        };
+        assert_rejected(&shared, settings);
+        if let Some(task) = task {
+            task.finish(TaskOutcome::Failed("fixture released".into()));
+        }
     }
 }

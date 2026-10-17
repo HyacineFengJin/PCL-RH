@@ -526,14 +526,25 @@ fn expand(
             vec![value.clone()]
         };
         for v in list {
-            let mut s = v.as_str().ok_or("Invalid argument metadata")?.to_string();
-            for (key, value) in replacements {
-                s = s.replace(&format!("${{{key}}}"), value);
+            let mut remaining = v.as_str().ok_or("Invalid argument metadata")?;
+            let mut expanded = String::new();
+            // Only metadata is a template. A replacement may contain literal
+            // `${...}` text (custom information, paths or authenticated data),
+            // which must never become a second round of placeholder expansion.
+            while let Some(start) = remaining.find("${") {
+                expanded.push_str(&remaining[..start]);
+                let placeholder = &remaining[start + 2..];
+                let end = placeholder
+                    .find('}')
+                    .ok_or("Unsupported launch placeholder")?;
+                let value = replacements
+                    .get(&placeholder[..end])
+                    .ok_or("Unsupported launch placeholder")?;
+                expanded.push_str(value);
+                remaining = &placeholder[end + 1..];
             }
-            if s.contains("${") {
-                return Err(format!("Unsupported launch placeholder: {s}"));
-            }
-            result.push(s);
+            expanded.push_str(remaining);
+            result.push(expanded);
         }
     }
     Ok(result)
@@ -779,7 +790,11 @@ fn build_launch_plan_inner(
         ("auth_session", "0".into()),
         (
             "version_type",
-            data["type"].as_str().unwrap_or("release").into(),
+            if options.custom_info.is_empty() {
+                data["type"].as_str().unwrap_or("release").into()
+            } else {
+                options.custom_info.clone()
+            },
         ),
         ("natives_directory", natives.display().to_string()),
         ("launcher_name", "PCL-RH".into()),
@@ -846,7 +861,7 @@ fn build_launch_plan_inner(
     if let Some(path) = log_config {
         args.push(text(logging, "argument").replace("${path}", &path.display().to_string()));
     }
-    options.apply_jvm(&mut args);
+    options.apply_jvm(&mut args)?;
     args.extend(crate::game_title::prepare_jvm_args(
         project,
         &options.window_title,
@@ -857,7 +872,7 @@ fn build_launch_plan_inner(
     }
     args.push(main.into());
     let mut game_args = expand(&raw_game, &replacements, &argument_context)?;
-    options.apply_game(&mut game_args);
+    options.apply_game(&mut game_args)?;
     args.extend(game_args);
     // Java probing and native preparation may take time. A newly added/removed
     // marker must fail preparation rather than silently switch its game data.

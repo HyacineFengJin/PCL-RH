@@ -16,6 +16,11 @@ export type Instance = {
   metadata_revision?: string;
 };
 export type IsolationPolicy = "automatic" | "shared" | "isolated";
+export type LaunchArgumentOverrides = {
+  custom_info?: string | null;
+  jvm_args?: string | null;
+  game_args?: string | null;
+};
 export type Settings = {
   revision?: string;
   root_id?: string | null;
@@ -30,6 +35,7 @@ export type Settings = {
   java_overrides?: Record<string, JavaSelection>;
   isolation_overrides?: Record<string, IsolationPolicy>;
   window_title_overrides?: Record<string, string>;
+  argument_overrides?: Record<string, LaunchArgumentOverrides>;
 };
 export type JavaSelection = { mode: "auto" } | { mode: "manual"; path: string };
 export type JavaRuntime = {
@@ -56,6 +62,7 @@ export type RootSummary = {
   java_overrides?: Record<string, JavaSelection>;
   isolation_overrides?: Record<string, IsolationPolicy>;
   window_title_overrides?: Record<string, string>;
+  argument_overrides?: Record<string, LaunchArgumentOverrides>;
   available: boolean;
   error?: string | null;
 };

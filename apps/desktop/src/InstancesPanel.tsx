@@ -1,4 +1,9 @@
 import { GameTitleField, IsolationField } from "./GameIdentityFields";
+import {
+  GameArgumentField,
+  withInstanceArgument,
+  type GameArgumentField as ArgumentKey,
+} from "./GameArgumentFields";
 import { CeSelect } from "./CeSelect";
 import { t, formatNumber, type MessageKey } from "./i18n";
 import { useEffect, useRef, useState } from "react";
@@ -670,6 +675,22 @@ export function InstancePanel({
       onNotify(String(e));
     }
   }
+  function argumentField(field: ArgumentKey) {
+    return (
+      <GameArgumentField
+        field={field}
+        value={settings.argument_overrides?.[instance.id]?.[field]}
+        inherited
+        draftKey={`${rootScope}:${settings.root}:${instance.id}:${section}:${field}`}
+        scope={`${rootScope}:${settings.root}:${settings.revision}:${instance.id}:${section}:${field}`}
+        disabled={!native || disabled || !!mutationDisabled}
+        onNotify={onNotify}
+        onSave={(value) =>
+          onSave(withInstanceArgument(settings, instance.id, field, value))
+        }
+      />
+    );
+  }
   if (section === "overview")
     return (
       <>
@@ -1279,15 +1300,7 @@ export function InstancePanel({
                 await onSave({ ...settings, window_title_overrides: titles });
               }}
             />
-            <label className="ce-row">
-              <span>{t("instance.customInfo")}</span>
-              <input
-                className="ce-field"
-                placeholder={t("ui.followGlobal")}
-                disabled
-                title={t("common.unavailable")}
-              />
-            </label>
+            {argumentField("custom_info")}
             <JavaSelect
               instance={instance}
               settings={settings}
@@ -1391,6 +1404,14 @@ export function InstancePanel({
                   })
                 : ""}
             </span>
+          </div>
+        </section>
+        <section className="ce-card">
+          <h2 className="ce-card-title">{t("settings.advanced")}</h2>
+          <div className="instance-launch-fields">
+            {argumentField("jvm_args")}
+            {argumentField("game_args")}
+            <p className="ce-game-field-hint">{t("settings.argumentsHint")}</p>
           </div>
         </section>
         <section className="ce-card">

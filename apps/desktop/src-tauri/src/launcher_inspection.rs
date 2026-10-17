@@ -6,8 +6,8 @@
 //! agree; navigation can never substitute a newly selected instance.
 
 use crate::{
-    config::GameRoot, ensure_instance_files_ready, instance_context, instance_reset, java_service,
-    launcher_monitor_runtime, resource_ops, RunStatus, Shared,
+    captured_game_options, config::GameRoot, ensure_instance_files_ready, instance_context,
+    instance_reset, java_service, launcher_monitor_runtime, resource_ops, RunStatus, Shared,
 };
 use pcl_core::{inspection::LaunchInspection, java::JavaSelection};
 use serde::Serialize;
@@ -32,7 +32,7 @@ struct CapturedInspection {
     id: String,
     root: GameRoot,
     settings_revision: String,
-    isolation: pcl_core::content_scope::IsolationPolicy,
+    game_options: pcl_core::launch_options::LaunchOptions,
     preferences_revision: String,
     tasks_revision: u64,
     close_generation: u64,
@@ -162,7 +162,7 @@ fn capture(shared: &Shared, id: &str, root_id: Option<&str>) -> Result<CapturedI
     Ok(CapturedInspection {
         id: id.into(),
         java: java_service::effective_choice(&settings, &root, id).clone(),
-        isolation: root.resolved_isolation(id, settings.isolation),
+        game_options: captured_game_options(&settings, &root, &preferences.preferences, id)?,
         extra_java_paths: settings.java_paths,
         settings_revision: settings.revision,
         preferences_revision: preferences.revision,
@@ -236,7 +236,7 @@ pub(super) fn inspect(
             &captured.id,
             &captured.java,
             &captured.extra_java_paths,
-            captured.isolation,
+            captured.game_options.isolation,
         )
     })
 }

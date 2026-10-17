@@ -35,21 +35,27 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
         },
         ip: IpPreference::Ipv6,
         window_title: "自定义测试 🦀".into(),
+        custom_info: "自定义版本 ${auth_access_token}".into(),
+        jvm_args: r#"-Dcustom.path="C:\Game Files\config" -Dliteral=${auth_access_token} -XX:+UseG1GC"#.into(),
+        game_args: r#"--server "host with spaces" --port 25565 --width 999 --height=555 --literal=${auth_access_token}"#.into(),
         ..Default::default()
     };
     for conditional in [false, true] {
         let mut data = json!({
             "id": "example",
+            "type": "snapshot",
             "mainClass": "FixtureMain",
             "javaVersion": {"majorVersion": 21},
             "libraries": [],
             "arguments": {
                 "jvm": [
+                    "-Dversion.flag=true",
                     "-Djava.net.preferIPv4Stack=true",
                     "-Djava.net.preferIPv6Addresses=false"
                 ],
                 "game": [
                     "--accessToken", "${auth_access_token}",
+                    "--versionType", "${version_type}",
                     {
                         "rules": [{"action": "allow", "features": {"has_custom_resolution": true}}],
                         "value": ["--width", "${resolution_width}", "--height", "${resolution_height}"]
@@ -60,7 +66,7 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
         if !conditional {
             data.as_object_mut().unwrap().remove("arguments");
             data["minecraftArguments"] =
-                "--accessToken ${auth_access_token} --width 854 --height=480".into();
+                "--accessToken ${auth_access_token} --versionType ${version_type} --width 854 --height=480".into();
         }
         fs::write(version.join("example.json"), data.to_string()).unwrap();
         let default = build_launch_plan_with_java(
@@ -73,6 +79,10 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
             &[],
         )
         .unwrap();
+        assert!(default
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--versionType", "snapshot"]));
         assert!(!default
             .args
             .iter()
@@ -114,6 +124,14 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
         assert!(plan.args[..main].contains(&"-Xmx14G".into()));
         assert!(plan.args[..main].contains(&"-Djava.net.preferIPv4Stack=false".into()));
         assert!(plan.args[..main].contains(&"-Djava.net.preferIPv6Addresses=true".into()));
+        assert!(plan.args[..main].contains(&r"-Dcustom.path=C:\Game Files\config".into()));
+        assert!(plan.args[..main].contains(&"-Dliteral=${auth_access_token}".into()));
+        assert!(plan.args[..main].contains(&"-XX:+UseG1GC".into()));
+        if conditional {
+            assert!(plan.args[..main].contains(&"-Dversion.flag=true".into()));
+        } else {
+            assert!(plan.args[..main].contains(&"-cp".into()));
+        }
         assert_eq!(
             plan.args
                 .iter()
@@ -131,6 +149,15 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
             .windows(2)
             .any(|pair| pair == ["--height", "720"]));
         assert_eq!(plan.args.iter().filter(|arg| *arg == "--width").count(), 1);
+        assert!(plan.args[main + 1..]
+            .windows(2)
+            .any(|pair| pair == ["--server", "host with spaces"]));
+        assert!(plan.args[main + 1..].contains(&"--literal=${auth_access_token}".into()));
+        assert!(plan.args[main + 1..]
+            .windows(2)
+            .any(|pair| pair == ["--versionType", &options.custom_info]));
+        assert!(!plan.args.contains(&"999".into()));
+        assert!(!plan.args.contains(&"--height=555".into()));
         assert!(plan.args.contains(&identity.access_token));
         assert!(!serde_json::to_string(&plan)
             .unwrap()
@@ -149,5 +176,41 @@ fn configured_legacy_and_conditional_plans_keep_jvm_flags_before_main_and_tokens
         .unwrap();
         assert!(offline.args.contains(&"0".into()));
         assert!(!offline.args.contains(&identity.access_token));
+        assert!(offline
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--versionType", &options.custom_info]));
+    }
+}
+
+#[test]
+fn invalid_additional_arguments_fail_before_any_filesystem_or_java_work() {
+    for options in [
+        LaunchOptions {
+            jvm_args: "-Dallowed=private-value -cp private-value".into(),
+            ..Default::default()
+        },
+        LaunchOptions {
+            game_args: "--server localhost --ACCESStoken=private-value".into(),
+            ..Default::default()
+        },
+        LaunchOptions {
+            custom_info: "private-value\n".into(),
+            ..Default::default()
+        },
+    ] {
+        let error = build_launch_plan_with_options(
+            Path::new("unused-missing-root"),
+            Path::new("unused-missing-project"),
+            "example",
+            "Player",
+            4,
+            &java::JavaSelection::Auto,
+            &[],
+            &options,
+        )
+        .unwrap_err();
+        assert!(!error.contains("private-value"));
+        assert!(!error.contains("No such file"));
     }
 }

@@ -371,3 +371,84 @@ fn mismatched_core_instance_is_not_published() {
     });
     assert!(matches!(result, Err(error) if error.contains("其他实例")));
 }
+
+#[test]
+fn inspection_captures_the_submitted_roots_arguments_and_retires_changed_settings() {
+    use pcl_core::launch_options::LaunchArgumentOverrides;
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let first = shared.config.resolve(None).unwrap();
+    instance(&first, "Same");
+    let mut settings = shared.config.snapshot();
+    settings.argument_overrides.insert(
+        "Same".into(),
+        LaunchArgumentOverrides {
+            custom_info: Some("First".into()),
+            jvm_args: Some(String::new()),
+            game_args: None,
+        },
+    );
+    shared.config.save(settings).unwrap();
+    let second_path = fixture.0.join("argument-second");
+    fs::create_dir(&second_path).unwrap();
+    let second = shared
+        .config
+        .register(second_path.to_string_lossy().into_owned(), None)
+        .unwrap();
+    shared.config.select(&second.id).unwrap();
+    let preferences = shared.launcher_preferences.snapshot();
+    shared.launcher_preferences.update(&preferences.revision, serde_json::from_value(serde_json::json!({
+        "game_launch": {"custom_info":"Global", "jvm_args":"-Dexample=global", "game_args":"--demo"}
+    })).unwrap()).unwrap();
+    let result = inspect_with(&shared, "Same", Some(&first.id), |captured| {
+        assert_eq!(captured.root.id, first.id);
+        assert_eq!(captured.game_options.custom_info, "First");
+        assert!(captured.game_options.jvm_args.is_empty());
+        assert_eq!(captured.game_options.game_args, "--demo");
+        let mut changed = shared.config.snapshot();
+        changed.argument_overrides.insert(
+            "Same".into(),
+            LaunchArgumentOverrides {
+                game_args: Some(String::new()),
+                ..Default::default()
+            },
+        );
+        shared.config.save(changed).unwrap();
+        Ok(report(captured))
+    });
+    assert!(matches!(result, Err(error) if error == CHANGED));
+}
+
+#[test]
+fn invalid_global_arguments_reject_inspection_before_probe_and_keep_the_document() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let root = shared.config.resolve(None).unwrap();
+    instance(&root, "fixture");
+    let preferences = shared.launcher_preferences.snapshot();
+    shared
+        .launcher_preferences
+        .update(
+            &preferences.revision,
+            serde_json::from_value(serde_json::json!({
+                "game_launch": {"jvm_args":"-Dexample=valid"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let file = shared.project.join(".pcl-rust/launcher-preferences.json");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    document["preferences"]["game_launch"]["jvm_args"] =
+        serde_json::json!("-Dprivate='private-value");
+    let bytes = serde_json::to_vec(&document).unwrap();
+    fs::write(&file, &bytes).unwrap();
+    assert!(shared.launcher_preferences.reload().warning.is_some());
+    let error = inspect_with(&shared, "fixture", Some(&root.id), |_| {
+        panic!("invalid arguments reached Java probing")
+    })
+    .err()
+    .unwrap();
+    assert!(!error.contains("private-value"));
+    assert_eq!(fs::read(file).unwrap(), bytes);
+}

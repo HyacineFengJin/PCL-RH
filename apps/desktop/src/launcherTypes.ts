@@ -113,6 +113,9 @@ export type LauncherPreferences = {
       { mode: "default" } | { mode: "custom"; width: number; height: number };
     ip: "default" | "ipv4" | "ipv6";
     window_title?: string;
+    custom_info?: string;
+    jvm_args?: string;
+    game_args?: string;
   };
 };
 

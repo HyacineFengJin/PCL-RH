@@ -39,9 +39,9 @@ impl Fixture {
             root,
             other,
         };
-        fixture.save_settings(json!({"schema_version":3,"active_root_id":"root-a","player":"FixturePlayer","memory_gib":10,"java":{"mode":"auto"},"java_paths":[],
-            "roots":[{"id":"root-a","name":"A","path":fixture.root,"selected":"Old","overrides":{"Old":12,"Unrelated":8},"java_overrides":{}},
-            {"id":"root-b","name":"B","path":fixture.other,"selected":"Old","overrides":{"Old":6},"java_overrides":{}}]}));
+        fixture.save_settings(json!({"schema_version":3,"active_root_id":"root-a","player":"FixturePlayer","memory_gib":10,"isolation":"automatic","java":{"mode":"auto"},"java_paths":[],
+            "roots":[{"id":"root-a","name":"A","path":fixture.root,"selected":"Old","overrides":{"Old":12,"Unrelated":8},"java_overrides":{},"isolation_overrides":{},"window_title_overrides":{},"argument_overrides":{}},
+            {"id":"root-b","name":"B","path":fixture.other,"selected":"Old","overrides":{"Old":6},"java_overrides":{},"isolation_overrides":{},"window_title_overrides":{},"argument_overrides":{}}]}));
         fixture
     }
     fn path(&self, name: &str) -> PathBuf {
@@ -704,10 +704,18 @@ fn pending_version_two_rename_preserves_golden_bytes_and_defers_backed_upgrade()
     let mut old = fixture.settings();
     old["schema_version"] = json!(2);
     old["memory_gib"] = json!(14);
-    old.as_object_mut().unwrap().remove("java");
-    old.as_object_mut().unwrap().remove("java_paths");
+    for field in ["java", "java_paths", "isolation"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
     for root in old["roots"].as_array_mut().unwrap() {
-        root.as_object_mut().unwrap().remove("java_overrides");
+        for field in [
+            "java_overrides",
+            "isolation_overrides",
+            "window_title_overrides",
+            "argument_overrides",
+        ] {
+            root.as_object_mut().unwrap().remove(field);
+        }
     }
     fixture.save_settings(old);
     let before = fs::read(fixture.path("settings.json")).unwrap();
@@ -818,6 +826,13 @@ fn java_overrides_move_back_and_other_root_global_registry_stay_unchanged() {
         .to_string_lossy()
         .into_owned();
     let mut settings = fixture.settings();
+    settings["roots"][0]["argument_overrides"] = json!({
+        "Old":{"custom_info":"First info","jvm_args":"","game_args":null},
+        "Unrelated":{"custom_info":null,"jvm_args":null,"game_args":"--demo"}
+    });
+    settings["roots"][1]["argument_overrides"] = json!({
+        "Old":{"custom_info":null,"jvm_args":"-Dother=value","game_args":null}
+    });
     settings["java"] = json!({"mode":"manual","path":global});
     settings["java_paths"] = json!([global, own, other]);
     settings["roots"][0]["java_overrides"] =
@@ -839,16 +854,30 @@ fn java_overrides_move_back_and_other_root_global_registry_stay_unchanged() {
         json!({"mode":"auto"})
     );
     assert!(after["roots"][0]["java_overrides"].get("Old").is_none());
+    assert!(after["roots"][0]["argument_overrides"].get("Old").is_none());
+    assert_eq!(
+        after["roots"][0]["argument_overrides"]["New"],
+        settings["roots"][0]["argument_overrides"]["Old"]
+    );
+    assert_eq!(
+        after["roots"][0]["argument_overrides"]["Unrelated"],
+        settings["roots"][0]["argument_overrides"]["Unrelated"]
+    );
     prepare(&fixture.project, "root-a", &fixture.root, "New", "Old")
         .unwrap()
         .apply(&fixture.project, &fixture.root)
         .unwrap();
     assert_eq!(fixture.settings(), settings);
-    let mut collision = settings;
-    collision["roots"][0]["java_overrides"]["New"] = json!({"mode":"auto"});
-    fixture.save_settings(collision.clone());
-    assert!(prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").is_err());
-    assert_eq!(fixture.settings(), collision);
+    for (field, value) in [
+        ("java_overrides", json!({"mode":"auto"})),
+        ("argument_overrides", json!({})),
+    ] {
+        let mut collision = settings.clone();
+        collision["roots"][0][field]["New"] = value;
+        fixture.save_settings(collision.clone());
+        assert!(prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").is_err());
+        assert_eq!(fixture.settings(), collision);
+    }
 }
 
 #[test]

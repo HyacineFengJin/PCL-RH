@@ -64,7 +64,10 @@ mod fixtures {
                 patch(serde_json::json!({
                     "game_launch": {
                         "window": {"mode": "custom", "width": 1920, "height": 1080},
-                        "window_title": "你好 Minecraft 🦀"
+                        "window_title": "你好 Minecraft 🦀",
+                        "custom_info": "Custom version",
+                        "jvm_args": "-Dexample=fixture",
+                        "game_args": "--demo"
                     }
                 })),
             )
@@ -89,6 +92,9 @@ mod fixtures {
             }
         );
         assert_eq!(after.preferences.game_launch.ip, IpPreference::Ipv6);
+        assert_eq!(after.preferences.game_launch.custom_info, "Custom version");
+        assert_eq!(after.preferences.game_launch.jvm_args, "-Dexample=fixture");
+        assert_eq!(after.preferences.game_launch.game_args, "--demo");
         assert_eq!(
             after.preferences.game_launch.window_title,
             "你好 Minecraft 🦀"
@@ -161,6 +167,76 @@ mod fixtures {
             .is_err());
         assert_eq!(fs::read(fixture.file()).unwrap(), unknown);
     }
+    #[test]
+    fn older_game_documents_default_arguments_and_partial_clear_preserves_other_fields() {
+        let fixture = Fixture::new();
+        let mut older = serde_json::to_value(Persisted::default()).unwrap();
+        for key in ["custom_info", "jvm_args", "game_args"] {
+            older["preferences"]["game_launch"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+        }
+        let bytes = serde_json::to_vec(&older).unwrap();
+        fixture.seed(&bytes);
+        let store = fixture.store();
+        let before = store.snapshot();
+        assert!(before.warning.is_none());
+        assert!(before.preferences.game_launch.custom_info.is_empty());
+        assert!(before.preferences.game_launch.jvm_args.is_empty());
+        assert!(before.preferences.game_launch.game_args.is_empty());
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        let changed = store.update(&before.revision, patch(serde_json::json!({
+            "game_launch": {"custom_info":"Custom", "jvm_args":"-Dexample=fixture", "game_args":"--demo"}
+        }))).unwrap();
+        let cleared = store
+            .update(
+                &changed.revision,
+                patch(serde_json::json!({"game_launch":{"jvm_args":""}})),
+            )
+            .unwrap();
+        assert!(cleared.preferences.game_launch.jvm_args.is_empty());
+        assert_eq!(cleared.preferences.game_launch.custom_info, "Custom");
+        assert_eq!(cleared.preferences.game_launch.game_args, "--demo");
+        let saved = fs::read(fixture.file()).unwrap();
+        for arguments in [
+            serde_json::json!({"custom_info":"bad\ninfo"}),
+            serde_json::json!({"jvm_args":"-Dprivate='private-value"}),
+            serde_json::json!({"game_args":"--accessToken=private-value"}),
+        ] {
+            let error = store
+                .update(
+                    &cleared.revision,
+                    patch(serde_json::json!({"game_launch": arguments.clone()})),
+                )
+                .unwrap_err();
+            assert!(!error.contains("private-value"));
+            let mut import: serde_json::Value =
+                serde_json::from_slice(&store.export_settings(&cleared.revision).unwrap()).unwrap();
+            import["preferences"]["game_launch"] = arguments;
+            let error = store
+                .import_settings(&cleared.revision, &serde_json::to_vec(&import).unwrap())
+                .unwrap_err();
+            assert!(!error.contains("private-value"));
+            assert_eq!(fs::read(fixture.file()).unwrap(), saved);
+            assert_eq!(store.snapshot().revision, cleared.revision);
+        }
+        let mut malformed: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        malformed["preferences"]["game_launch"]["game_args"] =
+            serde_json::json!("--accessToken=private-value");
+        let malformed = serde_json::to_vec(&malformed).unwrap();
+        fixture.seed(&malformed);
+        let view = store.reload();
+        assert!(view.warning.is_some());
+        assert!(store
+            .update(
+                &view.revision,
+                patch(serde_json::json!({"game_launch":{"game_args":""}}))
+            )
+            .is_err());
+        assert_eq!(fs::read(fixture.file()).unwrap(), malformed);
+    }
+
     fn changed(store: &LauncherPreferencesStore) -> LauncherPreferencesView {
         let view = store.snapshot();
         store

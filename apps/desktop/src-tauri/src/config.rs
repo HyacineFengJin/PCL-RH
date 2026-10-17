@@ -1,10 +1,12 @@
 //! Settings v3 with registered roots and an active-root UI projection.
 //! Transport revisions reject stale saves. V2 upgrades are deferred while a
 //! rename journal binds its original bytes, then backed up before the next write.
-//! Content policies and title overrides share the same root/instance identity
+//! Content policies, titles and arguments share the same root/instance identity
 //! and revision as launch settings. Saving them never relocates game content;
 //! deleted-instance references remain reserved until their existing recovery.
-use pcl_core::{content_scope::IsolationPolicy, java::JavaSelection};
+use pcl_core::{
+    content_scope::IsolationPolicy, java::JavaSelection, launch_options::LaunchArgumentOverrides,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -47,6 +49,8 @@ pub struct Settings {
     pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
     #[serde(default)]
     pub window_title_overrides: BTreeMap<String, String>,
+    #[serde(default)]
+    pub argument_overrides: BTreeMap<String, LaunchArgumentOverrides>,
 }
 
 impl Settings {
@@ -73,6 +77,8 @@ pub struct GameRoot {
     pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
     #[serde(default)]
     pub window_title_overrides: BTreeMap<String, String>,
+    #[serde(default)]
+    pub argument_overrides: BTreeMap<String, LaunchArgumentOverrides>,
 }
 
 impl GameRoot {
@@ -108,6 +114,8 @@ pub struct RootSummary {
     pub java_overrides: BTreeMap<String, JavaSelection>,
     pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
     pub window_title_overrides: BTreeMap<String, String>,
+    #[serde(default)]
+    pub argument_overrides: BTreeMap<String, LaunchArgumentOverrides>,
     pub available: bool,
     pub error: Option<String>,
 }
@@ -168,6 +176,7 @@ impl VersionTwo {
                     java_overrides: BTreeMap::new(),
                     isolation_overrides: BTreeMap::new(),
                     window_title_overrides: BTreeMap::new(),
+                    argument_overrides: BTreeMap::new(),
                 })
                 .collect(),
             java: JavaSelection::Auto,
@@ -273,6 +282,7 @@ fn defaults(project: &Path) -> Persisted {
             java_overrides: BTreeMap::new(),
             isolation_overrides: BTreeMap::new(),
             window_title_overrides: BTreeMap::new(),
+            argument_overrides: BTreeMap::new(),
         }],
         java: JavaSelection::Auto,
         java_paths: vec![],
@@ -313,6 +323,7 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
         || root.java_overrides.len() > 4096
         || root.isolation_overrides.len() > 4096
         || root.window_title_overrides.len() > 4096
+        || root.argument_overrides.len() > 4096
     {
         return Err("实例设置超过 4096 条上限".into());
     }
@@ -332,6 +343,10 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
     for (id, title) in &root.window_title_overrides {
         pcl_core::identifier(id)?;
         pcl_core::game_title::validate(title)?;
+    }
+    for (id, arguments) in &root.argument_overrides {
+        pcl_core::identifier(id)?;
+        arguments.validate()?;
     }
     Ok(())
 }
@@ -455,6 +470,7 @@ fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), Strin
                         java_overrides: BTreeMap::new(),
                         isolation_overrides: BTreeMap::new(),
                         window_title_overrides: BTreeMap::new(),
+                        argument_overrides: BTreeMap::new(),
                     }],
                     java: JavaSelection::Auto,
                     java_paths: vec![],
@@ -816,6 +832,7 @@ impl ConfigStore {
             java_overrides: BTreeMap::new(),
             isolation_overrides: BTreeMap::new(),
             window_title_overrides: BTreeMap::new(),
+            argument_overrides: BTreeMap::new(),
         };
         validate_root_values(&root)?;
         loop {
@@ -962,6 +979,7 @@ impl ConfigStore {
         next.roots[index].java_overrides = settings.java_overrides;
         next.roots[index].isolation_overrides = settings.isolation_overrides;
         next.roots[index].window_title_overrides = settings.window_title_overrides;
+        next.roots[index].argument_overrides = settings.argument_overrides;
         let selections: Vec<_> = std::iter::once(&next.java)
             .chain(next.roots[index].java_overrides.values())
             .cloned()
@@ -1063,6 +1081,7 @@ impl ConfigStore {
             || root.java_overrides.contains_key(id)
             || root.isolation_overrides.contains_key(id)
             || root.window_title_overrides.contains_key(id)
+            || root.argument_overrides.contains_key(id)
         {
             return Err("此名称仍有保存的实例设置，请使用新的实例名称".into());
         }
@@ -1209,9 +1228,10 @@ pub(crate) fn rename_bytes(
         || selected.java_overrides.contains_key(new)
         || selected.isolation_overrides.contains_key(new)
         || selected.window_title_overrides.contains_key(new)
+        || selected.argument_overrides.contains_key(new)
         || selected.selected.as_deref() == Some(new)
     {
-        return Err("目标名称已有选择、内存、Java、隔离或窗口标题配置，请选择其他名称".into());
+        return Err("目标名称已有选择或实例启动配置，请选择其他名称".into());
     }
     let mut changed = false;
     if selected.selected.as_deref() == Some(old) {
@@ -1232,6 +1252,10 @@ pub(crate) fn rename_bytes(
     }
     if let Some(title) = selected.window_title_overrides.remove(old) {
         selected.window_title_overrides.insert(new.into(), title);
+        changed = true;
+    }
+    if let Some(arguments) = selected.argument_overrides.remove(old) {
+        selected.argument_overrides.insert(new.into(), arguments);
         changed = true;
     }
     if !changed {
@@ -1264,6 +1288,7 @@ fn project_settings(config: &Persisted, revision: &str) -> Settings {
         java_overrides: root.java_overrides.clone(),
         isolation_overrides: root.isolation_overrides.clone(),
         window_title_overrides: root.window_title_overrides.clone(),
+        argument_overrides: root.argument_overrides.clone(),
     }
 }
 
@@ -1281,6 +1306,7 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
                 java_overrides: root.java_overrides,
                 isolation_overrides: root.isolation_overrides,
                 window_title_overrides: root.window_title_overrides,
+                argument_overrides: root.argument_overrides,
                 available: error.is_none(),
                 error,
             }

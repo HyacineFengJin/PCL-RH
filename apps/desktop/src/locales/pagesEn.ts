@@ -281,7 +281,7 @@ const messages = {
   "instance.customInfo": "Custom information",
   "instance.memory": "Game memory",
   "instance.memoryWarning":
-    "Too much memory is allocated to the game, which may cause crashes. Consider automatic allocation.",
+    "The heap limit exceeds available memory and may reduce performance or cause crashes. Lower the allocation.",
   "instance.memoryAuto": "Automatic allocation",
   "ui.custom": "Custom",
   "instance.memoryLabel": "Instance memory GiB",
@@ -294,7 +294,7 @@ const messages = {
   "server.actions": "Quick actions",
   "server.refreshHelp":
     "Reload the local server list; online status checks are unavailable",
-  "server.refresh": "Refresh all servers",
+  "server.refresh": "Refresh server list",
   "server.add": "Add server",
   "server.empty": "No servers",
   "server.unchecked": "Status unchecked",

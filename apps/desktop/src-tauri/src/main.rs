@@ -483,8 +483,8 @@ fn save_settings(settings: Settings, state: State<'_, Arc<Shared>>) -> Result<Se
 }
 
 /// Caller holds operations. Directory policy is shared by every file service.
-/// Unlike a future title,
-/// changing it while a worker owns an old directory would split that ownership.
+/// Titles and arguments affect the next launch; changing directory selection
+/// while a worker owns the old directory would split that ownership.
 fn save_game_settings(state: &Shared, settings: Settings) -> Result<Settings, String> {
     let before = state.config.snapshot();
     if settings.isolation != before.isolation
@@ -1722,6 +1722,9 @@ fn captured_game_options(
     options.isolation = root.resolved_isolation(id, settings.isolation);
     if let Some(title) = root.window_title_overrides.get(id) {
         options.window_title = title.clone();
+    }
+    if let Some(arguments) = root.argument_overrides.get(id) {
+        arguments.apply_to(&mut options)?;
     }
     options.validate()?;
     Ok(options)

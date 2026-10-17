@@ -7,6 +7,10 @@ import { Collapse } from "./Collapse";
 import { JavaPanel } from "./JavaPanel";
 import { GameTitleField, IsolationField } from "./GameIdentityFields";
 import { GameLaunchFields } from "./GameLaunchFields";
+import {
+  GameArgumentField,
+  type GameArgumentField as ArgumentKey,
+} from "./GameArgumentFields";
 import type {
   LauncherPreferenceView,
   LauncherPreferencePatch,
@@ -39,42 +43,30 @@ type Props = {
   onInstanceJava?: () => void;
 };
 const unavailable = () => t("settings.unavailable");
-const jvm =
-  "-XX:+UseG1GC -XX:-UseAdaptiveSizePolicy -XX:-OmitStackTraceInFastThrow -Djdk.lang.Process.allowAmbiguousCommands=true -Dfml.ignoreInvalidMinecraftCertificates=True -Dfml.ignorePatchDiscrepancies=True -Dlog4j2.formatMsgNoLookups=true";
 function Field({
   label,
   value,
-  multiline = false,
+  reason = unavailable(),
   dropdown = false,
 }: {
   label: string;
   value: string;
-  multiline?: boolean;
+  reason?: string;
   dropdown?: boolean;
 }) {
   return (
     <label className="ce-settings-row">
       <span>{label}</span>
-      {multiline ? (
-        <textarea
+      <div className="ce-settings-control">
+        <input
           className="ce-field"
           value={value}
           readOnly
           disabled
-          title={unavailable()}
+          title={reason}
         />
-      ) : (
-        <div className="ce-settings-control">
-          <input
-            className="ce-field"
-            value={value}
-            readOnly
-            disabled
-            title={unavailable()}
-          />
-          {dropdown && <ChevronDown size={17} />}
-        </div>
-      )}
+        {dropdown && <ChevronDown size={17} />}
+      </div>
     </label>
   );
 }
@@ -123,6 +115,28 @@ export function SettingsPanel({
       onNotify(String(e));
     }
   };
+  function argumentField(field: ArgumentKey) {
+    return (
+      <GameArgumentField
+        field={field}
+        value={launcherPreferences?.preferences.game_launch?.[field] ?? ""}
+        draftKey={`${settings.root_id}:${settings.root}:${section}:${field}`}
+        scope={`${settings.root_id}:${settings.root}:${launcherPreferences?.revision}:${section}:${field}`}
+        busy={launcherBusy}
+        disabled={
+          !native ||
+          disabled ||
+          !onLauncherPatch ||
+          !launcherPreferences?.revision ||
+          !!launcherPreferences.warning
+        }
+        onNotify={onNotify}
+        onSave={async (value) => {
+          await onLauncherPatch?.({ game_launch: { [field]: value ?? "" } });
+        }}
+      />
+    );
+  }
   if (section === "java")
     return (
       <JavaPanel
@@ -170,10 +184,10 @@ export function SettingsPanel({
               launcherPreferences?.preferences.game_launch?.window_title || ""
             }
             scope={`${settings.root_id}:${settings.root}:${launcherPreferences?.revision}:${section}`}
+            busy={launcherBusy}
             disabled={
               !native ||
               disabled ||
-              launcherBusy ||
               !onLauncherPatch ||
               !launcherPreferences?.revision ||
               !!launcherPreferences.warning
@@ -185,7 +199,7 @@ export function SettingsPanel({
               });
             }}
           />
-          <Field label={t("settings.customInfo")} value="PCL CE" />
+          {argumentField("custom_info")}
           <label className="ce-settings-row">
             <span>{t("settings.visibility")}</span>
             <CeSelect
@@ -234,9 +248,9 @@ export function SettingsPanel({
             onNotify={onNotify}
           />
           <Field
-            dropdown
             label={t("settings.authentication")}
             value={t("settings.deviceFlow")}
+            reason={t("settings.deviceFlowOnly")}
           />
           <GameLaunchFields
             field="ip"
@@ -329,8 +343,9 @@ export function SettingsPanel({
               label={t("settings.renderer")}
               value={t("settings.gameDefault")}
             />
-            <Field label={t("settings.jvm")} value={jvm} multiline />
-            <Field label={t("settings.gameArgs")} value="" />
+            {argumentField("jvm_args")}
+            {argumentField("game_args")}
+            <p className="ce-game-field-hint">{t("settings.argumentsHint")}</p>
             <Field label={t("settings.command")} value="" />
             <div className="ce-advanced-checks">
               {[
@@ -341,14 +356,9 @@ export function SettingsPanel({
                 t("settings.disableUnsafe"),
                 t("settings.disableCrash"),
                 t("settings.lockMemory"),
-              ].map((label, i) => (
+              ].map((label) => (
                 <label key={label} title={unavailable()}>
-                  <input
-                    type="checkbox"
-                    checked={i === 0 || i === 2}
-                    disabled
-                    readOnly
-                  />
+                  <input type="checkbox" checked={false} disabled readOnly />
                   {label}
                 </label>
               ))}

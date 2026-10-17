@@ -26,7 +26,7 @@
 | 缺失文件补全 | `launcher_repair.rs`、`crates/core/src/repair.rs`、`crates/install/src/repair.rs` | 原生任务绑定、纯下载清单、固定目录下载与发布 |
 | 平台与元数据规则 | `crates/core/src/platform.rs`、`rules.rs` | 系统／架构词汇、原生库与 Java 布局、安装和启动共用的规则 |
 | Java 核心 | `crates/core/src/java.rs` | 有限时探测、发现、架构与版本策略、启动选择 |
-| 游戏启动选项 | `GameLaunchFields.tsx`、`crates/core/src/launch_options.rs` | 全局窗口尺寸、Java 地址偏好、类型校验和参数替换 |
+| 游戏启动选项 | `GameLaunchFields.tsx`、`GameIdentityFields.tsx`、`GameArgumentFields.tsx`、`crates/core/src/launch_options.rs` | 窗口尺寸、Java 地址偏好、标题、实例覆盖、附加参数解析与版本信息 |
 | 游戏内容目录 | `crates/core/src/content_scope.rs` | 自动隔离标记、内容作用域、各文件服务共用的判断 |
 | 下载与安装 | `crates/install/src/`、`resolved.rs` | 网络请求、校验缓存、原版与加载器安装、固定提供者证据 |
 | 本地整合包 | `instance_import/mrpack/`、`instance_import/build.rs`、`publication.rs` | 格式适配、原生一次性确认、私有构建和可恢复提交 |
@@ -100,6 +100,10 @@ v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载�
 窗口尺寸只影响游戏参数规则中的 `has_custom_resolution`，不改变库选择或内容目录。核心展开新版条件参数或旧版参数后统一替换 `--width` / `--height`，防止重复尺寸；默认模式保留原参数。地址偏好在主类之前替换冲突的 JVM 属性，使用 `preferIPv6Addresses` 决定地址顺序，并保持 `preferIPv4Stack=false` 以允许双协议连接。属性含义见 [Java 网络属性说明](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/net/doc-files/net-properties.html)。
 
 前端自定义尺寸是未提交的本地草稿；只有明确保存才更新窗口字段。IP 或其他偏好修订变化不能重置尺寸草稿，旧修订或卸载页面的事件不能重新提交。对应回归覆盖偏好读写、备份导入、启动快照，以及新旧版本参数和账号令牌脱敏。
+
+`custom_info`、`jvm_args`、`game_args` 的全局值同样位于 `game_launch`；每个 `GameRoot::argument_overrides` 使用可选字段区分继承与显式清空。配置加载、保存和原生启动捕获均验证同一核心类型，改名迁移其所属实例 key，不猜测自由文本中的路径。`captured_game_options` 合并覆盖后整体校验，失败不部分采用或退回默认。预检验证配置，不运行 JVM 验证选项支持情况。
+
+`launch_options` 的有界分词器不调用 shell；JVM 参数保护主类、classpath 和堆大小所有权，游戏参数保护账号、版本及内容路径。附加 JVM 参数在主类前，游戏参数在窗口归一化前追加。版本参数只展开原始模板一次，替换值中的 `${...}` 保持字面量；分词及未知占位符错误不回显输入。前端每项显式保存，沿用修订与页面身份退役旧回调；无关字段的修订变化不会抹掉未保存草稿。
 
 ## 内容目录的所有权
 

@@ -18,6 +18,14 @@ export function harness(name, props = {}, options = {}) {
     tree,
     closed = false;
   const react = {
+    // The harness leaves child providers unmounted. Parent modules may still
+    // create contexts at import time; reads use their declared default value.
+    createContext(value) {
+      return { value };
+    },
+    useContext(context) {
+      return context.value;
+    },
     useState(initial) {
       const i = cursor++;
       if (!(i in hooks))

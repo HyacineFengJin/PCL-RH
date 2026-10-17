@@ -107,6 +107,7 @@ fn legacy_migration_preserves_values_exact_path_and_original_backup_once() {
     assert_eq!(settings.isolation, IsolationPolicy::Automatic);
     assert!(settings.isolation_overrides.is_empty());
     assert!(settings.window_title_overrides.is_empty());
+    assert!(settings.argument_overrides.is_empty());
     assert_eq!(settings.selected.as_deref(), Some("Same Instance"));
     assert_eq!(
         settings.overrides,
@@ -586,6 +587,7 @@ fn old_version_three_defaults_isolation_without_rewriting_its_bytes() {
         root.as_object_mut()
             .unwrap()
             .remove("window_title_overrides");
+        root.as_object_mut().unwrap().remove("argument_overrides");
     }
     let bytes = serde_json::to_vec(&original).unwrap();
     fixture.write(&bytes);
@@ -595,6 +597,7 @@ fn old_version_three_defaults_isolation_without_rewriting_its_bytes() {
     assert_eq!(settings.isolation, IsolationPolicy::Automatic);
     assert!(settings.isolation_overrides.is_empty());
     assert!(settings.window_title_overrides.is_empty());
+    assert!(settings.argument_overrides.is_empty());
     assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
     assert_eq!(
         store.isolation_settings(None).unwrap().policy("Example"),
@@ -796,6 +799,7 @@ fn version_two_rename_payload_keeps_its_exact_legacy_field_layout() {
     assert_eq!(normalized.isolation, IsolationPolicy::Automatic);
     assert!(normalized.roots[0].isolation_overrides.is_empty());
     assert!(normalized.roots[0].window_title_overrides.is_empty());
+    assert!(normalized.roots[0].argument_overrides.is_empty());
 }
 
 #[test]
@@ -947,4 +951,150 @@ fn policy_capture_preserves_registered_path_for_nofollow_consumers() {
     let captured = store.isolation_settings(None).unwrap();
     assert_eq!(captured.registered_path, alias.display().to_string());
     assert_eq!(captured.root.path, canonical.display().to_string());
+}
+
+#[test]
+fn arguments_are_root_scoped_round_trip_empty_overrides_and_reject_stale_saves() {
+    let fixture = Fixture::new();
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let first = store.snapshot().root_id;
+    let second = store
+        .register(fixture.root("argument-second"), None)
+        .unwrap();
+    assert!(second.argument_overrides.is_empty());
+    let arguments = LaunchArgumentOverrides {
+        custom_info: Some("Custom instance".into()),
+        jvm_args: Some("-Dexample='value with spaces'".into()),
+        game_args: None,
+    };
+    let mut stale = store.snapshot();
+    stale
+        .argument_overrides
+        .insert("Same".into(), arguments.clone());
+    store.save(stale.clone()).unwrap();
+    let before = store.snapshot();
+    let bytes = fs::read(fixture.file()).unwrap();
+    stale.argument_overrides.clear();
+    assert!(store.save(stale).is_err());
+    assert_eq!(store.snapshot(), before);
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+
+    let mut settings = store.select(&second.id).unwrap();
+    assert!(settings.argument_overrides.is_empty());
+    let empty = LaunchArgumentOverrides {
+        custom_info: Some(String::new()),
+        jvm_args: None,
+        game_args: Some(String::new()),
+    };
+    settings
+        .argument_overrides
+        .insert("Same".into(), empty.clone());
+    store.save(settings).unwrap();
+    let (loaded, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    assert_eq!(loaded.snapshot().argument_overrides["Same"], empty);
+    assert_eq!(
+        loaded.registered(&first).unwrap().argument_overrides["Same"],
+        arguments
+    );
+    assert_eq!(
+        loaded
+            .roots()
+            .iter()
+            .find(|root| root.id == first)
+            .unwrap()
+            .argument_overrides["Same"],
+        arguments
+    );
+    let mut settings = loaded.snapshot();
+    settings.argument_overrides.remove("Same");
+    loaded.save(settings).unwrap();
+    assert!(loaded
+        .registered(&second.id)
+        .unwrap()
+        .argument_overrides
+        .is_empty());
+    assert_eq!(
+        loaded.registered(&first).unwrap().argument_overrides["Same"],
+        arguments
+    );
+}
+
+#[test]
+fn argument_rename_moves_only_the_bound_root_and_reserves_empty_records() {
+    let fixture = Fixture::new();
+    let mut config = defaults(&fixture.0);
+    let first = config.roots[0].id.clone();
+    let path = PathBuf::from(&config.roots[0].path);
+    let empty = LaunchArgumentOverrides {
+        jvm_args: Some(String::new()),
+        ..Default::default()
+    };
+    config.roots[0]
+        .argument_overrides
+        .insert("Old".into(), empty.clone());
+    let mut other = config.roots[0].clone();
+    other.id = "root-other".into();
+    other.path = fixture.root("argument-other");
+    config.roots.push(other.clone());
+    let renamed = rename_bytes(&encode(&config).unwrap(), &first, &path, "Old", "New").unwrap();
+    let (after, _) = decode_settings(&renamed).unwrap();
+    assert_eq!(after.roots[0].argument_overrides.get("New"), Some(&empty));
+    assert!(!after.roots[0].argument_overrides.contains_key("Old"));
+    assert_eq!(after.roots[1], other);
+    config.roots[0]
+        .argument_overrides
+        .insert("New".into(), Default::default());
+    assert!(rename_bytes(&encode(&config).unwrap(), &first, &path, "Old", "New").is_err());
+    fixture.write(&encode(&config).unwrap());
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let before = fs::read(fixture.file()).unwrap();
+    assert!(store.ensure_new_instance_name(&first, "New").is_err());
+    assert!(store.ensure_new_instance_name(&first, "Different").is_ok());
+    assert_eq!(fs::read(fixture.file()).unwrap(), before);
+}
+
+#[test]
+fn malformed_argument_documents_and_saves_preserve_their_revision_and_bytes() {
+    let fixture = Fixture::new();
+    let valid = serde_json::to_value(defaults(&fixture.0)).unwrap();
+    for arguments in [
+        json!({"../Escape":{}}),
+        json!({"Example":{"extra":true}}),
+        json!({"Example":{"custom_info":"bad\ninfo"}}),
+        json!({"Example":{"jvm_args":"-Dprivate='unclosed"}}),
+        json!({"Example":{"game_args":"--accessToken=private-value"}}),
+        json!((0..4097)
+            .map(|n| (format!("Example{n}"), json!({})))
+            .collect::<BTreeMap<_, _>>()),
+    ] {
+        let mut bad = valid.clone();
+        bad["roots"][0]["argument_overrides"] = arguments;
+        let bytes = serde_json::to_vec(&bad).unwrap();
+        fixture.write(&bytes);
+        let (store, warning) = ConfigStore::load(&fixture.0);
+        assert!(warning.is_some());
+        assert!(store.checked_snapshot().is_err());
+        assert!(store.save(store.snapshot()).is_err());
+        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    }
+    fixture.write(&serde_json::to_vec(&valid).unwrap());
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let before = store.snapshot();
+    let bytes = fs::read(fixture.file()).unwrap();
+    let mut invalid = before.clone();
+    invalid.argument_overrides.insert(
+        "Example".into(),
+        LaunchArgumentOverrides {
+            game_args: Some("--accessToken=private-value".into()),
+            ..Default::default()
+        },
+    );
+    let error = store.save(invalid).unwrap_err();
+    assert!(!error.contains("private-value"));
+    assert_eq!(store.snapshot(), before);
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
 }
