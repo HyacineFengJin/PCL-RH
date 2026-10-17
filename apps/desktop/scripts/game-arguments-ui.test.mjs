@@ -328,6 +328,31 @@ test("instance saves preserve sibling settings, and removing the last override l
     restored.tree.argument_overrides.other,
     settings.argument_overrides.other,
   );
+  const special = harness(
+    "withInstanceArgument",
+    {},
+    {
+      module: "GameArgumentFields.tsx",
+      render(module) {
+        return module.withInstanceArgument(
+          settings,
+          "__proto__",
+          "jvm_args",
+          "-Dexample=true",
+        );
+      },
+    },
+  );
+  assert.equal(
+    Object.hasOwn(special.tree.argument_overrides, "__proto__"),
+    true,
+  );
+  assert.equal(
+    JSON.parse(JSON.stringify(special.tree)).argument_overrides.__proto__
+      .jvm_args,
+    "-Dexample=true",
+  );
+  special.close();
   changed.close();
   restored.close();
   ui.close();

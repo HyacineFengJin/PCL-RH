@@ -133,8 +133,13 @@ export function withInstanceArgument(
   const entry = { ...overrides[instanceId] };
   if (value === undefined) delete entry[field];
   else entry[field] = value;
+  // Computed properties preserve valid instance IDs such as "__proto__" as
+  // own data keys rather than invoking Object.prototype's legacy setter.
   if (Object.values(entry).some((value) => value != null))
-    overrides[instanceId] = entry;
-  else delete overrides[instanceId];
+    return {
+      ...settings,
+      argument_overrides: { ...overrides, [instanceId]: entry },
+    };
+  delete overrides[instanceId];
   return { ...settings, argument_overrides: overrides };
 }
