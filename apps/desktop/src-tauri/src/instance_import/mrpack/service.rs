@@ -757,7 +757,11 @@ fn execute(
         {
             return Err("构建后的游戏版本身份不符".into());
         }
-        let client = transfer::Client::new(&authority.factory, authority.scheduler.clone())?;
+        let client = transfer::Client::new(&authority.factory, authority.scheduler.clone())?
+            .with_local_mirrors(matches!(
+                authority.checked.plan.binding.source,
+                Source::Local(_)
+            ));
         let store = Dir(operation.root_fd()?);
         let mut completed = 0u64;
         let total = authority.checked.outputs.len() as u64;

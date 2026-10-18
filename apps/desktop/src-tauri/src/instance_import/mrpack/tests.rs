@@ -596,3 +596,24 @@ fn ignored_foreign_pcl_metadata_still_requires_the_original_crc() {
     };
     assert!(error.contains("CRC"), "{error}");
 }
+
+#[test]
+fn local_manifest_forge_mirror_admission_does_not_enable_official_archive_inputs() {
+    let fixture = Fixture::new();
+    let mut declared = remote("mods/example.jar", None, 12);
+    declared["downloads"] = json!(["https://edge.forgecdn.net/files/1/2/example.jar"]);
+    fixture.manifest(vec![declared], &[]);
+    let local = fixture.inspect(None).unwrap();
+    assert!(local.preview.blockers.is_empty());
+    let file = source_file(&fixture.source, MAX_ARCHIVE).unwrap();
+    let scan = archive::scan_cancellable(file, &AtomicBool::new(false)).unwrap();
+    let manifest = manifest::parse(&scan.index).unwrap();
+    let mut binding = local.binding;
+    binding.source = Source::Official("synthetic-official-input".into());
+    let (official, _, _) = build("Preview", manifest, scan, BTreeSet::new(), binding).unwrap();
+    assert!(official
+        .preview
+        .blockers
+        .iter()
+        .any(|value| value.contains("没有受支持的 HTTPS 下载镜像")));
+}

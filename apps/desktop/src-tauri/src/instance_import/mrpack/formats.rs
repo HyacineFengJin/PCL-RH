@@ -286,7 +286,7 @@ pub(super) fn prepare_with_budget(
         if let Output::Remote { downloads, .. } = output {
             if !downloads
                 .iter()
-                .any(|url| super::mirror::declaration(url).is_ok_and(|url| url.is_some()))
+                .any(|url| super::mirror::local_declaration(url).is_ok_and(|url| url.is_some()))
             {
                 prepared
                     .blockers

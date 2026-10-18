@@ -344,7 +344,7 @@ export function InstancePanel({
   disabled: boolean;
   mutationDisabled?: boolean;
   native: boolean;
-  onTaskStart: (id: string) => void;
+  onTaskStart: (id: string, reveal?: boolean) => void;
   occupiedNames?: string[];
   resourceRefreshKey?: string;
 }) {
@@ -973,6 +973,7 @@ export function InstancePanel({
             <InstanceDelete
               id={instance.id}
               api={api}
+              rootId={settings.root_id || ""}
               scopeKey={`${rootScope}:${settings.revision || ""}`}
               native={native}
               disabled={

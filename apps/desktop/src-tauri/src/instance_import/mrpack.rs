@@ -411,7 +411,7 @@ fn prepare_checked_with_stage(
             Output::Remote { downloads, .. } => Some(
                 downloads
                     .iter()
-                    .filter(|url| matches!(mirror::declaration(url), Ok(None)))
+                    .filter(|url| matches!(mirror::local_declaration(url), Ok(None)))
                     .count(),
             ),
             Output::Override(_) | Output::CurseForge(_) => None,
@@ -520,7 +520,10 @@ fn build(
                     downloads: file.downloads.clone(),
                 },
             );
-            mirrors.insert(file.path.clone(), file.has_supported_mirror());
+            mirrors.insert(
+                file.path.clone(),
+                file.has_supported_mirror(matches!(binding.source, Source::Local(_))),
+            );
         }
         files.push(PreviewFile {
             path: file.path.clone(),

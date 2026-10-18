@@ -88,3 +88,42 @@ fn redirect_cycles_and_sixth_hop_are_bounded() {
     }
     assert!(chain.follow("/hop6").unwrap_err().contains("5 次"));
 }
+
+#[test]
+fn local_manifests_allow_only_exact_official_forge_file_hosts_without_changing_standard_inputs() {
+    for host in ["mediafilez.forgecdn.net", "edge.forgecdn.net"] {
+        let url = format!("https://{host}/files/1/2/example.jar");
+        assert!(declaration(&url).unwrap().is_none());
+        assert!(local_declaration(&url).unwrap().is_some());
+    }
+    for url in [
+        "https://edge.forgecdn.net.evil.test/files/1/2/a.jar",
+        "https://media.forgecdn.net/files/1/2/a.jar",
+        "https://edge.forgecdn.net/avatars/a.jar",
+        "https://edge.forgecdn.net:444/files/1/2/a.jar",
+        "https://edge.forgecdn.net/files/../avatars/a.jar",
+    ] {
+        assert!(local_declaration(url).unwrap().is_none(), "{url}");
+    }
+    for url in [
+        "http://edge.forgecdn.net/files/a.jar",
+        "https://user@edge.forgecdn.net/files/a.jar",
+        "https://@edge.forgecdn.net/files/a.jar",
+        "https://edge.forgecdn.net/files/a.jar#fragment",
+    ] {
+        assert!(local_declaration(url).is_err(), "{url}");
+    }
+    let start = local_declaration("https://edge.forgecdn.net/files/1/2/a.jar")
+        .unwrap()
+        .unwrap();
+    let mut local = Chain::local(start.clone());
+    local
+        .follow("https://mediafilez.forgecdn.net/files/1/2/b.jar")
+        .unwrap();
+    assert!(local
+        .follow("https://mediafilez.forgecdn.net.evil.test/files/c.jar")
+        .is_err());
+    assert!(Chain::new(start)
+        .follow("https://edge.forgecdn.net/files/1/2/b.jar")
+        .is_err());
+}

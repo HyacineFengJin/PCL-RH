@@ -52,6 +52,7 @@ pub(super) struct Client {
     // Serialize updates and callbacks across concurrent files so callbacks
     // observe cumulative byte values in the same order as the counter updates.
     telemetry: Mutex<()>,
+    local_mirrors: bool,
     #[cfg(test)]
     route: Option<reqwest::Url>,
 }
@@ -85,9 +86,14 @@ impl Client {
             downloads,
             network_bytes: AtomicU64::new(0),
             telemetry: Mutex::new(()),
+            local_mirrors: false,
             #[cfg(test)]
             route: None,
         })
+    }
+    pub(super) fn with_local_mirrors(mut self, local: bool) -> Self {
+        self.local_mirrors = local;
+        self
     }
     pub(super) fn network_bytes(&self) -> u64 {
         self.network_bytes.load(Ordering::Relaxed)
@@ -179,6 +185,7 @@ impl Client {
             .downloads
             .iter()
             .map(|value| match source {
+                Source::Modrinth if self.local_mirrors => mirror::local_declaration(value),
                 Source::Modrinth => mirror::declaration(value),
                 Source::CurseForge => crate::community_curseforge::download_url(value).map(Some),
             })
@@ -275,7 +282,11 @@ impl Client {
         report: &impl Fn(TransferProgress),
         source: Source,
     ) -> Attempt<(String, String)> {
-        let mut chain = mirror::Chain::new(candidate);
+        let mut chain = if self.local_mirrors {
+            mirror::Chain::local(candidate)
+        } else {
+            mirror::Chain::new(candidate)
+        };
         let mut response = loop {
             // Initial declarations and every Location have already passed the
             // same authority checks; reqwest never chooses a redirect itself.

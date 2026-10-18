@@ -10,10 +10,11 @@ import "./instance-operations.css";
 
 type TaskProps = {
   api: Api;
+  rootId: string;
   scopeKey: string;
   native: boolean;
   disabled: boolean;
-  onTaskStart: (id: string) => void;
+  onTaskStart: (id: string, reveal?: boolean) => void;
 };
 
 /** The existing overview action prepares the whole physical instance range.
@@ -21,6 +22,7 @@ type TaskProps = {
 export function InstanceDelete({
   id,
   api,
+  rootId,
   scopeKey,
   native,
   disabled,
@@ -28,7 +30,7 @@ export function InstanceDelete({
 }: TaskProps & { id: string }) {
   const { scope, current, allowed } = useInstanceOperationScope(
     api,
-    `${scopeKey}:${id}`,
+    `${rootId}:${scopeKey}:${id}`,
     native,
     disabled,
   );
@@ -63,7 +65,7 @@ export function InstanceDelete({
     trigger.current?.focus();
   }
   async function prepare() {
-    if (!allowed() || operation.current?.scope === scope) return;
+    if (!allowed() || !rootId || operation.current?.scope === scope) return;
     const token = { scope, kind: "prepare" as const };
     const next = { scope, plan: null, error: "" };
     setDialog(next);
@@ -72,6 +74,7 @@ export function InstanceDelete({
     try {
       const plan = await api<InstanceDeletePlan>("instance_delete_prepare", {
         id,
+        rootId,
       });
       if (
         !current() ||
@@ -79,7 +82,7 @@ export function InstanceDelete({
         dialogRef.current !== next
       )
         return;
-      if (plan.id !== id || plan.root_id !== scopeKey || !plan.revision)
+      if (plan.id !== id || plan.root_id !== rootId || !plan.revision)
         throw new Error(t("trash.planChanged"));
       setDialog({ ...next, plan });
     } catch (error) {
@@ -100,6 +103,7 @@ export function InstanceDelete({
     const submitted = dialogRef.current;
     if (
       !allowed() ||
+      !rootId ||
       !submitted ||
       submitted.scope !== scope ||
       operation.current?.scope === scope
@@ -109,23 +113,32 @@ export function InstanceDelete({
       await prepare();
       return;
     }
+    if (
+      submitted.plan.id !== id ||
+      submitted.plan.root_id !== rootId ||
+      !submitted.plan.revision
+    ) {
+      setDialog({ scope, plan: null, error: t("trash.planChanged") });
+      return;
+    }
     const token = { scope, kind: "start" as const };
+    const onSubmittedTask = callback.current;
     operation.current = token;
     setActivity(token);
     try {
       const result = await api<{ id: string }>("instance_delete_start", {
         id: submitted.plan.id,
         revision: submitted.plan.revision,
+        rootId,
       });
-      if (
-        !current() ||
-        operation.current !== token ||
-        dialogRef.current !== submitted
-      )
-        return;
       if (!result.id) throw new Error(t("trash.taskMissing"));
-      setDialog(null);
-      callback.current(result.id);
+      const reveal =
+        current() &&
+        operation.current === token &&
+        dialogRef.current === submitted;
+      if (reveal) setDialog(null);
+      // Native admission owns this task even after navigation or unmounting.
+      onSubmittedTask(result.id, reveal);
     } catch (error) {
       // A rejected revision is discarded; a retry must describe a fresh range.
       if (
@@ -146,7 +159,7 @@ export function InstanceDelete({
       <button
         ref={trigger}
         className="ce-button danger"
-        disabled={!native || disabled || !!visible || !!working}
+        disabled={!native || disabled || !rootId || !!visible || !!working}
         title={!native ? t("trash.desktop") : t("trash.undoHelp")}
         onClick={() => {
           if (
@@ -215,6 +228,7 @@ export function InstanceDelete({
  * owning root's read snapshot; restore submits the exact record revision. */
 export function InstanceTrash({
   api,
+  rootId,
   scopeKey,
   native,
   disabled,
@@ -223,7 +237,7 @@ export function InstanceTrash({
 }: TaskProps & { refreshKey?: string | number }) {
   const { scope, current, readable, allowed } = useInstanceOperationScope(
     api,
-    scopeKey,
+    `${rootId}:${scopeKey}`,
     native,
     disabled,
   );
@@ -252,7 +266,7 @@ export function InstanceTrash({
       : { scope, entries: [], error: "", loading: true };
   const working = activity?.scope === scope ? activity : null;
   async function read() {
-    if (!readable()) return;
+    if (!readable() || !rootId) return;
     const epoch = ++readEpoch.current;
     setSnapshot((old) => ({
       scope,
@@ -263,9 +277,10 @@ export function InstanceTrash({
     try {
       const entries = await api<InstanceDeletedEntry[]>(
         "instance_deleted_list",
+        { rootId },
       );
       if (!current() || readEpoch.current !== epoch) return;
-      if (entries.some((entry) => entry.root_id !== scopeKey))
+      if (entries.some((entry) => entry.root_id !== rootId))
         throw new Error(t("trash.recordChanged"));
       setSnapshot({
         scope,
@@ -298,25 +313,29 @@ export function InstanceTrash({
         : null;
     if (
       !allowed() ||
+      !rootId ||
       operation.current?.scope === scope ||
       latest.current.loading ||
       latest.current.error ||
       !saved?.can_restore ||
+      saved.root_id !== rootId ||
+      entry.root_id !== rootId ||
       !saved.revision ||
       saved.revision !== entry.revision
     )
       return;
     const token = { scope, operationId: entry.operation_id };
+    const onSubmittedTask = callback.current;
     operation.current = token;
     setActivity(token);
     try {
       const result = await api<{ id: string }>("instance_restore_start", {
         operationId: saved.operation_id,
         revision: saved.revision,
+        rootId,
       });
-      if (!current() || operation.current !== token) return;
       if (!result.id) throw new Error(t("trash.restoreTaskMissing"));
-      callback.current(result.id);
+      onSubmittedTask(result.id, current() && operation.current === token);
     } catch (error) {
       if (current() && operation.current === token)
         setSnapshot((old) =>

@@ -84,8 +84,15 @@ fn url(value: &str) -> Result<bool> {
     super::mirror::declaration(value).map(|url| url.is_some())
 }
 impl RemoteFile {
-    pub(super) fn has_supported_mirror(&self) -> bool {
-        self.downloads.iter().any(|s| url(s) == Ok(true))
+    pub(super) fn has_supported_mirror(&self, local: bool) -> bool {
+        self.downloads.iter().any(|value| {
+            if local {
+                super::mirror::local_declaration(value)
+            } else {
+                super::mirror::declaration(value)
+            }
+            .is_ok_and(|url| url.is_some())
+        })
     }
 }
 pub(super) fn parse(bytes: &[u8]) -> Result<Manifest> {

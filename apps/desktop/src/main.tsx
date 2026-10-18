@@ -2924,7 +2924,8 @@ function App() {
                     <>
                       <InstanceTrash
                         api={rootApi}
-                        scopeKey={rootId || data.settings.root}
+                        rootId={rootId || ""}
+                        scopeKey={`${rootKey}:${data.settings.revision || ""}`}
                         native={native}
                         disabled={
                           archiveAdmission.current.blocked ||

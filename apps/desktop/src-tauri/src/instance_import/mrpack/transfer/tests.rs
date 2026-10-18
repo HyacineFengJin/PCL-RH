@@ -992,3 +992,66 @@ fn curseforge_corrupt_or_oversized_body_never_returns_a_verified_file() {
         fixture.assert_empty();
     }
 }
+
+#[test]
+fn local_manifest_forge_mirrors_keep_double_hashes_and_reject_external_redirects() {
+    let fixture = Fixture::new();
+    let body = b"synthetic manifest-pinned file";
+    let server = Server::new([
+        ("/files/1/2/ok.jar".into(), Response::body(body)),
+        (
+            "/files/1/2/redirect.jar".into(),
+            Response::redirect("https://edge.forgecdn.net.evil.test/files/other.jar"),
+        ),
+    ]);
+    let standard = client(&server, scheduler(1, 0));
+    let urls = ["https://edge.forgecdn.net/files/1/2/ok.jar".into()];
+    let expected = hashes(body);
+    assert!(run(standard.download(
+        remote(&urls, body, &expected),
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {}
+    ))
+    .is_err());
+    assert!(server.paths().is_empty());
+    let local = client(&server, scheduler(1, 0)).with_local_mirrors(true);
+    let verified = run(local.download(
+        remote(&urls, body, &expected),
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {},
+    ))
+    .unwrap();
+    assert_eq!((verified.sha1, verified.sha512), expected);
+    let wrong = (expected.0.clone(), "0".repeat(128));
+    assert!(failure(run(local.download(
+        remote(&urls, body, &wrong),
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {}
+    )))
+    .contains("SHA512"));
+    let redirect = ["https://mediafilez.forgecdn.net/files/1/2/redirect.jar".into()];
+    assert!(run(local.download(
+        remote(&redirect, body, &expected),
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {}
+    ))
+    .is_err());
+    assert_eq!(
+        server.paths(),
+        [
+            "/files/1/2/ok.jar",
+            "/files/1/2/ok.jar",
+            "/files/1/2/redirect.jar"
+        ]
+    );
+    assert!(server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|request| !request.to_ascii_lowercase().contains("x-api-key")));
+}

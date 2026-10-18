@@ -1,8 +1,9 @@
 //! Exact mrpack mirror authority shared by preview and manual redirects.
 //!
 //! A valid declaration may still be unsupported. Only the four explicit
-//! domains are request authority; GitHub release redirects to asset CDN hosts
-//! therefore fail this conservative policy and may use another declared mirror.
+//! domains are standard request authority. Local manifest inputs additionally
+//! admit two exact official Forge CDN hosts under /files/. Every redirect uses
+//! the captured input policy; no CDN URL is reconstructed.
 use super::Result;
 use reqwest::Url;
 use std::collections::BTreeSet;
@@ -73,10 +74,24 @@ pub(crate) fn declaration(value: &str) -> Result<Option<Url>> {
     Ok(allowed(&url).then_some(url))
 }
 
+/// Local manifests are explicit file authority, with mandatory SHA1/SHA512.
+/// This does not enable CurseForge API ID resolution or its service gate.
+pub(super) fn local_declaration(value: &str) -> Result<Option<Url>> {
+    let url = absolute(value)?;
+    let local = url.port_or_known_default() == Some(443)
+        && matches!(
+            url.host_str(),
+            Some("mediafilez.forgecdn.net" | "edge.forgecdn.net")
+        )
+        && url.path().starts_with("/files/");
+    Ok((allowed(&url) || local).then_some(url))
+}
+
 pub(super) struct Chain {
     current: Url,
     visited: BTreeSet<String>,
     redirects: usize,
+    local: bool,
 }
 impl Chain {
     pub(super) fn new(current: Url) -> Self {
@@ -84,6 +99,13 @@ impl Chain {
             visited: BTreeSet::from([current.as_str().to_owned()]),
             current,
             redirects: 0,
+            local: false,
+        }
+    }
+    pub(super) fn local(current: Url) -> Self {
+        Self {
+            local: true,
+            ..Self::new(current)
         }
     }
     pub(super) fn current(&self) -> &Url {
@@ -113,7 +135,12 @@ impl Chain {
             .current
             .join(location)
             .map_err(|_| "mrpack 镜像重定向 URI 无效")?;
-        let next = declaration(next.as_str())?.ok_or("mrpack 镜像重定向目标域名或端口不受支持")?;
+        let next = if self.local {
+            local_declaration(next.as_str())
+        } else {
+            declaration(next.as_str())
+        }?
+        .ok_or("mrpack 镜像重定向目标域名、路径或端口不受支持")?;
         if !self.visited.insert(next.as_str().to_owned()) {
             return Err("mrpack 镜像包含循环重定向".into());
         }
