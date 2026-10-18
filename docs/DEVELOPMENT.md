@@ -87,6 +87,8 @@
 
 `crates/core/src/java.rs` 统一列表与启动选择。每次探测限制时长和输出，自动发现限制候选数量及总时长。程序使用独立进程组，超时或退出后清理组内子进程，并等待直接子进程；不要改成持锁执行或无界管道读取。手动选择在启动时重新探测，错误不会退回自动选择。Forge/NeoForge 的主版本策略也在核心执行，前端禁用不兼容选项只是提前提示。
 
+启动前的自动获取由 `launcher_preparation/java.rs` 管理。核心 `inspection::java_requirement` 与 `java::select_from_catalog` 提供类型化需求和本地选择结果，只在 Auto 且无兼容候选时创建全局 `JavaInstall` 任务。官方下载复用 guarded engine；最终以捕获的设置 revision 调用 `ConfigStore::register_java`，只接受这次追加返回的新 revision，再把更新的 Settings 传给同一启动代次的构建闭包。手动选择不回退，账号身份仍只在最终构建阶段读取；取消、下载、登记或重验失败均不提交游戏进程。
+
 加载器处理器的 Java 由 `crates/install/src/components.rs::installer_java` 选择，与上述游戏启动选择分开。`Installer::with_java(path)` 是严格指定：路径失效、探测失败或主版本不符时直接报错，不继续寻找其他 Java；没有调用该方法时保留自动发现。不要把显式路径作为自动候选的优先提示，否则调用者确认的运行环境会被静默替换。当前桌面安装和组件重置使用处理器自动发现，游戏 Java 选项不改变它们的处理器选择。
 
 v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载荷必须按原 v2 字段顺序重放；存在项目待恢复标记时，只在内存中规范化，保留磁盘字节。完成恢复后的首次合法设置写入再备份恢复后的原始 v2 字节并升级。排查升级与改名交叉问题时，先读 `VersionTwo`、`rename_bytes` 和 `pending_migration`，不要让新字段提前改变 journal 的预期快照。
@@ -129,6 +131,12 @@ ZIP 导出的 `Scanner` 与资源信息的 `Binding` 继续使用各自的描述
 
 `instance_delete/filesystem.rs` 负责目录描述符、内容树快照、锁、移动与空目录清理；主模块负责依赖检查、计划、日志状态和删除/恢复。文件事务回归分别在 `instance_import/tests.rs` 和 `instance_delete/tests.rs`；bootstrap、旧资料及外部重建的组合行为在 `main.rs` 的应用集成用例中。桌面命令在大型归档/内容树的只读校验期间释放 `operations`，返回方案或准入任务前再检查占用、目录绑定和待恢复状态。
 
+## 损坏依赖修复与恢复
+
+`IntegrityCheck` 保持只读，`MissingRepair` 保持只补缺失。显式写入由 `DamageRepair` 重新捕获声明、校验已有内容；`damage_repair.rs` 编排下载与有界报告，`damage_store.rs` 持有目录 FD、独立原件副本、不可变 intent 与 commit/rollback 标记。每文件替换都先同步备份和 intent，再用无覆盖移动发布；未提交部分可恢复，提交完成部分保留。原件指纹使用 SHA256，下载验证沿用声明的 SHA1 与大小；不接受任意模组或存档路径。
+
+桌面 `launcher_damage` 复用已绑定的根目录、设置和任务 guard，普通修复只排除自身 operation ID；恢复是根目录任务，不要求原实例仍存在。未完成记录阻止该目录的其他写入和启动，bootstrap 给出恢复入口。结果保留在任务卡上，由用户收起。`DamageRepair::ensure_ready` 对不存在的存储先作无创建探测，健康启动不会因此新增修复能力要求。事务状态回归见 `damage_repair_tests.rs`，准入与恢复入口见 `launcher_damage_tests.rs`。
+
 ## 社区来源与项目身份
 
 `community_catalog` 编排来源搜索、部分失败和百科取证；`community_identity` 只用提供方 ID 与明确项目链接建立关系。名称、作者和跨站相同 slug 不构成匹配证据。关系组件含多个同站项目时拒绝跨站归并，避免百科宽泛词条合并分支。版本筛选下百科仅作为证据，不能增加未过滤的结果。
@@ -137,11 +145,11 @@ ZIP 导出的 `Scanner` 与资源信息的 `Binding` 继续使用各自的描述
 
 社区检索的 `page` 缺省为 1。Modrinth 使用受检查的 offset 与真实 total_hits，CurseForge 使用已验证的 index/resultCount/totalCount，百科沿用 HTML 分页证据；`pagination.has_next` 不从归并后的卡片数推算。CurseForge 的 index + pageSize 不超过官方 10,000 条边界，百科保持 100 页范围，这些限制只停止对应来源并给出提示。证据用途的百科列表不能延长已结束的筛选结果。`communityPagination.ts` 按查询保留最多 8 页原始结果，仅用真实来源 ID 与已确认链接对较早的已加载页去重，同站真实 ID 冲突保留独立。返回旧页不会被全局 seen 集合过滤；被淘汰的页重新请求。查询与页面分别绑定对象身份，根目录、API、关键词和筛选变化即时退役旧回复及事件处理函数。
 
-`resource_save` 按来源重新读取精确文件权限与元数据。CurseForge 的 SHA-1 与 Modrinth 的 SHA-512 由 `resource_digest` 明确区分，不将一种校验值冒充另一种。下载和落盘复核都校验官方摘要；本地 SHA-512 另行计算用于保存回执。保存继续使用已捕获目录、匿名暂存、最终元数据重验和无覆盖发布。CurseForge 尚不进入 Modrinth 的依赖安装／更新事务或整合包解析。
+`resource_save` 按来源重新读取精确文件权限与元数据。CurseForge 的 SHA-1 与 Modrinth 的 SHA-512 由 `resource_digest` 明确区分，不将一种校验值冒充另一种。下载和落盘复核都校验官方摘要；本地 SHA-512 另行计算用于保存回执。保存继续使用已捕获目录、匿名暂存、最终元数据重验和无覆盖发布。CurseForge 社区资源尚不进入 Modrinth 的依赖安装／更新事务；本地 CurseForge ZIP 的精确文件引用由独立的 `mrpack/curseforge.rs` 管线解析，仍要求已配置的官方 API 服务。
 
 ## 整合包与 Modrinth 资源安装
 
-整合包入口由 `instance_commands.rs` 与 `InstanceImport.tsx` 共享。PCL 导出 ZIP 保留原 DTO 和事务；其他格式由 `instance_import/mrpack.rs` 与 `formats.rs` 归一为客户端有效输出。`archive.rs` 限制 ZIP 索引、路径和解压容量，所有归档条目都校验；适配器只选择游戏内容，不导入启动器资料。完整目录包合并原核心继承，其余格式根据清单重建受支持组件。CurseForge 的远程文件编号当前作为明确阻止项，不能静默遗漏。
+整合包入口由 `instance_commands.rs` 与 `InstanceImport.tsx` 共享。PCL 导出 ZIP 保留原 DTO 和事务；其他格式由 `instance_import/mrpack.rs` 与 `formats.rs` 归一为客户端有效输出。`archive.rs` 限制 ZIP 索引、路径和解压容量，所有归档条目都校验；适配器只选择游戏内容，不导入启动器资料。完整目录包合并原核心继承，其余格式根据清单重建受支持组件。本地 CurseForge ZIP 的远程文件编号按精确项目与文件 ID 请求官方元数据；服务未配置、禁止分发或缺少官方地址时明确阻止，不能静默遗漏。
 
 带启动器归档始终保留用户所选外层文件作为来源权威。`prepare_checked_with_stage` 从严格中央目录定位唯一内包，调用方先预留磁盘与 FD，再将内包流式写入匿名文件；外层所有条目仍校验 CRC，内层沿用自己的格式与大小限制，两层共享解码预算。`CheckedPack::content_file` 是覆盖文件和完整游戏核心的唯一内容入口，源重查同时检查外层路径/FD 和内层 FD。计划摘要包括内层身份、哈希及外层条目事实，不以 `!/` 拼路径或序列化临时文件名。
 

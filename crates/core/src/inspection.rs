@@ -57,6 +57,31 @@ pub struct FileReadiness {
     pub missing_files: Vec<String>,
 }
 
+/// Includes the resolved metadata so a download can recheck the exact launch
+/// requirement it captured without guessing from an error message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JavaRequirement {
+    pub major: u32,
+    pub exact: bool,
+    metadata: serde_json::Value,
+}
+
+pub fn java_requirement(root: &Path, id: &str) -> Result<JavaRequirement> {
+    identifier(id)?;
+    let root = fs::canonicalize(root).map_err(err)?;
+    let data = metadata(&root, id, &mut HashSet::new())?;
+    let major = required_java(&data);
+    if major == 0 || major > 999 {
+        return Err("实例要求的 Java 主版本无效".into());
+    }
+    let loader = loader_description(&data);
+    Ok(JavaRequirement {
+        major,
+        exact: loader.starts_with("Forge ") || loader.starts_with("NeoForge "),
+        metadata: data,
+    })
+}
+
 pub fn inspect_files_with_isolation(
     root: &Path,
     id: &str,

@@ -1,4 +1,4 @@
-//! Missing-file repair at the desktop task boundary.
+//! Shared dependency-operation binding and missing-file repair task boundary.
 //!
 //! Submission pins the explicit registry root, instance, settings revision and
 //! physical root descriptor under admission. The globally exclusive task owns
@@ -9,8 +9,8 @@
 
 use crate::{
     config::GameRoot,
-    ensure_instance_files_ready, instance_context, instance_reset, require_network_submission,
-    resource_ops,
+    ensure_instance_files_ready_without_damage, instance_context, instance_reset,
+    require_network_submission, resource_ops,
     tasks::{TaskHandle, TaskKind, TaskOutcome, TaskTarget},
     RunStatus, Shared,
 };
@@ -19,7 +19,7 @@ use std::{
     fs::{self, File, Metadata, OpenOptions},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
-    sync::{atomic::Ordering, Arc},
+    sync::{atomic::Ordering, Arc, Mutex},
 };
 
 const CHANGED: &str = "操作期间实例、游戏目录或设置已变化，请重新检查实例依赖";
@@ -49,16 +49,30 @@ pub(super) struct CapturedRepair {
     run: RunStatus,
     pub(super) directory: File,
     identity: RootIdentity,
-    factory: Arc<pcl_network::ClientFactory>,
-    scheduler: Arc<pcl_network::DownloadScheduler>,
+    pub(super) factory: Arc<pcl_network::ClientFactory>,
+    pub(super) scheduler: Arc<pcl_network::DownloadScheduler>,
+    pub(super) damage_operation: Mutex<Option<String>>,
 }
 
-fn require_files_ready(shared: &Shared, root: &GameRoot, id: &str) -> Result<(), String> {
+fn require_files_ready(
+    shared: &Shared,
+    root: &GameRoot,
+    id: &str,
+    kind: TaskKind,
+    operation: Option<&str>,
+) -> Result<(), String> {
     let path = Path::new(&root.path);
     resource_ops::ensure_ready(path)?;
     instance_reset::ensure_ready(path)?;
-    ensure_instance_files_ready(shared, root)?;
-    crate::instance_delete::ensure_name_available(path, id)
+    ensure_instance_files_ready_without_damage(shared, root)?;
+    if kind != TaskKind::InstanceDamageRecover {
+        pcl_install::DamageRepair::ensure_ready_except(path, operation)?;
+    }
+    if kind == TaskKind::InstanceDamageRecover {
+        Ok(())
+    } else {
+        crate::instance_delete::ensure_name_available(path, id)
+    }
 }
 
 /// Caller holds operations. The descriptor stays owned even if the registered
@@ -83,8 +97,10 @@ pub(super) fn capture_for(
     kind: TaskKind,
 ) -> Result<CapturedRepair, String> {
     match kind {
-        TaskKind::InstanceRepair => require_network_submission(shared)?,
-        TaskKind::InstanceVerify => {
+        TaskKind::InstanceRepair | TaskKind::InstanceDamageRepair => {
+            require_network_submission(shared)?
+        }
+        TaskKind::InstanceVerify | TaskKind::InstanceDamageRecover => {
             crate::require_instance_job(shared)?;
             if shared.launcher_updates.busy() {
                 return Err("请等待启动器更新结束后检查实例依赖".into());
@@ -99,11 +115,18 @@ pub(super) fn capture_for(
     if settings.revision != revision {
         return Err("设置已改变，请刷新后重新补全缺失文件".into());
     }
-    let (current, root) = instance_context(&shared.config, Some(root_id), id)?;
+    let (current, root) = if kind == TaskKind::InstanceDamageRecover {
+        (
+            shared.config.checked_snapshot()?,
+            shared.config.resolve(Some(root_id))?,
+        )
+    } else {
+        instance_context(&shared.config, Some(root_id), id)?
+    };
     if current.revision != settings.revision {
         return Err(CHANGED.into());
     }
-    require_files_ready(shared, &root, id)?;
+    require_files_ready(shared, &root, id, kind, None)?;
     let metadata = fs::symlink_metadata(&root.path).map_err(|error| error.to_string())?;
     if !metadata.is_dir() {
         return Err("游戏目录不是文件夹".into());
@@ -128,6 +151,7 @@ pub(super) fn capture_for(
         identity,
         factory: pcl_network::snapshot(),
         scheduler: pcl_network::download_snapshot(),
+        damage_operation: Mutex::new(None),
     })
 }
 
@@ -151,7 +175,12 @@ pub(super) fn verify_fast(
     let owner = shared.tasks.snapshot(task.id()).ok_or(CHANGED)?;
     if owner.kind != captured.kind
         || owner.root_id != captured.root.id
-        || owner.instance_id.as_deref() != Some(&captured.id)
+        || owner.instance_id.as_deref()
+            != if captured.kind == TaskKind::InstanceDamageRecover {
+                None
+            } else {
+                Some(captured.id.as_str())
+            }
         || owner.stage.is_terminal()
     {
         return Err(CHANGED.into());
@@ -191,7 +220,13 @@ pub(super) fn verify(
     {
         return Err(CHANGED.into());
     }
-    require_files_ready(shared, &root, &captured.id)?;
+    require_files_ready(
+        shared,
+        &root,
+        &captured.id,
+        captured.kind,
+        captured.damage_operation.lock().unwrap().as_deref(),
+    )?;
     let _operation = shared.operations.lock().unwrap();
     verify_fast(shared, captured, task)?;
     shared.config.ensure_writable()?;

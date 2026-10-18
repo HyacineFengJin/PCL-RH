@@ -22,6 +22,7 @@ fn ready(shared: &Shared, root: &GameRoot) -> Result<(), String> {
     crate::instance_reset::ensure_ready(path)?;
     crate::instance_rename::ensure_ready(path)?;
     instance_import::ensure_ready(path)?;
+    pcl_install::DamageRepair::ensure_ready(path)?;
     instance_delete::ensure_ready(path)
 }
 

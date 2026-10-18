@@ -7,7 +7,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-fn fixture(missing: bool, supported: bool) -> (Fixture, Arc<Shared>, PreparedLaunch) {
+pub(super) fn fixture(missing: bool, supported: bool) -> (Fixture, Arc<Shared>, PreparedLaunch) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../work/launch-readiness-2026-10-18/preparation-tests")
         .join(format!(
@@ -65,7 +65,7 @@ fn fixture(missing: bool, supported: bool) -> (Fixture, Arc<Shared>, PreparedLau
     (fixture, shared, prepared)
 }
 
-fn repaired() -> MissingRepairReport {
+pub(super) fn repaired() -> MissingRepairReport {
     MissingRepairReport {
         id: "fixture".into(),
         files_downloaded: 1,
@@ -234,7 +234,7 @@ fn a_cancelled_preparation_does_not_poison_the_next_healthy_generation() {
         IsolationPolicy::Automatic,
     )
     .unwrap();
-    assert_eq!(next.prepare_with(&shared, || Ok(5)).unwrap(), 5);
+    assert_eq!(next.prepare_files_with(&shared, || Ok(5)).unwrap(), 5);
     assert!(next.authorize(&shared).is_ok());
     assert!(prepared.authorize(&shared).is_err());
 }
@@ -242,7 +242,7 @@ fn a_cancelled_preparation_does_not_poison_the_next_healthy_generation() {
 #[test]
 fn a_real_healthy_plan_failure_survives_a_concurrent_stop() {
     let (_fixture, shared, prepared) = fixture(false, true);
-    let result: Result<(), String> = prepared.prepare_with(&shared, || {
+    let result: Result<(), String> = prepared.prepare_files_with(&shared, || {
         launcher_monitor_runtime::request_stop(&shared).unwrap();
         Err("synthetic Java failure".into())
     });

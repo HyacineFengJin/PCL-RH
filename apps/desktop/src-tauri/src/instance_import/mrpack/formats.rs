@@ -457,7 +457,11 @@ fn scan(
             .checked_add(size)
             .filter(|n| *n <= DECODED_BYTES.min(decoded_limit))
             .ok_or("整合包解压内容超过 16 GiB 限制")?;
-        let bytes = if !directory && metadata_path(&path) {
+        let foreign = super::foreign::archive_candidate(&path);
+        if foreign && size > super::foreign::MAX_BYTES {
+            return Err("整合包 PCL 元数据超过 64 KiB 限制".into());
+        }
+        let bytes = if !directory && (metadata_path(&path) || foreign) {
             if size > JSON_BYTES {
                 return Err("整合包单项清单或版本 JSON 超过 4 MiB 限制".into());
             }
@@ -845,11 +849,23 @@ fn layer(
     {
         return Err("整合包内容层必须是目录".into());
     }
+    let mut foreign_count = 0;
     for (archive_path, node) in &scan.nodes {
         let Some(path) = archive_path.strip_prefix(&root) else {
             continue;
         };
         if path.is_empty() || skip.contains(path) {
+            continue;
+        }
+        if scan.layout.format == Format::Modrinth && super::foreign::candidate(path, node.directory)
+        {
+            if !node.directory {
+                super::foreign::validate(
+                    path,
+                    node.bytes.as_deref().ok_or("PCL 元数据未被完整捕获")?,
+                )?;
+                foreign_count += 1;
+            }
             continue;
         }
         safe_output(path)?;
@@ -867,6 +883,11 @@ fn layer(
                 prepared.shadowed_files += 1;
             }
         }
+    }
+    if foreign_count > 0 {
+        prepared
+            .warnings
+            .push(super::foreign::warning(foreign_count));
     }
     Ok(())
 }
@@ -937,6 +958,16 @@ fn modrinth(scan: &Scan, optional_paths: Option<&[String]>) -> Result<PreparedAr
     let mut server_count = 0;
     for (path, node) in &scan.nodes {
         if let Some(path) = path.strip_prefix(&server) {
+            if super::foreign::candidate(path, node.directory) {
+                if !node.directory {
+                    super::foreign::validate(
+                        path,
+                        node.bytes.as_deref().ok_or("PCL 元数据未被完整捕获")?,
+                    )?;
+                    server_count += 1;
+                }
+                continue;
+            }
             safe_output(path)?;
             if !node.directory {
                 server_count += 1;

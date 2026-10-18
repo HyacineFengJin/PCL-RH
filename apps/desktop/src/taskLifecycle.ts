@@ -21,7 +21,10 @@ export function taskHasFloatingEntry(status: DownloadStatus): boolean {
   return (
     taskIsActive(status) ||
     status.stage === "error" ||
-    (status.kind === "instance_verify" && status.stage === "complete")
+    (["instance_verify", "instance_damage_repair"].includes(
+      status.kind || "",
+    ) &&
+      status.stage === "complete")
   );
 }
 /** Resource lists change at a writer's terminal boundary, including partial
@@ -50,7 +53,13 @@ export function taskNeedsBootstrap(
 ): boolean {
   // Repair publishes verified files individually. Cancellation or a later
   // failure can still leave useful files in the submitted root.
-  if (task.kind === "instance_repair")
+  if (
+    [
+      "instance_repair",
+      "instance_damage_repair",
+      "instance_damage_recover",
+    ].includes(task.kind || "")
+  )
     return (
       !!currentRoot && taskIsTerminal(task) && task.root_id === currentRoot
     );
@@ -249,7 +258,10 @@ export class TaskPageOwner {
       tasks.some(
         (task) =>
           task.stage === "error" ||
-          (task.kind === "instance_verify" && task.stage === "complete"),
+          (["instance_verify", "instance_damage_repair"].includes(
+            task.kind || "",
+          ) &&
+            task.stage === "complete"),
       ) ||
       (!this.outcomes.size && !this.historyRetired)
     )

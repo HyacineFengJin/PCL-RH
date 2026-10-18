@@ -18,8 +18,19 @@ import {
 } from "./taskLifecycle";
 import "./task-manager.css";
 import { IntegrityResult } from "./IntegrityResult";
+import { DamageRepairResult } from "./DamageRepairResult";
 function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
   if (kind === "instance_verify") return t("integrity.step");
+  if (kind === "instance_damage_repair") {
+    return t(
+      step.id === "damage-download"
+        ? "damage.download"
+        : step.id === "damage-commit"
+          ? "damage.commit"
+          : "damage.check",
+    );
+  }
+  if (kind === "instance_damage_recover") return t("damage.recover");
   if (kind === "instance_repair") {
     switch (step.id) {
       case "repair-check":
@@ -89,6 +100,8 @@ const taskActionMessages: Partial<
   instance_reset: "ui.reset",
   instance_repair: "inspection.repair",
   instance_verify: "integrity.open",
+  instance_damage_repair: "damage.open",
+  instance_damage_recover: "damage.recover",
   instance_export: "nav.export",
   instance_rename: "ui.rename",
   instance_import: "ui.import",
@@ -179,6 +192,7 @@ export function TaskStatistics({
           speed === null ||
           status.kind === "instance_export" ||
           status.kind === "instance_verify" ||
+          status.kind === "instance_damage_recover" ||
           status.kind === "instance_rename" ||
           status.kind === "instance_import" ||
           status.kind === "instance_delete" ||
@@ -294,7 +308,9 @@ function TaskCard({
       latest.current.api !== api ||
       !(
         latest.current.status.stage === "error" ||
-        (latest.current.status.kind === "instance_verify" &&
+        (["instance_verify", "instance_damage_repair"].includes(
+          latest.current.status.kind || "",
+        ) &&
           latest.current.status.stage === "complete")
       )
     )
@@ -307,11 +323,16 @@ function TaskCard({
   const action = instanceTaskAction(status.kind);
   const reviewable =
     status.stage === "error" ||
-    (status.kind === "instance_verify" && status.stage === "complete");
+    (["instance_verify", "instance_damage_repair"].includes(
+      status.kind || "",
+    ) &&
+      status.stage === "complete");
   const dismissLabel = t(
-    status.kind === "instance_verify" && status.stage === "complete"
-      ? "integrity.dismiss"
-      : "task.dismiss",
+    status.kind === "instance_damage_repair" && status.stage === "complete"
+      ? "damage.dismiss"
+      : status.kind === "instance_verify" && status.stage === "complete"
+        ? "integrity.dismiss"
+        : "task.dismiss",
   );
   const cancelAction =
     status.kind === "resource_download" ? t("task.resourceDownload") : action;
@@ -405,28 +426,51 @@ function TaskCard({
                       ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
-    : status.kind === "instance_verify"
-      ? [
-          {
-            id: "integrity-verify",
-            label: t("integrity.step"),
-            state: status.stage === "complete" ? "complete" : "running",
-          },
-        ]
-      : status.kind === "instance_repair"
-        ? repairFallbackSteps(status)
-        : status.kind === "java_install"
-          ? javaFallbackSteps(status)
-          : fallbackLabels.map((label, index) => ({
-              id: `legacy-${index}`,
-              label,
-              state:
-                status.stage === "complete"
-                  ? "complete"
-                  : active && status.stage !== "queued" && index === current
-                    ? "running"
-                    : "pending",
-            }));
+    : status.kind === "instance_damage_repair"
+      ? ["damage-check", "damage-download", "damage-commit"].map(
+          (id, index, phases) => ({
+            id,
+            label: "",
+            state:
+              status.stage === "complete" ||
+              index < phases.indexOf(status.phase || "damage-check")
+                ? ("complete" as const)
+                : index ===
+                    Math.max(0, phases.indexOf(status.phase || "damage-check"))
+                  ? ("running" as const)
+                  : ("pending" as const),
+          }),
+        )
+      : status.kind === "instance_damage_recover"
+        ? [
+            {
+              id: "damage-recover",
+              label: t("damage.recover"),
+              state: status.stage === "complete" ? "complete" : "running",
+            },
+          ]
+        : status.kind === "instance_verify"
+          ? [
+              {
+                id: "integrity-verify",
+                label: t("integrity.step"),
+                state: status.stage === "complete" ? "complete" : "running",
+              },
+            ]
+          : status.kind === "instance_repair"
+            ? repairFallbackSteps(status)
+            : status.kind === "java_install"
+              ? javaFallbackSteps(status)
+              : fallbackLabels.map((label, index) => ({
+                  id: `legacy-${index}`,
+                  label,
+                  state:
+                    status.stage === "complete"
+                      ? "complete"
+                      : active && status.stage !== "queued" && index === current
+                        ? "running"
+                        : "pending",
+                }));
   async function cancel() {
     if (
       !native ||
@@ -603,6 +647,9 @@ function TaskCard({
           )}
         </details>
       )}
+      {status.kind === "instance_damage_repair" &&
+        (status.stage === "complete" || status.stage === "error") &&
+        status.result && <DamageRepairResult result={status.result} />}
       {status.kind === "instance_verify" && status.stage === "complete" && (
         <IntegrityResult result={status.result} />
       )}
@@ -660,6 +707,7 @@ export function useAggregateDownloadSpeed(tasks: readonly DownloadStatus[]) {
           "resource_operation",
           "instance_export",
           "instance_verify",
+          "instance_damage_recover",
           "instance_rename",
           "instance_import",
           "instance_delete",

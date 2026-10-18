@@ -56,6 +56,7 @@ pub(crate) fn require_root_removable(shared: &Shared, id: &str) -> Result<(), St
     // An accessible root can still own unpublished files or recoverable deleted
     // instances. Preserve those checks, including invalid/unreadable journals.
     resource_ops::ensure_verified_batches_ready(&path)?;
+    pcl_install::DamageRepair::ensure_ready(&path)?;
     if !crate::instance_delete::reserved_names(&path)?.is_empty() {
         return Err("此游戏目录仍有已删除实例，请先恢复它们后再移除目录登记".into());
     }

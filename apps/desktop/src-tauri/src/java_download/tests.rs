@@ -622,9 +622,15 @@ async fn cancellation_while_waiting_for_transfer_never_sends_payload_request() {
         cancel.store(true, Ordering::SeqCst);
     });
     assert_eq!(
-        http.file(&source(b"java", "java"), &mut out, &token, |_| {})
-            .await
-            .unwrap_err(),
+        http.file(
+            &source(b"java", "java"),
+            &mut out,
+            &token,
+            &|| Ok(()),
+            |_| {}
+        )
+        .await
+        .unwrap_err(),
         CANCELLED
     );
     setter.join().unwrap();
@@ -632,4 +638,150 @@ async fn cancellation_while_waiting_for_transfer_never_sends_payload_request() {
     assert_eq!(scheduler.status().active_transfers, 0);
     assert_eq!(scheduler.status().queued_transfers, 0);
     assert_eq!(out.metadata().unwrap().len(), 0);
+}
+
+fn auto_fixture() -> Fixture {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../work/launch-readiness-2026-10-18/auto-java-tests")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    fs::create_dir_all(path.join("Minecraft/.minecraft")).unwrap();
+    Fixture(path.canonicalize().unwrap())
+}
+
+#[tokio::test]
+async fn recommended_java8_uses_the_official_managed_installation_engine() {
+    let fixture = auto_fixture();
+    let store = Store::capture(&fixture.0).unwrap();
+    let tasks = Arc::new(Tasks::new());
+    let task = task(&tasks, &store);
+    let java = script(8, std::env::consts::ARCH);
+    let manifest = plan(&java);
+    let mut package = package(&manifest);
+    package.major = 8;
+    package.version = "1.8.0_451".into();
+    package.component = "jre-legacy".into();
+    let all = catalog_body(&[package]);
+    let metadata = serde_json::to_vec(&manifest).unwrap();
+    let server = Server::new(move |path| {
+        (
+            "200 OK".into(),
+            if path.ends_with("all.json") {
+                all.clone()
+            } else if path.ends_with("manifest.json") {
+                metadata.clone()
+            } else if path.ends_with("/java") {
+                java.clone()
+            } else {
+                b"license".to_vec()
+            },
+        )
+    });
+    let scheduler = pcl_network::DownloadScheduler::new(Default::default()).unwrap();
+    let result = install_recommended_guarded(
+        &store,
+        8,
+        server.http(scheduler),
+        &task,
+        &|| Ok(()),
+        &|| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.runtime.major, 8);
+    assert_eq!(
+        pcl_core::java::managed_runtime_paths(&fixture.0),
+        [result.path]
+    );
+    task.finish(TaskOutcome::Complete {
+        result: None,
+        message: "fixture".into(),
+        error: None,
+    });
+}
+
+#[tokio::test]
+async fn automatic_java_binding_guard_cleans_unpublished_runtime() {
+    let fixture = auto_fixture();
+    let store = Store::capture(&fixture.0).unwrap();
+    let tasks = Arc::new(Tasks::new());
+    let task = task(&tasks, &store);
+    let java = script(21, std::env::consts::ARCH);
+    let manifest = plan(&java);
+    let package = package(&manifest);
+    let all = catalog_body(&[package.clone()]);
+    let metadata = serde_json::to_vec(&manifest).unwrap();
+    let changed = Arc::new(AtomicBool::new(false));
+    let server_changed = changed.clone();
+    let server = Server::new(move |path| {
+        if path.ends_with("/java") {
+            server_changed.store(true, Ordering::SeqCst);
+        }
+        (
+            "200 OK".into(),
+            if path.ends_with("all.json") {
+                all.clone()
+            } else if path.ends_with("manifest.json") {
+                metadata.clone()
+            } else if path.ends_with("/java") {
+                java.clone()
+            } else {
+                b"license".to_vec()
+            },
+        )
+    });
+    let scheduler = pcl_network::DownloadScheduler::new(Default::default()).unwrap();
+    let result = install_guarded(
+        &store,
+        &package.component,
+        &package.sha1,
+        server.http(scheduler),
+        &task,
+        &|| Ok(()),
+        &|| {
+            if changed.load(Ordering::SeqCst) {
+                Err("synthetic Java binding invalid".into())
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await;
+    assert_eq!(result.err().unwrap(), "synthetic Java binding invalid");
+    assert!(pcl_core::java::managed_runtime_paths(&fixture.0).is_empty());
+    assert_eq!(store.dir.names().unwrap(), [".java-install.lock"]);
+    task.finish(TaskOutcome::Error("fixture binding invalid".into()));
+}
+
+#[tokio::test]
+async fn recommended_java_never_substitutes_a_higher_major() {
+    let fixture = auto_fixture();
+    let store = Store::capture(&fixture.0).unwrap();
+    let tasks = Arc::new(Tasks::new());
+    let task = task(&tasks, &store);
+    let package = package(&plan(&script(21, std::env::consts::ARCH)));
+    let all = catalog_body(&[package]);
+    let server = Server::new(move |path| {
+        assert!(path.ends_with("all.json"));
+        ("200 OK".into(), all.clone())
+    });
+    let scheduler = pcl_network::DownloadScheduler::new(Default::default()).unwrap();
+    let result = install_recommended_guarded(
+        &store,
+        8,
+        server.http(scheduler),
+        &task,
+        &|| Ok(()),
+        &|| Ok(()),
+    )
+    .await;
+    assert!(result.err().unwrap().contains("Java 8"));
+    assert!(pcl_core::java::managed_runtime_paths(&fixture.0).is_empty());
+    task.finish(TaskOutcome::Error("fixture unavailable major".into()));
 }

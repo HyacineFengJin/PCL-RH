@@ -7,8 +7,8 @@ mod components;
 mod network;
 mod repair;
 pub use repair::{
-    IntegrityCheck, IntegrityProblem, IntegrityProblemKind, IntegrityReport, MissingRepair,
-    MissingRepairReport, RepairUnsupported,
+    DamageRecoveryReport, DamageRepair, DamageRepairReport, IntegrityCheck, IntegrityProblem,
+    IntegrityProblemKind, IntegrityReport, MissingRepair, MissingRepairReport, RepairUnsupported,
 };
 mod resolved;
 pub use resolved::ResolvedInstallRequest;

@@ -169,6 +169,7 @@ type State = {
   rename_recovery_error?: string | null;
   rename_recovery_root_id?: string | null;
   import_recovery_error?: string | null;
+  damage_recovery_error?: string | null;
   resource_install_recovery_error?: string | null;
   delete_recovery_error?: string | null;
   delete_recovery_root_id?: string | null;
@@ -191,6 +192,8 @@ const resourceWrites = new Set([
   "instance_reset_start",
   "instance_repair_start",
   "instance_verify_start",
+  "instance_damage_repair_start",
+  "instance_damage_recover",
   "instance_reset_recover",
   "instance_rename_start",
   "instance_rename_recover",
@@ -218,6 +221,8 @@ const rootCommands = new Set([
   "launch_failure_ai_start",
   "instance_repair_start",
   "instance_verify_start",
+  "instance_damage_repair_start",
+  "instance_damage_recover",
   "open_folder",
   "instance_resources",
   "local_resource_info_export",
@@ -904,7 +909,10 @@ function App() {
       !current ||
       !(
         current.stage === "error" ||
-        (current.kind === "instance_verify" && current.stage === "complete")
+        (["instance_verify", "instance_damage_repair"].includes(
+          current.kind || "",
+        ) &&
+          current.stage === "complete")
       ) ||
       !current.task_id
     )
@@ -1137,7 +1145,7 @@ function App() {
     if (currentScreen !== "tasks") setTaskOrigin(currentScreen);
     setScreen("tasks");
   }
-  async function showInstanceTask(id: string) {
+  async function showInstanceTask(id: string, reveal = true) {
     if (!id) return;
     const capturedRoot = contextKey.current,
       capturedNavigation = taskNavigation.current.epoch,
@@ -1153,6 +1161,7 @@ function App() {
     )
       return;
     if (
+      reveal &&
       contextKey.current === capturedRoot &&
       taskNavigation.current.epoch === capturedNavigation
     )
@@ -1218,6 +1227,29 @@ function App() {
       notify(String(e));
     } finally {
       setResourceTarget((current) => (current === target ? null : current));
+    }
+  }
+  async function recoverDamage() {
+    if (
+      !native ||
+      archiveAdmission.current.blocked ||
+      !rootId ||
+      !data ||
+      !data.damage_recovery_error
+    )
+      return;
+    const epoch = taskNavigation.current.epoch;
+    const key = contextKey.current;
+    try {
+      const task = await rootApi<{ id: string }>("instance_damage_recover", {
+        revision: data.settings.revision,
+      });
+      showInstanceTask(
+        task.id,
+        key === contextKey.current && epoch === taskNavigation.current.epoch,
+      );
+    } catch (error) {
+      notify(String(error));
     }
   }
   async function recoverInstanceArchives(kind: "import" | "delete") {
@@ -1771,6 +1803,7 @@ function App() {
     !!data?.rename_recovery_error ||
     !!data?.reset_recovery_error ||
     !!data?.import_recovery_error ||
+    !!data?.damage_recovery_error ||
     !!data?.delete_recovery_error ||
     !!data?.resource_install_recovery_error;
   // Reading a stable log is useful while the game is running. Only preparation,
@@ -1790,6 +1823,7 @@ function App() {
       rootAvailable &&
       !data?.rename_recovery_error &&
       !data?.reset_recovery_error &&
+      !data?.damage_recovery_error &&
       !data?.delete_recovery_error &&
       !data?.resource_install_recovery_error &&
       (!data?.import_recovery_error ||
@@ -2647,6 +2681,23 @@ function App() {
                 ) : null}
               </aside>
               <main className="content" ref={contentRef}>
+                {data.damage_recovery_error && screen !== "tasks" && (
+                  <section className="error-banner" role="alert">
+                    <TriangleAlert size={17} />
+                    <span>{data.damage_recovery_error}</span>
+                    <button
+                      className="ce-button"
+                      disabled={
+                        !native ||
+                        archiveAdmission.current.blocked ||
+                        !rootAvailable
+                      }
+                      onClick={() => void recoverDamage()}
+                    >
+                      {t("damage.recover")}
+                    </button>
+                  </section>
+                )}
                 {data.import_recovery_error && screen !== "tasks" && (
                   <section className="error-banner" role="alert">
                     <TriangleAlert size={17} />

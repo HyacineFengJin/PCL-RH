@@ -20,6 +20,7 @@ pub(super) struct ArchiveScan {
     pub directories: BTreeSet<String>,
     pub server_files: usize,
     pub ignored_files: usize,
+    pub foreign_files: usize,
 }
 pub(super) fn validate_outputs(
     files: &BTreeSet<String>,
@@ -62,6 +63,7 @@ pub(super) fn scan_cancellable(
     let mut index_bytes = None;
     let mut server_files = 0;
     let mut ignored_files = 0;
+    let mut foreign_files = 0;
     let mut total = 0u64;
     let mut path_bytes = 0usize;
     for i in 0..zip.len() {
@@ -119,14 +121,23 @@ pub(super) fn scan_cancellable(
         {
             return Err("mrpack 覆盖层必须是目录".into());
         }
+        let foreign = layer.is_some_and(|(output, _, _)| foreign::candidate(output, directory));
         if let Some((output, _, server)) = layer {
-            manifest::output_path(output)?;
-            if directory && !server {
-                directories.insert(output.into());
+            if !foreign {
+                manifest::output_path(output)?;
+                if directory && !server {
+                    directories.insert(output.into());
+                }
             }
         }
         let size = entry.size();
-        let limit = if path == INDEX { MAX_INDEX } else { MAX_ENTRY };
+        let limit = if path == INDEX {
+            MAX_INDEX
+        } else if foreign {
+            foreign::MAX_BYTES
+        } else {
+            MAX_ENTRY
+        };
         if size > limit
             || (directory && size != 0)
             || (size > 1024 * 1024 && size > entry.compressed_size().max(1).saturating_mul(1024))
@@ -154,7 +165,7 @@ pub(super) fn scan_cancellable(
                 .filter(|s| *s <= size && *s <= limit)
                 .ok_or("mrpack ZIP 实际解压大小超过声明")?;
             hash.update(&buffer[..n]);
-            if path == INDEX {
+            if path == INDEX || foreign {
                 bytes.extend_from_slice(&buffer[..n]);
             }
         }
@@ -166,6 +177,11 @@ pub(super) fn scan_cancellable(
                 return Err("mrpack 根清单必须是普通文件".into());
             }
             index_bytes = Some(bytes);
+        } else if foreign {
+            if !directory {
+                foreign::validate(layer.unwrap().0, &bytes)?;
+                foreign_files += 1;
+            }
         } else if !directory {
             match layer {
                 Some((_, _, true)) => server_files += 1,
@@ -205,5 +221,6 @@ pub(super) fn scan_cancellable(
         directories,
         server_files,
         ignored_files,
+        foreign_files,
     })
 }

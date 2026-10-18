@@ -61,6 +61,19 @@ fn file_readiness_reports_missing_index_without_guessing_objects() {
     assert!(report.missing_files[0].ends_with("assets/indexes/fixture.json"));
     assert!(!fixture.root().join("assets").exists());
 }
+
+#[test]
+fn pure_java_requirement_captures_recommended_major_exact_policy_and_metadata() {
+    let fixture = readiness_fixture();
+    fixture.complete();
+    let vanilla = java_requirement(fixture.root(), "Example").unwrap();
+    assert_eq!((vanilla.major, vanilla.exact), (21, false));
+    fixture.instance("Example",json!({"id":"Example","mainClass":"Main","javaVersion":{"majorVersion":8},"libraries":[{"name":"net.minecraftforge:forge:1.12.2-14.23.5.2860"}]}));
+    let forge = java_requirement(fixture.root(), "Example").unwrap();
+    assert_eq!((forge.major, forge.exact), (8, true));
+    assert_ne!(forge, vanilla);
+    assert!(!fixture.root().join(".pcl-linux").exists());
+}
 impl Fixture {
     fn new() -> Self {
         let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/core-inspection-tests");

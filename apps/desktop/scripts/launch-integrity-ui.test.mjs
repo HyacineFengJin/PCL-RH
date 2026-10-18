@@ -496,3 +496,90 @@ test("malformed integrity projections never appear as a clean check", () => {
     ui.close();
   }
 });
+
+test("damage repair uses the actual root API, captures one admission and tracks late success", async () => {
+  const pending = deferred(),
+    calls = [],
+    events = [];
+  const scoped = rootApiFixture(async (command, args) => {
+    calls.push({ command, args });
+    return command === "inspect_instance" ? inspection() : pending.promise;
+  });
+  const ui = harness("LaunchInspection", {
+    id: "sample",
+    scopeKey: "root-a",
+    revision: "revision-a",
+    native: true,
+    disabled: false,
+    api: scoped.api,
+    onClose: () => events.push("close"),
+    onManageJava() {},
+    onTaskStart: (id, reveal) => events.push({ id, reveal }),
+  });
+  await ui.flush();
+  const start = button(ui, "damage.open").props.onClick;
+  start();
+  start();
+  await ui.flush();
+  assert.deepEqual(calls[1], {
+    command: "instance_damage_repair_start",
+    args: { id: "sample", revision: "revision-a", rootId: "root-a" },
+  });
+  assert.equal(calls.length, 2);
+  labelled(ui, "inspection.close").props.onClick();
+  ui.close();
+  pending.resolve({ id: "damage-task" });
+  await ui.flush();
+  assert.deepEqual(events, ["close", { id: "damage-task", reveal: false }]);
+  assert.deepEqual(scoped.events, [{ id: "root-a" }, null]);
+});
+
+test("completed damage repair stays readable and refreshes dependencies until explicitly dismissed", () => {
+  const done = task({ kind: "instance_damage_repair" }),
+    { TaskPageOwner, taskHasFloatingEntry, taskNeedsBootstrap } =
+      lifecycle.exports;
+  const owner = new TaskPageOwner();
+  owner.open({ ...done, stage: "processing" });
+  assert.equal(owner.takeCompletion([done]), false);
+  assert.equal(taskHasFloatingEntry(done), true);
+  assert.equal(taskNeedsBootstrap(done, "root-a"), true);
+  const dismissed = { current: new Set() };
+  mainDismiss(
+    { snapshot: { current: { tasks: [done] } } },
+    dismissed,
+    () => {},
+  )(done);
+  assert.equal(dismissed.current.has(done.task_id), true);
+  assert.equal(owner.takeCompletion([]), true);
+});
+
+test("damage result describes original backups and incomplete coverage in both languages", () => {
+  const result = {
+    id: "sample",
+    operation_id: "d-fixture",
+    backup_directory: ".pcl-linux/dependency-repairs/d-fixture",
+    files_repaired: 2,
+    files_already_valid: 5,
+    files_missing: 3,
+    unsupported_total: 1,
+    unsupported: [
+      { path: "libraries/unknown.jar", reason: "no verified download" },
+    ],
+    assets_enumerated: false,
+  };
+  const ui = harness("DamageRepairResult", { result });
+  for (const language of ["zh-CN", "en-US"]) {
+    const tr = ui.i18n.createTranslator({ language, region: language });
+    ui.i18n.t = tr.t;
+    ui.i18n.formatNumber = tr.formatNumber;
+    ui.replace({});
+    const text = content(ui.tree);
+    assert.ok(text.includes(result.backup_directory));
+    assert.ok(text.includes("libraries/unknown.jar"));
+    assert.ok(text.includes(tr.t("damage.missingHelp")));
+    assert.ok(text.includes(tr.t("integrity.coverage")));
+  }
+  ui.replace({ result: { ...result, files_repaired: -1 } });
+  assert.ok(content(ui.tree).includes(ui.i18n.t("damage.unavailable")));
+  ui.close();
+});

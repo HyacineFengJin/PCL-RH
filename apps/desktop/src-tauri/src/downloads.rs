@@ -159,10 +159,13 @@ impl Downloads {
         if !matches!(
             snapshot.kind,
             TaskKind::Install
+                | TaskKind::JavaInstall
                 | TaskKind::ModpackInstall
                 | TaskKind::ModpackPrepare
                 | TaskKind::InstanceRepair
                 | TaskKind::InstanceVerify
+                | TaskKind::InstanceDamageRepair
+                | TaskKind::InstanceDamageRecover
                 | TaskKind::InstanceReset
                 | TaskKind::InstanceExport
                 | TaskKind::InstanceRename
@@ -319,11 +322,12 @@ impl Downloads {
             | "component_main"
             | "component_libraries"
             | "game_libraries" => TaskStage::Downloading,
-            "repair-download" => TaskStage::Downloading,
+            "repair-download" | "damage-download" => TaskStage::Downloading,
             "pack-files" | "processing" | "installing" | "component_install"
             | "component_analyze" | "publishing" | "complete" | "game_install" | "game_support"
             | "reset_commit" | "reset_merge" | "export-archive" | "export-finalize"
-            | "repair-verify" | "integrity-verify" => TaskStage::Processing,
+            | "repair-verify" | "integrity-verify" | "damage-check" | "damage-commit"
+            | "damage-recover" => TaskStage::Processing,
             _ => TaskStage::Preparing,
         };
         let (phase, message) = if progress.stage == "complete" {
@@ -427,6 +431,9 @@ mod tests {
     #[test]
     fn instance_job_projection_and_cancel_target_are_scoped() {
         for kind in [
+            TaskKind::JavaInstall,
+            TaskKind::InstanceDamageRepair,
+            TaskKind::InstanceDamageRecover,
             TaskKind::InstanceVerify,
             TaskKind::InstanceReset,
             TaskKind::InstanceExport,

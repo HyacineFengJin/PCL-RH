@@ -130,6 +130,7 @@ impl Http {
         source: &super::catalog::Download,
         target: &mut File,
         cancel: &AtomicBool,
+        guard: &impl Fn() -> Result<()>,
         mut progress: impl FnMut(u64),
     ) -> Result<()> {
         let deadline = Instant::now()
@@ -140,9 +141,11 @@ impl Http {
                     1800
                 },
             );
+        guard()?;
         let _permit = wait(cancel, deadline, self.scheduler.acquire(cancel))
             .await?
             .map_err(cancel_error)?;
+        guard()?;
         let mut response = self.response(&source.url, cancel).await?;
         if response.content_length().is_some_and(|n| n != source.size) {
             return Err("Java 文件声明大小不匹配".into());
@@ -169,6 +172,7 @@ impl Http {
                 .await?
                 .map_err(cancel_error)?;
                 check(cancel)?;
+                guard()?;
                 target
                     .write_all(bytes)
                     .map_err(|e| format!("无法写入 Java 暂存文件：{e}"))?;

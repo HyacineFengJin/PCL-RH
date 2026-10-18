@@ -4,6 +4,8 @@
 //! never from an inspection report or a UI path. The missing-only writer does
 //! not validate or replace existing contents. IntegrityCheck hashes existing
 //! declared dependencies separately. No install processors or Java run here.
+//! DamageRepair separately authorizes verified replacements with persistent
+//! original backups and explicit interrupted-transaction recovery.
 //!
 //! State flow: capture version/index bytes and directory identities -> validate
 //! -> fetch a missing verified index into memory -> enumerate objects -> fetch
@@ -26,6 +28,9 @@ use std::{
 #[path = "integrity.rs"]
 mod integrity;
 pub use integrity::{IntegrityCheck, IntegrityProblem, IntegrityProblemKind, IntegrityReport};
+#[path = "damage_repair.rs"]
+mod damage_repair;
+pub use damage_repair::{DamageRecoveryReport, DamageRepair, DamageRepairReport};
 
 const MAX_VERSION_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_VERSION_TOTAL: u64 = 32 * 1024 * 1024;
@@ -240,7 +245,8 @@ impl RepairState {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Stamp {
     dev: u64,
     ino: u64,
@@ -686,7 +692,7 @@ impl RepairProgress {
 fn validate(
     state: &RepairState,
     cancel: &AtomicBool,
-    full: &(impl Fn() -> Result<()> + Send + Sync),
+    full: &(impl Fn() -> Result<()> + Send + Sync + ?Sized),
     bytes: bool,
 ) -> Result<()> {
     check(cancel)?;

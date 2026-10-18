@@ -21,6 +21,8 @@ use std::{
 mod archive;
 #[path = "mrpack/curseforge.rs"]
 mod curseforge;
+#[path = "mrpack/foreign.rs"]
+mod foreign;
 #[path = "mrpack/formats.rs"]
 mod formats;
 #[path = "mrpack/manifest.rs"]
@@ -572,6 +574,9 @@ fn build(
         file.overridden = matches!(outputs.get(&file.path), Some(Output::Override(_)));
     }
     let mut warnings = vec!["此计划仅用于本地预览；未连接网络，尚未核实游戏和加载器版本".into()];
+    if scan.foreign_files > 0 {
+        warnings.push(foreign::warning(scan.foreign_files));
+    }
     if scan.server_files > 0 {
         warnings.push(format!(
             "忽略 {} 个 server-overrides 文件；客户端不应用该层",

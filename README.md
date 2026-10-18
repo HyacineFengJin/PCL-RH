@@ -23,10 +23,10 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 实例删除移入可恢复区域，保留实例资料，并支持恢复原目录。
 - 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
 - 多游戏目录登记、切换、排序与显示名称管理，使用系统文件夹选择器。
-- Mojang 官方 Java 运行时下载、校验与任务取消，Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例内存设置。
+- Mojang 官方 Java 运行时下载、校验与任务取消，启动缺少适用 Java 时自动下载、Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例内存设置。
 - 版本继承、依赖库解析；启动核心支持 Windows／Linux／macOS 平台规则和原生库分类。
 - 启动环境检查与缺失依赖补全，校验新下载文件并保留已有内容；无法自动补全的项目提供清单。
-- 启动前自动补全缺失依赖、已有依赖完整性检查、游戏进程与退出状态管理、崩溃预分析、报告导出及 AI 诊断。
+- 启动前自动补全缺失依赖、已有依赖完整性检查与带原件备份的损坏修复、游戏进程与退出状态管理、崩溃预分析、报告导出及 AI 诊断。
 - PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
 - Microsoft 正版登录、系统密钥环保存登录、自动获取头像和当前披风。[账号说明](docs/AUTHENTICATION.md)。
 - 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
@@ -85,7 +85,7 @@ npm run dev --prefix apps/desktop
 
 ## English
 
-PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Mojang Java runtimes can be downloaded and verified from Settings. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
+PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Mojang Java runtimes can be downloaded and verified from Settings, or acquired automatically when an automatic launch selection has no compatible Java. Damaged dependencies can be explicitly repaired with original-file backups. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
 
 Windows and macOS adaptation has started in the portable core. Complete desktop builds for those platforms are not yet available; see [platform support](docs/PLATFORMS.md) for the implemented scope and independent core checks.
 

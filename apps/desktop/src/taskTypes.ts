@@ -27,6 +27,17 @@ export type FileIntegrityResult = {
     reason: string;
   }[];
 };
+export type DamageRepairResult = {
+  id: string;
+  operation_id: string;
+  backup_directory: string;
+  files_repaired: number;
+  files_already_valid: number;
+  files_missing: number;
+  unsupported_total: number;
+  unsupported: { path: string; reason: string }[];
+  assets_enumerated: boolean;
+};
 export type DownloadStatus = {
   kind?:
     | "install"
@@ -36,6 +47,8 @@ export type DownloadStatus = {
     | "instance_reset"
     | "instance_repair"
     | "instance_verify"
+    | "instance_damage_repair"
+    | "instance_damage_recover"
     | "instance_export"
     | "instance_rename"
     | "instance_import"
@@ -83,6 +96,8 @@ export type DownloadStatus = {
       }
     | FileRepairResult
     | FileIntegrityResult
+    | DamageRepairResult
+    | { recovered: number }
     | null;
 };
 export const idleDownload: DownloadStatus = {

@@ -30,6 +30,7 @@ mod java_service;
 mod launcher_asset_commands;
 mod launcher_assets;
 mod launcher_commands;
+mod launcher_damage;
 mod launcher_delay;
 mod launcher_discovery;
 mod launcher_discovery_commands;
@@ -203,6 +204,7 @@ struct Bootstrap {
     scan_error: Option<String>,
     reset_recovery_error: Option<String>,
     import_recovery_error: Option<String>,
+    damage_recovery_error: Option<String>,
     resource_install_recovery_error: Option<String>,
     delete_recovery_error: Option<String>,
     delete_recovery_root_id: Option<String>,
@@ -322,6 +324,18 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             Err(error) => (Some(error), None),
         }
     };
+    let damage_recovery_error = if running.iter().any(|task| {
+        matches!(
+            task.kind,
+            tasks::TaskKind::InstanceDamageRepair | tasks::TaskKind::InstanceDamageRecover
+        ) && task.root_id == settings.root_id
+    }) {
+        None
+    } else {
+        canonical
+            .as_ref()
+            .and_then(|path| pcl_install::DamageRepair::ensure_ready(path).err())
+    };
     let import_recovery_error = if running.iter().any(|task| {
         task.kind == tasks::TaskKind::InstanceImport && task.root_id == settings.root_id
     }) {
@@ -384,6 +398,7 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
         scan_error,
         reset_recovery_error,
         import_recovery_error,
+        damage_recovery_error,
         resource_install_recovery_error,
         delete_recovery_error,
         delete_recovery_root_id,
@@ -804,6 +819,13 @@ fn require_network_submission(s: &Shared) -> Result<(), String> {
 }
 
 fn ensure_instance_files_ready(s: &Shared, root: &GameRoot) -> Result<(), String> {
+    ensure_instance_files_ready_without_damage(s, root)?;
+    pcl_install::DamageRepair::ensure_ready(Path::new(&root.path))
+}
+
+// Repair workers apply their own exact operation exception after this common
+// guard. Ordinary callers must use ensure_instance_files_ready instead.
+fn ensure_instance_files_ready_without_damage(s: &Shared, root: &GameRoot) -> Result<(), String> {
     instance_rename_refs::ensure_project_ready(&s.project)?;
     instance_rename::ensure_ready(Path::new(&root.path))?;
     instance_import::ensure_ready(Path::new(&root.path))?;
@@ -1777,7 +1799,7 @@ fn launch_game(
             ..Default::default()
         },
     )?;
-    let preparation = match launcher_preparation::capture(
+    let mut preparation = match launcher_preparation::capture(
         &state,
         &id,
         &root,
@@ -1790,7 +1812,7 @@ fn launch_game(
         Err(error) => {
             let cancelled = matches!(
                 error.as_str(),
-                tasks::CANCELLED | "安装已取消" | "下载已取消"
+                tasks::CANCELLED | "安装已取消" | "下载已取消" | java_download::CANCELLED
             );
             launcher_monitor_runtime::update_current(
                 &state,
@@ -1832,33 +1854,35 @@ fn launch_game(
                     return Ok(());
                 }
                 let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
-                let plan = preparation.prepare_with(&s, || match s.accounts.identity()? {
-                    Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
-                        Path::new(&root.path),
-                        &s.project,
-                        &id,
-                        &pcl_core::OnlineIdentity {
-                            name: identity.name,
-                            uuid: identity.uuid,
-                            access_token: identity.access_token,
-                            xuid: identity.xuid,
-                            client_id: identity.client_id,
-                        },
-                        memory,
-                        java_service::effective_choice(&cfg, &root, &id),
-                        &cfg.java_paths,
-                        &game_options,
-                    ),
-                    None => pcl_core::build_launch_plan_with_options(
-                        Path::new(&root.path),
-                        &s.project,
-                        &id,
-                        &cfg.player,
-                        memory,
-                        java_service::effective_choice(&cfg, &root, &id),
-                        &cfg.java_paths,
-                        &game_options,
-                    ),
+                let plan = preparation.prepare_with(&s, &cfg, |launch_settings| {
+                    match s.accounts.identity()? {
+                        Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
+                            Path::new(&root.path),
+                            &s.project,
+                            &id,
+                            &pcl_core::OnlineIdentity {
+                                name: identity.name,
+                                uuid: identity.uuid,
+                                access_token: identity.access_token,
+                                xuid: identity.xuid,
+                                client_id: identity.client_id,
+                            },
+                            memory,
+                            java_service::effective_choice(launch_settings, &root, &id),
+                            &launch_settings.java_paths,
+                            &game_options,
+                        ),
+                        None => pcl_core::build_launch_plan_with_options(
+                            Path::new(&root.path),
+                            &s.project,
+                            &id,
+                            &cfg.player,
+                            memory,
+                            java_service::effective_choice(launch_settings, &root, &id),
+                            &launch_settings.java_paths,
+                            &game_options,
+                        ),
+                    }
                 })?;
                 if s.stop.load(Ordering::SeqCst) {
                     launcher_monitor_runtime::update_current(
@@ -1948,7 +1972,7 @@ fn launch_game(
             if let Err(error) = task() {
                 let cancelled = matches!(
                     error.as_str(),
-                    tasks::CANCELLED | "安装已取消" | "下载已取消"
+                    tasks::CANCELLED | "安装已取消" | "下载已取消" | java_download::CANCELLED
                 );
                 launcher_monitor_runtime::update_current(
                     &s,
@@ -2307,6 +2331,8 @@ fn main() {
             java_download_commands::java_download_start,
             launcher_repair_commands::instance_repair_start,
             launcher_repair_commands::instance_verify_start,
+            launcher_repair_commands::instance_damage_repair_start,
+            launcher_repair_commands::instance_damage_recover,
             launcher_failure_commands::launch_failure_report,
             launcher_failure_commands::launch_failure_export,
             launcher_failure_ai::launch_failure_ai_preview,

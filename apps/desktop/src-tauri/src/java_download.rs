@@ -95,8 +95,74 @@ pub async fn install(
     http: network::Http,
     task: &TaskHandle,
 ) -> Result<Installed> {
+    install_bound(
+        store,
+        component,
+        hash,
+        http,
+        task,
+        &|| Ok(()),
+        &|| Ok(()),
+        true,
+    )
+    .await
+}
+
+/// Reuses the exact same official catalog, manifest, staging and managed
+/// publication engine as explicit downloads. No higher-major substitution.
+pub async fn install_recommended_guarded(
+    store: &Store,
+    major: u32,
+    http: network::Http,
+    task: &TaskHandle,
+    fast: &impl Fn() -> Result<()>,
+    full: &impl Fn() -> Result<()>,
+) -> Result<Installed> {
+    fast()?;
+    full()?;
+    let package = catalog::list(&http, &task.cancellation_token())
+        .await?
+        .into_iter()
+        .find(|package| package.major == major)
+        .ok_or_else(|| format!("Mojang 官方目录没有当前平台的 Java {major}，请手动安装适用版本"))?;
+    full()?;
+    install_guarded(
+        store,
+        &package.component,
+        &package.sha1,
+        http,
+        task,
+        fast,
+        full,
+    )
+    .await
+}
+
+pub async fn install_guarded(
+    store: &Store,
+    component: &str,
+    hash: &str,
+    http: network::Http,
+    task: &TaskHandle,
+    fast: &impl Fn() -> Result<()>,
+    full: &impl Fn() -> Result<()>,
+) -> Result<Installed> {
+    install_bound(store, component, hash, http, task, fast, full, false).await
+}
+
+async fn install_bound(
+    store: &Store,
+    component: &str,
+    hash: &str,
+    http: network::Http,
+    task: &TaskHandle,
+    fast: &impl Fn() -> Result<()>,
+    full: &impl Fn() -> Result<()>,
+    finish_task: bool,
+) -> Result<Installed> {
     let cancel = task.cancellation_token();
     check(&cancel)?;
+    full()?;
     report(task, 0, 0, 0, 0, 0, "正在获取 Java 版本信息".into());
     let lock = store.dir.lock(".java-install.lock")?;
     store.recover(&lock)?;
@@ -113,6 +179,7 @@ pub async fn install(
         serde_json::from_slice(&body).map_err(|e| format!("Java 清单无效：{e}"))?;
     let total_bytes = manifest.validate()?;
     check(&cancel)?;
+    full()?;
     let mut stage = store.create(&package, &manifest, task.id(), &lock)?;
     let result = async {
         stage.prepare_directories()?;
@@ -130,6 +197,7 @@ pub async fn install(
             } = entry
             {
                 check(&cancel)?;
+                fast()?;
                 let source = &downloads["raw"];
                 let mut file = stage.anonymous(path)?;
                 report(
@@ -141,7 +209,7 @@ pub async fn install(
                     total_bytes,
                     format!("正在下载 Java：{path}"),
                 );
-                http.file(source, &mut file, &cancel, |current| {
+                http.file(source, &mut file, &cancel, fast, |current| {
                     report(
                         task,
                         1,
@@ -153,6 +221,7 @@ pub async fn install(
                     )
                 })
                 .await?;
+                full()?;
                 stage.publish_file(path, &file, *executable)?;
                 bytes += source.size;
                 complete += 1;
@@ -184,8 +253,12 @@ pub async fn install(
             ));
         }
         check(&cancel)?;
-        task.begin_finishing();
+        full()?;
+        if finish_task {
+            task.begin_finishing();
+        }
         check(&cancel)?;
+        full()?;
         report(
             task,
             3,

@@ -3,16 +3,16 @@ use super::*;
 use serde_json::json;
 use std::{net::TcpListener, os::unix::fs::symlink, thread};
 
-fn fixture() -> tempfile::TempDir {
+pub(super) fn fixture() -> tempfile::TempDir {
     let work = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../work/launch-readiness-2026-10-18/repair-tests");
     fs::create_dir_all(&work).unwrap();
-    tempfile::tempdir_in(work).unwrap()
+    tempfile::tempdir_in(work.canonicalize().unwrap()).unwrap()
 }
-struct Server {
-    base: String,
+pub(super) struct Server {
+    pub(super) base: String,
     stop: Arc<AtomicBool>,
-    requests: Arc<AtomicU64>,
+    pub(super) requests: Arc<AtomicU64>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Drop for Server {
@@ -21,7 +21,7 @@ impl Drop for Server {
         self.worker.take().unwrap().join().unwrap();
     }
 }
-fn server(routes: Vec<(&str, Vec<u8>)>) -> Server {
+pub(super) fn server(routes: Vec<(&str, Vec<u8>)>) -> Server {
     let routes: BTreeMap<String, Vec<u8>> = routes
         .into_iter()
         .map(|(path, bytes)| (path.into(), bytes))
@@ -92,7 +92,7 @@ fn server(routes: Vec<(&str, Vec<u8>)>) -> Server {
         worker: Some(worker),
     }
 }
-fn installer(server: &Server) -> Installer {
+pub(super) fn installer(server: &Server) -> Installer {
     let scheduler = pcl_network::DownloadScheduler::new(pcl_network::DownloadPolicy {
         max_concurrent_transfers: 1,
         total_rate_limit_mib_per_second: 0,
@@ -108,10 +108,10 @@ fn installer(server: &Server) -> Installer {
         .unwrap();
     installer
 }
-fn desc(server: &Server, path: &str, bytes: &[u8]) -> Value {
+pub(super) fn desc(server: &Server, path: &str, bytes: &[u8]) -> Value {
     json!({"url":format!("{}{path}",server.base),"sha1":format!("{:x}",Sha1::digest(bytes)),"size":bytes.len()})
 }
-fn metadata(root: &Path, id: &str, value: Value) {
+pub(super) fn metadata(root: &Path, id: &str, value: Value) {
     fs::create_dir_all(root.join(format!("versions/{id}"))).unwrap();
     fs::write(
         root.join(format!("versions/{id}/{id}.json")),

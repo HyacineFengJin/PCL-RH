@@ -397,11 +397,7 @@ fn requirement(required: u32, exact: bool) -> Result<String> {
 
 /// Separate policy from discovery so deterministic callers/tests can supply an
 /// already inspected catalog without running Java a second time.
-pub(crate) fn select_from_catalog(
-    catalog: &JavaCatalog,
-    required: u32,
-    exact: bool,
-) -> Result<PathBuf> {
+pub fn select_from_catalog(catalog: &JavaCatalog, required: u32, exact: bool) -> Result<PathBuf> {
     let requirement = requirement(required, exact)?;
     catalog
         .runtimes

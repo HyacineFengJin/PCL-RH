@@ -584,3 +584,36 @@ fn pcl_marker_dispatch_does_not_inherit_common_archive_compressed_budget() {
     assert_eq!(classify(&fixture.path).unwrap(), Format::Pcl);
     assert_eq!(Format::ReadyGame.as_str(), "ready_game");
 }
+
+#[test]
+fn wrapped_mrpack_ignores_only_bounded_known_foreign_launcher_metadata() {
+    let fixture = Fixture::new();
+    let index = json!({"formatVersion":1,"game":"minecraft","name":"Synthetic pack","versionId":"1","dependencies":{"minecraft":"1.20.1"},"files":[]}).to_string();
+    for prefix in ["", "Wrapped/"] {
+        let marker = format!("{prefix}modrinth.index.json");
+        let config = format!("{prefix}overrides/PCL/config.json");
+        let setup = format!("{prefix}overrides/PCL/Setup.ini");
+        let directory = format!("{prefix}overrides/PCL/");
+        fixture.zip(&[
+            (&marker, index.as_bytes()),
+            (&directory, b""),
+            (&config, br#"{"InstanceMigratedJava":true}"#),
+            (&setup, b"State:6\r\nInfo:Synthetic pack\r\n"),
+        ]);
+        let prepared = fixture.prepared(Format::Modrinth).unwrap();
+        assert!(prepared.outputs.is_empty());
+        assert!(!prepared.directories.contains("PCL"));
+        assert!(prepared
+            .warnings
+            .iter()
+            .any(|value| value.contains("2 个已识别的 PCL")));
+        fixture.zip(&[
+            (&marker, index.as_bytes()),
+            (
+                &config,
+                br#"{"InstanceMigratedJava":true,"UnknownSetting":true}"#,
+            ),
+        ]);
+        assert!(fixture.prepared(Format::Modrinth).is_err());
+    }
+}

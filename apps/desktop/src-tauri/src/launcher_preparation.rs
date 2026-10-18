@@ -23,6 +23,8 @@ use std::{
 
 const CHANGED: &str = "启动准备期间实例、游戏目录或设置已变化，请重新启动";
 
+mod java;
+
 pub(super) struct PreparedLaunch {
     id: String,
     root: GameRoot,
@@ -108,7 +110,10 @@ impl PreparedLaunch {
             Some(owner)
                 if active.len() == 1
                     && active[0].id == owner.id()
-                    && active[0].kind == TaskKind::InstanceRepair
+                    && matches!(
+                        active[0].kind,
+                        TaskKind::InstanceRepair | TaskKind::JavaInstall
+                    )
                     && active[0].root_id == self.root.id
                     && active[0].instance_id.as_deref() == Some(&self.id) => {}
             None if active.is_empty() => {}
@@ -164,7 +169,7 @@ impl PreparedLaunch {
         })
     }
 
-    pub(super) fn prepare_with<T>(
+    fn prepare_files_with<T>(
         &self,
         shared: &Shared,
         build: impl FnOnce() -> Result<T, String>,

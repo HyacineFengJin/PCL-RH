@@ -525,3 +525,74 @@ fn mixed_mirrors_keep_supported_install_and_redact_ignored_declarations() {
     assert!(!plan.warnings.join(" ").contains("secret"));
     assert!(!plan.warnings.join(" ").contains("unsupported.example"));
 }
+
+#[test]
+fn exact_foreign_pcl_display_and_migration_documents_are_ignored_with_a_warning() {
+    let fixture = Fixture::new();
+    fixture.manifest(vec![], &[
+        ("overrides/PCL/config.json", br#"{"InstanceMigratedJava":true}"#),
+        ("client-overrides/PCL/Setup.ini", b"State:6\r\nVersionVanillaName:1.20.1\r\nVersionForge:Example-1\r\nVersionArgumentIndieV2:True\r\nInfo:Synthetic pack\r\nLogo:example\r\nIsStar:False\r\nVersionLiteLoader:False\r\nReleaseTime:2026-01-01 00:00\r\n"),
+        ("overrides/config/example.cfg", b"game configuration"),
+    ]);
+    let plan = fixture.inspect(None).unwrap();
+    assert_eq!(plan.file_count, 1);
+    assert_eq!(plan.preview.override_files, 1);
+    assert!(plan
+        .warnings
+        .iter()
+        .any(|value| value.contains("2 个已识别的 PCL")));
+    assert!(!plan
+        .preview
+        .files
+        .iter()
+        .any(|file| file.path.starts_with("PCL/")));
+}
+
+#[test]
+fn foreign_pcl_exceptions_do_not_authorize_unknown_settings_paths_or_remote_files() {
+    let fixture = Fixture::new();
+    for (path, bytes) in [
+        ("overrides/PCL/private.json", b"{}".as_slice()),
+        (
+            "overrides/PCL/config.json",
+            br#"{"InstanceMigratedJava":true,"JavaPath":"example"}"#.as_slice(),
+        ),
+        (
+            "overrides/PCL/config.json",
+            br#"{"InstanceMigratedJava":true,"InstanceMigratedJava":false}"#.as_slice(),
+        ),
+        (
+            "overrides/PCL/Setup.ini",
+            b"UnknownSetting:example\n".as_slice(),
+        ),
+        ("overrides/PCL/Setup.ini", b"State:6\nState:6\n".as_slice()),
+        ("overrides/pcl/Setup.ini", b"State:6\n".as_slice()),
+    ] {
+        fixture.manifest(vec![], &[(path, bytes)]);
+        assert!(fixture.inspect(None).is_err(), "{path}");
+    }
+    fixture.manifest(vec![remote("PCL/Setup.ini", None, 12)], &[]);
+    assert!(fixture.inspect(None).is_err());
+    let oversized = vec![b'x'; 64 * 1024 + 1];
+    fixture.manifest(vec![], &[("overrides/PCL/Setup.ini", &oversized)]);
+    assert!(fixture.inspect(None).is_err());
+}
+
+#[test]
+fn ignored_foreign_pcl_metadata_still_requires_the_original_crc() {
+    let fixture = Fixture::new();
+    let body = br#"{"InstanceMigratedJava":true}"#;
+    fixture.manifest(vec![], &[("overrides/PCL/config.json", body)]);
+    let mut bytes = fs::read(&fixture.source).unwrap();
+    let at = bytes
+        .windows(body.len())
+        .position(|bytes| bytes == body)
+        .unwrap();
+    bytes[at + body.len() - 2] = b' ';
+    fs::write(&fixture.source, bytes).unwrap();
+    let error = match fixture.inspect(None) {
+        Ok(_) => panic!("ignored metadata skipped CRC"),
+        Err(error) => error,
+    };
+    assert!(error.contains("CRC"), "{error}");
+}
