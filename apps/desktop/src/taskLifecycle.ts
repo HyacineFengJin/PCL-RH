@@ -18,7 +18,11 @@ export function taskDisplayName(status: DownloadStatus): string {
   return status.display_name || status.version || "";
 }
 export function taskHasFloatingEntry(status: DownloadStatus): boolean {
-  return taskIsActive(status) || status.stage === "error";
+  return (
+    taskIsActive(status) ||
+    status.stage === "error" ||
+    (status.kind === "instance_verify" && status.stage === "complete")
+  );
 }
 /** Resource lists change at a writer's terminal boundary, including partial
  * failure/cancellation, without invalidating scans on every progress poll. */
@@ -57,6 +61,7 @@ export function taskNeedsBootstrap(
       "toolbox_download",
       "launcher_logs",
       "instance_export",
+      "instance_verify",
     ].includes(task.kind || "")
   )
     return false;
@@ -191,7 +196,8 @@ export function taskAggregate(
 /** The page owns an origin for an active set, not a single last-written slot.
  * New work joins while the page remains open. Every owned queued/running job
  * must terminate before returning; errors retain review and navigation releases
- * the lease. Retained backend history cannot reopen a completed page. */
+ * the lease. Completed verification reports retain explicit review until
+ * dismissed; other retained successful history does not reopen the page. */
 export class TaskPageOwner {
   private pending: Set<string> | null = null;
   private outcomes = new Map<string, DownloadStatus>();
@@ -240,7 +246,11 @@ export class TaskPageOwner {
     }
     if (
       this.pending.size ||
-      tasks.some((task) => task.stage === "error") ||
+      tasks.some(
+        (task) =>
+          task.stage === "error" ||
+          (task.kind === "instance_verify" && task.stage === "complete"),
+      ) ||
       (!this.outcomes.size && !this.historyRetired)
     )
       return false;

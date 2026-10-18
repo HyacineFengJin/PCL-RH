@@ -793,6 +793,7 @@ fn bounded_deadline_stops_real_headers_and_stalled_body_reads() {
                     &cancel,
                     Instant::now() + Duration::from_millis(80),
                     &|_| {},
+                    Source::Modrinth,
                 )
                 .await
         });
@@ -897,4 +898,97 @@ fn dropping_pending_download_releases_response_wait_permit_and_owned_fd() {
     }
     assert_eq!(server.closed_stalls.load(Ordering::Relaxed), 1);
     fixture.assert_empty();
+}
+
+fn curseforge_remote(body: &[u8]) -> super::super::curseforge::ResolvedFile {
+    super::super::curseforge::ResolvedFile {
+        project_id: 123,
+        file_id: 456,
+        path: "mods/fixture.jar".into(),
+        size: body.len() as u64,
+        sha1: hashes(body).0,
+        url: "https://edge.forgecdn.net/files/1/456/fixture.jar".into(),
+    }
+}
+
+#[test]
+fn curseforge_stream_uses_official_sha1_and_computes_local_sha512_without_credentials() {
+    let fixture = Fixture::new();
+    let body = b"synthetic CurseForge payload";
+    let server = Server::new([("/files/1/456/fixture.jar".into(), Response::body(body))]);
+    let client = client(&server, scheduler(1, 0));
+    let file = curseforge_remote(body);
+    let mut verified =
+        run(client.download_curseforge(&file, fixture.file(), &AtomicBool::new(false), |_| {}))
+            .unwrap();
+    assert_eq!((verified.sha1, verified.sha512), hashes(body));
+    let mut bytes = Vec::new();
+    verified.file.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, body);
+    assert!(server
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|request| !request.to_ascii_lowercase().contains("x-api-key")));
+}
+
+#[test]
+fn curseforge_does_not_broaden_mrpack_authority_and_never_follows_cdn_redirects() {
+    let fixture = Fixture::new();
+    let body = b"synthetic";
+    let file = curseforge_remote(body);
+    let server = Server::new([(
+        "/files/1/456/fixture.jar".into(),
+        Response::redirect("https://edge.forgecdn.net/files/1/456/redirect.jar"),
+    )]);
+    let client = client(&server, scheduler(1, 0));
+    assert!(super::super::mirror::declaration(&file.url)
+        .unwrap()
+        .is_none());
+    assert!(failure(run(client.download_curseforge(
+        &file,
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {}
+    )))
+    .contains("重定向"));
+    assert_eq!(server.paths(), ["/files/1/456/fixture.jar"]);
+    let mut wrong_origin = curseforge_remote(body);
+    wrong_origin.url = "https://cdn.modrinth.com/files/fixture.jar".into();
+    assert!(run(client.download_curseforge(
+        &wrong_origin,
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {}
+    ))
+    .is_err());
+    assert_eq!(server.paths().len(), 1);
+}
+
+#[test]
+fn curseforge_corrupt_or_oversized_body_never_returns_a_verified_file() {
+    for oversized in [false, true] {
+        let fixture = Fixture::new();
+        let body = b"synthetic";
+        let mut file = curseforge_remote(body);
+        if oversized {
+            file.size -= 1;
+        } else {
+            file.sha1 = "0".repeat(40);
+        }
+        let server = Server::new([("/files/1/456/fixture.jar".into(), Response::body(body))]);
+        let client = client(&server, scheduler(1, 0));
+        let destination = fixture.file();
+        let identity = AnonymousIdentity::of(&destination);
+        assert!(run(client.download_curseforge(
+            &file,
+            destination,
+            &AtomicBool::new(false),
+            |_| {}
+        ))
+        .is_err());
+        identity.assert_closed();
+        fixture.assert_empty();
+    }
 }

@@ -1,0 +1,23 @@
+.ce-integrity-result {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ce-integrity-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
+  margin: 12px 0;
+}
+.ce-integrity-summary > div {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.ce-integrity-summary dt {
+  color: var(--muted);
+}
+.ce-integrity-summary dd {
+  margin: 0;
+  font-weight: 600;
+}

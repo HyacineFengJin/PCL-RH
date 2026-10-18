@@ -190,6 +190,12 @@ impl LauncherPreferencesStore {
         let _ = self.verify_disk(&mut state);
         self.view(&state)
     }
+    /// Cheap generation guard for an already captured worker. Disk identity is
+    /// checked separately at publication boundaries, never once per HTTP chunk.
+    pub(crate) fn matches_revision(&self, expected: &str) -> bool {
+        let state = self.lock();
+        state.blocked.is_none() && state.revision == expected
+    }
     /// Explicitly adopts a valid on-disk edit. A failed reload keeps the last
     /// successful data, exposes its warning and continues to refuse writes.
     pub fn reload(&self) -> LauncherPreferencesView {

@@ -111,6 +111,7 @@ struct ConfirmedPack {
     core: Option<ConfirmedCore>,
     factory: Arc<pcl_network::ClientFactory>,
     scheduler: Arc<pcl_network::DownloadScheduler>,
+    curseforge: Option<Arc<crate::community_curseforge::CurseforgeClient>>,
     _lease: Lease,
 }
 struct ConfirmedCore {
@@ -277,11 +278,12 @@ impl ConfirmationCache {
             return Err("整合包检查 admission 与确认缓存不符".into());
         }
         let lease = preparation.lease.as_mut().unwrap();
+        let factory = pcl_network::snapshot();
+        let scheduler = pcl_network::download_snapshot();
+        let curseforge = curseforge::configure(&mut checked, factory.clone(), cancel)?;
         if !checked.plan.preview.blockers.is_empty() {
             return Ok(checked.plan);
         }
-        let factory = pcl_network::snapshot();
-        let scheduler = pcl_network::download_snapshot();
         let core = if checked.bundled.is_some() {
             None
         } else {
@@ -317,8 +319,10 @@ impl ConfirmationCache {
         }
         // Include native tree nodes, payload capacities and captured provider
         // metadata, rather than treating JSON size as the allocation budget.
-        let bytes =
-            footprint(&checked) + core.as_ref().map_or(0, |c| c.resolved.heap_bytes()) + 4096;
+        let bytes = footprint(&checked)
+            + core.as_ref().map_or(0, |c| c.resolved.heap_bytes())
+            + 4096
+            + usize::from(curseforge.is_some()) * 8192;
         if bytes > MAX_ONE {
             return Err("整合包确认超过内存限额，请减少包内文件数量".into());
         }
@@ -348,6 +352,7 @@ impl ConfirmationCache {
                 core,
                 factory,
                 scheduler,
+                curseforge,
                 _lease: preparation.lease.take().unwrap(),
             },
         });
@@ -485,6 +490,7 @@ fn footprint(c: &CheckedPack) -> usize {
                 + inner.outer_entry.hash.capacity())
         })
         + c.rebuild_profile.as_ref().map_or(0, Vec::capacity)
+        + c.curseforge_files.capacity() * std::mem::size_of::<(u32, u32)>()
         + view.name.capacity()
         + view.pack_name.capacity()
         + view.pack_version.capacity()
@@ -516,6 +522,9 @@ fn footprint(c: &CheckedPack) -> usize {
                                     .iter()
                                     .map(|s| s.capacity() + std::mem::size_of::<String>())
                                     .sum::<usize>()
+                        }
+                        Output::CurseForge(f) => {
+                            f.path.capacity() + f.sha1.capacity() + f.url.capacity()
                         }
                         Output::Override(f) => {
                             f.path.capacity() + f.hash.capacity() + f.archive_path.capacity()
@@ -686,6 +695,7 @@ fn execute(
     if let Some(input) = &authority.checked.official {
         official::recheck_evidence(input, &cancel)?;
     }
+    curseforge::recheck(&authority.checked, authority.curseforge.as_deref(), &cancel)?;
     target(&authority)?;
     let mut operation = super::super::build::BuildOperation::begin_bound(
         Path::new(&root.path),
@@ -795,6 +805,33 @@ fn execute(
                     }
                     verified.file
                 }
+                Output::CurseForge(file) => {
+                    let verified = tauri::async_runtime::block_on(client.download_curseforge(
+                        file,
+                        fd,
+                        &cancel,
+                        |p| {
+                            shared.downloads.progress(
+                                task,
+                                pack_progress(
+                                    &core_steps,
+                                    "pack-download",
+                                    path,
+                                    core_files.load(Ordering::Relaxed) + completed,
+                                    core_files.load(Ordering::Relaxed) + total,
+                                    core_bytes
+                                        .load(Ordering::Relaxed)
+                                        .saturating_add(p.network_bytes),
+                                ),
+                            );
+                        },
+                    ))?;
+                    if verified.size != file.size || !verified.sha1.eq_ignore_ascii_case(&file.sha1)
+                    {
+                        return Err("CurseForge 下载结果与确认信息不符".into());
+                    }
+                    verified.file
+                }
                 Output::Override(f) => extract_override(&authority.checked, f, fd, &cancel)?,
             };
             stage_file(
@@ -820,6 +857,7 @@ fn execute(
             );
         }
         authority.checked.recheck_source(&cancel)?;
+        curseforge::recheck(&authority.checked, authority.curseforge.as_deref(), &cancel)?;
         for path in &authority.checked.directories {
             ensure_directory(
                 &store,

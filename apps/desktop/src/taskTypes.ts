@@ -13,6 +13,20 @@ export type FileRepairResult = {
   unsupported_total: number;
   unsupported: { path: string; reason: string }[];
 };
+export type FileIntegrityResult = {
+  id: string;
+  files_verified: number;
+  files_missing: number;
+  files_corrupt: number;
+  files_unverifiable: number;
+  assets_enumerated: boolean;
+  problems_total: number;
+  problems: {
+    path: string;
+    kind: "missing" | "size_mismatch" | "sha1_mismatch" | "unverifiable";
+    reason: string;
+  }[];
+};
 export type DownloadStatus = {
   kind?:
     | "install"
@@ -21,6 +35,7 @@ export type DownloadStatus = {
     | "java_install"
     | "instance_reset"
     | "instance_repair"
+    | "instance_verify"
     | "instance_export"
     | "instance_rename"
     | "instance_import"
@@ -67,6 +82,7 @@ export type DownloadStatus = {
         files_reused: number;
       }
     | FileRepairResult
+    | FileIntegrityResult
     | null;
 };
 export const idleDownload: DownloadStatus = {

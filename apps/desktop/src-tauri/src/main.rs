@@ -42,6 +42,7 @@ mod launcher_favorite_commands;
 mod launcher_favorites;
 mod launcher_game_monitor;
 mod launcher_inspection;
+mod launcher_integrity;
 mod launcher_local;
 mod launcher_local_commands;
 mod launcher_log_commands;
@@ -50,6 +51,7 @@ mod launcher_minecraft_update_commands;
 mod launcher_minecraft_updates;
 mod launcher_monitor_runtime;
 mod launcher_prefs;
+mod launcher_preparation;
 mod launcher_repair;
 mod launcher_repair_commands;
 mod launcher_runtime;
@@ -1703,15 +1705,21 @@ fn instance_context(
 /// Preference warnings represent retained, unverified bytes. A launch must not
 /// silently substitute window/network defaults for such a policy. Capture the
 /// complete valid policy before preparing, alongside the root and Java choice.
+fn captured_launch_policy(
+    shared: &Shared,
+) -> Result<launcher_prefs::LauncherPreferencesView, String> {
+    let view = shared.launcher_preferences.snapshot();
+    if let Some(warning) = &view.warning {
+        return Err(warning.clone());
+    }
+    view.preferences.validate()?;
+    Ok(view)
+}
+#[cfg(test)]
 fn captured_launch_preferences(
     shared: &Shared,
 ) -> Result<launcher_prefs::LauncherPreferences, String> {
-    let view = shared.launcher_preferences.snapshot();
-    if let Some(warning) = view.warning {
-        return Err(warning);
-    }
-    view.preferences.validate()?;
-    Ok(view.preferences)
+    Ok(captured_launch_policy(shared)?.preferences)
 }
 fn captured_game_options(
     settings: &Settings,
@@ -1752,8 +1760,9 @@ fn launch_game(
     launcher_monitor_runtime::require_idle(&state)?;
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
-    let launcher_policy = captured_launch_preferences(&state)?;
-    let game_options = captured_game_options(&cfg, &root, &launcher_policy, &id)?;
+    let policy = captured_launch_policy(&state)?;
+    let launcher_policy = &policy.preferences;
+    let game_options = captured_game_options(&cfg, &root, launcher_policy, &id)?;
     resource_ops::ensure_ready(Path::new(&root.path))?;
     instance_reset::ensure_ready(Path::new(&root.path))?;
     ensure_instance_files_ready(&state, &root)?;
@@ -1761,150 +1770,212 @@ fn launch_game(
         &state,
         RunStatus {
             stage: "preparing".into(),
-            message: "正在解析版本和检查 Linux 依赖…".into(),
+            message: "正在检查启动依赖…".into(),
             version: Some(id.clone()),
             root_id: Some(root.id.clone()),
             root_path: Some(root.path.clone()),
             ..Default::default()
         },
     )?;
+    let preparation = match launcher_preparation::capture(
+        &state,
+        &id,
+        &root,
+        &cfg,
+        &policy.revision,
+        generation,
+        game_options.isolation,
+    ) {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            let cancelled = matches!(
+                error.as_str(),
+                tasks::CANCELLED | "安装已取消" | "下载已取消"
+            );
+            launcher_monitor_runtime::update_current(
+                &state,
+                generation,
+                if cancelled { "idle" } else { "error" },
+                if cancelled {
+                    "启动已取消".into()
+                } else {
+                    error.clone()
+                },
+                None,
+                None,
+            );
+            return Err(error);
+        }
+    };
     let visibility_policy = launcher_policy.launch_visibility;
     let preparation_delay = launcher_policy.advanced.artificial_delay_ms;
     let s = state.inner().clone();
-    std::thread::spawn(move || {
-        let mut visibility = launcher_visibility::VisibilityGuard::new(
-            window.clone(),
-            visibility_policy,
-            s.clone(),
-            generation,
-        );
-        let mut task = || -> Result<(), String> {
-            if launcher_delay::preparation_delay(preparation_delay, &s.stop) {
-                launcher_monitor_runtime::update_current(
-                    &s,
-                    generation,
-                    "idle",
-                    "启动已取消".into(),
-                    None,
-                    None,
-                );
-                return Ok(());
-            }
-            let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
-            let plan = match s.accounts.identity()? {
-                Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
-                    Path::new(&root.path),
-                    &s.project,
-                    &id,
-                    &pcl_core::OnlineIdentity {
-                        name: identity.name,
-                        uuid: identity.uuid,
-                        access_token: identity.access_token,
-                        xuid: identity.xuid,
-                        client_id: identity.client_id,
-                    },
-                    memory,
-                    java_service::effective_choice(&cfg, &root, &id),
-                    &cfg.java_paths,
-                    &game_options,
-                )?,
-                None => pcl_core::build_launch_plan_with_options(
-                    Path::new(&root.path),
-                    &s.project,
-                    &id,
-                    &cfg.player,
-                    memory,
-                    java_service::effective_choice(&cfg, &root, &id),
-                    &cfg.java_paths,
-                    &game_options,
-                )?,
-            };
-            if s.stop.load(Ordering::SeqCst) {
-                launcher_monitor_runtime::update_current(
-                    &s,
-                    generation,
-                    "idle",
-                    "启动已取消".into(),
-                    None,
-                    None,
-                );
-                return Ok(());
-            }
-            let request = launcher_game_monitor::MonitorRequest::new(
-                s.project.clone(),
-                root.id.clone(),
-                PathBuf::from(&root.path),
-                id.clone(),
-                plan.java,
-                plan.args,
-                plan.game_dir,
-                plan.log_path,
-                s.accounts.redaction_snapshot(),
-            )?;
-            let started = launcher_game_monitor::spawn_monitor(request)?;
-            // Statistics reflect actual ACKed spawn even when the user cancels
-            // during the handshake; cancellation is checked before window effects.
-            let handoff = launcher_monitor_runtime::adopt_spawned(
-                &s,
+    let spawn = std::thread::Builder::new()
+        .name("pcl-launch-preparation".into())
+        .spawn(move || {
+            let mut visibility = launcher_visibility::VisibilityGuard::new(
+                window.clone(),
+                visibility_policy,
+                s.clone(),
                 generation,
-                started.pid,
-                started.monitor_pid,
-                started.session_id,
-                started.log_path,
-                started.log_start,
             );
-            s.launcher_local.game_spawned();
-            let handoff = handoff?;
-            if handoff == launcher_monitor_runtime::Handoff::Superseded {
-                return Ok(());
-            }
-            if handoff == launcher_monitor_runtime::Handoff::Ready {
-                if visibility_policy == launcher_prefs::LaunchVisibility::ExitAfterLaunch {
-                    let closed =
-                        launcher_monitor_runtime::with_spawn_visibility(&s, generation, || {
-                            window.close()
-                        })?;
-                    if let Some(result) = closed {
-                        launcher_monitor_runtime::with_current(&s, generation, || {
-                            s.launcher_local.warnings.set(
-                                launcher_runtime::WarningKind::Visibility,
-                                result.err().map(|_| {
-                                    "游戏已启动，但启动器窗口未能关闭；可以手动关闭".into()
-                                }),
-                            )
-                        });
-                        return Ok(());
-                    }
-                } else {
-                    let warning = visibility
-                        .spawned()?
-                        .and_then(|result| result.err())
-                        .map(|_| "游戏已启动，但窗口管理器未能隐藏启动器".into());
-                    launcher_monitor_runtime::with_current(&s, generation, || {
-                        s.launcher_local
-                            .warnings
-                            .set(launcher_runtime::WarningKind::Visibility, warning)
-                    });
+            let mut task = || -> Result<(), String> {
+                if launcher_delay::preparation_delay(preparation_delay, &s.stop) {
+                    launcher_monitor_runtime::update_current(
+                        &s,
+                        generation,
+                        "idle",
+                        "启动已取消".into(),
+                        None,
+                        None,
+                    );
+                    return Ok(());
                 }
+                let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
+                let plan = preparation.prepare_with(&s, || match s.accounts.identity()? {
+                    Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
+                        Path::new(&root.path),
+                        &s.project,
+                        &id,
+                        &pcl_core::OnlineIdentity {
+                            name: identity.name,
+                            uuid: identity.uuid,
+                            access_token: identity.access_token,
+                            xuid: identity.xuid,
+                            client_id: identity.client_id,
+                        },
+                        memory,
+                        java_service::effective_choice(&cfg, &root, &id),
+                        &cfg.java_paths,
+                        &game_options,
+                    ),
+                    None => pcl_core::build_launch_plan_with_options(
+                        Path::new(&root.path),
+                        &s.project,
+                        &id,
+                        &cfg.player,
+                        memory,
+                        java_service::effective_choice(&cfg, &root, &id),
+                        &cfg.java_paths,
+                        &game_options,
+                    ),
+                })?;
+                if s.stop.load(Ordering::SeqCst) {
+                    launcher_monitor_runtime::update_current(
+                        &s,
+                        generation,
+                        "idle",
+                        "启动已取消".into(),
+                        None,
+                        None,
+                    );
+                    return Ok(());
+                }
+                let request = launcher_game_monitor::MonitorRequest::new(
+                    s.project.clone(),
+                    root.id.clone(),
+                    PathBuf::from(&root.path),
+                    id.clone(),
+                    plan.java,
+                    plan.args,
+                    plan.game_dir,
+                    plan.log_path,
+                    s.accounts.redaction_snapshot(),
+                )?;
+                let spawn_admission = preparation.authorize(&s)?;
+                let started = launcher_game_monitor::spawn_monitor(request)?;
+                drop(spawn_admission);
+                // Statistics reflect actual ACKed spawn even when the user cancels
+                // during the handshake; cancellation is checked before window effects.
+                let handoff = launcher_monitor_runtime::adopt_spawned(
+                    &s,
+                    generation,
+                    started.pid,
+                    started.monitor_pid,
+                    started.session_id,
+                    started.log_path,
+                    started.log_start,
+                );
+                s.launcher_local.game_spawned();
+                let handoff = handoff?;
+                if handoff == launcher_monitor_runtime::Handoff::Superseded {
+                    return Ok(());
+                }
+                if handoff == launcher_monitor_runtime::Handoff::Ready {
+                    if visibility_policy == launcher_prefs::LaunchVisibility::ExitAfterLaunch {
+                        let closed = launcher_monitor_runtime::with_spawn_visibility(
+                            &s,
+                            generation,
+                            || window.close(),
+                        )?;
+                        if let Some(result) = closed {
+                            launcher_monitor_runtime::with_current(&s, generation, || {
+                                s.launcher_local.warnings.set(
+                                    launcher_runtime::WarningKind::Visibility,
+                                    result.err().map(|_| {
+                                        "游戏已启动，但启动器窗口未能关闭；可以手动关闭".into()
+                                    }),
+                                )
+                            });
+                            return Ok(());
+                        }
+                    } else {
+                        let warning = visibility
+                            .spawned()?
+                            .and_then(|result| result.err())
+                            .map(|_| "游戏已启动，但窗口管理器未能隐藏启动器".into());
+                        launcher_monitor_runtime::with_current(&s, generation, || {
+                            s.launcher_local
+                                .warnings
+                                .set(launcher_runtime::WarningKind::Visibility, warning)
+                        });
+                    }
+                }
+                while launcher_monitor_runtime::poll_generation(&s, generation)? {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                let warning = visibility
+                    .restore()
+                    .err()
+                    .map(|_| "游戏已退出，但窗口管理器未能恢复启动器，请从应用入口重新打开".into());
+                launcher_monitor_runtime::with_current(&s, generation, || {
+                    s.launcher_local
+                        .warnings
+                        .set(launcher_runtime::WarningKind::Visibility, warning)
+                });
+                Ok(())
+            };
+            if let Err(error) = task() {
+                let cancelled = matches!(
+                    error.as_str(),
+                    tasks::CANCELLED | "安装已取消" | "下载已取消"
+                );
+                launcher_monitor_runtime::update_current(
+                    &s,
+                    generation,
+                    if cancelled { "idle" } else { "error" },
+                    if cancelled {
+                        "启动已取消".into()
+                    } else {
+                        error
+                    },
+                    None,
+                    None,
+                );
             }
-            while launcher_monitor_runtime::poll_generation(&s, generation)? {
-                std::thread::sleep(Duration::from_millis(300));
-            }
-            let warning = visibility
-                .restore()
-                .err()
-                .map(|_| "游戏已退出，但窗口管理器未能恢复启动器，请从应用入口重新打开".into());
-            launcher_monitor_runtime::with_current(&s, generation, || {
-                s.launcher_local
-                    .warnings
-                    .set(launcher_runtime::WarningKind::Visibility, warning)
-            });
-            Ok(())
-        };
-        if let Err(e) = task() {
-            launcher_monitor_runtime::update_current(&s, generation, "error", e, None, None);
-        }
-    });
+        });
+    if let Err(error) = spawn {
+        let error = format!("无法启动游戏准备任务：{error}");
+        launcher_monitor_runtime::update_current(
+            &state,
+            generation,
+            "error",
+            error.clone(),
+            None,
+            None,
+        );
+        return Err(error);
+    }
     Ok(())
 }
 #[tauri::command]
@@ -2235,6 +2306,7 @@ fn main() {
             java_download_commands::java_download_catalog,
             java_download_commands::java_download_start,
             launcher_repair_commands::instance_repair_start,
+            launcher_repair_commands::instance_verify_start,
             launcher_failure_commands::launch_failure_report,
             launcher_failure_commands::launch_failure_export,
             launcher_failure_ai::launch_failure_ai_preview,

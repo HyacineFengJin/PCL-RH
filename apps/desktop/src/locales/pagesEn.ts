@@ -1,6 +1,8 @@
 /** Fixed game/download/resource UI text; protocol IDs and user content stay in callers. */
 import type pagesZh from "./pagesZh";
+import { integrityEn } from "./integrityMessages";
 const messages = {
+  ...integrityEn,
   "context.menu": "Text actions",
   "context.copy": "Copy",
   "context.cut": "Cut",
@@ -165,7 +167,7 @@ const messages = {
   "instance.inspect": "Test game",
   "inspection.open": "Check launch environment",
   "inspection.help":
-    "Check local Java and required launch files. File integrity and mod compatibility are not checked.",
+    "Quickly check Java and required files. Verify dependency integrity separately.",
   "inspection.loading": "Checking launch environment…",
   "inspection.ready": "Launch environment check passed",
   "inspection.needsAttention": "Launch environment needs attention",

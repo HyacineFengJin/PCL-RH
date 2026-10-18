@@ -1,5 +1,7 @@
 /** Fixed game/download/resource UI text; protocol IDs and user content stay in callers. */
+import { integrityZh } from "./integrityMessages";
 const messages = {
+  ...integrityZh,
   "context.menu": "文本操作",
   "context.copy": "复制",
   "context.cut": "剪切",
@@ -152,8 +154,7 @@ const messages = {
   "instance.inspectHelp": "检查启动环境与依赖",
   "instance.inspect": "测试游戏",
   "inspection.open": "检查启动环境",
-  "inspection.help":
-    "检查本地 Java 与启动所需文件，不验证文件完整性或模组兼容性。",
+  "inspection.help": "快速检查 Java 与文件是否齐全；完整性可另行校验。",
   "inspection.loading": "正在检查启动环境…",
   "inspection.ready": "启动环境检查通过",
   "inspection.needsAttention": "启动环境存在问题",

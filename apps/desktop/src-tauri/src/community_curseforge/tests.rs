@@ -771,3 +771,88 @@ async fn search_page_reports_the_official_ten_thousand_result_boundary() {
         .unwrap()
         .contains("index=9950"));
 }
+
+#[tokio::test]
+async fn pack_files_use_exact_ids_and_official_classes_without_renderer_filenames() {
+    for (class, route, directory, extension) in [
+        (6, "mc-mods", "mods", "jar"),
+        (12, "texture-packs", "resourcepacks", "zip"),
+        (6552, "shaders", "shaderpacks", "zip"),
+    ] {
+        let mut owner = project_value();
+        owner["classId"] = class.into();
+        owner["links"]["websiteUrl"] =
+            format!("https://www.curseforge.com/minecraft/{route}/example-resource").into();
+        let mut selected = file_value(1);
+        selected["fileName"] = format!("example.{extension}").into();
+        let fixture = Fixture::new(vec![
+            Reply::json(json!({"data":owner})),
+            Reply::json(json!({"data":selected})),
+        ]);
+        let files = fixture.client().pack_downloads(&[(123, 1)]).await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].directory, directory);
+        assert_eq!(files[0].download.name, format!("example.{extension}"));
+        assert_eq!(fixture.requests().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn pack_metadata_rejects_unavailable_or_mismatched_files_and_excess_ids() {
+    let fixture = Fixture::new(Vec::new());
+    assert!(fixture
+        .client()
+        .pack_downloads(&vec![(123, 1); 2001])
+        .await
+        .is_err());
+    assert!(fixture.client().pack_downloads(&[(0, 1)]).await.is_err());
+    assert!(fixture.requests().is_empty());
+    for field in [
+        "id",
+        "modId",
+        "isEarlyAccessContent",
+        "isAvailable",
+        "downloadUrl",
+    ] {
+        let mut selected = file_value(1);
+        selected[field] = match field {
+            "id" | "modId" => 2.into(),
+            "isEarlyAccessContent" => true.into(),
+            "isAvailable" => false.into(),
+            _ => Value::Null,
+        };
+        let fixture = Fixture::new(vec![
+            Reply::json(json!({"data":project_value()})),
+            Reply::json(json!({"data":selected})),
+        ]);
+        assert!(
+            fixture.client().pack_downloads(&[(123, 1)]).await.is_err(),
+            "{field}"
+        );
+        assert_eq!(fixture.requests().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn pack_metadata_shares_the_eight_mib_budget_across_exact_file_lookups() {
+    let mut replies = Vec::new();
+    for id in 1..=3 {
+        let mut owner = project_value();
+        owner["ignoredPadding"] = "x".repeat(1_750_000).into();
+        let mut selected = file_value(id);
+        selected["ignoredPadding"] = "x".repeat(1_750_000).into();
+        replies.push(Reply::json(json!({"data":owner})));
+        replies.push(Reply::json(json!({"data":selected})));
+    }
+    let fixture = Fixture::new(replies);
+    let error = match fixture
+        .client()
+        .pack_downloads(&[(123, 1), (123, 2), (123, 3)])
+        .await
+    {
+        Ok(_) => panic!("unbounded pack metadata"),
+        Err(error) => error,
+    };
+    assert!(error.contains("大小上限"));
+    assert_eq!(fixture.requests().len(), 5);
+}

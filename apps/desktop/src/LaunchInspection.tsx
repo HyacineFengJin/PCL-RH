@@ -29,11 +29,13 @@ type Result = {
 };
 type RepairResult = {
   scope: Scope;
+  kind: "repair" | "verify";
   status: "pending" | "error";
   error?: string;
 };
 type RepairRequest = {
   scope: Scope;
+  kind: "repair" | "verify";
   onTaskStart: (id: string, reveal: boolean) => void;
 };
 type Props = {
@@ -205,28 +207,42 @@ export function LaunchInspection({
     !!scope.revision?.trim() &&
     !operation.current &&
     !repairOperation.current;
-  async function repair() {
+  const canVerify =
+    allowed() &&
+    !!report &&
+    !!scope.revision?.trim() &&
+    !operation.current &&
+    !repairOperation.current;
+  async function repair(kind: "repair" | "verify" = "repair") {
     if (
       !allowed() ||
-      !repairable ||
+      (kind === "repair" ? !repairable : !report) ||
       !scope.revision?.trim() ||
       operation.current ||
       repairOperation.current ||
       latestResult.current !== displayed
     )
       return;
-    const request = { scope, onTaskStart: callbacks.current.onTaskStart };
+    const request = { scope, kind, onTaskStart: callbacks.current.onTaskStart };
     repairOperation.current = request;
-    publishRepair({ scope, status: "pending" });
+    publishRepair({ scope, kind, status: "pending" });
     let task: { id: string };
     try {
-      task = await scope.api<{ id: string }>("instance_repair_start", {
-        id: scope.id,
-        revision: scope.revision,
-      });
+      task = await scope.api<{ id: string }>(
+        kind === "verify" ? "instance_verify_start" : "instance_repair_start",
+        {
+          id: scope.id,
+          revision: scope.revision,
+        },
+      );
     } catch (error) {
       if (current())
-        publishRepair({ scope, status: "error", error: serviceError(error) });
+        publishRepair({
+          scope,
+          kind,
+          status: "error",
+          error: serviceError(error),
+        });
       else if (live.current) publishRepair(null);
       return;
     } finally {
@@ -422,7 +438,7 @@ export function LaunchInspection({
                       disabled={!canRepair}
                       onClick={() => void repair()}
                     >
-                      {repairing && (
+                      {repairing && displayedRepair?.kind === "repair" && (
                         <LoaderCircle
                           className="spin"
                           size={16}
@@ -430,7 +446,7 @@ export function LaunchInspection({
                         />
                       )}
                       {t(
-                        repairing
+                        repairing && displayedRepair?.kind === "repair"
                           ? "inspection.repairStarting"
                           : "inspection.repair",
                       )}
@@ -440,6 +456,30 @@ export function LaunchInspection({
                     </p>
                   </div>
                 )}
+                <div className="ce-inspection-repair-action">
+                  <button
+                    className="ce-button"
+                    type="button"
+                    disabled={!canVerify}
+                    onClick={() => void repair("verify")}
+                  >
+                    {repairing && displayedRepair?.kind === "verify" && (
+                      <LoaderCircle
+                        className="spin"
+                        size={16}
+                        aria-hidden="true"
+                      />
+                    )}
+                    {t(
+                      repairing && displayedRepair?.kind === "verify"
+                        ? "integrity.starting"
+                        : "integrity.open",
+                    )}
+                  </button>
+                  <p className="ce-inspection-repair-help">
+                    {t("integrity.help")}
+                  </p>
+                </div>
               </section>
               {report.issues.length > 0 && (
                 <section className="ce-inspection-section">
@@ -455,7 +495,13 @@ export function LaunchInspection({
           ) : null}
           {displayedRepair?.status === "error" && (
             <div className="ce-inspection-error" role="alert">
-              <strong>{t("inspection.repairFailed")}</strong>
+              <strong>
+                {t(
+                  displayedRepair.kind === "verify"
+                    ? "integrity.failed"
+                    : "inspection.repairFailed",
+                )}
+              </strong>
               <p>{displayedRepair.error}</p>
             </div>
           )}

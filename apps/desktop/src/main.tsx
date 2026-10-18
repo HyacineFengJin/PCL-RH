@@ -190,6 +190,7 @@ const resourceWrites = new Set([
   "instance_metadata_update",
   "instance_reset_start",
   "instance_repair_start",
+  "instance_verify_start",
   "instance_reset_recover",
   "instance_rename_start",
   "instance_rename_recover",
@@ -216,6 +217,7 @@ const rootCommands = new Set([
   "launch_failure_ai_preview",
   "launch_failure_ai_start",
   "instance_repair_start",
+  "instance_verify_start",
   "open_folder",
   "instance_resources",
   "local_resource_info_export",
@@ -898,7 +900,15 @@ function App() {
     const current = tasks.snapshot.current.tasks.find(
       (task) => task.task_id === record.task_id,
     );
-    if (!current || current.stage !== "error" || !current.task_id) return;
+    if (
+      !current ||
+      !(
+        current.stage === "error" ||
+        (current.kind === "instance_verify" && current.stage === "complete")
+      ) ||
+      !current.task_id
+    )
+      return;
     const next = new Set(dismissedSnapshot.current);
     next.add(current.task_id);
     dismissedSnapshot.current = next;

@@ -4,7 +4,8 @@ use serde_json::json;
 use std::{net::TcpListener, os::unix::fs::symlink, thread};
 
 fn fixture() -> tempfile::TempDir {
-    let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/launcher-repair-tests");
+    let work = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../work/launch-readiness-2026-10-18/repair-tests");
     fs::create_dir_all(&work).unwrap();
     tempfile::tempdir_in(work).unwrap()
 }
@@ -643,4 +644,90 @@ fn directory_descriptor_budget_fails_before_creating_a_new_directory() {
     assert!(result.unwrap_err().contains("目录数量超过安全上限"));
     assert!(!root.path().join("libraries").exists());
     assert_eq!(server.requests.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn missing_count_is_local_deduplicated_and_existing_contents_are_not_checked() {
+    let root = fixture();
+    let server = server(Vec::new());
+    let mut artifact = desc(&server, "/library", b"expected");
+    artifact["path"] = "fixture.jar".into();
+    let library = json!({"name":"org.example:fixture:1","downloads":{"artifact":artifact}});
+    let mut index = desc(&server, "/index", b"not fetched");
+    index["id"] = "fixture-index".into();
+    metadata(
+        root.path(),
+        "fixture",
+        json!({"id":"fixture", "libraries":[library,library], "assetIndex":index}),
+    );
+    // Presence counting deliberately accepts old, modified existing bytes.
+    fs::write(
+        root.path().join("versions/fixture/fixture.jar"),
+        b"user modified",
+    )
+    .unwrap();
+    let request = capture(root.path(), "fixture");
+    assert_eq!(request.missing_count().unwrap(), 2);
+    assert_eq!(server.requests.load(Ordering::Relaxed), 0);
+    assert!(!root.path().join("libraries").exists());
+    assert!(!root.path().join("assets").exists());
+    fs::write(root.path().join("versions/fixture/fixture.json"), b"{}").unwrap();
+    assert!(request.missing_count().is_err());
+}
+
+#[test]
+fn missing_count_includes_captured_objects_without_double_counting_the_index() {
+    let root = fixture();
+    let server = server(Vec::new());
+    let hash = "1234567890123456789012345678901234567890";
+    let index = serde_json::to_vec(
+        &json!({"objects":{"one":{"hash":hash,"size":1},"alias":{"hash":hash,"size":1}}}),
+    )
+    .unwrap();
+    let mut descriptor = desc(&server, "/index", &index);
+    descriptor["id"] = "fixture-index".into();
+    metadata(
+        root.path(),
+        "fixture",
+        json!({"id":"fixture","assetIndex":descriptor}),
+    );
+    fs::write(root.path().join("versions/fixture/fixture.jar"), b"present").unwrap();
+    fs::create_dir_all(root.path().join("assets/indexes")).unwrap();
+    fs::write(root.path().join("assets/indexes/fixture-index.json"), index).unwrap();
+    assert_eq!(capture(root.path(), "fixture").missing_count().unwrap(), 1);
+    assert_eq!(server.requests.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn repairable_count_shares_writer_source_and_inheritance_eligibility_without_io() {
+    let root = fixture();
+    let server = server(Vec::new());
+    let mut allowed = desc(&server, "/library", b"library");
+    allowed["path"] = "allowed.jar".into();
+    let mut denied = allowed.clone();
+    denied["path"] = "denied.jar".into();
+    denied["url"] = "https://example.com/custom.jar".into();
+    let mut index = desc(&server, "/index", b"index");
+    index["id"] = "fixture-index".into();
+    metadata(
+        root.path(),
+        "fixture",
+        json!({"id":"fixture","downloads":{"client":desc(&server,"/client",b"client")},"libraries":[{"name":"org.example:allowed:1","downloads":{"artifact":allowed}},{"name":"org.example:denied:1","downloads":{"artifact":denied}},{"name":"org.example:unknown:1"}],"assetIndex":index}),
+    );
+    let request = capture(root.path(), "fixture");
+    let installer = installer(&server);
+    assert_eq!(request.missing_count().unwrap(), 5);
+    assert_eq!(installer.repairable_missing_count(&request).unwrap(), 3);
+    request
+        .state
+        .lock()
+        .unwrap()
+        .jar_probes
+        .insert("versions/fixture/fixture.jar".into(), false);
+    assert_eq!(installer.repairable_missing_count(&request).unwrap(), 2);
+    assert_eq!(server.requests.load(Ordering::Relaxed), 0);
+    assert!(!root.path().join("libraries").exists());
+    assert!(!root.path().join("assets").exists());
+    fs::write(root.path().join("versions/fixture/fixture.json"), b"{}").unwrap();
+    assert!(installer.repairable_missing_count(&request).is_err());
 }

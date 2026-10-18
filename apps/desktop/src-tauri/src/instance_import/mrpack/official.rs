@@ -404,6 +404,7 @@ fn prepare_checked(
         directories,
         bundled: None,
         rebuild_profile: None,
+        curseforge_files: Vec::new(),
         inner: None,
         official: Some(input),
     })

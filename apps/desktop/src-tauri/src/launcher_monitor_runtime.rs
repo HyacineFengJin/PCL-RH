@@ -10,7 +10,10 @@
 use crate::{launcher_game_monitor, RunStatus, Shared};
 use std::{
     path::PathBuf,
-    sync::{atomic::Ordering, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +27,7 @@ struct Session {
     generation: u64,
     attached: bool,
     stop_requested: bool,
+    preparation_cancel: Option<Arc<AtomicBool>>,
     supervisor: Option<String>,
     binding: Option<MonitorBinding>,
     log_start: Option<u64>,
@@ -267,6 +271,7 @@ fn retire_history_locked(shared: &Shared, session: &mut Session) -> Result<(), S
     session.terminal_revision = None;
     session.unattached_history_retired = true;
     session.stop_requested = false;
+    session.preparation_cancel = None;
     *shared.status.lock().unwrap() = RunStatus {
         stage: "idle".into(),
         message: "已完成的游戏监控记录已变化，先前失败上下文已失效".into(),
@@ -395,6 +400,7 @@ fn begin_preparation_with(
     }
     session.generation = next_generation;
     session.stop_requested = false;
+    session.preparation_cancel = None;
     session.supervisor = None;
     session.binding = None;
     session.log_start = None;
@@ -431,6 +437,71 @@ pub fn with_current<T>(
 ) -> Option<T> {
     let session = shared.monitor.lock();
     (session.generation == generation.0).then(action)
+}
+
+/// A preparation worker may continue only in its own unacknowledged generation.
+/// This check performs no marker or filesystem reads and never consumes stop.
+pub(super) fn require_current_preparation(
+    shared: &Shared,
+    generation: Generation,
+) -> Result<(), String> {
+    let session = shared.monitor.lock();
+    require_preparation_locked(shared, &session, generation)
+}
+
+/// Pins the final spawn admission against accepted stop requests. The caller
+/// holds operations first and drops this guard before ACK adoption takes it.
+pub(super) struct PreparationAdmission<'a> {
+    _session: MutexGuard<'a, Session>,
+}
+
+pub(super) fn authorize_preparation(
+    shared: &Shared,
+    generation: Generation,
+) -> Result<PreparationAdmission<'_>, String> {
+    let session = shared.monitor.lock();
+    require_preparation_locked(shared, &session, generation)?;
+    Ok(PreparationAdmission { _session: session })
+}
+
+fn require_preparation_locked(
+    shared: &Shared,
+    session: &Session,
+    generation: Generation,
+) -> Result<(), String> {
+    if session.generation != generation.0
+        || session.attached
+        || shared.status.lock().unwrap().stage != "preparing"
+    {
+        return Err("启动准备会话已变化，请重新启动".into());
+    }
+    if shared.stop.load(Ordering::SeqCst)
+        || session.stop_requested
+        || session
+            .preparation_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+    {
+        return Err(crate::tasks::CANCELLED.into());
+    }
+    Ok(())
+}
+
+/// Stop and download scheduling share this exact cancellation token. Binding
+/// under the session lock closes the stop-before-registration race.
+pub(super) fn bind_preparation_cancel(
+    shared: &Shared,
+    generation: Generation,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut session = shared.monitor.lock();
+    let result = require_preparation_locked(shared, &session, generation);
+    if result.is_err() {
+        cancel.store(true, Ordering::SeqCst);
+        return result;
+    }
+    session.preparation_cancel = Some(cancel);
+    Ok(())
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handoff {
@@ -476,6 +547,9 @@ pub fn request_stop(shared: &Shared) -> Result<(), String> {
         stop_running(shared, &mut session)
     } else {
         shared.stop.store(true, Ordering::SeqCst);
+        if let Some(cancel) = &session.preparation_cancel {
+            cancel.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 }
@@ -531,7 +605,11 @@ fn adopt_with(
         run.pid = Some(pid);
         run.exit_code = None;
     }
-    if shared.stop.swap(false, Ordering::SeqCst) {
+    let preparation_cancelled = session
+        .preparation_cancel
+        .take()
+        .is_some_and(|cancel| cancel.load(Ordering::SeqCst));
+    if shared.stop.swap(false, Ordering::SeqCst) || preparation_cancelled {
         stop(&mut session)?;
         return Ok(Handoff::Cancelled);
     }

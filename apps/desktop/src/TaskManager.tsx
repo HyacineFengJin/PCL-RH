@@ -17,7 +17,9 @@ import {
   taskAggregate,
 } from "./taskLifecycle";
 import "./task-manager.css";
+import { IntegrityResult } from "./IntegrityResult";
 function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
+  if (kind === "instance_verify") return t("integrity.step");
   if (kind === "instance_repair") {
     switch (step.id) {
       case "repair-check":
@@ -86,6 +88,7 @@ const taskActionMessages: Partial<
   launcher_logs: "task.launcherLogs",
   instance_reset: "ui.reset",
   instance_repair: "inspection.repair",
+  instance_verify: "integrity.open",
   instance_export: "nav.export",
   instance_rename: "ui.rename",
   instance_import: "ui.import",
@@ -175,6 +178,7 @@ export function TaskStatistics({
           {terminalCancelled ||
           speed === null ||
           status.kind === "instance_export" ||
+          status.kind === "instance_verify" ||
           status.kind === "instance_rename" ||
           status.kind === "instance_import" ||
           status.kind === "instance_delete" ||
@@ -288,7 +292,11 @@ function TaskCard({
       !mounted.current ||
       currentTask.current !== taskKey ||
       latest.current.api !== api ||
-      latest.current.status.stage !== "error"
+      !(
+        latest.current.status.stage === "error" ||
+        (latest.current.status.kind === "instance_verify" &&
+          latest.current.status.stage === "complete")
+      )
     )
       return;
     latest.current.onDismiss?.(latest.current.status);
@@ -297,6 +305,14 @@ function TaskCard({
     status.stage,
   );
   const action = instanceTaskAction(status.kind);
+  const reviewable =
+    status.stage === "error" ||
+    (status.kind === "instance_verify" && status.stage === "complete");
+  const dismissLabel = t(
+    status.kind === "instance_verify" && status.stage === "complete"
+      ? "integrity.dismiss"
+      : "task.dismiss",
+  );
   const cancelAction =
     status.kind === "resource_download" ? t("task.resourceDownload") : action;
   const phase =
@@ -389,20 +405,28 @@ function TaskCard({
                       ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
-    : status.kind === "instance_repair"
-      ? repairFallbackSteps(status)
-      : status.kind === "java_install"
-        ? javaFallbackSteps(status)
-        : fallbackLabels.map((label, index) => ({
-            id: `legacy-${index}`,
-            label,
-            state:
-              status.stage === "complete"
-                ? "complete"
-                : active && status.stage !== "queued" && index === current
-                  ? "running"
-                  : "pending",
-          }));
+    : status.kind === "instance_verify"
+      ? [
+          {
+            id: "integrity-verify",
+            label: t("integrity.step"),
+            state: status.stage === "complete" ? "complete" : "running",
+          },
+        ]
+      : status.kind === "instance_repair"
+        ? repairFallbackSteps(status)
+        : status.kind === "java_install"
+          ? javaFallbackSteps(status)
+          : fallbackLabels.map((label, index) => ({
+              id: `legacy-${index}`,
+              label,
+              state:
+                status.stage === "complete"
+                  ? "complete"
+                  : active && status.stage !== "queued" && index === current
+                    ? "running"
+                    : "pending",
+            }));
   async function cancel() {
     if (
       !native ||
@@ -475,7 +499,8 @@ function TaskCard({
     0,
     (repairResult?.unsupported_total || 0) - unsupported.length,
   );
-  if (["idle", "cancelled", "complete"].includes(status.stage)) return null;
+  if (["idle", "cancelled", "complete"].includes(status.stage) && !reviewable)
+    return null;
   return (
     <section className={`ce-card ce-task-card ${status.stage}`}>
       <div className="ce-task-heading">
@@ -492,27 +517,25 @@ function TaskCard({
         <button
           className="icon-button"
           aria-label={
-            status.stage === "error" && onDismiss
-              ? t("task.dismiss")
+            reviewable && onDismiss
+              ? dismissLabel
               : cancelling
                 ? t("task.cleanupPending")
                 : t("task.cancel", { action: cancelAction })
           }
           title={
-            status.stage === "error" && onDismiss
-              ? t("task.dismiss")
+            reviewable && onDismiss
+              ? dismissLabel
               : cancelling
                 ? t("task.cleanup")
                 : t("task.cancel", { action: cancelAction })
           }
           disabled={
-            status.stage === "error" && onDismiss
+            reviewable && onDismiss
               ? false
               : !native || !active || status.can_cancel === false || cancelling
           }
-          onClick={() =>
-            status.stage === "error" && onDismiss ? dismiss() : void cancel()
-          }
+          onClick={() => (reviewable && onDismiss ? dismiss() : void cancel())}
         >
           {cancelling ? (
             <LoaderCircle size={17} className="spin" />
@@ -580,6 +603,9 @@ function TaskCard({
           )}
         </details>
       )}
+      {status.kind === "instance_verify" && status.stage === "complete" && (
+        <IntegrityResult result={status.result} />
+      )}
     </section>
   );
 }
@@ -633,6 +659,7 @@ export function useAggregateDownloadSpeed(tasks: readonly DownloadStatus[]) {
         [
           "resource_operation",
           "instance_export",
+          "instance_verify",
           "instance_rename",
           "instance_import",
           "instance_delete",

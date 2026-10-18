@@ -6,6 +6,61 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 struct Fixture(tempfile::TempDir);
+
+fn readiness_fixture() -> Fixture {
+    let work = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../work/launch-readiness-2026-10-18/core-readiness-tests");
+    fs::create_dir_all(&work).unwrap();
+    Fixture(
+        tempfile::Builder::new()
+            .prefix("files-")
+            .tempdir_in(work)
+            .unwrap(),
+    )
+}
+
+#[test]
+fn file_readiness_never_discovers_java_or_creates_launch_outputs() {
+    let fixture = readiness_fixture();
+    fixture.complete();
+    let report = inspect_files_with_isolation(
+        fixture.root(),
+        "Example",
+        content_scope::IsolationPolicy::Automatic,
+    )
+    .unwrap();
+    assert_eq!(report.missing_total, 0);
+    assert!(!fixture.root().join(".pcl-linux").exists());
+    fs::remove_file(fixture.root().join("versions/Example/Example.jar")).unwrap();
+    let report = inspect_files_with_isolation(
+        fixture.root(),
+        "Example",
+        content_scope::IsolationPolicy::Automatic,
+    )
+    .unwrap();
+    assert_eq!(report.missing_total, 1);
+    assert!(report.missing_files[0].ends_with("Example.jar"));
+    assert!(!fixture.root().join(".pcl-linux").exists());
+}
+
+#[test]
+fn file_readiness_reports_missing_index_without_guessing_objects() {
+    let fixture = readiness_fixture();
+    fixture.complete();
+    fixture.instance(
+        "Example",
+        json!({"id":"Example","mainClass":"Main","libraries":[],"assetIndex":{"id":"fixture"}}),
+    );
+    let report = inspect_files_with_isolation(
+        fixture.root(),
+        "Example",
+        content_scope::IsolationPolicy::Automatic,
+    )
+    .unwrap();
+    assert_eq!(report.missing_total, 1);
+    assert!(report.missing_files[0].ends_with("assets/indexes/fixture.json"));
+    assert!(!fixture.root().join("assets").exists());
+}
 impl Fixture {
     fn new() -> Self {
         let work = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/core-inspection-tests");

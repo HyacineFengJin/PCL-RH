@@ -78,6 +78,7 @@ pub(super) struct PreparedArchive {
     /// HMCL runtime declarations need proof against the captured provider
     /// profile before a rebuild can receive a confirmation token.
     pub rebuild_profile: Option<Vec<u8>>,
+    pub curseforge_files: Vec<(u32, u32)>,
 }
 struct Node {
     directory: bool,
@@ -782,6 +783,7 @@ fn empty(pack_name: String, version: String) -> PreparedArchive {
         bundled: None,
         shadowed_files: 0,
         rebuild_profile: None,
+        curseforge_files: Vec::new(),
     }
 }
 fn summary(data: &Value) -> Result<Option<String>> {
@@ -988,10 +990,22 @@ fn curse_data(data: &Value) -> Result<PreparedArchive> {
         return Err("CurseForge 文件 ID 重复".into());
     }
     if !ids.is_empty() {
-        prepared.blockers.push(format!(
-            "此包包含 {} 个 CurseForge 文件；当前尚未连接获授权的官方文件元数据服务，无法完整安装",
-            ids.len()
-        ));
+        prepared.curseforge_files = ids
+            .iter()
+            .map(|(project, file)| (*project as u32, *file as u32))
+            .collect();
+        prepared
+            .blockers
+            .push(super::curseforge::blocker(ids.len()));
+        let optional = array(data, "files")?
+            .iter()
+            .filter(|file| file["required"].as_bool() == Some(false))
+            .count();
+        if optional > 0 {
+            prepared.warnings.push(format!(
+                "CurseForge 清单包含 {optional} 个可选文件；本次按完整清单安装全部列项"
+            ));
+        }
     }
     Ok(prepared)
 }

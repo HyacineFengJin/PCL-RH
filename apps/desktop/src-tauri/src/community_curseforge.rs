@@ -40,6 +40,7 @@ pub struct CurseforgeSearchPage {
 
 /// Trusted API metadata for the native file downloader. The API key never
 /// travels with this value and must never be attached to the CDN request.
+#[derive(Debug)]
 pub struct CurseforgeDownload {
     pub title: String,
     pub version: String,
@@ -47,6 +48,13 @@ pub struct CurseforgeDownload {
     pub size: u64,
     pub url: String,
     pub sha1: String,
+}
+
+/// Exact manifest-file metadata for a native pack. The official project class
+/// chooses the content directory; manifests never supply a CDN or output path.
+pub(crate) struct CurseforgePackDownload {
+    pub directory: &'static str,
+    pub download: CurseforgeDownload,
 }
 
 /// Recheck native download metadata against the official CDN authority policy.
@@ -248,6 +256,68 @@ impl CurseforgeClient {
         })
         .await
         .map_err(|_| "CurseForge 下载信息超过总时间上限".to_owned())?
+    }
+
+    /// Resolve exact manifest IDs with one shared metadata budget. The same
+    /// official distribution checks used by standalone Save apply to each file.
+    pub(crate) async fn pack_downloads(
+        &self,
+        ids: &[(u32, u32)],
+    ) -> Result<Vec<CurseforgePackDownload>, String> {
+        if ids.len() > 2000
+            || ids
+                .iter()
+                .any(|(project, file)| *project == 0 || *file == 0)
+        {
+            return Err("CurseForge 整合包文件 ID 无效或超过 2000 项限制".into());
+        }
+        tokio::time::timeout(Duration::from_secs(300), async {
+            let mut budget = Budget::new(ids.len() * 2);
+            let mut files = Vec::with_capacity(ids.len());
+            for &(project_id, file_id) in ids {
+                let project = self.project(project_id, &mut budget).await?;
+                normalize_project(&project, false)?;
+                let directory = match project.class_id {
+                    Some(6) => "mods",
+                    Some(12) => "resourcepacks",
+                    Some(6552) => "shaderpacks",
+                    _ => return Err("CurseForge 整合包文件的资源类型不受支持".into()),
+                };
+                if !project.is_available || project.allow_mod_distribution == Some(false) {
+                    return Err(
+                        "CurseForge 项目不可用或作者已禁止第三方分发，请访问项目页面".into(),
+                    );
+                }
+                let response: Envelope<File> = self
+                    .transport
+                    .get(
+                        &format!("mods/{project_id}/files/{file_id}"),
+                        &[],
+                        &mut budget,
+                    )
+                    .await?;
+                let download = mapping::download_metadata(
+                    &project,
+                    &response.data,
+                    file_id,
+                    &response.data.file_name,
+                )?;
+                files.push(CurseforgePackDownload {
+                    directory,
+                    download,
+                });
+            }
+            Ok(files)
+        })
+        .await
+        .map_err(|_| "CurseForge 整合包文件解析超过总时间上限".to_owned())?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loopback(network: Arc<pcl_network::ClientFactory>, address: String) -> Self {
+        Self {
+            transport: Transport::loopback(network, address),
+        }
     }
 
     async fn project(&self, id: u32, budget: &mut Budget) -> Result<Project, String> {

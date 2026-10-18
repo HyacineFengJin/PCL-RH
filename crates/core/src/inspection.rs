@@ -49,6 +49,38 @@ fn bounded_error(mut error: String) -> String {
     error
 }
 
+/// Installed-file readiness only: no JVM discovery/probe, accounts, extraction
+/// or directory creation. The launcher uses this before enabling missing repair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileReadiness {
+    pub missing_total: usize,
+    pub missing_files: Vec<String>,
+}
+
+pub fn inspect_files_with_isolation(
+    root: &Path,
+    id: &str,
+    policy: content_scope::IsolationPolicy,
+) -> Result<FileReadiness> {
+    identifier(id)?;
+    let root = fs::canonicalize(root).map_err(err)?;
+    let data = metadata(&root, id, &mut HashSet::new())?;
+    let scope = content_scope::inspect_with_isolation(&root, id, policy)?;
+    content_scope::verified_base(&root, id, scope)?;
+    let context = RuleContext::current()?;
+    let dependencies = dependencies::resolve(&root, id, &data, &context)?;
+    if metadata(&root, id, &mut HashSet::new())? != data {
+        return Err("实例版本元数据在检查期间变化，请重新检查".into());
+    }
+    if content_scope::inspect_with_isolation(&root, id, policy)? != scope {
+        return Err("实例隔离目录在检查期间变化，请重新检查".into());
+    }
+    Ok(FileReadiness {
+        missing_total: dependencies.missing.total,
+        missing_files: dependencies.missing.paths,
+    })
+}
+
 /// Use the same bounded Java probe and selection policy as launch. The caller
 /// captures settings before this call; probing does not need an account lock.
 pub fn inspect_instance(

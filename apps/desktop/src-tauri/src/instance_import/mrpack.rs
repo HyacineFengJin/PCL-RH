@@ -19,6 +19,8 @@ use std::{
 };
 #[path = "mrpack/archive.rs"]
 mod archive;
+#[path = "mrpack/curseforge.rs"]
+mod curseforge;
 #[path = "mrpack/formats.rs"]
 mod formats;
 #[path = "mrpack/manifest.rs"]
@@ -132,12 +134,14 @@ enum Output {
         sha512: String,
         downloads: Vec<String>,
     },
+    CurseForge(curseforge::ResolvedFile),
     Override(OverrideFile),
 }
 impl Output {
     fn size(&self) -> u64 {
         match self {
             Self::Remote { size, .. } => *size,
+            Self::CurseForge(f) => f.size,
             Self::Override(f) => f.size,
         }
     }
@@ -230,6 +234,7 @@ struct CheckedPack {
     directories: BTreeSet<String>,
     bundled: Option<formats::BundledCore>,
     rebuild_profile: Option<Vec<u8>>,
+    curseforge_files: Vec<(u32, u32)>,
     inner: Option<HeldInnerArchive>,
     official: Option<std::sync::Arc<official::Input>>,
 }
@@ -248,6 +253,7 @@ struct PreparedPack {
     directories: BTreeSet<String>,
     bundled: Option<formats::BundledCore>,
     rebuild_profile: Option<Vec<u8>>,
+    curseforge_files: Vec<(u32, u32)>,
 }
 fn prepare_checked(
     root: &Path,
@@ -361,6 +367,7 @@ fn prepare_checked_with_stage(
         directories,
         bundled,
         rebuild_profile,
+        curseforge_files,
     } = if inner.is_none()
         && format == formats::Format::Modrinth
         && recognizes_cancellable(source, cancel)?
@@ -375,6 +382,7 @@ fn prepare_checked_with_stage(
             directories: dirs,
             bundled: None,
             rebuild_profile: None,
+            curseforge_files: Vec::new(),
         }
     } else {
         from_archive(
@@ -404,7 +412,7 @@ fn prepare_checked_with_stage(
                     .filter(|url| matches!(mirror::declaration(url), Ok(None)))
                     .count(),
             ),
-            Output::Override(_) => None,
+            Output::Override(_) | Output::CurseForge(_) => None,
         })
         .sum::<usize>();
     if ignored_mirrors > 0 {
@@ -443,6 +451,7 @@ fn prepare_checked_with_stage(
         directories,
         bundled,
         rebuild_profile,
+        curseforge_files,
         inner,
         official: None,
     })
@@ -549,6 +558,7 @@ fn build(
                     blockers.push(format!("文件 {path} 没有受支持的 HTTPS 下载镜像"));
                 }
             }
+            Output::CurseForge(_) => return Err("Modrinth 清单不能声明 CurseForge 文件".into()),
             Output::Override(file) => {
                 override_files += 1;
                 override_bytes += file.size;
@@ -780,6 +790,7 @@ fn from_archive(
         bundled,
         shadowed_files,
         rebuild_profile,
+        curseforge_files,
     } = prepared;
     let (mut dependencies, _) = manifest::dependencies(&dependencies);
     if bundled.is_some() {
@@ -874,5 +885,6 @@ fn from_archive(
         directories,
         bundled,
         rebuild_profile,
+        curseforge_files,
     })
 }

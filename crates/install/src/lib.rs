@@ -6,7 +6,10 @@ mod cache;
 mod components;
 mod network;
 mod repair;
-pub use repair::{MissingRepair, MissingRepairReport, RepairUnsupported};
+pub use repair::{
+    IntegrityCheck, IntegrityProblem, IntegrityProblemKind, IntegrityReport, MissingRepair,
+    MissingRepairReport, RepairUnsupported,
+};
 mod resolved;
 pub use resolved::ResolvedInstallRequest;
 use serde::{Deserialize, Serialize};

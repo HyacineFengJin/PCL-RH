@@ -55,6 +55,12 @@ pub(super) struct Client {
     #[cfg(test)]
     route: Option<reqwest::Url>,
 }
+#[derive(Clone, Copy)]
+enum Source {
+    Modrinth,
+    CurseForge,
+}
+
 enum Failure {
     Cancelled,
     Mirror(String),
@@ -107,17 +113,60 @@ impl Client {
     pub(super) async fn download(
         &self,
         remote: Remote<'_>,
+        destination: File,
+        cancel: &AtomicBool,
+        report: impl Fn(TransferProgress),
+    ) -> Result<VerifiedFile> {
+        self.download_with(remote, destination, cancel, report, Source::Modrinth)
+            .await
+    }
+
+    pub(super) async fn download_curseforge(
+        &self,
+        file: &super::curseforge::ResolvedFile,
+        destination: File,
+        cancel: &AtomicBool,
+        report: impl Fn(TransferProgress),
+    ) -> Result<VerifiedFile> {
+        let downloads = [file.url.clone()];
+        self.download_with(
+            Remote {
+                downloads: &downloads,
+                size: file.size,
+                sha1: &file.sha1,
+                sha512: "",
+            },
+            destination,
+            cancel,
+            report,
+            Source::CurseForge,
+        )
+        .await
+    }
+
+    async fn download_with(
+        &self,
+        remote: Remote<'_>,
         mut destination: File,
         cancel: &AtomicBool,
         report: impl Fn(TransferProgress),
+        source: Source,
     ) -> Result<VerifiedFile> {
         check(cancel).map_err(failure_text)?;
         if remote.size > MAX_FILE_BYTES || remote.downloads.len() > mirror::MAX_MIRRORS {
             return Err("mrpack 单文件大小或镜像数量超过限制".into());
         }
-        for (hash, length) in [(remote.sha1, 40), (remote.sha512, 128)] {
+        let hashes = match source {
+            Source::Modrinth => vec![(remote.sha1, 40), (remote.sha512, 128)],
+            Source::CurseForge => vec![(remote.sha1, 40)],
+        };
+        for (hash, length) in hashes {
             if hash.len() != length || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err("mrpack 文件必须提供有效 SHA1 与 SHA512".into());
+                return Err(match source {
+                    Source::Modrinth => "mrpack 文件必须提供有效 SHA1 与 SHA512",
+                    Source::CurseForge => "CurseForge 文件必须提供有效官方 SHA1",
+                }
+                .into());
             }
         }
         let metadata = destination
@@ -129,7 +178,10 @@ impl Client {
         let candidates = remote
             .downloads
             .iter()
-            .map(|value| mirror::declaration(value))
+            .map(|value| match source {
+                Source::Modrinth => mirror::declaration(value),
+                Source::CurseForge => crate::community_curseforge::download_url(value).map(Some),
+            })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
             .flatten()
@@ -169,6 +221,7 @@ impl Client {
                     cancel,
                     deadline,
                     &report,
+                    source,
                 )
                 .await
             {
@@ -220,6 +273,7 @@ impl Client {
         cancel: &AtomicBool,
         deadline: Instant,
         report: &impl Fn(TransferProgress),
+        source: Source,
     ) -> Attempt<(String, String)> {
         let mut chain = mirror::Chain::new(candidate);
         let mut response = loop {
@@ -235,6 +289,11 @@ impl Client {
             )
             .await?
             .map_err(|_| Failure::Mirror("mrpack 镜像请求失败".into()))?;
+            if response.status().is_redirection() && matches!(source, Source::CurseForge) {
+                return Err(Failure::Mirror(
+                    "CurseForge 官方文件返回重定向，已停止下载".into(),
+                ));
+            }
             if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 let location = response
                     .headers()
@@ -310,9 +369,15 @@ impl Client {
         }
         let sha1 = format!("{:x}", sha1.finalize());
         let sha512 = format!("{:x}", sha512.finalize());
-        if !sha1.eq_ignore_ascii_case(remote.sha1) || !sha512.eq_ignore_ascii_case(remote.sha512) {
+        if !sha1.eq_ignore_ascii_case(remote.sha1)
+            || (matches!(source, Source::Modrinth) && !sha512.eq_ignore_ascii_case(remote.sha512))
+        {
             return Err(Failure::Mirror(
-                "mrpack 镜像 SHA1 或 SHA512 校验失败".into(),
+                match source {
+                    Source::Modrinth => "mrpack 镜像 SHA1 或 SHA512 校验失败",
+                    Source::CurseForge => "CurseForge 官方文件 SHA1 校验失败",
+                }
+                .into(),
             ));
         }
         check(cancel)?;

@@ -43,6 +43,7 @@ pub enum TaskKind {
     ModpackPrepare,
     JavaInstall,
     InstanceRepair,
+    InstanceVerify,
     InstanceReset,
     InstanceExport,
     InstanceRename,
@@ -489,6 +490,7 @@ impl Tasks {
                     TaskKind::ModpackPrepare => "pack-input-metadata",
                     TaskKind::JavaInstall => "java-metadata",
                     TaskKind::InstanceRepair => "repair-check",
+                    TaskKind::InstanceVerify => "integrity-verify",
                     TaskKind::InstanceReset => "reset_prepare",
                     TaskKind::InstanceExport => "export-scan",
                     TaskKind::InstanceRename => "rename_prepare",
@@ -510,6 +512,7 @@ impl Tasks {
                     TaskKind::ModpackPrepare => "正在获取整合包文件信息…",
                     TaskKind::JavaInstall => "正在获取 Java 版本信息…",
                     TaskKind::InstanceRepair => "正在检查可补全的缺失文件…",
+                    TaskKind::InstanceVerify => "正在检查依赖完整性…",
                     TaskKind::InstanceReset => "正在检查重置方案…",
                     TaskKind::InstanceExport => "正在检查导出文件…",
                     TaskKind::InstanceRename => "正在检查实例名称与引用…",
@@ -591,6 +594,7 @@ impl Tasks {
                     TaskKind::ModpackPrepare => "正在取消整合包下载并清理暂存文件…",
                     TaskKind::JavaInstall => "正在取消 Java 下载并清理未完成文件…",
                     TaskKind::InstanceRepair => "正在取消文件补全并清理未完成文件…",
+                    TaskKind::InstanceVerify => "正在取消依赖完整性检查…",
                     TaskKind::InstanceReset => "正在取消重置并恢复原核心文件…",
                     TaskKind::InstanceExport => "正在取消导出并清理临时文件…",
                     TaskKind::InstanceRename => "正在取消改名并清理临时文件…",
@@ -868,6 +872,7 @@ impl Tasks {
                             TaskKind::InstanceRepair => {
                                 "文件补全已取消，已完成文件保留，未完成文件已清理"
                             }
+                            TaskKind::InstanceVerify => "依赖完整性检查已取消",
                             TaskKind::InstanceReset => "重置已取消，原实例已保留",
                             TaskKind::InstanceExport => "导出已取消，未完成 ZIP 已清理",
                             TaskKind::InstanceRename => "改名已取消，原实例已保留",

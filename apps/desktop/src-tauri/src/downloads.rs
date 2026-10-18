@@ -162,6 +162,7 @@ impl Downloads {
                 | TaskKind::ModpackInstall
                 | TaskKind::ModpackPrepare
                 | TaskKind::InstanceRepair
+                | TaskKind::InstanceVerify
                 | TaskKind::InstanceReset
                 | TaskKind::InstanceExport
                 | TaskKind::InstanceRename
@@ -322,18 +323,18 @@ impl Downloads {
             "pack-files" | "processing" | "installing" | "component_install"
             | "component_analyze" | "publishing" | "complete" | "game_install" | "game_support"
             | "reset_commit" | "reset_merge" | "export-archive" | "export-finalize"
-            | "repair-verify" => TaskStage::Processing,
+            | "repair-verify" | "integrity-verify" => TaskStage::Processing,
             _ => TaskStage::Preparing,
         };
         let (phase, message) = if progress.stage == "complete" {
-            if self
-                .tasks
-                .snapshot(task.id())
-                .is_some_and(|snapshot| snapshot.kind == TaskKind::InstanceRepair)
-            {
-                ("repair-verify".into(), "正在复核文件补全结果…".into())
-            } else {
-                ("installing".into(), "正在保存安装结果…".into())
+            match self.tasks.snapshot(task.id()).map(|snapshot| snapshot.kind) {
+                Some(TaskKind::InstanceRepair) => {
+                    ("repair-verify".into(), "正在复核文件补全结果…".into())
+                }
+                Some(TaskKind::InstanceVerify) => {
+                    ("integrity-verify".into(), "正在汇总依赖完整性结果…".into())
+                }
+                _ => ("installing".into(), "正在保存安装结果…".into()),
             }
         } else {
             (progress.stage, progress.message)
@@ -426,6 +427,7 @@ mod tests {
     #[test]
     fn instance_job_projection_and_cancel_target_are_scoped() {
         for kind in [
+            TaskKind::InstanceVerify,
             TaskKind::InstanceReset,
             TaskKind::InstanceExport,
             TaskKind::InstanceRename,

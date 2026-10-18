@@ -1,7 +1,9 @@
-//! Missing-only repair of a captured installed instance. Destination authority
+//! Missing-only repair and explicit read-only integrity checks of a captured
+//! installed instance. The writer's destination authority
 //! comes from bounded metadata enumeration and retained directory descriptors,
-//! never from an inspection report or a UI path. Existing files are not opened
-//! for content validation or replaced. No install processors or Java run here.
+//! never from an inspection report or a UI path. The missing-only writer does
+//! not validate or replace existing contents. IntegrityCheck hashes existing
+//! declared dependencies separately. No install processors or Java run here.
 //!
 //! State flow: capture version/index bytes and directory identities -> validate
 //! -> fetch a missing verified index into memory -> enumerate objects -> fetch
@@ -20,6 +22,10 @@ use std::{
     },
     time::Instant,
 };
+
+#[path = "integrity.rs"]
+mod integrity;
+pub use integrity::{IntegrityCheck, IntegrityProblem, IntegrityProblemKind, IntegrityReport};
 
 const MAX_VERSION_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_VERSION_TOTAL: u64 = 32 * 1024 * 1024;
@@ -53,14 +59,24 @@ pub struct MissingRepair {
     state: Mutex<RepairState>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    MissingOnly,
+    Verify,
+}
+
 impl MissingRepair {
     /// The display root must be the caller's canonical physical directory. It
     /// is checked against the supplied FD; changes never redirect the request.
     /// Capture performs reads only and is suitable for a background worker.
     pub fn capture_bound(root: fs::File, root_display: impl AsRef<Path>, id: &str) -> Result<Self> {
+        Self::capture(root, root_display.as_ref(), id, CaptureMode::MissingOnly)
+    }
+
+    fn capture(root: fs::File, root_display: &Path, id: &str, mode: CaptureMode) -> Result<Self> {
         pcl_core::identifier(id)?;
         let state = RefCell::new(RepairState {
-            filesystem: RepairFilesystem::new(root, root_display.as_ref())?,
+            filesystem: RepairFilesystem::new(root, root_display)?,
             metadata: Vec::new(),
             jar_probes: BTreeMap::new(),
             missing_index: None,
@@ -104,9 +120,21 @@ impl MissingRepair {
                     let snapshot = state
                         .filesystem
                         .snapshot(relative, manifest::MAX_ASSET_INDEX_BYTES)?;
-                    let value = json(&snapshot.bytes)?;
-                    files.extend(manifest::asset_objects(&value)?);
-                    captured_index = Some(value);
+                    // Verification must not trust objects named by a damaged
+                    // index. Missing-only capture retains its existing strict
+                    // parse behavior and never hashes existing dependencies.
+                    if mode == CaptureMode::MissingOnly {
+                        let value = json(&snapshot.bytes)?;
+                        files.extend(manifest::asset_objects(&value)?);
+                        captured_index = Some(value);
+                    } else if integrity::trusted_bytes(index, &snapshot.bytes) {
+                        if let Ok(value) = json(&snapshot.bytes) {
+                            if let Ok(objects) = manifest::asset_objects(&value) {
+                                files.extend(objects);
+                                captured_index = Some(value);
+                            }
+                        }
+                    }
                     state.metadata.push(snapshot);
                 } else {
                     state.missing_index = Some(relative.clone());
@@ -139,6 +167,27 @@ impl MissingRepair {
             .lock()
             .map_err(|_| "缺失补全捕获锁损坏")?
             .verify()
+    }
+
+    /// Count the captured required paths that are currently absent. A missing
+    /// index counts once; its unknown objects are never guessed or fetched.
+    /// Existing files are checked for presence only, as in repair_missing().
+    pub fn missing_count(&self) -> Result<usize> {
+        let mut state = self.state.lock().map_err(|_| "缺失补全捕获锁损坏")?;
+        state.verify()?;
+        let mut files = self.files.clone();
+        files.extend(self.index.iter().cloned());
+        let mut missing = 0;
+        for file in manifest::deduplicate(files)? {
+            if match file.relative {
+                Some(path) => !state.filesystem.inspect(&path)?.present(),
+                None => true,
+            } {
+                missing += 1;
+            }
+        }
+        state.verify()?;
+        Ok(missing)
     }
 }
 
@@ -654,6 +703,47 @@ fn validate(
 }
 
 impl Installer {
+    /// Count currently missing destinations eligible for this same writer.
+    /// This does not fetch a missing index or guess its object count, allocate
+    /// a temporary inode, or create directories. Admission may therefore skip
+    /// an empty download task while retaining the captured filesystem binding.
+    pub fn repairable_missing_count(&self, request: &MissingRepair) -> Result<usize> {
+        let mut state = request.state.lock().map_err(|_| "缺失补全捕获锁损坏")?;
+        state.verify()?;
+        let mut files = request.files.clone();
+        files.extend(request.index.iter().cloned());
+        let mut count = 0;
+        for file in manifest::deduplicate(files)? {
+            let Some(path) = &file.relative else { continue };
+            if !state.filesystem.inspect(path)?.present()
+                && self.repair_download_eligibility(&file, &state).is_ok()
+            {
+                count += 1;
+            }
+        }
+        state.verify()?;
+        Ok(count)
+    }
+
+    fn repair_download_eligibility(&self, file: &RequiredFile, state: &RepairState) -> Result<()> {
+        let download = file.download.as_ref().ok_or_else(|| {
+            file.unsupported
+                .clone()
+                .unwrap_or_else(|| "缺少可信下载声明".into())
+        })?;
+        self.url(&download.url)?;
+        // Publishing a probed-absent child jar would change the frozen launch
+        // inheritance choice; both planning and execution reject that target.
+        if file
+            .relative
+            .as_ref()
+            .is_some_and(|path| state.jar_probes.get(path) == Some(&false))
+        {
+            return Err("补全此 JAR 会改变已捕获的继承核心选择".into());
+        }
+        Ok(())
+    }
+
     /// Caller owns exclusive writer admission. The fast guard checks its cheap
     /// generations during streaming; full binding validation runs at admission,
     /// every publication boundary and completion, outside HTTP scheduling waits.
@@ -722,17 +812,10 @@ impl Installer {
             if state.filesystem.inspect(relative)?.present() {
                 continue;
             }
-            if let Some(download) = &file.download {
-                if let Err(reason) = self.url(&download.url) {
+            if file.download.is_some() {
+                if let Err(reason) = self.repair_download_eligibility(file, &state) {
                     file.download = None;
                     file.unsupported = Some(reason);
-                    continue;
-                }
-                // A missing probe would change the frozen inheritance choice
-                // after publication. Do not repair ambiguous custom metadata.
-                if state.jar_probes.get(relative) == Some(&false) {
-                    file.download = None;
-                    file.unsupported = Some("补全此 JAR 会改变已捕获的继承核心选择".into());
                     continue;
                 }
                 missing.push(file.clone());

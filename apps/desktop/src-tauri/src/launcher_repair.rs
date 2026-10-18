@@ -22,7 +22,7 @@ use std::{
     sync::{atomic::Ordering, Arc},
 };
 
-const CHANGED: &str = "补全期间实例、游戏目录或设置已变化；已完成的文件保留，请重新检查后再补全";
+const CHANGED: &str = "操作期间实例、游戏目录或设置已变化，请重新检查实例依赖";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RootIdentity {
@@ -40,13 +40,14 @@ impl RootIdentity {
     }
 }
 
-struct CapturedRepair {
-    id: String,
-    root: GameRoot,
+pub(super) struct CapturedRepair {
+    pub(super) id: String,
+    pub(super) root: GameRoot,
+    kind: TaskKind,
     settings_revision: String,
     close_generation: u64,
     run: RunStatus,
-    directory: File,
+    pub(super) directory: File,
     identity: RootIdentity,
     factory: Arc<pcl_network::ClientFactory>,
     scheduler: Arc<pcl_network::DownloadScheduler>,
@@ -69,7 +70,28 @@ fn capture(
     root_id: &str,
     revision: &str,
 ) -> Result<CapturedRepair, String> {
-    require_network_submission(shared)?;
+    capture_for(shared, id, root_id, revision, TaskKind::InstanceRepair)
+}
+
+/// Both operations retain the same application/filesystem guard. Verification
+/// requires exclusive read admission but never constructs a network client.
+pub(super) fn capture_for(
+    shared: &Shared,
+    id: &str,
+    root_id: &str,
+    revision: &str,
+    kind: TaskKind,
+) -> Result<CapturedRepair, String> {
+    match kind {
+        TaskKind::InstanceRepair => require_network_submission(shared)?,
+        TaskKind::InstanceVerify => {
+            crate::require_instance_job(shared)?;
+            if shared.launcher_updates.busy() {
+                return Err("请等待启动器更新结束后检查实例依赖".into());
+            }
+        }
+        _ => return Err("实例依赖操作类型无效".into()),
+    }
     if shared.tasks.active().is_some() {
         return Err("请在当前文件操作结束后补全缺失文件".into());
     }
@@ -98,6 +120,7 @@ fn capture(
     Ok(CapturedRepair {
         id: id.into(),
         root,
+        kind,
         settings_revision: settings.revision,
         close_generation: shared.close_generation.load(Ordering::SeqCst),
         run: shared.status.lock().unwrap().clone(),
@@ -111,13 +134,13 @@ fn capture(
 /// Transfer chunks only inspect in-memory generations. Disk settings and
 /// recovery journals are checked separately before publication; reading those
 /// on every chunk would serialize unrelated UI actions behind filesystem IO.
-fn verify_fast(
+pub(super) fn verify_fast(
     shared: &Shared,
     captured: &CapturedRepair,
     task: &TaskHandle,
 ) -> Result<(), String> {
     if shared.closing.load(Ordering::SeqCst) {
-        return Err("启动器正在关闭；已完成的补全文件保留".into());
+        return Err("启动器正在关闭，请稍后重新检查实例依赖".into());
     }
     if shared.config.snapshot().revision != captured.settings_revision
         || shared.close_generation.load(Ordering::SeqCst) != captured.close_generation
@@ -126,7 +149,7 @@ fn verify_fast(
         return Err(CHANGED.into());
     }
     let owner = shared.tasks.snapshot(task.id()).ok_or(CHANGED)?;
-    if owner.kind != TaskKind::InstanceRepair
+    if owner.kind != captured.kind
         || owner.root_id != captured.root.id
         || owner.instance_id.as_deref() != Some(&captured.id)
         || owner.stage.is_terminal()
@@ -136,7 +159,11 @@ fn verify_fast(
     Ok(())
 }
 
-fn verify(shared: &Shared, captured: &CapturedRepair, task: &TaskHandle) -> Result<(), String> {
+pub(super) fn verify(
+    shared: &Shared,
+    captured: &CapturedRepair,
+    task: &TaskHandle,
+) -> Result<(), String> {
     // The global writer lease excludes cooperating filesystem transactions.
     // Keep disk settings and recovery enumeration outside operations; neither
     // that mutex nor a disk check can fence arbitrary external filesystem edits.
