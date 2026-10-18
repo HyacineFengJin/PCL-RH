@@ -749,6 +749,34 @@ impl ConfigStore {
             .ok_or_else(|| "游戏目录未注册或已移除".into())
     }
 
+    /// One in-memory policy snapshot for an admitted processor task. Selection,
+    /// active-root and unrelated launch edits do not revoke its frozen inputs.
+    /// File authorization still belongs to the caller's captured root FD.
+    pub(crate) fn installer_java_policy(
+        &self,
+        root_id: &str,
+        id: &str,
+    ) -> Result<(String, JavaSelection, Vec<String>), String> {
+        let current = self.lock();
+        if let Some(error) = &current.blocked {
+            return Err(error.clone());
+        }
+        let root = current
+            .config
+            .roots
+            .iter()
+            .find(|root| root.id == root_id)
+            .ok_or("游戏目录未注册或已移除")?;
+        Ok((
+            root.path.clone(),
+            root.java_overrides
+                .get(id)
+                .unwrap_or(&current.config.java)
+                .clone(),
+            current.config.java_paths.clone(),
+        ))
+    }
+
     /// Returns a verified canonical path for a root bound to an operation.
     pub fn resolve(&self, root_id: Option<&str>) -> Result<GameRoot, String> {
         let mut root = {

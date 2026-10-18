@@ -15,6 +15,14 @@ pub struct ResolvedInstallRequest {
     pub(super) vanilla: ResolvedVanilla,
     pub(super) component: Option<ResolvedComponent>,
 }
+
+/// Only a processor batch needs an installation runtime. Its exact-major
+/// contract is distinct from the Java eventually used to launch the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessorJavaRequirement {
+    pub major: u32,
+    pub exact: bool,
+}
 pub(super) struct ResolvedVanilla {
     descriptor: Download,
     pub(super) metadata: Value,
@@ -53,6 +61,23 @@ impl ResolvedInstallRequest {
     /// Fabric and vanilla do not execute installation processors.
     pub fn requires_exact_java(&self) -> bool {
         self.component.as_ref().is_some_and(|c| c.install.is_some())
+    }
+    /// Pure captured-metadata inspection: legacy Forge spec0 and loaders with
+    /// no client processors perform no Java discovery or installation work.
+    pub fn processor_java_requirement(&self) -> Result<Option<ProcessorJavaRequirement>> {
+        let processors = self
+            .component
+            .as_ref()
+            .and_then(|component| component.install.as_ref());
+        if processors.is_none_or(|install| components::client_processors(install).next().is_none())
+        {
+            return Ok(None);
+        }
+        let major = self.vanilla.required_java;
+        if major == 0 || major > 999 {
+            return Err("组件要求的 Java 主版本无效".into());
+        }
+        Ok(Some(ProcessorJavaRequirement { major, exact: true }))
     }
     /// The launch metadata represented by this captured native authority.
     /// This performs no HTTP or Java work and retains no extra cached value.

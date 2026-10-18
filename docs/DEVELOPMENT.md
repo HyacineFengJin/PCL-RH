@@ -89,7 +89,9 @@
 
 启动前的自动获取由 `launcher_preparation/java.rs` 管理。核心 `inspection::java_requirement` 与 `java::select_from_catalog` 提供类型化需求和本地选择结果，只在 Auto 且无兼容候选时创建全局 `JavaInstall` 任务。官方下载复用 guarded engine；最终以捕获的设置 revision 调用 `ConfigStore::register_java`，只接受这次追加返回的新 revision，再把更新的 Settings 传给同一启动代次的构建闭包。手动选择不回退，账号身份仍只在最终构建阶段读取；取消、下载、登记或重验失败均不提交游戏进程。
 
-加载器处理器的 Java 由 `crates/install/src/components.rs::installer_java` 选择，与上述游戏启动选择分开。`Installer::with_java(path)` 是严格指定：路径失效、探测失败或主版本不符时直接报错，不继续寻找其他 Java；没有调用该方法时保留自动发现。不要把显式路径作为自动候选的优先提示，否则调用者确认的运行环境会被静默替换。当前桌面安装和组件重置使用处理器自动发现，游戏 Java 选项不改变它们的处理器选择。
+加载器处理器的 Java 由 `crates/install/src/components.rs::installer_java` 选择，与上述游戏启动选择分开。`Installer::with_java(path)` 是严格指定：路径失效、探测失败或主版本不符时直接报错，不继续寻找其他 Java；没有调用该方法时保留自动发现。不要把显式路径作为自动候选的优先提示，否则调用者确认的运行环境会被静默替换。桌面普通安装、整合包和重置通过 `installer_java::Context` 复用捕获的实例／全局选择与网络策略。`ResolvedInstallRequest::processor_java_requirement` 与执行器共用客户端处理器判定，无处理器不探测或下载；自动模式缺少精确主版本才调用官方 guarded 下载引擎，手动选择通过 `with_java` 保持严格语义。
+
+Java 获取沿用原安装任务与取消 token，在实例私有构建或重置 journal 之前完成。普通安装与整合包在排队前通过 `TaskScope::union` 同时保留目标根和托管 Java 子树；缺失子树只读捕获现存祖先，不预建目录。重置继续使用原全局 writer。Java 策略检查只绑定目标登记路径、有效选择和候选路径；前序安装自动选择实例或无关偏好更新不会使排队任务失效。网络工厂与调度器仍使用提交快照。Java 的完整目录发布不会关闭父安装任务的取消接纳，失败后保留完整 runtime，由核心自动发现，无须改写设置 revision。后续安装始终使用同一份原生 resolved metadata，Java 网络字节累加到原任务；外层事务进入提交后仍保留自己的提交语义。
 
 v2 设置在普通启动时备份并迁移。已有改名 journal 的引用载荷必须按原 v2 字段顺序重放；存在项目待恢复标记时，只在内存中规范化，保留磁盘字节。完成恢复后的首次合法设置写入再备份恢复后的原始 v2 字节并升级。排查升级与改名交叉问题时，先读 `VersionTwo`、`rename_bytes` 和 `pending_migration`，不要让新字段提前改变 journal 的预期快照。
 
@@ -343,3 +345,9 @@ schema 2 记录显式实例 ID，schema 1 不从文件名补猜身份。schema 3
 本地 CF ZIP 的清单保留精确 project/file ID，只有已配置的官方文件服务可将其转为下载依据。项目类型决定内容目录，官方 API 检查归属、许可、可用状态、URL、SHA1 和大小；归档不能自行授予 CDN 地址。整个清单解析成功后才更新确认内容和修订，工作线程在构建和发布前重新核对。服务未配置或文件被限制时保留阻止项，不跳过缺少的文件。
 
 CF 下载使用独立来源分支，拒绝 CDN 重定向，API Key 不进入文件请求；官方 SHA1 校验后另算本地 SHA512。Modrinth 原有双哈希、镜像和重定向策略保持各自语义。此入口只负责本地 CF ZIP，不扩展社区详情直接安装或 MCBBS 中的 CF 引用。
+
+## 多文件下载并发
+
+`pcl-network::for_each_bounded` 轮询有界、借用的 transfer futures，不创建脱离提交者的异步任务。Java 与整合包将已校验的匿名 FD 在每个完成回调中立即暂存；普通资源批量下载使用同一收集器保留待事务导入的文件。出现错误或取消时，所有在途响应、FD 与连接许可先释放，外层才清理暂存。全局连接数与总字节节奏仍由捕获的 `DownloadScheduler` 统一管理；元数据读取和按依赖排序的加载器处理器不变成无序并发。
+
+原版支持库／资源文件及加载器支持库使用有界工作线程，传输仍取得同一调度器的许可。并行进度必须累计每个文件的增量；单个文件的局部进度不能覆盖整批计数。文件发布继续要求完整大小与摘要校验，不使用未经验证的部分文件。

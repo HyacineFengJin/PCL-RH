@@ -3,7 +3,7 @@
 use super::{provider::HttpProvider, target::Dir, *};
 use std::{
     collections::VecDeque,
-    future::{poll_fn, Future},
+    future::Future,
     io::{Seek, SeekFrom, Write},
     pin::Pin,
     sync::atomic::Ordering,
@@ -15,36 +15,16 @@ type QueuedTransfer<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 /// outlive this owner: an error drops every in-flight response, anonymous file
 /// and already-verified result before returning to the publisher.
 pub(super) async fn collect_bounded<'a, T>(
-    mut pending: VecDeque<QueuedTransfer<'a, T>>,
+    pending: VecDeque<QueuedTransfer<'a, T>>,
     limit: usize,
 ) -> Result<Vec<T>> {
-    if !(1..=64).contains(&limit) {
-        return Err("资源下载并行数量无效".into());
-    }
-    let mut active = Vec::new();
     let mut ready = Vec::new();
-    loop {
-        while active.len() < limit {
-            let Some(job) = pending.pop_front() else {
-                break;
-            };
-            active.push(job);
-        }
-        if active.is_empty() {
-            return Ok(ready);
-        }
-        let (index, result) = poll_fn(|context| {
-            for (index, job) in active.iter_mut().enumerate() {
-                if let std::task::Poll::Ready(result) = job.as_mut().poll(context) {
-                    return std::task::Poll::Ready((index, result));
-                }
-            }
-            std::task::Poll::Pending
-        })
-        .await;
-        drop(active.swap_remove(index));
-        ready.push(result?);
-    }
+    pcl_network::for_each_bounded(pending, limit, |value| {
+        ready.push(value);
+        Ok(())
+    })
+    .await?;
+    Ok(ready)
 }
 
 #[derive(Clone, Debug, Serialize)]

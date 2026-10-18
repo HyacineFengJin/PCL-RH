@@ -7,11 +7,13 @@
 //! and recreate any caller-owned long-lived client after a successful change.
 mod doh;
 mod download;
+mod parallel;
 mod policy;
 pub use download::{
     download_snapshot, install_download_policy, install_download_snapshot, DownloadPermit,
     DownloadPolicy, DownloadScheduler, DownloadStatus, DOWNLOAD_SLICE_BYTES,
 };
+pub use parallel::for_each_bounded;
 pub use policy::{DnsFallback, DnsPolicy, Policy, ProxyPolicy};
 use serde::Serialize;
 use std::{

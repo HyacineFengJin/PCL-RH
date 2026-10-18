@@ -149,10 +149,7 @@ fn verify_file(file: &mut File, size: u64, hash: &str, executable: bool) -> Resu
 }
 impl Store {
     pub fn capture(project: &Path) -> Result<Self> {
-        let path = project.join(".pcl-rust/java");
-        let dir = Dir::create_absolute(&path)?;
-        dir.require_private()?;
-        Ok(Self { path, dir })
+        super::StoreBinding::capture(project)?.open()
     }
     fn recheck(&self) -> Result<()> {
         if Dir::absolute(&self.path)?.identity()? != self.dir.identity()? {

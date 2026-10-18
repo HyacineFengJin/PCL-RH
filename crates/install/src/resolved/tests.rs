@@ -194,6 +194,96 @@ impl Fixture {
     }
 }
 
+fn processor_authority(install: Option<Value>, major: u32) -> ResolvedInstallRequest {
+    let download = Download {
+        url: String::new(),
+        hash: "0".repeat(40),
+        size: 1,
+        relative: "fixture".into(),
+    };
+    ResolvedInstallRequest {
+        request: InstallRequest {
+            minecraft: "fixture".into(),
+            name: "fixture".into(),
+            components: vec![],
+        },
+        vanilla: ResolvedVanilla {
+            descriptor: download.clone(),
+            metadata: json!({"javaVersion":{"majorVersion":major}}),
+            required_java: major,
+        },
+        component: Some(ResolvedComponent {
+            selection: ComponentSelection {
+                provider: "forge".into(),
+                version: "1".into(),
+            },
+            source: ComponentSource::Installer {
+                coordinate: "fixture:loader:1".into(),
+                download,
+            },
+            profile: json!({}),
+            install,
+            libraries: BTreeMap::new(),
+        }),
+    }
+}
+
+#[test]
+fn processor_java_requirement_skips_legacy_empty_and_server_only_batches() {
+    for install in [
+        None,
+        Some(json!({"install":{"version":"legacy"}})),
+        Some(json!({"processors":[]})),
+        Some(json!({"processors":[{"sides":["server"]}]})),
+    ] {
+        assert_eq!(
+            processor_authority(install, 8)
+                .processor_java_requirement()
+                .unwrap(),
+            None
+        );
+    }
+    let mut vanilla = processor_authority(None, 8);
+    vanilla.component = None;
+    assert_eq!(vanilla.processor_java_requirement().unwrap(), None);
+}
+
+#[test]
+fn processor_java_requirement_matches_client_filter_and_exact_major() {
+    for processor in [
+        json!({"args":[]}),
+        json!({"sides":["client"],"args":[]}),
+        json!({"sides":["server","client"],"args":[]}),
+    ] {
+        let resolved = processor_authority(
+            Some(json!({"processors":[{"sides":["server"]},processor]})),
+            17,
+        );
+        assert_eq!(
+            resolved.processor_java_requirement().unwrap(),
+            Some(ProcessorJavaRequirement {
+                major: 17,
+                exact: true
+            })
+        );
+    }
+}
+
+#[test]
+fn processor_java_requirement_rejects_invalid_major_only_when_processors_need_it() {
+    for major in [0, 1000] {
+        assert!(processor_authority(Some(json!({"processors":[{}]})), major)
+            .processor_java_requirement()
+            .is_err());
+        assert_eq!(
+            processor_authority(None, major)
+                .processor_java_requirement()
+                .unwrap(),
+            None
+        );
+    }
+}
+
 #[test]
 fn resolved_vanilla_uses_captured_metadata_without_catalog_reselection() {
     let fixture = Fixture::new("fixture");

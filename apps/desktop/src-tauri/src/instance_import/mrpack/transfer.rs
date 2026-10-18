@@ -95,6 +95,16 @@ impl Client {
         self.local_mirrors = local;
         self
     }
+    #[cfg(test)]
+    pub(super) fn with_test_route(mut self, route: reqwest::Url) -> Result<Self> {
+        self.http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| "无法创建回环下载测试客户端")?;
+        self.route = Some(route);
+        Ok(self)
+    }
     pub(super) fn network_bytes(&self) -> u64 {
         self.network_bytes.load(Ordering::Relaxed)
     }

@@ -300,6 +300,39 @@ pub fn require_idle(shared: &Shared) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// A file worker binds the idle attempt as well as its visible status. A later
+/// launch may return to identical status fields without being the same attempt.
+#[derive(Clone)]
+pub(super) struct IdleSnapshot {
+    generation: Generation,
+    run: RunStatus,
+}
+
+/// The submission already refreshed monitor state under operations. This is an
+/// in-memory capture and never reopens its durable marker.
+pub(super) fn capture_idle(shared: &Shared) -> Result<IdleSnapshot, String> {
+    let session = shared.monitor.lock();
+    let run = shared.status.lock().unwrap();
+    if session.attached || matches!(run.stage.as_str(), "preparing" | "running") {
+        return Err("游戏启动状态已变化，请重新提交安装".into());
+    }
+    Ok(IdleSnapshot {
+        generation: Generation(session.generation),
+        run: run.clone(),
+    })
+}
+
+pub(super) fn verify_idle(shared: &Shared, expected: &IdleSnapshot) -> Result<(), String> {
+    let session = shared.monitor.lock();
+    if session.attached
+        || session.generation != expected.generation.0
+        || *shared.status.lock().unwrap() != expected.run
+    {
+        return Err("游戏启动状态已变化，请重新提交安装".into());
+    }
+    Ok(())
+}
 pub fn require_root_unused(shared: &Shared, root_id: &str) -> Result<(), String> {
     let mut session = shared.monitor.lock();
     refresh_locked(shared, &mut session)?;

@@ -12,6 +12,9 @@ struct Server {
     stop: Arc<AtomicBool>,
     maximum: Arc<AtomicU64>,
     artifact_requests: Arc<AtomicU64>,
+    routes: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+    component_maximum: Arc<AtomicU64>,
+    component_requests: Arc<AtomicU64>,
     worker: Option<thread::JoinHandle<()>>,
 }
 impl Drop for Server {
@@ -51,23 +54,55 @@ fn server(payload: Vec<u8>) -> Server {
     let active = Arc::new(AtomicU64::new(0));
     let requests = Arc::new(AtomicU64::new(0));
     let seen = requests.clone();
-    let routes = Arc::new(routes);
+    let routes = Arc::new(Mutex::new(routes));
+    let server_routes = routes.clone();
+    let component_maximum = Arc::new(AtomicU64::new(0));
+    let component_peak = component_maximum.clone();
+    let component_active = Arc::new(AtomicU64::new(0));
+    let component_requests = Arc::new(AtomicU64::new(0));
+    let component_seen = component_requests.clone();
     let worker = thread::spawn(move || {
         let mut workers = Vec::new();
         while !stopping.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((mut socket, _)) => {
-                    let routes = routes.clone();
+                    let routes = server_routes.clone();
                     let active = active.clone();
                     let peak = peak.clone();
                     let seen = seen.clone();
-                    workers.push(thread::spawn(move||{
-                socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();socket.set_write_timeout(Some(Duration::from_secs(1))).unwrap();let mut buf=[0u8;4096];let count=socket.read(&mut buf).unwrap_or(0);let request=String::from_utf8_lossy(&buf[..count]);let path=request.split_whitespace().nth(1).unwrap_or("");
-                let artifact=path.starts_with("/library")||path=="/client"||path=="/payload";
-                if artifact{seen.fetch_add(1,Ordering::Relaxed);let count=active.fetch_add(1,Ordering::Relaxed)+1;peak.fetch_max(count,Ordering::Relaxed);thread::sleep(Duration::from_millis(40));}
-                if let Some(body)=routes.get(path){let _=write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len());let _=socket.write_all(body);}else{let _=socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");}
-                if artifact{active.fetch_sub(1,Ordering::Relaxed);}
-            }));
+                    let component_peak = component_peak.clone();
+                    let component_active = component_active.clone();
+                    let component_seen = component_seen.clone();
+                    workers.push(thread::spawn(move || {
+                        socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                        socket.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+                        let mut buf = [0u8; 4096];
+                        let count = socket.read(&mut buf).unwrap_or(0);
+                        let request = String::from_utf8_lossy(&buf[..count]);
+                        let path = request.split_whitespace().nth(1).unwrap_or("");
+                        let component = path.starts_with("/component");
+                        let artifact = component || path.starts_with("/library") || path == "/client" || path == "/payload";
+                        if artifact {
+                            seen.fetch_add(1, Ordering::Relaxed);
+                            let count = active.fetch_add(1, Ordering::Relaxed) + 1;
+                            peak.fetch_max(count, Ordering::Relaxed);
+                            if component {
+                                component_seen.fetch_add(1, Ordering::Relaxed);
+                                let count = component_active.fetch_add(1, Ordering::Relaxed) + 1;
+                                component_peak.fetch_max(count, Ordering::Relaxed);
+                            }
+                            thread::sleep(Duration::from_millis(40));
+                        }
+                        let body = routes.lock().unwrap().get(path).cloned();
+                        if let Some(body) = body {
+                            let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                            let _ = socket.write_all(&body);
+                        } else {
+                            let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
+                        if component { component_active.fetch_sub(1, Ordering::Relaxed); }
+                        if artifact { active.fetch_sub(1, Ordering::Relaxed); }
+                    }));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(2))
@@ -84,9 +119,15 @@ fn server(payload: Vec<u8>) -> Server {
         stop,
         maximum,
         artifact_requests: requests,
+        routes,
+        component_maximum,
+        component_requests,
         worker: Some(worker),
     }
 }
+
+#[path = "component_parallel_tests.rs"]
+mod component_parallel_tests;
 fn installer(server: &Server, max: u16, rate: u32, forbid: bool) -> Installer {
     let scheduler = pcl_network::DownloadScheduler::new(pcl_network::DownloadPolicy {
         max_concurrent_transfers: max,

@@ -119,6 +119,7 @@ pub(crate) fn advance_steps(steps: &mut [InstallStep], p: &Progress) {
         }
     }
 }
+#[derive(Clone, Copy)]
 pub(crate) struct ComponentStats {
     pub completed: u64,
     pub total: u64,
@@ -323,78 +324,136 @@ impl Installer {
         stats: &mut ComponentStats,
         cb: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<()> {
-        let path = workspace.file(&d.relative)?;
-        let cached = cache.file(&d.relative)?;
-        fs::create_dir_all(path.parent().ok_or("组件文件路径无效")?).map_err(error)?;
-        if verify(&path, &d.hash, d.size, cancel)? {
-            return Ok(());
-        }
-        stats.total += 1;
-        stats.byte_total += d.size;
-        if !self.downloads.policy().forbid_cross_root_cache_copy
-            && verify(&cached, &d.hash, d.size, cancel)?
-        {
-            // Copy instead of hard links: processors can rewrite their inputs.
-            copy_cancel(&cached, &path, cancel)?;
-            stats.component_completed += 1;
-            stats.reused += 1;
-            stats.completed += 1;
-            stats.bytes += d.size;
-            cb(stats.event("component_download", "正在校验组件依赖库", 0.0));
-            return Ok(());
-        }
-        let url = self.url(&d.url)?;
-        let mut last = String::new();
-        for attempt in 0..3 {
+        self.component_files(workspace, cache, std::slice::from_ref(d), cancel, stats, cb)
+    }
+
+    /// ZIP extraction, profile edits and cache copies stay on the caller. Only
+    /// independent remote misses enter the same bounded downloader as vanilla.
+    pub(super) fn component_files(
+        &self,
+        workspace: &InstallDir,
+        cache: &InstallDir,
+        downloads: &[Download],
+        cancel: &AtomicBool,
+        stats: &mut ComponentStats,
+        cb: &(impl Fn(Progress) + Send + Sync),
+    ) -> Result<()> {
+        let mut remote = Vec::new();
+        let mut seen = HashSet::new();
+        for d in downloads {
             check(cancel)?;
-            if attempt > 0 {
-                retry_wait(cancel, attempt)?;
+            if !seen.insert(&d.relative) {
+                continue;
             }
-            let mut written = 0;
-            let mut output =
-                tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(error)?;
-            let result = (|| {
-                let mut digest = Sha1::new();
-                self.transfer(&url, d.size, cancel, |chunk| {
-                    output.write_all(chunk).map_err(error)?;
-                    digest.update(chunk);
-                    written += chunk.len() as u64;
-                    stats.bytes += chunk.len() as u64;
-                    stats.network += chunk.len() as u64;
-                    cb(stats.event("component_download", "正在下载组件依赖库", 0.0));
-                    Ok(())
-                })?;
-                if written != d.size
-                    || !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(&d.hash)
-                {
-                    return Err("组件文件 SHA1 或大小校验失败".into());
+            let path = workspace.file(&d.relative)?;
+            fs::create_dir_all(path.parent().ok_or("组件文件路径无效")?).map_err(error)?;
+            if verify(&path, &d.hash, d.size, cancel)? {
+                stats.component_completed += 1;
+                continue;
+            }
+            stats.total = stats.total.checked_add(1).ok_or("组件文件数量超出范围")?;
+            stats.byte_total = stats
+                .byte_total
+                .checked_add(d.size)
+                .ok_or("组件文件总大小超出范围")?;
+            let mut reused = false;
+            if !self.downloads.policy().forbid_cross_root_cache_copy {
+                let cached = cache.file(&d.relative)?;
+                if verify(&cached, &d.hash, d.size, cancel)? {
+                    // Processors may rewrite inputs. Never share cache inodes.
+                    copy_cancel(&cached, &path, cancel)?;
+                    reused = true;
+                } else if let Some(source) = &self.cache_source {
+                    reused = source.copy_to(workspace, d, cancel)?;
                 }
-                output.as_file().sync_all().map_err(error)?;
-                Ok(())
-            })();
-            let result = match result {
-                Ok(()) => persist_download(output, &path),
-                Err(e) => Err(close_download(output, e)),
-            };
-            match result {
-                Ok(()) => {
-                    stats.component_completed += 1;
-                    stats.downloaded += 1;
-                    stats.completed += 1;
-                    cb(stats.event("component_download", "组件依赖下载完成", 1.0));
-                    return Ok(());
-                }
-                Err(e) => {
-                    if e.starts_with("取消清理失败：") {
-                        return Err(e);
-                    }
-                    check(cancel)?;
-                    stats.bytes = stats.bytes.saturating_sub(written);
-                    last = e;
-                }
+            }
+            if reused {
+                stats.component_completed += 1;
+                stats.reused += 1;
+                stats.completed += 1;
+                stats.bytes += d.size;
+                cb(stats.event("component_download", "正在校验组件依赖库", 0.0));
+            } else {
+                self.url(&d.url)?;
+                remote.push(d);
             }
         }
-        Err(last)
+        if remote.is_empty() {
+            return Ok(());
+        }
+        let initial = *stats;
+        let done = AtomicU64::new(initial.completed);
+        let bytes = AtomicU64::new(initial.bytes);
+        let network = AtomicU64::new(initial.network);
+        let group = AtomicU64::new(initial.component_completed);
+        let downloaded = AtomicU64::new(initial.downloaded);
+        let reused = AtomicU64::new(initial.reused);
+        let next = AtomicU64::new(0);
+        let failure = Mutex::new(None);
+        let abort = AtomicBool::new(false);
+        let emission = Mutex::new(());
+        let progress = |_: Progress| {
+            // Sample after admission to this short emission lock so callbacks
+            // cannot deliver older counts after a faster sibling's snapshot.
+            let _emission = emission.lock().unwrap();
+            let snapshot = ComponentStats {
+                completed: done.load(Ordering::Relaxed),
+                bytes: bytes.load(Ordering::Relaxed),
+                network: network.load(Ordering::Relaxed),
+                component_completed: group.load(Ordering::Relaxed),
+                ..initial
+            };
+            cb(snapshot.event("component_download", "正在下载组件依赖库", 0.0));
+        };
+        std::thread::scope(|scope| {
+            for _ in
+                0..usize::from(self.downloads.policy().max_concurrent_transfers).min(remote.len())
+            {
+                scope.spawn(|| loop {
+                    if abort.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed) as usize;
+                    let Some(d) = remote.get(index) else { break };
+                    match self.download_to(
+                        workspace,
+                        d,
+                        cancel,
+                        &abort,
+                        &done,
+                        initial.total,
+                        &bytes,
+                        &network,
+                        initial.byte_total,
+                        &group,
+                        initial.component_total,
+                        &progress,
+                    ) {
+                        Ok(true) => {
+                            downloaded.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(false) => {
+                            reused.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(error) => {
+                            record_failure(&failure, error);
+                            abort.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        stats.completed = done.load(Ordering::Relaxed);
+        stats.bytes = bytes.load(Ordering::Relaxed);
+        stats.network = network.load(Ordering::Relaxed);
+        stats.component_completed = group.load(Ordering::Relaxed);
+        stats.downloaded = downloaded.load(Ordering::Relaxed);
+        stats.reused = reused.load(Ordering::Relaxed);
+        if let Some(error) = failure.into_inner().map_err(error)? {
+            return Err(error);
+        }
+        check(cancel)
     }
     pub(super) fn loader_library(
         &self,
@@ -486,9 +545,9 @@ impl Installer {
             let libs = profile["libraries"]
                 .as_array_mut()
                 .ok_or("Fabric 依赖信息无效")?;
-            let count = libs.len();
-            stats.component_total = count as u64;
-            for (index, library) in libs.iter_mut().enumerate() {
+            let mut dependencies = Vec::new();
+            let mut seen = HashSet::new();
+            for library in libs.iter_mut() {
                 check(cancel)?;
                 if !pcl_core::library_allowed(library)? {
                     continue;
@@ -502,14 +561,13 @@ impl Installer {
                 let d = descriptors
                     .get(&format!("libraries/{path}"))
                     .ok_or("已解析的 Fabric 依赖缺失")?;
-                self.component_file(&workspace, root, d, cancel, stats, cb)?;
+                if seen.insert(&d.relative) {
+                    dependencies.push(d.clone());
+                }
                 library["downloads"] = json!({"artifact":{"url":d.url,"sha1":d.hash,"size":d.size,"path":d.relative.strip_prefix("libraries/").unwrap()}});
-                cb(stats.event(
-                    "component_download",
-                    "正在下载 Fabric 依赖文件",
-                    (index + 1) as f64 / count.max(1) as f64,
-                ));
             }
+            stats.component_total = dependencies.len() as u64;
+            self.component_files(&workspace, root, &dependencies, cancel, stats, cb)?;
             cb(stats.event("component_install", "正在组装 Fabric 启动信息", 1.0));
         } else {
             let bytes = loaded.archive.ok_or("已解析的官方安装器缺失")?;
@@ -524,6 +582,7 @@ impl Installer {
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(error)?;
             cb(stats.event("component_analyze", "正在分析组件支持库文件", 0.0));
             let mut generated = vec![];
+            let mut dependencies = Vec::new();
             stats.component_total = descriptors.len() as u64;
             for d in descriptors.values() {
                 check(cancel)?;
@@ -544,19 +603,11 @@ impl Installer {
                     generated.push(d.clone());
                     stats.component_total -= 1;
                 } else {
-                    self.component_file(&workspace, root, d, cancel, stats, cb)?;
+                    dependencies.push(d.clone());
                 }
             }
-            let processors: Vec<_> = install["processors"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|p| {
-                    p["sides"]
-                        .as_array()
-                        .is_none_or(|s| s.iter().any(|v| v.as_str() == Some("client")))
-                })
-                .collect();
+            self.component_files(&workspace, root, &dependencies, cancel, stats, cb)?;
+            let processors: Vec<_> = client_processors(&install).collect();
             if !processors.is_empty() {
                 let java_major =
                     vanilla["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32;
@@ -1056,6 +1107,18 @@ fn run_child(
         std::thread::sleep(Duration::from_millis(40));
     }
 }
+pub(super) fn client_processors(install: &Value) -> impl Iterator<Item = &Value> {
+    install["processors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|processor| {
+            processor["sides"]
+                .as_array()
+                .is_none_or(|sides| sides.iter().any(|side| side.as_str() == Some("client")))
+        })
+}
+
 enum JavaProbe {
     Major(u32),
     Unavailable(String),

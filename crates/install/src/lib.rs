@@ -11,7 +11,7 @@ pub use repair::{
     IntegrityProblemKind, IntegrityReport, MissingRepair, MissingRepairReport, RepairUnsupported,
 };
 mod resolved;
-pub use resolved::ResolvedInstallRequest;
+pub use resolved::{ProcessorJavaRequirement, ResolvedInstallRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest, Sha1};

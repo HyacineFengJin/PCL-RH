@@ -36,6 +36,9 @@ impl Http {
             fixture: None,
         })
     }
+    pub fn parallel_limit(&self) -> usize {
+        usize::from(self.scheduler.policy().max_concurrent_transfers)
+    }
     async fn response(&self, url: &str, cancel: &AtomicBool) -> Result<reqwest::Response> {
         let parsed = reqwest::Url::parse(url).map_err(|_| "Java 官方下载地址无效")?;
         if parsed.scheme() != "https"

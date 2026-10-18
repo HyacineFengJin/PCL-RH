@@ -1,7 +1,9 @@
 use crate::tasks::{
     TaskHandle, TaskKind, TaskOutcome, TaskProgress, TaskScope, TaskStage, TaskTarget, Tasks,
 };
-use pcl_install::{InstallRequest, InstallResult, Installer, Progress, VersionEntry};
+use pcl_install::{
+    InstallRequest, InstallResult, Installer, Progress, ResolvedInstallRequest, VersionEntry,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -72,6 +74,15 @@ pub struct Downloads {
     tasks: Arc<Tasks>,
     current: Mutex<Option<String>>,
     catalog: Mutex<Option<(Instant, Vec<VersionEntry>)>>,
+}
+
+/// Metadata and the processor runtime are prepared after this task acquires its
+/// submitted scope. Keeping the resolved authority with its Installer prevents
+/// a second metadata lookup from changing the plan after Java was selected.
+pub(crate) struct PreparedInstall {
+    pub installer: Installer,
+    pub resolved: ResolvedInstallRequest,
+    pub java_bytes: u64,
 }
 
 impl Downloads {
@@ -214,8 +225,8 @@ impl Downloads {
         root: PathBuf,
         root_id: String,
         request: InstallRequest,
-        project: PathBuf,
-        before_start: impl FnOnce() -> Result<(), String> + Send + 'static,
+        scope: TaskScope,
+        before_start: impl FnOnce(&TaskHandle) -> Result<PreparedInstall, String> + Send + 'static,
         on_complete: impl FnOnce(&InstallResult) -> Result<(), String> + Send + 'static,
     ) -> Result<String, String> {
         if !root.is_absolute() {
@@ -223,7 +234,6 @@ impl Downloads {
         }
         request.validate()?;
         let id = request.name.clone();
-        let scope = TaskScope::root(&root)?;
         let task = self.tasks.admit_queued(
             TaskTarget {
                 root_id,
@@ -239,7 +249,6 @@ impl Downloads {
         // latest ID was assigned. Publish it once more after committing that ID.
         task.publish();
         let downloads = self.clone();
-        let download_policy = pcl_network::download_snapshot();
         std::thread::Builder::new()
             .name(format!("pcl-install-{task_id}"))
             .spawn(move || {
@@ -249,26 +258,39 @@ impl Downloads {
                 // scope turn, with no operations lock held while waiting.
                 let gate = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     task.wait_turn()?;
-                    before_start()
+                    before_start(&task)
                 }))
                 .unwrap_or_else(|_| Err("安装开始前的目标检查意外退出".into()));
-                if let Err(error) = gate {
-                    task.finish(if error == crate::tasks::CANCELLED {
-                        TaskOutcome::Failed(error)
-                    } else {
-                        TaskOutcome::Error(error)
-                    });
-                    return;
-                }
+                let prepared = match gate {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        task.finish(
+                            if matches!(
+                                error.as_str(),
+                                crate::tasks::CANCELLED
+                                    | crate::java_download::CANCELLED
+                                    | "安装已取消"
+                                    | "下载已取消"
+                            ) {
+                                TaskOutcome::Failed(error)
+                            } else {
+                                TaskOutcome::Error(error)
+                            },
+                        );
+                        return;
+                    }
+                };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Installer::new().and_then(|installer| {
-                        installer
-                            .with_download_policy(download_policy)
-                            .with_project(&project)
-                            .install_request(&root, &request, &cancel, |progress| {
-                                downloads.progress(&task, progress);
-                            })
-                    })
+                    prepared.installer.install_resolved_request(
+                        &root,
+                        &prepared.resolved,
+                        &cancel,
+                        |mut progress| {
+                            progress.network_bytes =
+                                progress.network_bytes.saturating_add(prepared.java_bytes);
+                            downloads.progress(&task, progress);
+                        },
+                    )
                 }))
                 .unwrap_or_else(|_| Err("安装任务意外退出，请重试".into()));
                 match result {
@@ -300,8 +322,16 @@ impl Downloads {
                     Err(error) => {
                         if error.starts_with("取消清理失败：") {
                             task.finish(TaskOutcome::CleanupFailed(error));
-                        } else {
+                        } else if matches!(
+                            error.as_str(),
+                            crate::tasks::CANCELLED
+                                | crate::java_download::CANCELLED
+                                | "安装已取消"
+                                | "下载已取消"
+                        ) {
                             task.finish(TaskOutcome::Failed(error));
+                        } else {
+                            task.finish(TaskOutcome::Error(error));
                         }
                     }
                 }

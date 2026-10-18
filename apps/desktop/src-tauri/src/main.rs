@@ -12,6 +12,7 @@ mod downloads;
 mod editing;
 mod experimental;
 mod export_presets;
+mod installer_java;
 mod instance_commands;
 mod instance_delete;
 mod instance_export;
@@ -727,32 +728,70 @@ fn download_start(
     }
     // Installation uses the policy submitted with this job. Editing the
     // launcher later must not change its post-publication selection behavior.
-    let auto_select = state
-        .launcher_preferences
-        .snapshot()
-        .preferences
-        .auto_select_installed;
+    let policy = captured_launch_policy(&state)?;
+    let auto_select = policy.preferences.auto_select_installed;
+    let factory = pcl_network::snapshot();
+    let scheduler = pcl_network::download_snapshot();
+    let mut java = installer_java::Context::capture(
+        &state,
+        &root,
+        &request.name,
+        tasks::TaskKind::Install,
+        installer_java::Inputs {
+            settings: state.config.checked_snapshot()?,
+            preferences_revision: policy.revision,
+            factory: factory.clone(),
+            scheduler: scheduler.clone(),
+        },
+    )?;
+    let mut scope = tasks::TaskScope::root(Path::new(&root.path))?;
+    // Metadata resolution waits for the queue. Reserve the shared runtime
+    // store conservatively for processor-capable loaders before admission;
+    // the resolved plan still decides whether Java work is actually needed.
+    if request.components.iter().any(|component| {
+        matches!(
+            component.provider.to_ascii_lowercase().as_str(),
+            "forge" | "neoforge"
+        )
+    }) {
+        scope = scope.union(tasks::TaskScope::managed_runtime_store(&state.project)?)?;
+    }
     let shared = state.inner().clone();
     let target = root.id.clone();
     let captured_root = root.clone();
     let captured_name = request.name.clone();
+    let submitted = request.clone();
     let before_start = shared.clone();
     state.downloads.start(
         PathBuf::from(root.path),
         root.id,
         request,
-        shared.project.clone(),
-        move || {
-            let _operation = before_start.operations.lock().unwrap();
-            require_network_submission(&before_start)?;
-            let current = before_start.config.resolve(Some(&captured_root.id))?;
-            if current.path != captured_root.path {
-                return Err("游戏目录登记已变化，请重新提交安装".into());
+        scope,
+        move |task| {
+            {
+                let _operation = before_start.operations.lock().unwrap();
+                require_network_submission(&before_start)?;
+                let current = before_start.config.resolve(Some(&captured_root.id))?;
+                if current.path != captured_root.path {
+                    return Err("游戏目录登记已变化，请重新提交安装".into());
+                }
+                ensure_instance_files_ready(&before_start, &current)?;
+                instance_reset::ensure_ready(Path::new(&current.path))?;
+                resource_ops::ensure_verified_batches_ready(Path::new(&current.path))?;
+                instance_commands::new_name(&before_start, &current, &captured_name)?;
             }
-            ensure_instance_files_ready(&before_start, &current)?;
-            instance_reset::ensure_ready(Path::new(&current.path))?;
-            resource_ops::ensure_verified_batches_ready(Path::new(&current.path))?;
-            instance_commands::new_name(&before_start, &current, &captured_name)
+            java.verify(&before_start, task)?;
+            let installer = pcl_install::Installer::from_factory(&factory)?
+                .with_download_policy(scheduler)
+                .with_project(&before_start.project);
+            let resolved = installer.resolve_request(&submitted, &task.cancellation_token())?;
+            let installer = java.ensure(&before_start, task, installer, &resolved)?;
+            java.verify(&before_start, task)?;
+            Ok(downloads::PreparedInstall {
+                installer,
+                resolved,
+                java_bytes: java.network_bytes(),
+            })
         },
         move |result| {
             if auto_select {
@@ -981,9 +1020,26 @@ async fn instance_reset_start(
         if checked.revision != plan.revision {
             return Err("实例或重置方案已改变，请重新检查".into());
         }
+        let policy = captured_launch_policy(&s)?;
+        let factory = pcl_network::snapshot();
+        let scheduler = pcl_network::download_snapshot();
+        let mut java = installer_java::Context::capture(
+            &s,
+            &root,
+            &plan.id,
+            tasks::TaskKind::InstanceReset,
+            installer_java::Inputs {
+                settings: s.config.checked_snapshot()?,
+                preferences_revision: policy.revision,
+                factory: factory.clone(),
+                scheduler: scheduler.clone(),
+            },
+        )?;
+        // Reset retains its existing exclusive writer admission, which also
+        // covers the shared runtime store throughout preparation and rollback.
         let task = s.tasks.admit(
             tasks::TaskTarget {
-                root_id: root.id,
+                root_id: root.id.clone(),
                 root_path: root.path.clone(),
                 instance_id: Some(plan.id),
             },
@@ -992,31 +1048,66 @@ async fn instance_reset_start(
         let task_id = task.id().to_owned();
         s.downloads.track(&task);
         let worker = s.clone();
-        let download_policy = pcl_network::download_snapshot();
         std::thread::Builder::new()
             .name(format!("pcl-reset-{task_id}"))
             .spawn(move || {
                 let cancel = task.cancellation_token();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    instance_reset::execute_with_policy(
+                    java.verify(&worker, &task)?;
+                    let installer = pcl_install::Installer::from_factory(&factory)?
+                        .with_download_policy(scheduler)
+                        .with_project(&worker.project)
+                        .with_cache_source(&root.path)?;
+                    let resolved =
+                        installer.resolve_request(&checked.install_request(), &cancel)?;
+                    let installer = java.ensure(&worker, &task, installer, &resolved)?;
+                    java.verify(&worker, &task)?;
+                    let java_bytes = java.network_bytes();
+                    instance_reset::execute_prepared(
                         Path::new(&root.path),
-                        &worker.project,
                         checked,
-                        download_policy,
+                        installer,
+                        resolved,
                         &cancel,
-                        |p| worker.downloads.progress(&task, p),
+                        |mut p| {
+                            p.network_bytes = p.network_bytes.saturating_add(java_bytes);
+                            worker.downloads.progress(&task, p);
+                        },
+                        || java.verify(&worker, &task),
                     )
                 }))
                 .unwrap_or_else(|_| {
                     Err("取消清理失败：重置任务意外退出，请恢复未完成的重置后重试".into())
                 });
-                finish_instance_task(task, result, "实例核心重置完成，游戏内容已保留");
+                finish_reset_task(task, result);
             })
             .map_err(|e| format!("无法启动重置任务：{e}"))?;
         Ok(task_id)
     })
     .await
     .map_err(|_| "启动重置任务失败".to_string())?
+}
+
+fn finish_reset_task(task: tasks::TaskHandle, result: Result<serde_json::Value, String>) {
+    // A late click on Cancel cannot turn a genuine Java/checksum/binding
+    // failure into successful cleanup. Only a producer's cancellation result
+    // may be projected as Cancelled by the task coordinator.
+    match result {
+        Err(error)
+            if !error.starts_with("取消清理失败：")
+                && !matches!(
+                    error.as_str(),
+                    tasks::CANCELLED
+                        | java_download::CANCELLED
+                        | "安装已取消"
+                        | "下载已取消"
+                        | "组件重置已取消"
+                ) =>
+        {
+            task.finish(tasks::TaskOutcome::Error(error));
+        }
+        other => finish_instance_task(task, other, "实例核心重置完成，游戏内容已保留"),
+    }
 }
 
 fn finish_instance_task(
@@ -2408,6 +2499,72 @@ mod integration_tests {
     mod resource_updates;
     #[path = "root_removal.rs"]
     mod root_removal_tests;
+
+    #[test]
+    fn reset_retains_real_preparation_errors_after_late_cancel() {
+        for error in ["Java 文件校验失败", "安装期间游戏目录已变化"] {
+            let fixture = Fixture::new();
+            let shared = fixture.shared();
+            let root = shared.config.resolve(None).unwrap();
+            let task = shared
+                .tasks
+                .admit(
+                    TaskTarget {
+                        root_id: root.id,
+                        root_path: root.path,
+                        instance_id: Some("fixture".into()),
+                    },
+                    TaskKind::InstanceReset,
+                )
+                .unwrap();
+            let id = task.id().to_owned();
+            shared.tasks.cancel(&id).unwrap();
+            finish_reset_task(task, Err(error.into()));
+            let ended = shared.tasks.snapshot(&id).unwrap();
+            assert_eq!(ended.stage, tasks::TaskStage::Error);
+            assert_eq!(ended.error.as_deref(), Some(error));
+        }
+    }
+
+    #[test]
+    fn reset_cancellation_and_committed_success_preserve_their_outcomes() {
+        for cancelled_result in [true, false] {
+            let fixture = Fixture::new();
+            let shared = fixture.shared();
+            let root = shared.config.resolve(None).unwrap();
+            let task = shared
+                .tasks
+                .admit(
+                    TaskTarget {
+                        root_id: root.id,
+                        root_path: root.path,
+                        instance_id: Some("fixture".into()),
+                    },
+                    TaskKind::InstanceReset,
+                )
+                .unwrap();
+            let id = task.id().to_owned();
+            shared.tasks.cancel(&id).unwrap();
+            let result = if cancelled_result {
+                Err("组件重置已取消".into())
+            } else {
+                Ok(serde_json::json!({"id":"fixture", "backup_id":"retained"}))
+            };
+            finish_reset_task(task, result);
+            let ended = shared.tasks.snapshot(&id).unwrap();
+            assert_eq!(
+                ended.stage,
+                if cancelled_result {
+                    tasks::TaskStage::Cancelled
+                } else {
+                    tasks::TaskStage::Complete
+                }
+            );
+            if !cancelled_result {
+                assert_eq!(ended.result.unwrap()["backup_id"], "retained");
+            }
+        }
+    }
 
     #[test]
     fn game_preparation_uses_a_captured_policy_and_refuses_unverified_preferences() {

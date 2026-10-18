@@ -28,16 +28,16 @@ fn source(body: &[u8], leaf: &str) -> Download {
         size: body.len() as u64,
     }
 }
-fn file(body: &[u8], leaf: &str, executable: bool) -> Entry {
+pub(super) fn file(body: &[u8], leaf: &str, executable: bool) -> Entry {
     Entry::File {
         executable,
         downloads: BTreeMap::from([("raw".into(), source(body, leaf))]),
     }
 }
-fn script(major: u32, arch: &str) -> Vec<u8> {
+pub(super) fn script(major: u32, arch: &str) -> Vec<u8> {
     format!("#!/bin/sh\nprintf 'java.specification.version = {major}\\njava.vendor = Fixture JVM\\nos.arch = {arch}\\n' >&2\n").into_bytes()
 }
-fn plan(body: &[u8]) -> Manifest {
+pub(super) fn plan(body: &[u8]) -> Manifest {
     Manifest {
         files: BTreeMap::from([
             ("bin".into(), Entry::Directory),
@@ -61,7 +61,7 @@ fn plan(body: &[u8]) -> Manifest {
         ]),
     }
 }
-fn package(manifest: &Manifest) -> Package {
+pub(super) fn package(manifest: &Manifest) -> Package {
     let raw = serde_json::to_vec(manifest).unwrap();
     let sha1 = hash(&raw);
     Package {
@@ -78,14 +78,14 @@ fn package(manifest: &Manifest) -> Package {
         sha1,
     }
 }
-fn catalog_body(packages: &[Package]) -> Vec<u8> {
+pub(super) fn catalog_body(packages: &[Package]) -> Vec<u8> {
     let mut components = serde_json::Map::new();
     for p in packages {
         components.insert(p.component.clone(), serde_json::json!([{"manifest":p.manifest,"version":{"name":p.version,"released":p.released}}]));
     }
     serde_json::to_vec(&serde_json::json!({catalog::platform().unwrap():components})).unwrap()
 }
-fn task(tasks: &Arc<Tasks>, store: &Store) -> TaskHandle {
+pub(super) fn task(tasks: &Arc<Tasks>, store: &Store) -> TaskHandle {
     tasks
         .admit_queued(
             TaskTarget {

@@ -2,17 +2,22 @@
 //! Catalog authority -> bounded manifest -> anonymous checked files -> probe ->
 //! no-replacement directory publication. Config registration only appends the
 //! resulting canonical executable; it never changes a manual/automatic choice.
+mod binding;
 mod catalog;
 mod files;
 mod network;
 #[cfg(test)]
+mod parallel_tests;
+#[cfg(test)]
 mod tests;
 use crate::tasks::{TaskHandle, TaskProgress, TaskStage};
+pub use binding::StoreBinding;
 pub use catalog::Package;
 use catalog::{Entry, Manifest};
 pub use files::Store;
 use pcl_install::InstallStep;
 use std::{
+    cell::Cell,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -188,45 +193,78 @@ async fn install_bound(
             .values()
             .filter(|entry| matches!(entry, Entry::File { .. }))
             .count() as u64;
-        let mut bytes = 0;
-        let mut complete = 0;
-        for (path, entry) in &manifest.files {
-            if let Entry::File {
+        // Futures are polled by this worker, so counters need no lock. Each
+        // progress callback adds only its file's new bytes; another active
+        // file's callback can never replace or roll back the task total.
+        let bytes = Cell::new(0);
+        let complete = Cell::new(0);
+        let stage_ref = &stage;
+        let jobs = manifest.files.iter().filter_map(|(path, entry)| {
+            let Entry::File {
                 executable,
                 downloads,
             } = entry
-            {
-                check(&cancel)?;
+            else {
+                return None;
+            };
+            let source = &downloads["raw"];
+            let http = &http;
+            let bytes = &bytes;
+            let complete = &complete;
+            let cancel = &cancel;
+            Some(async move {
+                check(cancel)?;
                 fast()?;
-                let source = &downloads["raw"];
-                let mut file = stage.anonymous(path)?;
+                let mut file = stage_ref.anonymous(path)?;
                 report(
                     task,
                     1,
-                    complete,
+                    complete.get(),
                     total,
-                    bytes,
+                    bytes.get(),
                     total_bytes,
                     format!("正在下载 Java：{path}"),
                 );
-                http.file(source, &mut file, &cancel, fast, |current| {
+                let mut previous = 0;
+                http.file(source, &mut file, cancel, fast, |current| {
+                    bytes.set(bytes.get() + current - previous);
+                    previous = current;
                     report(
                         task,
                         1,
-                        complete,
+                        complete.get(),
                         total,
-                        bytes + current,
+                        bytes.get(),
                         total_bytes,
                         format!("正在下载 Java：{path}"),
                     )
                 })
                 .await?;
-                full()?;
-                stage.publish_file(path, &file, *executable)?;
-                bytes += source.size;
-                complete += 1;
-            }
-        }
+                Ok((path, file, *executable))
+            })
+        });
+        // Completion consumes and publishes one checked anonymous descriptor
+        // immediately. On any error the helper drops all remaining futures
+        // (responses, scheduler permits and FDs) before stage cleanup runs.
+        pcl_network::for_each_bounded(jobs, http.parallel_limit(), |(path, file, executable)| {
+            check(&cancel)?;
+            full()?;
+            stage_ref.publish_file(path, &file, executable)?;
+            complete.set(complete.get() + 1);
+            report(
+                task,
+                1,
+                complete.get(),
+                total,
+                bytes.get(),
+                total_bytes,
+                format!("已校验 Java：{path}"),
+            );
+            Ok(())
+        })
+        .await?;
+        let bytes = bytes.get();
+        let complete = complete.get();
         check(&cancel)?;
         stage.links()?;
         // Re-fetch only small provider metadata. An identity change cannot

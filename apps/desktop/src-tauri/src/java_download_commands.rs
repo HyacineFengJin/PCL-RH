@@ -30,13 +30,15 @@ pub fn java_download_start(
     if settings.revision != revision || root_id.as_ref().is_some_and(|id| id != &settings.root_id) {
         return Err("设置或游戏目录已改变，请刷新后重新下载 Java".into());
     }
-    let store = java_download::Store::capture(&shared.project)?;
-    let scope = tasks::TaskScope::root(&store.path)?;
+    let store_binding = java_download::StoreBinding::capture(&shared.project)?;
+    let scope = tasks::TaskScope::managed_runtime_store(&shared.project)?;
+    store_binding.verify()?;
+    let store_path = shared.project.join(".pcl-rust/java");
     let http = java_download::http(pcl_network::snapshot(), pcl_network::download_snapshot())?;
     let task = Arc::new(shared.tasks.admit_queued(
         tasks::TaskTarget {
             root_id: "launcher".into(),
-            root_path: store.path.display().to_string(),
+            root_path: store_path.display().to_string(),
             instance_id: None,
         },
         tasks::TaskKind::JavaInstall,
@@ -51,6 +53,7 @@ pub fn java_download_start(
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 worker_task.wait_turn()?;
+                let store = store_binding.open()?;
                 tauri::async_runtime::block_on(java_download::install(
                     &store,
                     &component,

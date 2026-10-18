@@ -147,8 +147,8 @@ fn vanilla_preflight_runs_after_queued_turn_and_preserves_real_admission_error()
             root.clone(),
             "game".into(),
             request(),
-            f.0.clone(),
-            move || {
+            TaskScope::root(&root).unwrap(),
+            move |_| {
                 seen.store(true, Ordering::SeqCst);
                 entered.send(()).unwrap();
                 Err("Fixture root selection changed".into())
@@ -191,8 +191,8 @@ fn cancelling_queued_vanilla_drops_preflight_captures_before_terminal_reply() {
             root.clone(),
             "game".into(),
             request(),
-            f.0.clone(),
-            move || {
+            TaskScope::root(&root).unwrap(),
+            move |_| {
                 let _captured = prepared;
                 panic!("Cancelled queued work must not enter its preflight")
             },
@@ -206,4 +206,62 @@ fn cancelling_queued_vanilla_drops_preflight_captures_before_terminal_reply() {
     assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
     assert!(!blocker.cancellation_token().load(Ordering::SeqCst));
     complete(&blocker);
+}
+
+#[test]
+fn java_preparation_failure_keeps_published_runtime_and_original_task_outcome() {
+    for cancelled in [false, true] {
+        let f = Fixture::new();
+        let root = f.root("game");
+        let runtime = f.0.join(".pcl-rust/java/complete-runtime");
+        let published = runtime.clone();
+        let tasks = Arc::new(Tasks::new());
+        let preparing_tasks = tasks.clone();
+        let downloads = Arc::new(Downloads::new(tasks.clone()));
+        let scope = TaskScope::root(&root)
+            .unwrap()
+            .union(TaskScope::managed_runtime_store(&f.0).unwrap())
+            .unwrap();
+        let id = downloads
+            .start(
+                root.clone(),
+                "game".into(),
+                request(),
+                scope,
+                move |task| {
+                    assert!(preparing_tasks.snapshot(task.id()).unwrap().can_cancel);
+                    // Model a complete managed publication followed by an
+                    // acquisition recheck failure. The outer install must not
+                    // clean up this independently reusable directory.
+                    fs::create_dir_all(&published).unwrap();
+                    fs::write(published.join("complete"), b"retained runtime").unwrap();
+                    if cancelled {
+                        task.cancellation_token().store(true, Ordering::SeqCst);
+                        Err(crate::java_download::CANCELLED.into())
+                    } else {
+                        Err("Fixture Java binding changed".into())
+                    }
+                },
+                |_| panic!("A failed runtime preparation cannot publish a game"),
+            )
+            .unwrap();
+        let ended = tasks.wait_terminal(&id).unwrap();
+        assert_eq!(
+            ended.stage,
+            if cancelled {
+                TaskStage::Cancelled
+            } else {
+                TaskStage::Error
+            }
+        );
+        if !cancelled {
+            assert_eq!(ended.error.as_deref(), Some("Fixture Java binding changed"));
+        }
+        assert_eq!(tasks.list().len(), 1, "Java reuses its parent task");
+        assert_eq!(
+            fs::read(runtime.join("complete")).unwrap(),
+            b"retained runtime"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    }
 }

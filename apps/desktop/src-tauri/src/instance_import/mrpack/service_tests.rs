@@ -174,6 +174,200 @@ fn input_usage(cache: &ConfirmationCache) -> (usize, usize, u64, usize) {
     (usage.fds, usage.bytes, usage.inner_bytes, usage.preparing)
 }
 
+// A bundled core keeps these outer Java-binding regressions independent of
+// provider HTTP and executable probes. Processor requirement/acquisition itself
+// is exercised by install/resolved and installer_java's synthetic fixtures.
+fn contextual_authority(
+    f: &Fixture,
+    name: &str,
+) -> (TaskHandle, ConfirmedPack, crate::installer_java::Context) {
+    let plan = f.prepare(name);
+    let _operations = f.shared.operations.lock().unwrap();
+    let authority = f
+        .shared
+        .pack_confirmations
+        .claim(&f.root, &f.project.0, &f.source, name, &plan.revision)
+        .unwrap();
+    let context = crate::installer_java::Context::capture(
+        &f.shared,
+        &f.root,
+        name,
+        TaskKind::ModpackInstall,
+        crate::installer_java::Inputs {
+            settings: f.shared.config.checked_snapshot().unwrap(),
+            preferences_revision: f.shared.launcher_preferences.snapshot().revision,
+            factory: authority.factory.clone(),
+            scheduler: authority.scheduler.clone(),
+        },
+    )
+    .unwrap();
+    let scope = TaskScope::root(Path::new(&f.root.path))
+        .unwrap()
+        .union(TaskScope::managed_runtime_store(&f.project.0).unwrap())
+        .unwrap();
+    let task = f
+        .shared
+        .tasks
+        .admit_queued(
+            TaskTarget {
+                root_id: f.root.id.clone(),
+                root_path: f.root.path.clone(),
+                instance_id: Some(name.into()),
+            },
+            TaskKind::ModpackInstall,
+            scope,
+        )
+        .unwrap();
+    (task, authority, context)
+}
+
+#[test]
+fn bundled_pack_never_probes_missing_manual_java_or_creates_the_managed_store() {
+    let f = Fixture::new();
+    let mut settings = f.shared.config.snapshot();
+    settings.java = pcl_core::java::JavaSelection::Manual {
+        path: f
+            .project
+            .0
+            .join("missing-java/bin/java")
+            .display()
+            .to_string(),
+    };
+    f.shared.config.save(settings.clone()).unwrap();
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let observed = phases.clone();
+    f.shared.tasks.set_listener(move |snapshot| {
+        observed.lock().unwrap().push(snapshot.phase);
+    });
+    let plan = f.prepare("BundledWithoutJava");
+    let id = f.submit(&f.root, &plan);
+    let terminal = f.shared.tasks.wait_terminal(&id).unwrap();
+    assert_eq!(terminal.stage, TaskStage::Complete, "{:?}", terminal.error);
+    assert_eq!(f.shared.config.snapshot().java, settings.java);
+    assert!(!f.project.0.join(".pcl-rust/java").exists());
+    assert!(phases
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|phase| !phase.starts_with("java-")));
+}
+
+#[test]
+fn queued_pack_java_binding_survives_previous_install_auto_selection() {
+    let f = Fixture::new();
+    let (first, first_authority, first_context) = contextual_authority(&f, "FirstQueuedBinding");
+    let (second, second_authority, second_context) =
+        contextual_authority(&f, "SecondQueuedBinding");
+    let first_result = execute(
+        &f.shared,
+        &f.root,
+        &first,
+        first_authority,
+        Some(first_context),
+    );
+    assert!(first_result.is_ok(), "{first_result:?}");
+    f.shared
+        .config
+        .select_installed(&f.root.id, "FirstQueuedBinding")
+        .unwrap();
+    crate::finish_instance_task(first, first_result, "first queued fixture complete");
+    let second_result = execute(
+        &f.shared,
+        &f.root,
+        &second,
+        second_authority,
+        Some(second_context),
+    );
+    assert!(second_result.is_ok(), "{second_result:?}");
+    crate::finish_instance_task(second, second_result, "second queued fixture complete");
+    for name in ["FirstQueuedBinding", "SecondQueuedBinding"] {
+        assert!(Path::new(&f.root.path).join("versions").join(name).exists());
+    }
+    assert!(!f.project.0.join(".pcl-rust/java").exists());
+    assert_eq!(budget(&f.shared.pack_confirmations), (0, 0));
+}
+
+#[test]
+fn captured_pack_java_binding_rejects_changed_selection_before_private_build() {
+    let f = Fixture::new();
+    let before = tree(Path::new(&f.root.path));
+    let (task, authority, context) = contextual_authority(&f, "StaleJavaBinding");
+    let mut settings = f.shared.config.snapshot();
+    settings.java = pcl_core::java::JavaSelection::Manual {
+        path: f
+            .project
+            .0
+            .join("changed-java/bin/java")
+            .display()
+            .to_string(),
+    };
+    f.shared.config.save(settings).unwrap();
+    let error = execute(&f.shared, &f.root, &task, authority, Some(context)).unwrap_err();
+    assert!(error.contains("已变化"), "{error}");
+    task.finish(TaskOutcome::Error(error));
+    assert_eq!(tree(Path::new(&f.root.path)), before);
+    assert!(!f.project.0.join(".pcl-rust/java").exists());
+    assert_eq!(budget(&f.shared.pack_confirmations), (0, 0));
+}
+
+#[test]
+fn captured_pack_java_binding_stops_stale_build_but_does_not_revoke_a_committing_close() {
+    for late in [false, true] {
+        let f = Fixture::new();
+        let name = if late {
+            "CommittingJavaBinding"
+        } else {
+            "StaleBuiltJavaBinding"
+        };
+        let (task, authority, context) = contextual_authority(&f, name);
+        let weak = Arc::downgrade(&f.shared);
+        let attempted = Arc::new(AtomicBool::new(false));
+        let observed = attempted.clone();
+        f.shared.tasks.set_listener(move |snapshot| {
+            let boundary = if late {
+                snapshot.phase == "import-commit" && !snapshot.can_cancel
+            } else {
+                snapshot.phase == "pack-files"
+            };
+            if boundary && !observed.swap(true, Ordering::SeqCst) {
+                let shared = weak.upgrade().unwrap();
+                assert!(shared.operations.try_lock().is_ok());
+                if late {
+                    shared.closing.store(true, Ordering::SeqCst);
+                    shared.close_generation.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    let mut settings = shared.config.snapshot();
+                    settings.java = pcl_core::java::JavaSelection::Manual {
+                        path: shared
+                            .project
+                            .join("changed-java/bin/java")
+                            .display()
+                            .to_string(),
+                    };
+                    shared.config.save(settings).unwrap();
+                }
+            }
+        });
+        let result = execute(&f.shared, &f.root, &task, authority, Some(context));
+        assert!(attempted.load(Ordering::SeqCst));
+        if late {
+            assert!(result.is_ok(), "{result:?}");
+            crate::finish_instance_task(task, result, "synthetic pack complete");
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.contains("已变化"), "{error}");
+            task.finish(TaskOutcome::Error(error));
+        }
+        assert_eq!(
+            Path::new(&f.root.path).join("versions").join(name).exists(),
+            late
+        );
+        assert!(!f.project.0.join(".pcl-rust/java").exists());
+        super::super::super::ensure_ready(Path::new(&f.root.path)).unwrap();
+        assert_eq!(budget(&f.shared.pack_confirmations), (0, 0));
+    }
+}
+
 #[test]
 fn ready_zip_real_confirmation_worker_publishes_complete_instance_and_preserves_source() {
     let f = Fixture::new();
@@ -1063,3 +1257,6 @@ fn projection_drop_cannot_revoke_claimed_inner_or_another_unclaimed_revision() {
     drop(claimed);
     assert_eq!(input_usage(cache), (0, 0, 0, 0));
 }
+
+#[path = "parallel_tests.rs"]
+mod parallel_tests;

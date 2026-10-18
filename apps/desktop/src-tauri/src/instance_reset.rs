@@ -1,7 +1,9 @@
 //! Existing-instance component reset. Callers hold the shared writer admission.
 //! Installation and processors run in an owned root; only the two same-id core
 //! files are exchanged. All filesystem mutations are relative to no-follow FDs.
-use pcl_install::{ComponentSelection, InstallRequest, Installer, Progress};
+use pcl_install::{
+    ComponentSelection, InstallRequest, Installer, Progress, ResolvedInstallRequest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -16,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -49,6 +51,16 @@ pub struct ResetPlan {
     instance_key: DirKey,
     #[serde(skip)]
     originals: Vec<Snapshot>,
+}
+
+impl ResetPlan {
+    pub(crate) fn install_request(&self) -> InstallRequest {
+        InstallRequest {
+            minecraft: self.minecraft.clone(),
+            name: self.id.clone(),
+            components: self.components.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1399,18 +1411,44 @@ pub fn execute(
         callback,
     )
 }
-/// Submission captures the scheduler before its worker enters filesystem
-/// preparation. Later preference changes cannot alter this reset's transfers.
+#[cfg(test)]
 pub fn execute_with_policy(
     root: &Path,
     project: &Path,
     plan: ResetPlan,
-    scheduler: Arc<pcl_network::DownloadScheduler>,
+    scheduler: std::sync::Arc<pcl_network::DownloadScheduler>,
     cancel: &AtomicBool,
     callback: impl Fn(Progress) + Send + Sync,
 ) -> Result<Value> {
     check(cancel)?;
     recheck_plan(root, &plan)?;
+    let installer = Installer::new()?
+        .with_download_policy(scheduler)
+        .with_project(project)
+        .with_cache_source(&plan.root)?;
+    let resolved = installer.resolve_request(&plan.install_request(), cancel)?;
+    execute_prepared(root, plan, installer, resolved, cancel, callback, || Ok(()))
+}
+
+/// Java acquisition precedes the durable reset journal. The same resolved
+/// authority is then installed in its private stage; a failed Java download
+/// therefore leaves neither a pending reset nor a partly replaced core.
+pub(crate) fn execute_prepared(
+    root: &Path,
+    plan: ResetPlan,
+    installer: Installer,
+    resolved: ResolvedInstallRequest,
+    cancel: &AtomicBool,
+    callback: impl Fn(Progress) + Send + Sync,
+    before_commit: impl Fn() -> Result<()>,
+) -> Result<Value> {
+    check(cancel)?;
+    recheck_plan(root, &plan)?;
+    if serde_json::to_value(resolved.request()).map_err(err)?
+        != serde_json::to_value(plan.install_request()).map_err(err)?
+    {
+        return Err("安装元数据与重置计划不一致，请重新检查".into());
+    }
     let root_dir = Dir::open(&plan.root)?;
     let store = storage(&root_dir, true)?.ok_or("重置记录目录缺失")?;
     let _lock = lock(&store)?;
@@ -1420,34 +1458,25 @@ pub fn execute_with_policy(
     let result = (|| {
         let stage =
             owned_child(&operation, "stage", &journal.stage_key)?.ok_or("安装暂存目录缺失")?;
-        let request = InstallRequest {
-            minecraft: plan.minecraft.clone(),
-            name: plan.id.clone(),
-            components: plan.components.clone(),
-        };
-        Installer::new()?
-            .with_download_policy(scheduler)
-            .with_project(project)
-            .with_cache_source(&plan.root)?
-            .install_request(&stage.fd_path(), &request, cancel, |mut p| {
-                if p.stage == "complete" {
-                    p.stage = "reset_commit".into();
-                    p.message = "正在替换实例核心文件".into();
+        installer.install_resolved_request(&stage.fd_path(), &resolved, cancel, |mut p| {
+            if p.stage == "complete" {
+                p.stage = "reset_commit".into();
+                p.message = "正在替换实例核心文件".into();
+            }
+            p.steps.push(pcl_install::InstallStep {
+                id: "reset_core".into(),
+                label: "重置实例组件".into(),
+                state: if p.stage == "reset_commit" {
+                    "running"
+                } else {
+                    "pending"
                 }
-                p.steps.push(pcl_install::InstallStep {
-                    id: "reset_core".into(),
-                    label: "重置实例组件".into(),
-                    state: if p.stage == "reset_commit" {
-                        "running"
-                    } else {
-                        "pending"
-                    }
-                    .into(),
-                    progress: None,
-                });
-                *last.lock().unwrap() = Some(p.clone());
-                callback(p);
-            })?;
+                .into(),
+                progress: None,
+            });
+            *last.lock().unwrap() = Some(p.clone());
+            callback(p);
+        })?;
         check(cancel)?;
         bound_dirs(&root_dir, &journal)?;
         if stage.key()? != operation.child("stage")?.key()? {
@@ -1502,6 +1531,7 @@ pub fn execute_with_policy(
         if fresh.revision != plan.revision {
             return Err("安装期间实例或关联版本已变化，请重新读取重置计划".into());
         }
+        before_commit()?;
         commit(&root_dir, &operation, &mut journal, cancel, &|_| Ok(()))?;
         Ok(())
     })();

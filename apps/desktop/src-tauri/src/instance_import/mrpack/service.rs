@@ -113,6 +113,8 @@ struct ConfirmedPack {
     scheduler: Arc<pcl_network::DownloadScheduler>,
     curseforge: Option<Arc<crate::community_curseforge::CurseforgeClient>>,
     _lease: Lease,
+    #[cfg(test)]
+    transfer_route: Option<reqwest::Url>,
 }
 struct ConfirmedCore {
     resolved: ResolvedInstallRequest,
@@ -354,6 +356,8 @@ impl ConfirmationCache {
                 scheduler,
                 curseforge,
                 _lease: preparation.lease.take().unwrap(),
+                #[cfg(test)]
+                transfer_route: None,
             },
         });
         Ok(view)
@@ -617,7 +621,37 @@ pub(super) fn start_source(
         &name,
         &revision,
     )?;
-    let scope = TaskScope::root(Path::new(&root.path))?;
+    let mut scope = TaskScope::root(Path::new(&root.path))?;
+    let java = if authority
+        .core
+        .as_ref()
+        .map(|core| core.resolved.processor_java_requirement())
+        .transpose()?
+        .flatten()
+        .is_some()
+    {
+        // Resolution already knows the actual client processor batch. Reserve
+        // both destinations before queueing; the worker never upgrades its turn.
+        scope = scope.union(TaskScope::managed_runtime_store(&shared.project)?)?;
+        let preferences = shared.launcher_preferences.snapshot();
+        if let Some(warning) = preferences.warning {
+            return Err(warning);
+        }
+        Some(crate::installer_java::Context::capture(
+            &shared,
+            &root,
+            &name,
+            TaskKind::ModpackInstall,
+            crate::installer_java::Inputs {
+                settings: shared.config.checked_snapshot()?,
+                preferences_revision: preferences.revision,
+                factory: authority.factory.clone(),
+                scheduler: authority.scheduler.clone(),
+            },
+        )?)
+    } else {
+        None
+    };
     if shared.tasks.list().iter().any(|t| {
         !t.stage.is_terminal() && t.root_id == root.id && t.instance_id.as_deref() == Some(&name)
     }) {
@@ -644,7 +678,7 @@ pub(super) fn start_source(
         .name(format!("pcl-pack-{id}"))
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                execute(&shared, &root, &task, authority)
+                execute(&shared, &root, &task, authority, java)
             }))
             .unwrap_or_else(|_| Err("整合包安装任务意外退出，请先恢复未完成操作".into()));
             match result {
@@ -662,7 +696,8 @@ pub(super) fn start_source(
                     if e == crate::tasks::CANCELLED
                         || e == "实例导入已取消"
                         || e == "导入已取消"
-                        || e == "安装已取消" =>
+                        || e == "安装已取消"
+                        || e == crate::java_download::CANCELLED =>
                 {
                     task.finish(TaskOutcome::Failed(e));
                 }
@@ -679,11 +714,15 @@ fn execute(
     shared: &Shared,
     root: &GameRoot,
     task: &TaskHandle,
-    authority: ConfirmedPack,
+    mut authority: ConfirmedPack,
+    mut java: Option<crate::installer_java::Context>,
 ) -> Result<serde_json::Value> {
     task.wait_turn()?;
     let cancel = task.cancellation_token();
     app_gate(shared, root, &authority.checked.plan.name)?;
+    if let Some(java) = &java {
+        java.verify(shared, task)?;
+    }
     crate::ensure_instance_files_ready(shared, root)?;
     crate::instance_reset::ensure_ready(Path::new(&root.path))?;
     crate::resource_ops::ensure_verified_batches_ready(Path::new(&root.path))?;
@@ -697,6 +736,22 @@ fn execute(
     }
     curseforge::recheck(&authority.checked, authority.curseforge.as_deref(), &cancel)?;
     target(&authority)?;
+    let core = match (authority.core.take(), java.as_mut()) {
+        (Some(core), Some(java)) => Some(ConfirmedCore {
+            installer: java.ensure(shared, task, core.installer, &core.resolved)?,
+            resolved: core.resolved,
+        }),
+        (core, _) => core,
+    };
+    let java_bytes = java.as_ref().map_or(0, |java| java.network_bytes());
+    if let Some(java) = &java {
+        java.verify(shared, task)?;
+        // Managed Java publication can outlive the input and target bindings.
+        // It stays installed on error; no private instance exists at this point.
+        authority.checked.recheck_source(&cancel)?;
+        target(&authority)?;
+        app_gate(shared, root, &authority.checked.plan.name)?;
+    }
     let mut operation = super::super::build::BuildOperation::begin_bound(
         Path::new(&root.path),
         &authority.checked.plan.name,
@@ -715,18 +770,19 @@ fn execute(
             }
         }
     };
-    let core_bytes = AtomicU64::new(0);
+    let core_bytes = AtomicU64::new(java_bytes);
     let pack_bytes = AtomicU64::new(0);
     let core_files = AtomicU64::new(0);
     let core_steps = Mutex::new(Vec::<pcl_install::InstallStep>::new());
     let pack_files = authority.checked.outputs.len() as u64;
     let outcome = (|| {
-        if let Some(core) = &authority.core {
+        if let Some(core) = &core {
             let result = core.installer.install_resolved_request_bound(
                 operation.root_fd()?,
                 &core.resolved,
                 &cancel,
                 |mut p| {
+                    p.network_bytes = p.network_bytes.saturating_add(java_bytes);
                     core_bytes.fetch_max(p.network_bytes, Ordering::Relaxed);
                     core_files.fetch_max(p.completed, Ordering::Relaxed);
                     *core_steps.lock().unwrap() = p.steps.clone();
@@ -740,6 +796,9 @@ fn execute(
             }
         } else {
             stage_bundled(&authority.checked, &operation, &cancel)?;
+        }
+        if let Some(java) = &java {
+            java.verify(shared, task)?;
         }
         // Core resolution/processors may take minutes. Verify both held input
         // archives before consuming any pack body after this long phase.
@@ -762,82 +821,21 @@ fn execute(
                 authority.checked.plan.binding.source,
                 Source::Local(_)
             ));
+        #[cfg(test)]
+        let client = match &authority.transfer_route {
+            Some(route) => client.with_test_route(route.clone())?,
+            None => client,
+        };
         let store = Dir(operation.root_fd()?);
-        let mut completed = 0u64;
+        let completed = AtomicU64::new(0);
         let total = authority.checked.outputs.len() as u64;
-        for (path, output) in &authority.checked.outputs {
+        let finish = |path: &str, file: File| -> Result<()> {
             super::super::check(&cancel)?;
-            let fd = store.anonymous()?;
-            let file = match output {
-                Output::Remote {
-                    size,
-                    sha1,
-                    sha512,
-                    downloads,
-                    ..
-                } => {
-                    let verified = tauri::async_runtime::block_on(client.download(
-                        transfer::Remote {
-                            downloads,
-                            size: *size,
-                            sha1,
-                            sha512,
-                        },
-                        fd,
-                        &cancel,
-                        |p| {
-                            shared.downloads.progress(
-                                task,
-                                pack_progress(
-                                    &core_steps,
-                                    "pack-download",
-                                    path,
-                                    core_files.load(Ordering::Relaxed) + completed,
-                                    core_files.load(Ordering::Relaxed) + total,
-                                    core_bytes
-                                        .load(Ordering::Relaxed)
-                                        .saturating_add(p.network_bytes),
-                                ),
-                            )
-                        },
-                    ))?;
-                    if verified.size != *size
-                        || !verified.sha1.eq_ignore_ascii_case(sha1)
-                        || !verified.sha512.eq_ignore_ascii_case(sha512)
-                    {
-                        return Err("整合包下载结果与确认信息不符".into());
-                    }
-                    verified.file
-                }
-                Output::CurseForge(file) => {
-                    let verified = tauri::async_runtime::block_on(client.download_curseforge(
-                        file,
-                        fd,
-                        &cancel,
-                        |p| {
-                            shared.downloads.progress(
-                                task,
-                                pack_progress(
-                                    &core_steps,
-                                    "pack-download",
-                                    path,
-                                    core_files.load(Ordering::Relaxed) + completed,
-                                    core_files.load(Ordering::Relaxed) + total,
-                                    core_bytes
-                                        .load(Ordering::Relaxed)
-                                        .saturating_add(p.network_bytes),
-                                ),
-                            );
-                        },
-                    ))?;
-                    if verified.size != file.size || !verified.sha1.eq_ignore_ascii_case(&file.sha1)
-                    {
-                        return Err("CurseForge 下载结果与确认信息不符".into());
-                    }
-                    verified.file
-                }
-                Output::Override(f) => extract_override(&authority.checked, f, fd, &cancel)?,
-            };
+            if let Some(java) = &java {
+                java.verify_fast(shared, task)?;
+            }
+            // Completion is consumed serially, so shared parent directories
+            // cannot race even when their independent downloads finish together.
             stage_file(
                 &store,
                 &format!("versions/{}/{path}", authority.checked.plan.name),
@@ -845,23 +843,127 @@ fn execute(
                 &cancel,
             )?;
             pack_bytes.store(client.network_bytes(), Ordering::Relaxed);
-            completed += 1;
+            let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             shared.downloads.progress(
                 task,
                 pack_progress(
                     &core_steps,
                     "pack-files",
                     path,
-                    core_files.load(Ordering::Relaxed) + completed,
+                    core_files.load(Ordering::Relaxed) + done,
                     core_files.load(Ordering::Relaxed) + total,
                     core_bytes
                         .load(Ordering::Relaxed)
                         .saturating_add(client.network_bytes()),
                 ),
             );
+            Ok(())
+        };
+        let jobs = authority
+            .checked
+            .outputs
+            .iter()
+            .filter(|(_, output)| !matches!(output, Output::Override(_)))
+            .map(|(path, output)| {
+                let client = &client;
+                let store = &store;
+                let cancel = &cancel;
+                let java = &java;
+                let core_steps = &core_steps;
+                let core_files = &core_files;
+                let core_bytes = &core_bytes;
+                let completed = &completed;
+                async move {
+                    super::super::check(cancel)?;
+                    if let Some(java) = java {
+                        java.verify_fast(shared, task)?;
+                    }
+                    let report = |p: transfer::TransferProgress| {
+                        shared.downloads.progress(
+                            task,
+                            pack_progress(
+                                core_steps,
+                                "pack-download",
+                                path,
+                                core_files.load(Ordering::Relaxed)
+                                    + completed.load(Ordering::Relaxed),
+                                core_files.load(Ordering::Relaxed) + total,
+                                core_bytes
+                                    .load(Ordering::Relaxed)
+                                    .saturating_add(p.network_bytes),
+                            ),
+                        );
+                    };
+                    // Each polled file owns one anonymous inode. An error drops
+                    // every other borrowed future before the build can abort.
+                    let fd = store.anonymous()?;
+                    let verified = match output {
+                        Output::Remote {
+                            size,
+                            sha1,
+                            sha512,
+                            downloads,
+                            ..
+                        } => {
+                            let verified = client
+                                .download(
+                                    transfer::Remote {
+                                        downloads,
+                                        size: *size,
+                                        sha1,
+                                        sha512,
+                                    },
+                                    fd,
+                                    cancel,
+                                    report,
+                                )
+                                .await?;
+                            if verified.size != *size
+                                || !verified.sha1.eq_ignore_ascii_case(sha1)
+                                || !verified.sha512.eq_ignore_ascii_case(sha512)
+                            {
+                                return Err("整合包下载结果与确认信息不符".into());
+                            }
+                            verified
+                        }
+                        Output::CurseForge(file) => {
+                            let verified =
+                                client.download_curseforge(file, fd, cancel, report).await?;
+                            if verified.size != file.size
+                                || !verified.sha1.eq_ignore_ascii_case(&file.sha1)
+                            {
+                                return Err("CurseForge 下载结果与确认信息不符".into());
+                            }
+                            verified
+                        }
+                        Output::Override(_) => unreachable!(),
+                    };
+                    Ok((path.as_str(), verified.file))
+                }
+            });
+        tauri::async_runtime::block_on(pcl_network::for_each_bounded(
+            jobs,
+            usize::from(authority.scheduler.policy().max_concurrent_transfers),
+            |(path, file)| finish(path, file),
+        ))?;
+        // ZIP clones share the held source cursor. Decode local overrides only
+        // after all remote futures have released their responses and descriptors.
+        for (path, output) in &authority.checked.outputs {
+            let Output::Override(file) = output else {
+                continue;
+            };
+            super::super::check(&cancel)?;
+            if let Some(java) = &java {
+                java.verify_fast(shared, task)?;
+            }
+            let file = extract_override(&authority.checked, file, store.anonymous()?, &cancel)?;
+            finish(path, file)?;
         }
         authority.checked.recheck_source(&cancel)?;
         curseforge::recheck(&authority.checked, authority.curseforge.as_deref(), &cancel)?;
+        if let Some(java) = &java {
+            java.verify(shared, task)?;
+        }
         for path in &authority.checked.directories {
             ensure_directory(
                 &store,
@@ -906,6 +1008,9 @@ fn execute(
             commit_binding(shared, root, &authority.checked)
         },
         || {
+            if let Some(java) = &java {
+                java.verify(shared, task)?;
+            }
             app_gate(shared, root, &authority.checked.plan.name)?;
             task.begin_finishing();
             Ok(())
