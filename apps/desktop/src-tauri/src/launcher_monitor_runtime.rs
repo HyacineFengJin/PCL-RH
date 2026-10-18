@@ -495,10 +495,11 @@ pub(super) fn bind_preparation_cancel(
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let mut session = shared.monitor.lock();
-    let result = require_preparation_locked(shared, &session, generation);
-    if result.is_err() {
-        cancel.store(true, Ordering::SeqCst);
-        return result;
+    if let Err(error) = require_preparation_locked(shared, &session, generation) {
+        if error == crate::tasks::CANCELLED {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        return Err(error);
     }
     session.preparation_cancel = Some(cancel);
     Ok(())

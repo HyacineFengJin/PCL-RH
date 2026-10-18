@@ -268,6 +268,61 @@ fn cancellation_never_hides_a_real_repair_failure_or_authorizes_an_unprepared_pl
 }
 
 #[test]
+fn stop_accepted_by_the_admit_listener_finishes_the_unbound_task_as_cancelled() {
+    let (_fixture, shared, prepared) = fixture(true, true);
+    let weak = Arc::downgrade(&shared);
+    shared.tasks.set_listener(move |snapshot| {
+        if snapshot.stage == TaskStage::Preparing {
+            launcher_monitor_runtime::request_stop(&weak.upgrade().unwrap()).unwrap();
+        }
+    });
+    let result: Result<(), String> = prepared.prepare_using(
+        &shared,
+        || panic!("cancelled plan must not build"),
+        |_, _, _| panic!("unbound cancelled task must not repair"),
+    );
+    assert_eq!(result.unwrap_err(), crate::tasks::CANCELLED);
+    let task = shared.tasks.list().pop().unwrap();
+    assert_eq!(task.stage, TaskStage::Cancelled);
+    assert!(task.error.is_none());
+    assert!(task.message.starts_with("文件补全已取消"));
+    assert!(shared.tasks.active().is_none());
+    assert!(prepared.authorize(&shared).is_err());
+}
+
+#[test]
+fn binding_failure_in_the_admit_listener_retains_its_exact_error() {
+    let (_fixture, shared, prepared) = fixture(true, true);
+    let weak = Arc::downgrade(&shared);
+    let generation = prepared.generation;
+    shared.tasks.set_listener(move |snapshot| {
+        if snapshot.stage == TaskStage::Preparing {
+            launcher_monitor_runtime::update_current(
+                &weak.upgrade().unwrap(),
+                generation,
+                "error",
+                "synthetic binding change".into(),
+                None,
+                None,
+            );
+        }
+    });
+    let result: Result<(), String> = prepared.prepare_using(
+        &shared,
+        || panic!("stale plan must not build"),
+        |_, _, _| panic!("unbound stale task must not repair"),
+    );
+    let error = result.unwrap_err();
+    assert_eq!(error, "启动准备会话已变化，请重新启动");
+    let task = shared.tasks.list().pop().unwrap();
+    assert_eq!(task.stage, TaskStage::Error);
+    assert_eq!(task.error.as_deref(), Some(error.as_str()));
+    assert_eq!(task.message, error);
+    assert!(shared.tasks.active().is_none());
+    assert!(prepared.authorize(&shared).is_err());
+}
+
+#[test]
 fn stop_cancels_the_exact_task_token_while_waiting_for_a_download_slot() {
     let (_fixture, shared, prepared) = fixture(true, true);
     let scheduler = pcl_network::DownloadScheduler::new(pcl_network::DownloadPolicy {

@@ -242,11 +242,23 @@ impl PreparedLaunch {
                 },
                 TaskKind::InstanceRepair,
             )?;
-            launcher_monitor_runtime::bind_preparation_cancel(
+            if let Err(error) = launcher_monitor_runtime::bind_preparation_cancel(
                 shared,
                 self.generation,
                 task.cancellation_token(),
-            )?;
+            ) {
+                // Admission already published a task. Close it explicitly so
+                // a real binding error cannot be projected by Drop as either
+                // an unexpected exit or an unrelated cancellation.
+                drop(_operation);
+                drop(request);
+                task.finish(if error == crate::tasks::CANCELLED {
+                    TaskOutcome::Failed(error.clone())
+                } else {
+                    TaskOutcome::Error(error.clone())
+                });
+                return Err(error);
+            }
             shared.downloads.track(&task);
             task
         };
