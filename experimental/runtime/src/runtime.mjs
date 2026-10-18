@@ -90,7 +90,9 @@ export class AgentRuntime {
         : intent && intent !== 'execute'
           ? profile.tools.filter(name => ['workspace.read', 'maker.plan', 'maker.report_plan'].includes(name))
           : profile.tools.filter(name => !(intent && job.input.sourceOperationId && name === 'maker.generate'));
-      const allowedTools = this.tools.resolveAllowed(job, modeTools);
+      // Diagnostic text can never acquire tools, including through a plugin's
+      // profile resolver. The provider also receives an empty SDK tool list.
+      const allowedTools = job.profile === 'diagnostic' ? [] : this.tools.resolveAllowed(job, modeTools);
       const signal = run.controller.signal;
       const workspace = await this.store.workspace(id);
       // Providers may supply a captured host budget; persisted job input has

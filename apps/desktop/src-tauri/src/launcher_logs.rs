@@ -424,6 +424,33 @@ pub(super) struct FailureLogTail {
 }
 
 impl FailureLogCapture {
+    /// The displayed-content receipt also binds carriers, so replacing a log
+    /// with identical bytes cannot reuse a receipt from the previous file.
+    pub fn binding_revision(&self) -> Result<String, String> {
+        let directory = |entry: &Option<FailureDirectory>| {
+            entry.as_ref().map(|entry| {
+                (
+                    entry
+                        .stamp
+                        .as_ref()
+                        .map(|stamp| (stamp.identity(), stamp.mode & libc::S_IFMT)),
+                    entry.error.clone(),
+                )
+            })
+        };
+        let bytes = serde_json::to_vec(&(
+            "failure-log-binding-v1",
+            self.root.stamp()?.identity(),
+            directory(&self.owner),
+            directory(&self.logs),
+            &self.name,
+            &self.stamp,
+            &self.error,
+        ))
+        .map_err(|_| "无法绑定本次启动日志")?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
     pub fn capture(path: &Path, current: Option<&Path>) -> Result<Self, String> {
         let mut captured = Self {
             path: path.to_owned(),
@@ -513,16 +540,27 @@ impl FailureLogCapture {
         Ok(())
     }
 
-    /// Read a fixed suffix from the captured FD. Dropping the initial partial
-    /// line also removes a split UTF-8 character; one giant line cannot enlarge
-    /// the buffer or manufacture a diagnostic from a fragment of a message.
+    /// Legacy callers have no attempt boundary and may inspect only history.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn read_tail(&mut self) -> Result<FailureLogTail, String> {
+        self.read_tail_from(None)
+    }
+
+    /// Read a bounded suffix from the captured FD, starting no earlier than
+    /// this attempt's durable offset. Only a byte-limit cut drops its partial
+    /// first line; the first line written by the current attempt stays intact.
+    /// An unknown offset retains the legacy history suffix without guessing.
+    pub fn read_tail_from(&mut self, offset: Option<u64>) -> Result<FailureLogTail, String> {
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
         let file = self.file.as_mut().ok_or("本次启动日志不存在")?;
         let stamp = self.stamp.as_ref().ok_or("本次启动日志不存在")?;
-        let start = stamp.bytes.saturating_sub(FAILURE_TAIL_BYTES);
+        let floor = offset.unwrap_or(0);
+        if floor > stamp.bytes {
+            return Err("本次启动日志边界已超出文件长度，请重新诊断".into());
+        }
+        let start = stamp.bytes.saturating_sub(FAILURE_TAIL_BYTES).max(floor);
         file.seek(SeekFrom::Start(start))
             .map_err(|error| error.to_string())?;
         let mut bytes = Vec::new();
@@ -535,7 +573,7 @@ impl FailureLogCapture {
         {
             return Err("本次启动日志读取期间发生变化，请重新诊断".into());
         }
-        let suffix = if start > 0 {
+        let suffix = if start > floor {
             bytes
                 .iter()
                 .position(|byte| *byte == b'\n')
@@ -552,7 +590,7 @@ impl FailureLogCapture {
                 .skip(count.saturating_sub(FAILURE_TAIL_LINES))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            truncated: start > 0 || count > FAILURE_TAIL_LINES,
+            truncated: start > floor || count > FAILURE_TAIL_LINES,
         })
     }
 }

@@ -4,6 +4,11 @@ use super::*;
 use crate::integration_tests::Fixture;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
+#[path = "boundary_tests.rs"]
+mod boundary_tests;
+#[path = "export_tests.rs"]
+mod export_tests;
+
 fn failed(shared: &Shared, name: Option<&str>) -> (GameRoot, RunStatus) {
     let root = shared.config.resolve(None).unwrap();
     let run = RunStatus {
@@ -17,6 +22,7 @@ fn failed(shared: &Shared, name: Option<&str>) -> (GameRoot, RunStatus) {
     };
     *shared.status.lock().unwrap() = run.clone();
     *shared.log.lock().unwrap() = name.map(|name| log_path(&root, name));
+    launcher_monitor_runtime::set_failure_log_start(shared, Some(0));
     (root, run)
 }
 
@@ -75,10 +81,11 @@ fn report_is_read_only_and_releases_operation_and_configuration_locks_during_log
         &shared,
         &root.id,
         &expected,
-        |log| {
+        |log, offset| {
             assert!(shared.operations.try_lock().is_ok());
             assert_eq!(shared.config.snapshot().root_id, root.id);
-            log.read_tail()
+            assert_eq!(offset, Some(0));
+            log.read_tail_from(offset)
         },
         str::to_owned,
     )
@@ -153,7 +160,7 @@ fn switching_root_during_log_read_rejects_even_a_read_error() {
             &shared,
             &root.id,
             &expected,
-            |log| {
+            |log, _| {
                 shared.config.select(&second.id).unwrap();
                 if fail_read {
                     Err("late read error".into())
@@ -177,7 +184,7 @@ fn a_new_attempt_with_identical_status_and_log_cannot_publish_the_old_report() {
         &shared,
         &root.id,
         &expected,
-        |log| {
+        |log, _| {
             let mut next = expected.clone();
             next.stage = "preparing".into();
             let generation = launcher_monitor_runtime::begin_preparation(&shared, next).unwrap();
@@ -215,7 +222,7 @@ fn replacing_any_bound_directory_or_the_log_rejects_the_report() {
             &shared,
             &root.id,
             &expected,
-            |log| {
+            |log, _| {
                 fs::rename(&path, path.with_file_name("retained-carrier")).unwrap();
                 if component == "file" {
                     fs::write(&path, b"replacement evidence").unwrap();
@@ -244,7 +251,7 @@ fn a_log_appearing_or_changing_after_capture_rejects_the_report() {
             &shared,
             &root.id,
             &expected,
-            |log| {
+            |log, _| {
                 write_log(&root, "current.log", "changed evidence");
                 log.read_tail()
             },
@@ -280,7 +287,7 @@ fn foreign_log_binding_and_symbolic_links_never_read_another_file() {
 }
 
 #[test]
-fn linked_log_directories_and_non_regular_or_shared_files_remain_read_errors() {
+fn unsafe_owner_refuses_recovery_admission_and_unsafe_log_carriers_remain_read_errors() {
     for carrier in ["owner-link", "logs-link", "fifo", "hardlink"] {
         let fixture = Fixture::new();
         let shared = fixture.shared();
@@ -307,7 +314,19 @@ fn linked_log_directories_and_non_regular_or_shared_files_remain_read_errors() {
                 fs::hard_link(foreign.join("current.log"), current).unwrap();
             }
         }
-        let report = report(&shared, &root.id, &expected).unwrap();
+        let result = report(&shared, &root.id, &expected);
+        if carrier == "owner-link" {
+            // The owner directory also contains recovery journals. A symlink
+            // prevents proving their absence, so the new scoped admission must
+            // refuse before attempting any log read.
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read(foreign.join("current.log")).unwrap(),
+                b"foreign secret sentinel"
+            );
+            continue;
+        }
+        let report = result.unwrap();
         assert!(report.log_tail.is_none());
         assert!(report.log_error.is_some());
         assert!(!serde_json::to_string(&report)
@@ -329,7 +348,7 @@ fn sanitized_text_enters_the_classifier_and_report_evidence_and_log_fields() {
         &shared,
         &root.id,
         &expected,
-        FailureLogCapture::read_tail,
+        FailureLogCapture::read_tail_from,
         redact,
     )
     .unwrap();
@@ -343,7 +362,7 @@ fn sanitized_text_enters_the_classifier_and_report_evidence_and_log_fields() {
         &shared,
         &root.id,
         &expected,
-        |_| Err("cannot read fixture-secret".into()),
+        |_, _| Err("cannot read fixture-secret".into()),
         redact,
     )
     .unwrap();
@@ -361,7 +380,7 @@ fn closing_generation_or_log_binding_change_retires_the_report() {
             &shared,
             &root.id,
             &expected,
-            |log| {
+            |log, _| {
                 if closing {
                     shared.close_generation.fetch_add(1, Ordering::SeqCst);
                 } else {

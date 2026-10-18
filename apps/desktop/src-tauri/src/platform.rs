@@ -105,6 +105,13 @@ impl Desktop {
                 vec!["txt"],
                 "instance-log.excerpt.txt",
             ),
+            "export_launch_failure_report" => (
+                "导出本次启动失败报告",
+                true,
+                "txt",
+                vec!["txt"],
+                "launch-failure-report.txt",
+            ),
             "title_image" => (
                 "选择标题图片",
                 false,

@@ -309,6 +309,17 @@ impl Host {
         }
         result
     }
+    /// Launcher diagnostics have their own native receipt boundary. Keep these
+    /// operations out of the renderer's general experimental Operation enum.
+    pub(super) fn diagnostic_call(&self, operation: &str, args: Value) -> Result<Value, String> {
+        if !matches!(
+            operation,
+            "diagnostic_preview" | "diagnostic_analyze" | "diagnostic_status" | "diagnostic_cancel"
+        ) {
+            return Err("不支持的启动诊断引擎操作".into());
+        }
+        self.call(operation, args)
+    }
     fn suspend(&self) -> Result<SuspendResult, String> {
         // This lock is also the start/call/exit ownership boundary. No operation
         // can enter the retiring process; later calls may lazily start a new one.

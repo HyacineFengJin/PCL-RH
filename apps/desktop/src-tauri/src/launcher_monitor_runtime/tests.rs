@@ -30,6 +30,8 @@ fn terminal(shared: &Shared) -> Observation {
         root_path: root.path.clone(),
         instance_id: None,
         log_path: format!("{}/.pcl-linux/logs/previous.log", root.path),
+        log_start: None,
+        boundary_pending: false,
         terminal: true,
         retired: false,
         exit_code: None,
@@ -125,6 +127,7 @@ fn new_preparation_that_fails_before_monitor_spawn_cannot_reuse_the_previous_log
     let shared = fixture.shared();
     let old_log = shared.project.join("previous.log");
     *shared.log.lock().unwrap() = Some(old_log);
+    set_failure_log_start(&shared, Some(123));
     let generation = begin_preparation(&shared, preparing(&shared, "Current")).unwrap();
     update_current(
         &shared,
@@ -137,6 +140,7 @@ fn new_preparation_that_fails_before_monitor_spawn_cannot_reuse_the_previous_log
     let failed = failure_snapshot(&shared).unwrap();
     assert_eq!(failed.run.message, "preparation failed");
     assert!(failed.log.is_none());
+    assert_eq!(failed.log_start, None);
 }
 #[test]
 fn successful_stop_intent_survives_a_later_failed_signal_retry() {
@@ -186,6 +190,7 @@ fn stop_during_handshake_is_applied_at_ack_before_any_exit_or_hide_effect() {
             4343,
             "previous-supervisor".into(),
             helper.project.join("owned.log"),
+            None,
             |session| {
                 stop_locked(session, || {
                     helper_signals.fetch_add(1, AtomicOrdering::SeqCst);
@@ -221,6 +226,7 @@ fn stop_between_ack_and_window_action_suppresses_automatic_exit() {
             4343,
             "previous-supervisor".into(),
             shared.project.join("owned.log"),
+            None,
             |_| panic!("not cancelled")
         )
         .unwrap(),
@@ -246,6 +252,7 @@ fn a_different_durable_supervisor_invalidates_old_worker_and_same_root_version()
         4343,
         "previous-supervisor".into(),
         shared.project.join("owned.log"),
+        None,
         |_| panic!("not cancelled"),
     )
     .unwrap();
@@ -329,6 +336,7 @@ fn reopened_gui_restores_new_and_legacy_failures_without_rewriting_or_guessing_i
         assert_eq!(failed.run.exit_code, Some(2));
         assert!(failed.run.pid.is_none());
         assert_eq!(failed.log, Some(log));
+        assert_eq!(failed.log_start, None);
         let report = crate::launcher_failure::report(&reopened, &root.id, &failed.run).unwrap();
         let report = serde_json::to_value(report).unwrap();
         assert_eq!(report["version"], serde_json::to_value(instance).unwrap());
@@ -524,6 +532,7 @@ fn same_named_instance_in_another_root_recovers_its_own_explicit_identity_and_lo
         4343,
         "previous-supervisor".into(),
         shared.project.join("previous.log"),
+        None,
         |_| panic!("not cancelled"),
     )
     .unwrap();
@@ -638,8 +647,8 @@ fn abandoned_unfinished_history_does_not_restore_a_terminal_failure() {
 }
 
 #[test]
-fn a_live_same_supervisor_cannot_change_its_bound_root_instance_or_log() {
-    for case in ["root", "instance", "log"] {
+fn a_live_same_supervisor_cannot_change_its_bound_root_instance_log_or_boundary() {
+    for case in ["root", "instance", "log", "boundary"] {
         let fixture = Fixture::new();
         let shared = fixture.shared();
         let mut live = terminal(&shared);
@@ -647,6 +656,7 @@ fn a_live_same_supervisor_cannot_change_its_bound_root_instance_or_log() {
         live.game_running = true;
         live.terminal = false;
         live.instance_id = Some("captured-instance".into());
+        live.log_start = Some(12);
         let mut session = shared.monitor.lock();
         refresh_from(&shared, &mut session, || Ok(Some(live))).unwrap();
         let bound = shared.status.lock().unwrap().clone();
@@ -655,10 +665,12 @@ fn a_live_same_supervisor_cannot_change_its_bound_root_instance_or_log() {
         changed.game_running = true;
         changed.terminal = false;
         changed.instance_id = Some("captured-instance".into());
+        changed.log_start = Some(12);
         match case {
             "root" => changed.root_id = "another-root".into(),
             "instance" => changed.instance_id = Some("another-instance".into()),
             "log" => changed.log_path.push_str(".another.log"),
+            "boundary" => changed.log_start = Some(13),
             _ => unreachable!(),
         }
         assert!(refresh_from(&shared, &mut session, || Ok(Some(changed))).is_err());
@@ -684,4 +696,93 @@ fn unknown_replacement_of_completed_history_still_preserves_bytes_and_blocks_adm
     assert!(test_attached(&shared));
     assert!(require_idle(&shared).is_err());
     assert_eq!(std::fs::read(path).unwrap(), unknown);
+}
+
+#[test]
+fn reopened_failure_keeps_its_persisted_boundary_and_boundary_edits_retire_it() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let (path, bytes) = completed_marker(&shared, Some("captured-instance"));
+    let mut marker: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    marker["schema_version"] = 3.into();
+    marker["log_start"] = 123.into();
+    let bytes = serde_json::to_vec(&marker).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    refresh(&shared).unwrap();
+    let previous = failure_snapshot(&shared).unwrap();
+    assert_eq!(previous.log_start, Some(123));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    drop(shared);
+    let reopened = fixture.shared();
+    let expected = failure_snapshot(&reopened).unwrap();
+    assert_eq!(expected.log_start, Some(123));
+    marker["log_start"] = 124.into();
+    let edited = serde_json::to_vec(&marker).unwrap();
+    std::fs::write(&path, &edited).unwrap();
+    assert!(verify_failure(&reopened, &expected, || Ok(())).is_err());
+    assert_eq!(reopened.status.lock().unwrap().stage, "idle");
+    assert!(reopened.log.lock().unwrap().is_none());
+    assert_eq!(reopened.monitor.lock().log_start, None);
+    assert_eq!(std::fs::read(path).unwrap(), edited);
+}
+
+#[test]
+fn ack_adoption_pins_the_boundary_before_the_first_marker_poll() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let generation = begin_preparation(&shared, preparing(&shared, "captured-instance")).unwrap();
+    let root = shared.config.resolve(None).unwrap();
+    let log = PathBuf::from(&root.path).join(".pcl-linux/logs/previous.log");
+    adopt_with(
+        &shared,
+        generation,
+        4242,
+        4343,
+        "previous-supervisor".into(),
+        log,
+        Some(97),
+        |_| panic!("not cancelled"),
+    )
+    .unwrap();
+    let mut session = shared.monitor.lock();
+    assert_eq!(session.log_start, Some(97));
+    assert_eq!(session.binding.as_ref().unwrap().log_start, Some(97));
+    let mut altered = terminal(&shared);
+    altered.busy = true;
+    altered.game_running = true;
+    altered.terminal = false;
+    altered.instance_id = Some("captured-instance".into());
+    altered.log_start = Some(98);
+    assert!(refresh_from(&shared, &mut session, || Ok(Some(altered))).is_err());
+    assert_eq!(session.log_start, Some(97));
+}
+
+#[test]
+fn observing_a_starting_helper_can_commit_its_boundary_once_before_or_after_spawn() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let mut session = shared.monitor.lock();
+    let mut starting = terminal(&shared);
+    starting.busy = true;
+    starting.terminal = false;
+    starting.pid = None;
+    starting.boundary_pending = true;
+    starting.instance_id = Some("captured-instance".into());
+    refresh_from(&shared, &mut session, || Ok(Some(starting))).unwrap();
+    assert!(session.boundary_pending);
+    assert_eq!(session.log_start, None);
+    let mut running = terminal(&shared);
+    running.busy = true;
+    running.terminal = false;
+    running.game_running = true;
+    running.log_start = Some(97);
+    running.instance_id = Some("captured-instance".into());
+    refresh_from(&shared, &mut session, || Ok(Some(running))).unwrap();
+    assert!(!session.boundary_pending);
+    assert_eq!(session.log_start, Some(97));
+    let mut edited = terminal(&shared);
+    edited.log_start = Some(98);
+    edited.instance_id = Some("captured-instance".into());
+    assert!(refresh_from(&shared, &mut session, || Ok(Some(edited))).is_err());
+    assert_eq!(session.log_start, Some(97));
 }

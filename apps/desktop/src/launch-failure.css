@@ -149,6 +149,53 @@
   gap: 9px;
   margin-top: 19px;
 }
+.ce-failure-tools {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ce-border, #d5e2f2);
+}
+.ce-failure-tool-buttons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ce-failure-tool-buttons .ce-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ce-failure-ai {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--ce-border, #d5e2f2);
+  border-radius: 5px;
+  background: var(--ce-tinted-surface, #edf4fd);
+}
+.ce-failure-ai-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+.ce-failure-ai-target small {
+  flex-basis: 100%;
+  color: var(--ce-muted-text, #9299a3);
+  overflow-wrap: anywhere;
+}
+.ce-failure-ai-output {
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--ce-border, #d5e2f2);
+  border-radius: 4px;
+  background: var(--ce-surface, #f7faff);
+}
 .ce-failure-modal .ce-button {
   height: 34px;
   padding: 0 12px;

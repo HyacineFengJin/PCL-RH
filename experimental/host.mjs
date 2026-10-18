@@ -43,6 +43,7 @@ import {
   inspectForeignPackageFile,
 } from "./extensions/src/foreign-package.mjs";
 import { AiPresets } from "./ai-presets.mjs";
+import { DiagnosticJobs } from "./diagnostic-jobs.mjs";
 import { prepareIdle } from "./idle-state.mjs";
 import {
   captureIndexedSource,
@@ -341,7 +342,7 @@ async function persistExtensions() {
 }
 const pendingExtensions = new Map();
 const sourceImports = new Map();
-async function listJobs() {
+async function listJobs({ includeDiagnostics = true } = {}) {
   const entries = await fs.readdir(runtime.store.root);
   const jobs = [];
   for (const id of entries
@@ -349,6 +350,7 @@ async function listJobs() {
     .slice(-100)) {
     try {
       const job = await runtime.getJob(id);
+      if (!includeDiagnostics && job.profile === "diagnostic") continue;
       jobs.push({
         ...projectPublicJobSummary(job),
         ...(["queued", "running"].includes(job.status) && !hasCurrentJob(id)
@@ -463,6 +465,23 @@ async function startCapturedJob(job, preset) {
   }
   return { jobId: job.id };
 }
+async function cancelJob(jobId) {
+  const cancelled = await runtime.cancel(jobId);
+  if (!runtime.hasActiveJob(jobId)) {
+    pendingJobs.delete(jobId);
+    liveRuns.delete(jobId);
+  }
+  return cancelled;
+}
+const diagnostics = new DiagnosticJobs({
+  runtime,
+  presets,
+  provider: live.id,
+  listJobs,
+  start: startCapturedJob,
+  cancel: cancelJob,
+  hasCurrentJob,
+});
 async function createPorterRound(input, permittedPaths, mode) {
   if (
     (await listJobs()).filter((j) => ["queued", "running"].includes(j.status))
@@ -518,7 +537,7 @@ async function dispatch(operation, a) {
       return prepareIdle({
         runtime,
         reviews,
-        children: [reviews, adapters, bridge, builds],
+        children: [reviews, adapters, bridge, builds, diagnostics],
         pendingJobs,
         liveRuns,
         pendingExtensions,
@@ -533,6 +552,14 @@ async function dispatch(operation, a) {
       if (preset?.id === a.presetId) selection = preset.selection;
       return true;
     }
+    case "diagnostic_preview":
+      return diagnostics.preview(a);
+    case "diagnostic_analyze":
+      return diagnostics.analyze(a);
+    case "diagnostic_status":
+      return diagnostics.status(a);
+    case "diagnostic_cancel":
+      return diagnostics.cancelOwned(a);
     case "rh_code_run":
       return prepareCodeJob(a, {
         runtime,
@@ -581,7 +608,7 @@ async function dispatch(operation, a) {
           runtime: "v7",
           pi: "1.0.4",
         },
-        jobs: await listJobs(),
+        jobs: await listJobs({ includeDiagnostics: false }),
         liveConfigured: !!selection,
         liveAvailable: !!presets.selected(),
         liveSelection: publicPiSelection(selection),
@@ -880,6 +907,7 @@ async function dispatch(operation, a) {
       };
     }
     case "provider_stop":
+      diagnostics.clearConfirmations();
       selection = null;
       await Promise.all([...liveRuns.keys()].map((id) => runtime.cancel(id)));
       return { liveConfigured: false, liveSelection: null };
@@ -1063,6 +1091,8 @@ async function dispatch(operation, a) {
         a.jobId,
         hasCurrentJob,
       );
+      if (job.profile === "diagnostic")
+        throw new Error("Use the report-owned diagnostic task endpoint");
       return {
         summary,
         mode: job.provider === "pcl-template" ? "template" : "live",
@@ -1122,12 +1152,9 @@ async function dispatch(operation, a) {
       };
     }
     case "job_cancel": {
-      const cancelled = await runtime.cancel(a.jobId);
-      if (!runtime.hasActiveJob(a.jobId)) {
-        pendingJobs.delete(a.jobId);
-        liveRuns.delete(a.jobId);
-      }
-      return cancelled;
+      if ((await runtime.getJob(a.jobId)).profile === "diagnostic")
+        throw new Error("Use the report-owned diagnostic task endpoint");
+      return cancelJob(a.jobId);
     }
     case "artifact_read": {
       const { snapshot } = await artifact(a.jobId, a.operationId);
@@ -1220,6 +1247,7 @@ async function dispatch(operation, a) {
     }
     case "shutdown":
       closing = true;
+      diagnostics.clearConfirmations();
       selection = null;
       await runtime.shutdown();
       await builds.shutdown();

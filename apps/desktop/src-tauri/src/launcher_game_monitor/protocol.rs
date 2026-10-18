@@ -153,6 +153,7 @@ pub struct MonitorStarted {
     pub pid: u32,
     pub monitor_pid: u32,
     pub log_path: PathBuf,
+    pub log_start: u64,
 }
 pub(super) fn nonblocking(fd: i32) -> Result<(), String> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -302,12 +303,14 @@ fn spawn_with_timeout(
     drop(bytes);
     let ready = read_line(output.as_raw_fd(), deadline)?;
     let words = ready.split_whitespace().collect::<Vec<_>>();
-    if words.len() != 3 || words[0] != "READY" {
+    if words.len() != 4 || words[0] != "READY" {
         return Err(FAILURE.into());
     }
     let pid = words[1].parse::<u32>().map_err(|_| FAILURE)?;
     let monitor_pid = words[2].parse::<u32>().map_err(|_| FAILURE)?;
-    if monitor_pid != child.id() || pid == 0 || pid == monitor_pid {
+    let log_start = words[3].parse::<u64>().map_err(|_| FAILURE)?;
+    if monitor_pid != child.id() || pid == 0 || pid == monitor_pid || log_start > output::LOG_LIMIT
+    {
         return Err(FAILURE.into());
     }
     pending.game = process::identity(pid)?;
@@ -334,6 +337,7 @@ fn spawn_with_timeout(
         pid,
         monitor_pid,
         log_path,
+        log_start,
     })
 }
 struct Pending {
@@ -408,10 +412,13 @@ fn helper() -> Result<(), String> {
         request.instance_id,
         request.log_path.clone(),
     )?;
-    let log = Arc::new(Mutex::new(state::open_launch_log(
-        &request.root_path,
-        &request.log_path,
-    )?));
+    let log = state::open_launch_log(&request.root_path, &request.log_path)?;
+    // Read the extent from the exact append FD used by both output readers.
+    // Persist and acknowledge this boundary before the child can write bytes;
+    // historical content remains intact even when a log name is reused.
+    let log_start = log.metadata().map_err(|_| FAILURE)?.len();
+    session.record_log_start(log_start)?;
+    let log = Arc::new(Mutex::new(log));
     let game_directory = crate::launcher_local::filesystem::Dir::absolute(&request.game_dir)?;
     let game_directory_fd = game_directory.0.as_raw_fd();
     let mut command = Command::new(&request.java);
@@ -466,7 +473,7 @@ fn helper() -> Result<(), String> {
         .map_err(|_| FAILURE)?;
     write_pipe(
         1,
-        format!("READY {} {}\n", game.0.id(), supervisor).as_bytes(),
+        format!("READY {} {} {}\n", game.0.id(), supervisor, log_start).as_bytes(),
         deadline,
     )?;
     if read_line(0, deadline)? != "COMMIT" {

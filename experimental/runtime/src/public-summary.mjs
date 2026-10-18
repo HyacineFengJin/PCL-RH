@@ -31,7 +31,7 @@ export function projectPublicJobSummary(job) {
     "Invalid job identity",
   );
   check(
-    ["maker", "porter", "harness"].includes(job.profile) && STATES.has(job.status),
+    ["maker", "porter", "harness", "diagnostic"].includes(job.profile) && STATES.has(job.status),
     "INVALID_JOB",
     "Invalid job profile/status",
   );

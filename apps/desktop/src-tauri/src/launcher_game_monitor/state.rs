@@ -41,6 +41,8 @@ pub(super) struct Marker {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     instance_id: Option<String>,
     log_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    log_start: Option<u64>,
     monitor: Identity,
     game: Option<Identity>,
     phase: Phase,
@@ -55,6 +57,7 @@ pub struct MonitorStatus {
     pub root_path: String,
     pub instance_id: Option<String>,
     pub log_path: String,
+    pub log_start: Option<u64>,
     pub pid: Option<u32>,
     pub monitor_pid: u32,
     pub busy: bool,
@@ -73,10 +76,20 @@ fn parse(project: &Path, snapshot: &Snapshot) -> Result<Marker, String> {
     // Version 2 launch records bind one validated instance to this session/root.
     // Explicit retirement can retain a legacy None identity without inventing
     // one; that exception never permits an identity-free version-2 launch.
-    let supported_identity = match (marker.schema_version, marker.instance_id.as_deref()) {
-        (1, None) => marker.phase != Phase::Retired,
-        (2, Some(instance)) => validate_instance_id(instance).is_ok(),
-        (2, None) => marker.phase == Phase::Retired,
+    // Version 3 records the append boundary captured from the actual output FD
+    // before Java is spawned. Legacy records cannot gain an invented boundary;
+    // a schema-3 record without one must not be treated as unscoped history.
+    let supported_identity = match (
+        marker.schema_version,
+        marker.instance_id.as_deref(),
+        marker.log_start,
+    ) {
+        (1, None, None) => marker.phase != Phase::Retired,
+        (2, Some(instance), None) => validate_instance_id(instance).is_ok(),
+        (2, None, None) => marker.phase == Phase::Retired,
+        (3, Some(instance), Some(start)) => {
+            validate_instance_id(instance).is_ok() && start <= super::output::LOG_LIMIT
+        }
         _ => false,
     };
     if !supported_identity
@@ -118,6 +131,7 @@ fn status(marker: &Marker, revision: String) -> Result<MonitorStatus, String> {
         root_path: marker.root_path.display().to_string(),
         instance_id: marker.instance_id.clone(),
         log_path: marker.log_path.display().to_string(),
+        log_start: marker.log_start,
         pid: marker.game.as_ref().map(|game| game.pid),
         monitor_pid: marker.monitor.pid,
         busy: supervisor_running || game_running,
@@ -206,17 +220,36 @@ fn progresses(previous: &Marker, current: &Marker) -> bool {
     if !same_binding {
         return false;
     }
+    // The helper first claims the project, then opens the output FD and commits
+    // its append boundary. No child or output exists during this sole 2→3
+    // transition. All later publications keep the captured boundary immutable.
+    let bound_during_start = previous.schema_version == 2
+        && current.schema_version == 3
+        && previous.phase == Phase::Starting
+        && previous.log_start.is_none()
+        && current.log_start.is_some()
+        && previous.game.is_none()
+        && previous.exit_code.is_none();
+    // A reread may skip the intermediate schema-3 Starting publication if the
+    // helper already spawned or finished. Apply the same phase/process guards
+    // below while allowing its one initial boundary commitment.
+    if previous.log_start != current.log_start && !bound_during_start {
+        return false;
+    }
     // A GUI retires only under the helper's lifetime lock and after observing
-    // both process identities gone. This is the sole schema-1→2 transition and
+    // both process identities gone. Retirement upgrades legacy schema 1→2 and
     // retains every captured value, including the absent legacy instance ID.
     if current.phase == Phase::Retired && previous.phase != Phase::Retired {
-        return current.schema_version == 2
+        return (current.schema_version == previous.schema_version.max(2) || bound_during_start)
             && previous.game == current.game
             && previous.exit_code == current.exit_code;
     }
-    previous.schema_version == current.schema_version
+    (previous.schema_version == current.schema_version || bound_during_start)
         && previous.exit_code.is_none()
         && match (previous.phase, current.phase) {
+            (Phase::Starting, Phase::Starting) => {
+                bound_during_start && current.game.is_none() && current.exit_code.is_none()
+            }
             (Phase::Starting, Phase::Running | Phase::Exited) => {
                 previous.game.is_none()
                     && current.game.is_some()
@@ -255,9 +288,10 @@ pub(super) fn read_status_observed(
     };
     let mut previous: Option<(Marker, Snapshot)> = None;
     // One helper publishes starting→running→finished, then an admitted GUI may
-    // retire it. Four complete bounded reads cover those legitimate exchanges;
+    // retire it. Starting may first gain its version-3 log boundary; five
+    // complete bounded reads cover those legitimate exchanges;
     // repeated churn remains blocked.
-    for _ in 0..4 {
+    for _ in 0..5 {
         let Some(snapshot) = capture_marker(folder, observed)? else {
             scope.recheck()?;
             if previous.is_some() || lock_is_held(folder)? {
@@ -329,7 +363,7 @@ pub(super) fn retire_completed_observed(
     // An interrupted helper can leave Starting/Running after both identities
     // have died. Retirement only removes its claim to current context; it never
     // fabricates a successful exit or changes its log/exit information.
-    marker.schema_version = 2;
+    marker.schema_version = marker.schema_version.max(2);
     marker.phase = Phase::Retired;
     let bytes = serde_json::to_vec(&marker).map_err(|_| "无法保存游戏监控退役状态")?;
     before_publish()?;
@@ -369,6 +403,7 @@ impl Session {
             root_path,
             instance_id: Some(instance_id),
             log_path,
+            log_start: None,
             monitor: process::identity(std::process::id())?.ok_or("监控进程身份不可用")?,
             game: None,
             phase: Phase::Starting,
@@ -400,7 +435,27 @@ impl Session {
         self.snapshot = Some(Snapshot::open(folder, NAME, LIMIT)?);
         Ok(())
     }
+    /// Commit the append start from the already-opened output FD before any
+    /// game process or output reader is created. Once published, this offset is
+    /// immutable throughout running, terminal and retirement records.
+    pub fn record_log_start(&mut self, start: u64) -> Result<(), String> {
+        if self.marker.schema_version != 2
+            || self.marker.phase != Phase::Starting
+            || self.marker.game.is_some()
+            || self.marker.exit_code.is_some()
+            || self.marker.log_start.is_some()
+            || start > super::output::LOG_LIMIT
+        {
+            return Err("游戏日志起点无效或已绑定，拒绝继续启动".into());
+        }
+        self.marker.schema_version = 3;
+        self.marker.log_start = Some(start);
+        self.save()
+    }
     pub fn spawned(&mut self, pid: u32) -> Result<(), String> {
+        if self.marker.schema_version != 3 || self.marker.log_start.is_none() {
+            return Err("游戏日志起点尚未提交，拒绝记录游戏进程".into());
+        }
         self.marker.game = Some(process::identity(pid)?.ok_or("游戏进程在确认前已结束")?);
         self.marker.phase = Phase::Running;
         self.save()

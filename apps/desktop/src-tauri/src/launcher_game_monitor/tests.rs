@@ -147,6 +147,10 @@ fn huge_unterminated_lines_are_streamed_with_bounded_pending_and_no_credentials(
 #[test]
 fn helper_handoff_continues_logs_and_reopen_detects_owned_root() {
     let f = Fixture::new();
+    let old = b"java.lang.OutOfMemoryError: historical attempt\n";
+    let log_path = f.0.join("root/.pcl-linux/logs/generic.log");
+    fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+    fs::write(&log_path, old).unwrap();
     let java = f.java("printf 'before fake-access-'; sleep 0.05; printf 'token after\\n'; printf 'err fake-access-token\\n' >&2; sleep 0.5");
     assert!(read_status(&f.0.join("project")).unwrap().is_none());
     assert!(!f.0.join("project/.pcl-rust").exists());
@@ -157,6 +161,8 @@ fn helper_handoff_continues_logs_and_reopen_detects_owned_root() {
     assert_eq!(status.root_id, "root-generic");
     assert_eq!(status.instance_id.as_deref(), Some("generic-instance"));
     assert_eq!(status.session_id, started.session_id);
+    assert_eq!(started.log_start, old.len() as u64);
+    assert_eq!(status.log_start, Some(started.log_start));
     let marker =
         fs::read_to_string(f.0.join("project/.pcl-rust/game-monitor/active.json")).unwrap();
     assert!(!marker.contains("fake-access-token"));
@@ -169,7 +175,9 @@ fn helper_handoff_continues_logs_and_reopen_detects_owned_root() {
     assert_eq!(ended.exit_code, Some(0));
     assert_eq!(ended.session_id, started.session_id);
     assert_eq!(ended.instance_id, status.instance_id);
+    assert_eq!(ended.log_start, status.log_start);
     let log = fs::read_to_string(started.log_path).unwrap();
+    assert!(log.as_bytes().starts_with(old));
     assert!(!log.contains("fake-access-token"));
     assert!(log.contains("before [REDACTED] after\n"));
     assert!(log.contains("err [REDACTED]\n"));
@@ -409,6 +417,7 @@ fn marker_phase_exchange_during_fd_capture_and_final_recheck_reads_fresh_state()
             .process_group(0)
             .spawn()
             .unwrap();
+        session.record_log_start(0).unwrap();
         session.spawned(child.id()).unwrap();
         let running = read_status(&project).unwrap().unwrap();
         let mut exchanged = false;
@@ -559,7 +568,7 @@ fn relocation_alias_keeps_live_process_and_future_schema_guards() {
         serde_json::to_value(process::identity(std::process::id()).unwrap().unwrap()).unwrap();
     fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
     assert!(read_status(&current).unwrap().unwrap().busy);
-    value["schema_version"] = serde_json::json!(3);
+    value["schema_version"] = serde_json::json!(4);
     let bytes = serde_json::to_vec(&value).unwrap();
     fs::write(&marker, &bytes).unwrap();
     assert!(read_status(&current).is_err());
@@ -601,6 +610,7 @@ fn completed_marker_identity_is_explicit_for_v2_and_absent_for_unmodified_v1() {
         assert!(!status.busy);
         assert_eq!(status.phase, "failed");
         assert_eq!(status.instance_id.as_deref(), instance);
+        assert_eq!(status.log_start, None);
         assert_eq!(status.root_path, f.0.join("root").display().to_string());
         assert_eq!(
             status.log_path,
@@ -608,6 +618,184 @@ fn completed_marker_identity_is_explicit_for_v2_and_absent_for_unmodified_v1() {
                 .display()
                 .to_string()
         );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn append_boundary_is_durable_before_output_and_cannot_be_recorded_twice() {
+    use std::io::Write;
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let root = f.0.join("root");
+    let log = root.join(".pcl-linux/logs/generic.log");
+    fs::create_dir_all(log.parent().unwrap()).unwrap();
+    let historical = b"retained historical bytes without trailing newline";
+    fs::write(&log, historical).unwrap();
+    let mut session = state::Session::start(
+        &project,
+        "root-generic".into(),
+        root.clone(),
+        "captured-instance".into(),
+        log.clone(),
+    )
+    .unwrap();
+    let starting = read_status(&project).unwrap().unwrap();
+    assert_eq!(starting.log_start, None);
+    assert!(session.spawned(std::process::id()).is_err());
+    assert!(session.record_log_start(output::LOG_LIMIT + 1).is_err());
+    let mut output = state::open_launch_log(&root, &log).unwrap();
+    let boundary = output.metadata().unwrap().len();
+    session.record_log_start(boundary).unwrap();
+    let bound = read_status(&project).unwrap().unwrap();
+    assert_eq!(bound.phase, "starting");
+    assert_eq!(bound.log_start, Some(historical.len() as u64));
+    assert!(bound.pid.is_none());
+    assert_eq!(fs::read(&log).unwrap(), historical);
+    let marker = project.join(".pcl-rust/game-monitor/active.json");
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+    assert_eq!(saved["schema_version"], 3);
+    assert_eq!(saved["log_start"], boundary);
+    assert!(session.record_log_start(boundary + 1).is_err());
+    output.write_all(b"current failure\n").unwrap();
+    session.finished(false, Some(2)).unwrap();
+    assert_eq!(
+        read_status(&project).unwrap().unwrap().log_start,
+        Some(boundary)
+    );
+    let bytes = fs::read(log).unwrap();
+    assert_eq!(&bytes[..boundary as usize], historical);
+    assert_eq!(&bytes[boundary as usize..], b"current failure\n");
+}
+
+#[test]
+fn helper_boundary_publication_is_an_allowed_fresh_inode_starting_transition() {
+    for finish_before_reread in [false, true] {
+        let f = Fixture::new();
+        let project = f.0.join("project");
+        let root = f.0.join("root");
+        let mut session = state::Session::start(
+            &project,
+            "root-generic".into(),
+            root.clone(),
+            "captured-instance".into(),
+            root.join(".pcl-linux/logs/generic.log"),
+        )
+        .unwrap();
+        let mut published = false;
+        let current = state::read_status_observed(&project, &mut |point| {
+            if point == state::ReadPoint::BeforeRecheck && !published {
+                published = true;
+                session.record_log_start(17).unwrap();
+                if finish_before_reread {
+                    session.finished(false, Some(2)).unwrap();
+                }
+            }
+        })
+        .unwrap()
+        .unwrap();
+        assert!(published);
+        assert_eq!(
+            current.phase,
+            if finish_before_reread {
+                "failed"
+            } else {
+                "starting"
+            }
+        );
+        assert_eq!(current.log_start, Some(17));
+    }
+}
+
+#[test]
+fn marker_retry_rejects_replacing_an_already_bound_append_boundary() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let root = f.0.join("root");
+    let mut session = state::Session::start(
+        &project,
+        "root-generic".into(),
+        root.clone(),
+        "captured-instance".into(),
+        root.join(".pcl-linux/logs/generic.log"),
+    )
+    .unwrap();
+    session.record_log_start(17).unwrap();
+    let path = project.join(".pcl-rust/game-monitor/active.json");
+    let mut edited: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    edited["log_start"] = 18.into();
+    edited["phase"] = "failed".into();
+    let bytes = serde_json::to_vec(&edited).unwrap();
+    let mut replaced = false;
+    let result = state::read_status_observed(&project, &mut |point| {
+        if point == state::ReadPoint::BeforeRecheck && !replaced {
+            replaced = true;
+            let stage = path.with_file_name("external-boundary.json");
+            fs::write(&stage, &bytes).unwrap();
+            fs::rename(stage, &path).unwrap();
+        }
+    });
+    assert!(replaced && result.is_err());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn schema_three_boundary_survives_terminal_read_and_retirement() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let scope = crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+    let path = scope.path().join("active.json");
+    let mut marker: serde_json::Value =
+        serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();
+    marker["schema_version"] = 3.into();
+    marker["instance_id"] = "captured-instance".into();
+    marker["log_start"] = 97.into();
+    let bytes = serde_json::to_vec(&marker).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let completed = read_status(&project).unwrap().unwrap();
+    assert_eq!(completed.log_start, Some(97));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    retire_completed(&project, &completed.revision).unwrap();
+    let retired = read_status(&project).unwrap().unwrap();
+    assert_eq!(retired.phase, "retired");
+    assert_eq!(retired.log_start, Some(97));
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(saved["schema_version"], 3);
+    assert_eq!(saved["log_start"], 97);
+}
+
+#[test]
+fn invalid_boundary_and_future_schema_are_retained_without_start_or_retirement() {
+    let f = Fixture::new();
+    let project = f.0.join("project");
+    let root = f.0.join("root");
+    let scope = crate::launcher_local::filesystem::Scope::create(&project, "game-monitor").unwrap();
+    let path = scope.path().join("active.json");
+    for (schema, start) in [
+        (3, serde_json::Value::Null),
+        (3, serde_json::json!(-1)),
+        (3, serde_json::json!(output::LOG_LIMIT + 1)),
+        (3, serde_json::json!("12")),
+        (2, serde_json::json!(12)),
+        (4, serde_json::json!(12)),
+    ] {
+        let mut marker: serde_json::Value =
+            serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();
+        marker["schema_version"] = schema.into();
+        marker["instance_id"] = "captured-instance".into();
+        marker["log_start"] = start;
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(read_status(&project).is_err());
+        assert!(retire_completed(&project, "ignored-invalid-revision").is_err());
+        assert!(state::Session::start(
+            &project,
+            "root-generic".into(),
+            root.clone(),
+            "new-instance".into(),
+            root.join(".pcl-linux/logs/new.log")
+        )
+        .is_err());
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 }
@@ -627,6 +815,7 @@ fn unsupported_or_invalid_explicit_identity_is_retained_and_never_replaced_on_st
         (2, Some("control\ncharacter")),
         (1, Some("unrecognized-extension")),
         (3, Some("future-instance")),
+        (4, Some("future-instance")),
     ] {
         let mut marker: serde_json::Value =
             serde_json::from_slice(&relocation_marker(&f, &project, "failed")).unwrap();

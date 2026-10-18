@@ -26,6 +26,11 @@ struct Session {
     stop_requested: bool,
     supervisor: Option<String>,
     binding: Option<MonitorBinding>,
+    log_start: Option<u64>,
+    // A different GUI can observe the helper's initial claim before its output
+    // FD exists. Only that Starting observation permits None→Some once; ACK
+    // adoption already knows the offset and never grants this exception.
+    boundary_pending: bool,
     terminal_revision: Option<String>,
     // Only unbound history is retired; a helper this GUI actually observes
     // running may always publish its own final result afterward.
@@ -48,12 +53,15 @@ struct Observation {
     root_path: String,
     instance_id: Option<String>,
     log_path: String,
+    log_start: Option<u64>,
+    boundary_pending: bool,
     terminal: bool,
     retired: bool,
     exit_code: Option<i32>,
     revision: String,
 }
-/// These captured values are immutable for a helper's lifetime. The instance ID
+/// These captured values are immutable after the initial boundary commitment.
+/// The instance ID
 /// is meaningful only with this exact root and supervisor; matching names in a
 /// different root or a log filename never establish the identity of an attempt.
 #[derive(Clone, PartialEq, Eq)]
@@ -62,6 +70,7 @@ struct MonitorBinding {
     root_path: String,
     instance_id: Option<String>,
     log_path: String,
+    log_start: Option<u64>,
 }
 impl From<&Observation> for MonitorBinding {
     fn from(monitor: &Observation) -> Self {
@@ -70,7 +79,18 @@ impl From<&Observation> for MonitorBinding {
             root_path: monitor.root_path.clone(),
             instance_id: monitor.instance_id.clone(),
             log_path: monitor.log_path.clone(),
+            log_start: monitor.log_start,
         }
+    }
+}
+impl MonitorBinding {
+    fn commits_initial_boundary(&self, next: &Self) -> bool {
+        self.log_start.is_none()
+            && next.log_start.is_some()
+            && self.root_id == next.root_id
+            && self.root_path == next.root_path
+            && self.instance_id == next.instance_id
+            && self.log_path == next.log_path
     }
 }
 fn observe(shared: &Shared) -> Result<Option<Observation>, String> {
@@ -85,6 +105,8 @@ fn observe(shared: &Shared) -> Result<Option<Observation>, String> {
             root_path: monitor.root_path,
             instance_id: monitor.instance_id,
             log_path: monitor.log_path,
+            log_start: monitor.log_start,
+            boundary_pending: monitor.phase == "starting" && monitor.log_start.is_none(),
             terminal: matches!(monitor.phase.as_str(), "exited" | "failed"),
             retired: monitor.phase == "retired",
             exit_code: monitor.exit_code,
@@ -122,14 +144,13 @@ fn refresh_from(
             let replaced = session.supervisor.as_deref() != Some(monitor.session_id.as_str());
             let binding = MonitorBinding::from(&monitor);
             if !replaced {
-                if session
-                    .binding
-                    .as_ref()
-                    .is_some_and(|seen| *seen != binding)
-                    || session
-                        .terminal_revision
-                        .as_deref()
-                        .is_some_and(|seen| seen != monitor.revision)
+                if session.binding.as_ref().is_some_and(|seen| {
+                    *seen != binding
+                        && !(session.boundary_pending && seen.commits_initial_boundary(&binding))
+                }) || session
+                    .terminal_revision
+                    .as_deref()
+                    .is_some_and(|seen| seen != monitor.revision)
                 {
                     if !session.attached && session.terminal_revision.is_some() {
                         return retire_history_locked(shared, session);
@@ -165,6 +186,8 @@ fn refresh_from(
             }
             session.supervisor = Some(monitor.session_id.clone());
             session.binding = Some(binding);
+            session.log_start = monitor.log_start;
+            session.boundary_pending = monitor.boundary_pending;
             session.terminal_revision = (!monitor.busy).then(|| monitor.revision.clone());
             let stopped = !monitor.busy && session.stop_requested;
             if !monitor.busy {
@@ -239,6 +262,8 @@ fn retire_history_locked(shared: &Shared, session: &mut Session) -> Result<(), S
     session.attached = false;
     session.supervisor = None;
     session.binding = None;
+    session.log_start = None;
+    session.boundary_pending = false;
     session.terminal_revision = None;
     session.unattached_history_retired = true;
     session.stop_requested = false;
@@ -285,7 +310,13 @@ pub fn require_root_unused(shared: &Shared, root_id: &str) -> Result<(), String>
 pub(super) struct FailureSnapshot {
     pub run: RunStatus,
     pub log: Option<PathBuf>,
+    pub log_start: Option<u64>,
     generation: Generation,
+}
+impl FailureSnapshot {
+    pub(super) fn generation(&self) -> u64 {
+        self.generation.0
+    }
 }
 
 /// Caller holds operations. Refresh may itself describe a broken monitor; that
@@ -305,6 +336,7 @@ fn failure_snapshot_locked(shared: &Shared, session: &Session) -> Result<Failure
     Ok(FailureSnapshot {
         run,
         log: shared.log.lock().unwrap().clone(),
+        log_start: session.log_start,
         generation: Generation(session.generation),
     })
 }
@@ -365,6 +397,8 @@ fn begin_preparation_with(
     session.stop_requested = false;
     session.supervisor = None;
     session.binding = None;
+    session.log_start = None;
+    session.boundary_pending = false;
     session.terminal_revision = None;
     session.unattached_history_retired = true;
     shared.stop.store(false, Ordering::SeqCst);
@@ -452,6 +486,7 @@ fn adopt_with(
     monitor_pid: u32,
     supervisor: String,
     log: PathBuf,
+    log_start: Option<u64>,
     stop: impl FnOnce(&mut Session) -> Result<(), String>,
 ) -> Result<Handoff, String> {
     let mut session = shared.monitor.lock();
@@ -472,6 +507,8 @@ fn adopt_with(
     session.attached = true;
     session.supervisor = Some(supervisor);
     session.terminal_revision = None;
+    session.log_start = log_start;
+    session.boundary_pending = false; // ACK already carries the committed start.
     let log_path = log.display().to_string();
     *shared.log.lock().unwrap() = Some(log);
     {
@@ -487,6 +524,7 @@ fn adopt_with(
                     root_path: root_path.clone(),
                     instance_id: run.version.clone(),
                     log_path,
+                    log_start,
                 });
         run.stage = "running".into();
         run.message = "游戏进程已启动，正在加载".into();
@@ -507,6 +545,7 @@ pub fn adopt_spawned(
     monitor_pid: u32,
     supervisor: String,
     log: PathBuf,
+    log_start: u64,
 ) -> Result<Handoff, String> {
     adopt_with(
         shared,
@@ -515,6 +554,7 @@ pub fn adopt_spawned(
         monitor_pid,
         supervisor,
         log,
+        Some(log_start),
         |session| stop_running(shared, session),
     )
 }
@@ -553,6 +593,15 @@ pub fn test_attach(shared: &Shared) {
 #[cfg(test)]
 pub fn test_attached(shared: &Shared) -> bool {
     shared.monitor.lock().attached
+}
+
+#[cfg(test)]
+pub(super) fn set_failure_log_start(shared: &Shared, start: Option<u64>) {
+    let mut session = shared.monitor.lock();
+    session.log_start = start;
+    if let Some(binding) = &mut session.binding {
+        binding.log_start = start;
+    }
 }
 
 #[cfg(test)]

@@ -190,6 +190,40 @@ const messages = {
   "inspection.repairUnsupported": "{count} 个文件需手动处理",
   "failure.open": "启动失败诊断",
   "failure.help": "以下是日志线索，需结合环境检查确认原因。",
+  "failure.historyLog":
+    "旧日志未记录本次启动的边界，片段可能包含之前的运行；未用于判断本次失败原因。",
+  "failure.exportReport": "导出诊断报告",
+  "failure.exported": "报告已导出",
+  "failure.aiAnalyze": "AI 分析",
+  "failure.aiPreparing": "正在准备报告与 AI 目标…",
+  "failure.aiStarting": "正在启动分析…",
+  "failure.aiConsent":
+    "确认后，将下方报告发送给此预设。已过滤已知账号凭据；请检查内容。",
+  "failure.aiPayload": "查看将发送的内容",
+  "failure.aiExcerpt": "报告较长，本次只发送标注的开头与末尾摘录。",
+  "failure.aiNotConfigured": "请先在 AI 管理中保存并选择一个预设。",
+  "failure.aiSend": "发送并分析",
+  "failure.aiRunning": "正在分析…",
+  "failure.aiStop": "停止分析",
+  "failure.aiReference": "AI 分析供排查参考，结论需与日志证据核对。",
+  "failure.aiCompleted": "分析完成",
+  "failure.aiCancelled": "分析已停止",
+  "failure.aiFailed": "分析未完成",
+  "failure.graphics_handoff.title": "启动窗口交接超时",
+  "failure.graphics_handoff.suggestion":
+    "早期加载窗口未及时交给游戏主窗口。需结合附近异常排查，单凭此提示无法确定驱动、窗口环境或模组原因。",
+  "failure.mod_dependency.title": "模组依赖要求未满足",
+  "failure.mod_dependency.suggestion":
+    "核对日志中的依赖名称、所需版本范围与已安装版本。",
+  "failure.mod_incompatible.title": "模组不兼容线索",
+  "failure.mod_incompatible.suggestion":
+    "检查模组要求的游戏与加载器版本，以及明确列出的冲突。",
+  "failure.mod_duplicate.title": "重复模组线索",
+  "failure.mod_duplicate.suggestion":
+    "核对重复的模组 ID 与文件版本，确认后再处理副本。",
+  "failure.mixin.title": "Mixin 应用失败",
+  "failure.mixin.suggestion":
+    "检查致命异常对应的模组与目标版本；普通 refmap 警告不能单独证明崩溃原因。",
   "failure.loading": "正在读取启动失败报告…",
   "failure.desktopOnly": "请在桌面应用中查看启动失败报告",
   "failure.disabled": "当前无法读取报告，请稍后重试",

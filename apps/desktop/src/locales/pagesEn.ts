@@ -205,6 +205,42 @@ const messages = {
   "inspection.repairCheck": "Recheck instance files",
   "inspection.repairUnsupported": "{count} files need manual attention",
   "failure.open": "Launch failure report",
+  "failure.historyLog":
+    "This legacy log has no attempt boundary and may include earlier runs. It was not used to classify this failure.",
+  "failure.exportReport": "Export report",
+  "failure.exported": "Report exported",
+  "failure.aiAnalyze": "AI analysis",
+  "failure.aiPreparing": "Preparing report and AI destination…",
+  "failure.aiStarting": "Starting analysis…",
+  "failure.aiConsent":
+    "Confirm to send the report below to this preset. Known account credentials have been filtered; review the content.",
+  "failure.aiPayload": "Review what will be sent",
+  "failure.aiExcerpt":
+    "The report is long. Only the marked opening and closing excerpts will be sent.",
+  "failure.aiNotConfigured": "Save and select a preset in AI Management first.",
+  "failure.aiSend": "Send and analyze",
+  "failure.aiRunning": "Analyzing…",
+  "failure.aiStop": "Stop analysis",
+  "failure.aiReference":
+    "Use AI analysis as a reference and check its conclusions against log evidence.",
+  "failure.aiCompleted": "Analysis completed",
+  "failure.aiCancelled": "Analysis stopped",
+  "failure.aiFailed": "Analysis did not complete",
+  "failure.graphics_handoff.title": "Startup window handoff timed out",
+  "failure.graphics_handoff.suggestion":
+    "The early loading window was not handed to the game in time. Inspect nearby exceptions; this message alone does not identify a driver, display environment or mod as the cause.",
+  "failure.mod_dependency.title": "Mod requirements were not met",
+  "failure.mod_dependency.suggestion":
+    "Compare dependency names, required version ranges and installed versions in the log.",
+  "failure.mod_incompatible.title": "Mod incompatibility clue",
+  "failure.mod_incompatible.suggestion":
+    "Check required game and loader versions and explicitly listed conflicts.",
+  "failure.mod_duplicate.title": "Duplicate mod clue",
+  "failure.mod_duplicate.suggestion":
+    "Check repeated mod IDs and file versions before removing a copy.",
+  "failure.mixin.title": "Fatal Mixin application failure",
+  "failure.mixin.suggestion":
+    "Check the mod and target version named in the fatal exception. Ordinary refmap warnings do not prove the crash cause.",
   "failure.help":
     "These log clues need an environment check to confirm the cause.",
   "failure.loading": "Reading launch failure report…",

@@ -10,6 +10,7 @@ import {
 import { serviceError, t } from "./i18n";
 import type { Api } from "./types";
 import "./launch-failure.css";
+import { FailureTools } from "./FailureTools";
 
 export type FailureRunStatus = {
   stage: string;
@@ -29,6 +30,8 @@ export type LaunchFailureReport = {
   log_tail: string | null;
   log_error: string | null;
   log_truncated: boolean;
+  log_scope: "attempt" | "history" | "none";
+  content_revision: string;
 };
 type Scope = {
   expected: FailureRunStatus;
@@ -61,6 +64,11 @@ const findingCodes = [
   "java_option",
   "missing_dependency",
   "graphics",
+  "graphics_handoff",
+  "mod_dependency",
+  "mod_incompatible",
+  "mod_duplicate",
+  "mixin",
   "mod_loading",
   "unknown",
 ] as const;
@@ -252,7 +260,7 @@ export function LaunchFailure({
           event.stopPropagation();
           const controls = [
             ...event.currentTarget.querySelectorAll<HTMLElement>(
-              "button:not(:disabled),summary",
+              "button:not(:disabled),summary,pre[tabindex='0']",
             ),
           ];
           const first = controls[0],
@@ -356,6 +364,16 @@ export function LaunchFailure({
                   );
                 })}
               </div>
+              {report.content_revision && (
+                <FailureTools
+                  key={report.content_revision}
+                  api={api}
+                  expected={expected}
+                  revision={report.content_revision}
+                  scopeKey={scopeKey}
+                  disabled={!readable || loading}
+                />
+              )}
               {report.log_error && (
                 <div
                   className="ce-failure-error ce-failure-log-error"
@@ -375,6 +393,9 @@ export function LaunchFailure({
                     <p className="ce-failure-help">
                       {t("failure.logTruncated")}
                     </p>
+                  )}
+                  {report.log_scope === "history" && (
+                    <p className="ce-failure-help">{t("failure.historyLog")}</p>
                   )}
                   <pre>{report.log_tail}</pre>
                 </details>
