@@ -4,6 +4,13 @@ import pages from "./pagesEn";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 import type zhCN from "./zh-CN";
 const messages = {
+  "memory.previewChanged": "Settings changed. Refresh the estimate.",
+  "memory.previewFailed": "Estimate failed: {error}",
+  "memory.loading": "Estimating memory…",
+  "memory.recalculate": "Recalculated before launch",
+  "memory.constrained": "Reduced to fit available memory",
+  "memory.refresh": "Refresh estimate",
+
   "community.previousPage": "Previous page",
   "community.nextPage": "Next page",
   "community.currentPage": "Page {page}",

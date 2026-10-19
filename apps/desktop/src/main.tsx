@@ -212,6 +212,7 @@ const rootCommands = new Set([
   "java_download_start",
   "launch_game",
   "inspect_instance",
+  "memory_preview",
   "instance_logs",
   "instance_read_log",
   "instance_export_log",

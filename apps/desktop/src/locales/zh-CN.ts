@@ -3,6 +3,13 @@ import app from "./appZh";
 import pages from "./pagesZh";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 const messages = {
+  "memory.previewChanged": "设置已变化，请刷新预估。",
+  "memory.previewFailed": "预估失败：{error}",
+  "memory.loading": "正在预估内存…",
+  "memory.recalculate": "启动前重新计算",
+  "memory.constrained": "已按可用内存降低分配",
+  "memory.refresh": "刷新预估",
+
   "community.previousPage": "上一页",
   "community.nextPage": "下一页",
   "community.currentPage": "第 {page} 页",

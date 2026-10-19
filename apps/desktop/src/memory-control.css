@@ -1,0 +1,16 @@
+.ce-memory-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 7.5px 0;
+}
+.ce-memory-preview > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ce-memory-preview > .ce-button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 3px 10px;
+}

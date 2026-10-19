@@ -27,6 +27,7 @@ import {
 import { Collapse } from "./Collapse";
 import { InstanceOperations } from "./InstanceOperations";
 import { JavaSelect } from "./JavaSelect";
+import { MemoryControl } from "./MemoryControl";
 import { InstanceDelete } from "./InstanceTrash";
 import { ResourcePanel, type LocalResourceDetails } from "./LocalResources";
 export type { LocalResourceDetails } from "./LocalResources";
@@ -638,43 +639,6 @@ export function InstancePanel({
       }
     }
   }
-  const [memory, setMemory] = useState(
-    settings.overrides[instance.id] || settings.memory_gib,
-  );
-  const [mode, setMode] = useState(
-    settings.overrides[instance.id] ? "custom" : "global",
-  );
-  const [system, setSystem] = useState<{
-    total_memory_bytes: number;
-    available_memory_bytes: number;
-  } | null>(null);
-  useEffect(() => {
-    setMemory(settings.overrides[instance.id] || settings.memory_gib);
-    setMode(settings.overrides[instance.id] ? "custom" : "global");
-  }, [instance.id, settings]);
-  useEffect(() => {
-    let live = true;
-    api<{ total_memory_bytes: number; available_memory_bytes: number }>(
-      "system_info",
-    )
-      .then((v) => {
-        if (live) setSystem(v);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [api]);
-  async function saveMemory(nextMode = mode, nextMemory = memory) {
-    const overrides = { ...settings.overrides };
-    if (nextMode === "global") delete overrides[instance.id];
-    else overrides[instance.id] = nextMemory;
-    try {
-      await onSave({ ...settings, overrides });
-    } catch (e) {
-      onNotify(String(e));
-    }
-  }
   function argumentField(field: ArgumentKey) {
     return (
       <GameArgumentField
@@ -1266,15 +1230,6 @@ export function InstancePanel({
       </>
     );
   if (section === "settings") {
-    const allocation = mode === "global" ? settings.memory_gib : memory;
-    const used = system
-      ? system.total_memory_bytes - system.available_memory_bytes
-      : 0;
-    const gib = (bytes: number) =>
-      formatNumber(bytes / 1073741824, {
-        minimumFractionDigits: 1,
-        maximumFractionDigits: 1,
-      });
     return (
       <>
         <section className="ce-card">
@@ -1313,100 +1268,15 @@ export function InstancePanel({
             />
           </div>
         </section>
-        <section className="ce-card ce-memory-card">
-          <h2 className="ce-card-title">{t("instance.memory")}</h2>
-          {system &&
-            allocation * 1073741824 > system.available_memory_bytes && (
-              <div className="ce-memory-warning">
-                {t("instance.memoryWarning")}
-              </div>
-            )}
-          <label className="ce-memory-mode">
-            <input
-              type="radio"
-              name="instance-memory"
-              checked={mode === "global"}
-              disabled={disabled}
-              onChange={() => {
-                setMode("global");
-                void saveMemory("global");
-              }}
-            />
-            {t("ui.followGlobal")}
-          </label>
-          <label className="ce-memory-mode">
-            <input
-              type="radio"
-              name="instance-memory"
-              checked={false}
-              readOnly
-              disabled
-              title={t("common.unavailable")}
-            />
-            {t("instance.memoryAuto")}
-          </label>
-          <div className="ce-memory-custom">
-            <label className="ce-memory-mode">
-              <input
-                type="radio"
-                name="instance-memory"
-                checked={mode === "custom"}
-                disabled={disabled}
-                onChange={() => {
-                  setMode("custom");
-                  void saveMemory("custom");
-                }}
-              />
-              {t("ui.custom")}
-            </label>
-            <input
-              type="range"
-              aria-label={t("instance.memoryLabel")}
-              min="2"
-              max={Math.max(14, memory)}
-              value={memory}
-              disabled={disabled || mode !== "custom"}
-              onChange={(e) => setMemory(Number(e.target.value))}
-              onPointerUp={() => void saveMemory()}
-              onKeyUp={() => void saveMemory()}
-              onBlur={() => {
-                if (mode === "custom") void saveMemory();
-              }}
-            />
-          </div>
-          <div className="ce-memory-labels">
-            <span>{t("instance.usedMemory")}</span>
-            <span>{t("instance.allocatedMemory")}</span>
-          </div>
-          <div className="ce-memory-bar">
-            <span
-              style={{
-                width: system
-                  ? `${Math.min(100, (used / system.total_memory_bytes) * 100)}%`
-                  : "0%",
-              }}
-            />
-          </div>
-          <div className="ce-memory-values">
-            <span>
-              {system
-                ? `${gib(used)} GiB / ${gib(system.total_memory_bytes)} GiB`
-                : t("instance.memoryUnavailable")}
-            </span>
-            <span>
-              {formatNumber(allocation, {
-                minimumFractionDigits: 1,
-                maximumFractionDigits: 1,
-              })}{" "}
-              GiB
-              {system
-                ? t("instance.availableMemory", {
-                    memory: gib(system.available_memory_bytes),
-                  })
-                : ""}
-            </span>
-          </div>
-        </section>
+        <MemoryControl
+          settings={settings}
+          instanceId={instance.id}
+          api={api}
+          native={native}
+          disabled={disabled || !!mutationDisabled}
+          onSave={onSave}
+          onNotify={onNotify}
+        />
         <section className="ce-card">
           <h2 className="ce-card-title">{t("settings.advanced")}</h2>
           <div className="instance-launch-fields">

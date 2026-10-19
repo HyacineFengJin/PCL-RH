@@ -12,8 +12,8 @@ use tauri::State;
 
 #[derive(Serialize)]
 pub struct SystemInfo {
-    total_memory_bytes: u64,
-    available_memory_bytes: u64,
+    pub(crate) total_memory_bytes: u64,
+    pub(crate) available_memory_bytes: u64,
 }
 
 fn parse_memory(text: &str) -> Result<SystemInfo, String> {

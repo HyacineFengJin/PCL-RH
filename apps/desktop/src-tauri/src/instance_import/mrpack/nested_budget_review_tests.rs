@@ -57,6 +57,7 @@ impl Fixture {
             path: project.join("root").to_string_lossy().into_owned(),
             selected: None,
             overrides: Default::default(),
+            memory_mode_overrides: Default::default(),
             java_overrides: Default::default(),
             isolation_overrides: Default::default(),
             argument_overrides: Default::default(),

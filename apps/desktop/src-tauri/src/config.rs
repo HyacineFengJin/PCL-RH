@@ -1,11 +1,14 @@
 //! Settings v3 with registered roots and an active-root UI projection.
 //! Transport revisions reject stale saves. V2 upgrades are deferred while a
 //! rename journal binds its original bytes, then backed up before the next write.
-//! Content policies, titles and arguments share the same root/instance identity
+//! Memory modes, content policies, titles and arguments share the same root/instance identity
 //! and revision as launch settings. Saving them never relocates game content;
 //! deleted-instance references remain reserved until their existing recovery.
+//! Legacy numeric-only memory overrides keep manual behavior. Explicit modes
+//! preserve dormant numbers, so changing policy never discards a manual choice.
 use pcl_core::{
     content_scope::IsolationPolicy, java::JavaSelection, launch_options::LaunchArgumentOverrides,
+    memory::MemoryMode,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,10 +38,14 @@ pub struct Settings {
     pub player: String,
     pub memory_gib: u32,
     #[serde(default)]
+    pub memory_mode: MemoryMode,
+    #[serde(default)]
     pub isolation: IsolationPolicy,
     pub selected: Option<String>,
     #[serde(default)]
     pub overrides: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub memory_mode_overrides: BTreeMap<String, MemoryMode>,
     #[serde(default)]
     pub java: JavaSelection,
     #[serde(default)]
@@ -72,6 +79,8 @@ pub struct GameRoot {
     #[serde(default)]
     pub overrides: BTreeMap<String, u32>,
     #[serde(default)]
+    pub memory_mode_overrides: BTreeMap<String, MemoryMode>,
+    #[serde(default)]
     pub java_overrides: BTreeMap<String, JavaSelection>,
     #[serde(default)]
     pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
@@ -81,7 +90,30 @@ pub struct GameRoot {
     pub argument_overrides: BTreeMap<String, LaunchArgumentOverrides>,
 }
 
+/// Numeric-only overrides predate the mode selector and keep their manual
+/// behavior when the global policy changes. Explicit modes take precedence so
+/// Auto may retain a dormant numeric choice for a later switch back to Manual.
+fn resolved_memory_mode(
+    explicit: Option<MemoryMode>,
+    has_manual: bool,
+    global: MemoryMode,
+) -> MemoryMode {
+    explicit.unwrap_or(if has_manual {
+        MemoryMode::Manual
+    } else {
+        global
+    })
+}
+
 impl GameRoot {
+    pub fn resolved_memory_mode(&self, id: &str, global: MemoryMode) -> MemoryMode {
+        resolved_memory_mode(
+            self.memory_mode_overrides.get(id).copied(),
+            self.overrides.contains_key(id),
+            global,
+        )
+    }
+
     pub fn resolved_isolation(&self, id: &str, global: IsolationPolicy) -> IsolationPolicy {
         self.isolation_overrides.get(id).copied().unwrap_or(global)
     }
@@ -111,6 +143,8 @@ pub struct RootSummary {
     pub path: String,
     pub selected: Option<String>,
     pub overrides: BTreeMap<String, u32>,
+    #[serde(default)]
+    pub memory_mode_overrides: BTreeMap<String, MemoryMode>,
     pub java_overrides: BTreeMap<String, JavaSelection>,
     pub isolation_overrides: BTreeMap<String, IsolationPolicy>,
     pub window_title_overrides: BTreeMap<String, String>,
@@ -127,6 +161,8 @@ struct Persisted {
     active_root_id: String,
     player: String,
     memory_gib: u32,
+    #[serde(default)]
+    memory_mode: MemoryMode,
     #[serde(default)]
     isolation: IsolationPolicy,
     roots: Vec<GameRoot>,
@@ -163,6 +199,7 @@ impl VersionTwo {
             active_root_id: self.active_root_id,
             player: self.player,
             memory_gib: self.memory_gib,
+            memory_mode: MemoryMode::Manual,
             isolation: IsolationPolicy::Automatic,
             roots: self
                 .roots
@@ -173,6 +210,7 @@ impl VersionTwo {
                     path: root.path,
                     selected: root.selected,
                     overrides: root.overrides,
+                    memory_mode_overrides: BTreeMap::new(),
                     java_overrides: BTreeMap::new(),
                     isolation_overrides: BTreeMap::new(),
                     window_title_overrides: BTreeMap::new(),
@@ -272,6 +310,7 @@ fn defaults(project: &Path) -> Persisted {
         active_root_id: "root-default".into(),
         player: "Player".into(),
         memory_gib: 6,
+        memory_mode: MemoryMode::Manual,
         isolation: IsolationPolicy::Automatic,
         roots: vec![GameRoot {
             id: "root-default".into(),
@@ -279,6 +318,7 @@ fn defaults(project: &Path) -> Persisted {
             path: path.to_string_lossy().into_owned(),
             selected: None,
             overrides: BTreeMap::new(),
+            memory_mode_overrides: BTreeMap::new(),
             java_overrides: BTreeMap::new(),
             isolation_overrides: BTreeMap::new(),
             window_title_overrides: BTreeMap::new(),
@@ -320,6 +360,7 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
         pcl_core::identifier(selected)?;
     }
     if root.overrides.len() > 4096
+        || root.memory_mode_overrides.len() > 4096
         || root.java_overrides.len() > 4096
         || root.isolation_overrides.len() > 4096
         || root.window_title_overrides.len() > 4096
@@ -332,6 +373,9 @@ fn validate_root_values(root: &GameRoot) -> Result<(), String> {
         if !(2..=64).contains(memory) {
             return Err("内存应为 2–64 GiB".into());
         }
+    }
+    for id in root.memory_mode_overrides.keys() {
+        pcl_core::identifier(id)?;
     }
     for (id, selection) in &root.java_overrides {
         pcl_core::identifier(id)?;
@@ -460,6 +504,7 @@ fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), Strin
                     active_root_id: "root-legacy".into(),
                     player: old.player,
                     memory_gib: old.memory_gib,
+                    memory_mode: MemoryMode::Manual,
                     isolation: IsolationPolicy::Automatic,
                     roots: vec![GameRoot {
                         id: "root-legacy".into(),
@@ -467,6 +512,7 @@ fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), Strin
                         path: old.root,
                         selected: old.selected,
                         overrides: old.overrides,
+                        memory_mode_overrides: BTreeMap::new(),
                         java_overrides: BTreeMap::new(),
                         isolation_overrides: BTreeMap::new(),
                         window_title_overrides: BTreeMap::new(),
@@ -857,6 +903,7 @@ impl ConfigStore {
             path,
             selected: None,
             overrides: BTreeMap::new(),
+            memory_mode_overrides: BTreeMap::new(),
             java_overrides: BTreeMap::new(),
             isolation_overrides: BTreeMap::new(),
             window_title_overrides: BTreeMap::new(),
@@ -1000,9 +1047,11 @@ impl ConfigStore {
         let mut next = current.config.clone();
         next.player = settings.player;
         next.memory_gib = settings.memory_gib;
+        next.memory_mode = settings.memory_mode;
         next.isolation = settings.isolation;
         next.roots[index].selected = settings.selected;
         next.roots[index].overrides = settings.overrides;
+        next.roots[index].memory_mode_overrides = settings.memory_mode_overrides;
         next.java = settings.java;
         next.roots[index].java_overrides = settings.java_overrides;
         next.roots[index].isolation_overrides = settings.isolation_overrides;
@@ -1106,6 +1155,7 @@ impl ConfigStore {
             .ok_or("游戏目录未注册")?;
         if root.selected.as_deref() == Some(id)
             || root.overrides.contains_key(id)
+            || root.memory_mode_overrides.contains_key(id)
             || root.java_overrides.contains_key(id)
             || root.isolation_overrides.contains_key(id)
             || root.window_title_overrides.contains_key(id)
@@ -1253,6 +1303,7 @@ pub(crate) fn rename_bytes(
         return Err("设置中的游戏目录与重命名范围不符".into());
     }
     if selected.overrides.contains_key(new)
+        || selected.memory_mode_overrides.contains_key(new)
         || selected.java_overrides.contains_key(new)
         || selected.isolation_overrides.contains_key(new)
         || selected.window_title_overrides.contains_key(new)
@@ -1268,6 +1319,10 @@ pub(crate) fn rename_bytes(
     }
     if let Some(memory) = selected.overrides.remove(old) {
         selected.overrides.insert(new.into(), memory);
+        changed = true;
+    }
+    if let Some(mode) = selected.memory_mode_overrides.remove(old) {
+        selected.memory_mode_overrides.insert(new.into(), mode);
         changed = true;
     }
     if let Some(java) = selected.java_overrides.remove(old) {
@@ -1308,9 +1363,11 @@ fn project_settings(config: &Persisted, revision: &str) -> Settings {
         root: root.path.clone(),
         player: config.player.clone(),
         memory_gib: config.memory_gib,
+        memory_mode: config.memory_mode,
         isolation: config.isolation,
         selected: root.selected.clone(),
         overrides: root.overrides.clone(),
+        memory_mode_overrides: root.memory_mode_overrides.clone(),
         java: config.java.clone(),
         java_paths: config.java_paths.clone(),
         java_overrides: root.java_overrides.clone(),
@@ -1331,6 +1388,7 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
                 path: root.path,
                 selected: root.selected,
                 overrides: root.overrides,
+                memory_mode_overrides: root.memory_mode_overrides,
                 java_overrides: root.java_overrides,
                 isolation_overrides: root.isolation_overrides,
                 window_title_overrides: root.window_title_overrides,

@@ -16,6 +16,20 @@ export type Instance = {
   metadata_revision?: string;
 };
 export type IsolationPolicy = "automatic" | "shared" | "isolated";
+export type MemoryMode = "manual" | "auto";
+export type MemoryPreview = {
+  root_id: string;
+  instance_id: string | null;
+  settings_revision: string;
+  mode: MemoryMode;
+  memory_gib: number;
+  manual_gib: number;
+  total_memory_bytes: number | null;
+  available_memory_bytes: number | null;
+  mod_count: number | null;
+  constrained: boolean;
+  error: string | null;
+};
 export type LaunchArgumentOverrides = {
   custom_info?: string | null;
   jvm_args?: string | null;
@@ -27,6 +41,8 @@ export type Settings = {
   root: string;
   player: string;
   memory_gib: number;
+  memory_mode?: MemoryMode;
+  memory_mode_overrides?: Record<string, MemoryMode>;
   isolation?: IsolationPolicy;
   selected: string | null;
   overrides: Record<string, number>;
@@ -59,6 +75,7 @@ export type RootSummary = {
   path: string;
   selected: string | null;
   overrides?: Record<string, number>;
+  memory_mode_overrides?: Record<string, MemoryMode>;
   java_overrides?: Record<string, JavaSelection>;
   isolation_overrides?: Record<string, IsolationPolicy>;
   window_title_overrides?: Record<string, string>;

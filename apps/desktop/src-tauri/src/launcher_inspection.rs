@@ -6,8 +6,10 @@
 //! agree; navigation can never substitute a newly selected instance.
 
 use crate::{
-    captured_game_options, config::GameRoot, ensure_instance_files_ready, instance_context,
-    instance_reset, java_service, launcher_monitor_runtime, resource_ops, RunStatus, Shared,
+    captured_game_options,
+    config::{GameRoot, Settings},
+    ensure_instance_files_ready, instance_context, instance_reset, java_service,
+    launcher_monitor_runtime, resource_ops, RunStatus, Shared,
 };
 use pcl_core::{inspection::LaunchInspection, java::JavaSelection};
 use serde::Serialize;
@@ -32,6 +34,7 @@ struct CapturedInspection {
     id: String,
     root: GameRoot,
     settings_revision: String,
+    memory_settings: Settings,
     game_options: pcl_core::launch_options::LaunchOptions,
     preferences_revision: String,
     tasks_revision: u64,
@@ -161,6 +164,7 @@ fn capture(shared: &Shared, id: &str, root_id: Option<&str>) -> Result<CapturedI
     }
     Ok(CapturedInspection {
         id: id.into(),
+        memory_settings: settings.clone(),
         java: java_service::effective_choice(&settings, &root, id).clone(),
         game_options: captured_game_options(&settings, &root, &preferences.preferences, id)?,
         extra_java_paths: settings.java_paths,
@@ -230,14 +234,26 @@ pub(super) fn inspect(
     root_id: Option<&str>,
 ) -> Result<Inspection, String> {
     inspect_with(shared, id, root_id, |captured| {
-        pcl_core::inspection::inspect_instance_with_isolation(
+        let mut report = pcl_core::inspection::inspect_instance_with_isolation(
             Path::new(&captured.root.path),
             &shared.project,
             &captured.id,
             &captured.java,
             &captured.extra_java_paths,
             captured.game_options.isolation,
-        )
+        )?;
+        if let Err(error) = crate::launcher_memory::allocation(
+            &captured.memory_settings,
+            &captured.root,
+            &captured.id,
+            captured.game_options.isolation,
+        ) {
+            report.ready = false;
+            if report.issues.len() < 8 {
+                report.issues.push(error);
+            }
+        }
+        Ok(report)
     })
 }
 

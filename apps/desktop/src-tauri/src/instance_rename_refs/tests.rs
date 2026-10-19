@@ -39,9 +39,9 @@ impl Fixture {
             root,
             other,
         };
-        fixture.save_settings(json!({"schema_version":3,"active_root_id":"root-a","player":"FixturePlayer","memory_gib":10,"isolation":"automatic","java":{"mode":"auto"},"java_paths":[],
-            "roots":[{"id":"root-a","name":"A","path":fixture.root,"selected":"Old","overrides":{"Old":12,"Unrelated":8},"java_overrides":{},"isolation_overrides":{},"window_title_overrides":{},"argument_overrides":{}},
-            {"id":"root-b","name":"B","path":fixture.other,"selected":"Old","overrides":{"Old":6},"java_overrides":{},"isolation_overrides":{},"window_title_overrides":{},"argument_overrides":{}}]}));
+        fixture.save_settings(json!({"schema_version":3,"active_root_id":"root-a","player":"FixturePlayer","memory_gib":10,"memory_mode":"manual","isolation":"automatic","java":{"mode":"auto"},"java_paths":[],
+            "roots":[{"id":"root-a","name":"A","path":fixture.root,"selected":"Old","overrides":{"Old":12,"Unrelated":8},"memory_mode_overrides":{},"java_overrides":{},"isolation_overrides":{},"window_title_overrides":{},"argument_overrides":{}},
+            {"id":"root-b","name":"B","path":fixture.other,"selected":"Old","overrides":{"Old":6},"memory_mode_overrides":{},"java_overrides":{},"isolation_overrides":{},"window_title_overrides":{},"argument_overrides":{}}]}));
         fixture
     }
     fn path(&self, name: &str) -> PathBuf {
@@ -704,11 +704,12 @@ fn pending_version_two_rename_preserves_golden_bytes_and_defers_backed_upgrade()
     let mut old = fixture.settings();
     old["schema_version"] = json!(2);
     old["memory_gib"] = json!(14);
-    for field in ["java", "java_paths", "isolation"] {
+    for field in ["java", "java_paths", "isolation", "memory_mode"] {
         old.as_object_mut().unwrap().remove(field);
     }
     for root in old["roots"].as_array_mut().unwrap() {
         for field in [
+            "memory_mode_overrides",
             "java_overrides",
             "isolation_overrides",
             "window_title_overrides",
@@ -1071,4 +1072,55 @@ fn unsupported_or_pending_resource_journals_block_migration() {
     fs::write(&path, &bytes).unwrap();
     assert!(prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").is_err());
     assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn memory_modes_and_dormant_manual_values_migrate_with_root_scoped_rename() {
+    let fixture = Fixture::new(true);
+    let mut before = fixture.settings();
+    before["memory_mode"] = json!("auto");
+    before["roots"][0]["memory_mode_overrides"] = json!({"Old":"auto", "Unrelated":"manual"});
+    before["roots"][1]["memory_mode_overrides"] = json!({"Old":"manual"});
+    fixture.save_settings(before.clone());
+    let refs = fixture.refs();
+    refs.verify_before(&fixture.project, &fixture.root).unwrap();
+    refs.apply(&fixture.project, &fixture.root).unwrap();
+    refs.apply(&fixture.project, &fixture.root).unwrap();
+    let after = fixture.settings();
+    let mut expected = before;
+    expected["roots"][0]["selected"] = json!("New");
+    expected["roots"][0]["overrides"] = json!({"New":12,"Unrelated":8});
+    expected["roots"][0]["memory_mode_overrides"] = json!({"New":"auto","Unrelated":"manual"});
+    assert_eq!(after, expected);
+    let (config, warning) = ConfigStore::load(&fixture.project);
+    assert!(warning.is_none());
+    let settings = config.snapshot();
+    assert_eq!(
+        config
+            .registered("root-a")
+            .unwrap()
+            .resolved_memory_mode("New", settings.memory_mode),
+        pcl_core::memory::MemoryMode::Auto
+    );
+    assert_eq!(settings.overrides["New"], 12);
+    assert_eq!(
+        config
+            .registered("root-b")
+            .unwrap()
+            .resolved_memory_mode("Old", settings.memory_mode),
+        pcl_core::memory::MemoryMode::Manual
+    );
+}
+
+#[test]
+fn mode_only_destination_blocks_rename_and_keeps_all_reference_bytes() {
+    let fixture = Fixture::new(true);
+    let mut settings = fixture.settings();
+    settings["roots"][0]["memory_mode_overrides"] = json!({"New":"auto"});
+    fixture.save_settings(settings.clone());
+    let original = fs::read(fixture.path("settings.json")).unwrap();
+    let error = prepare(&fixture.project, "root-a", &fixture.root, "Old", "New").unwrap_err();
+    assert!(error.contains("目标名称"));
+    assert_eq!(fs::read(fixture.path("settings.json")).unwrap(), original);
+    assert_eq!(fixture.settings(), settings);
 }

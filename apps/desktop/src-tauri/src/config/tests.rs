@@ -104,6 +104,8 @@ fn legacy_migration_preserves_values_exact_path_and_original_backup_once() {
     assert_eq!(settings.root, exact);
     assert_eq!(settings.player, "Old_Player");
     assert_eq!(settings.memory_gib, 14);
+    assert_eq!(settings.memory_mode, MemoryMode::Manual);
+    assert!(settings.memory_mode_overrides.is_empty());
     assert_eq!(settings.isolation, IsolationPolicy::Automatic);
     assert!(settings.isolation_overrides.is_empty());
     assert!(settings.window_title_overrides.is_empty());
@@ -356,6 +358,8 @@ fn version_two_migration_keeps_settings_and_exact_backup_once() {
     assert!(warning.is_none());
     let settings = store.snapshot();
     assert_eq!(settings.memory_gib, 14);
+    assert_eq!(settings.memory_mode, MemoryMode::Manual);
+    assert!(settings.memory_mode_overrides.is_empty());
     assert_eq!(settings.player, "FixturePlayer");
     assert_eq!(settings.selected.as_deref(), Some("Installed"));
     assert_eq!(settings.overrides["Installed"], 12);
@@ -1096,5 +1100,277 @@ fn malformed_argument_documents_and_saves_preserve_their_revision_and_bytes() {
     let error = store.save(invalid).unwrap_err();
     assert!(!error.contains("private-value"));
     assert_eq!(store.snapshot(), before);
+    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+}
+
+#[test]
+fn old_schema_three_memory_fields_default_without_rewriting_disk() {
+    let fixture = Fixture::new();
+    let original = serde_json::to_vec_pretty(&json!({
+        "schema_version":3,"active_root_id":"root-old","player":"Player","memory_gib":10,
+        "roots":[{"id":"root-old","name":"Game","path":fixture.root("old-v3"),
+            "selected":null,"overrides":{"Custom":14}}]
+    }))
+    .unwrap();
+    fixture.write(&original);
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    let settings = store.snapshot();
+    assert_eq!(settings.memory_mode, MemoryMode::Manual);
+    assert!(settings.memory_mode_overrides.is_empty());
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("Custom", settings.memory_mode),
+        MemoryMode::Manual
+    );
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("Inherited", settings.memory_mode),
+        MemoryMode::Manual
+    );
+    assert_eq!(settings.overrides["Custom"], 14);
+    assert_eq!(fs::read(fixture.file()).unwrap(), original);
+    let entries: Vec<_> = fs::read_dir(fixture.file().parent().unwrap())
+        .unwrap()
+        .collect();
+    assert_eq!(entries.len(), 1);
+}
+
+#[test]
+fn memory_modes_preserve_manual_values_and_resolve_independently_for_each_root() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let first = store.snapshot().root_id;
+    let second = store.register(fixture.root("second-memory"), None).unwrap();
+    assert!(second.memory_mode_overrides.is_empty());
+    let mut settings = store.snapshot();
+    settings.memory_gib = 14;
+    settings.memory_mode = MemoryMode::Auto;
+    settings.overrides.insert("LegacyCustom".into(), 12);
+    settings.overrides.insert("Same".into(), 8);
+    settings
+        .memory_mode_overrides
+        .insert("Same".into(), MemoryMode::Auto);
+    settings
+        .memory_mode_overrides
+        .insert("ForcedManual".into(), MemoryMode::Manual);
+    store.save(settings).unwrap();
+    let settings = store.snapshot();
+    assert_eq!(settings.memory_gib, 14);
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("Inherited", settings.memory_mode),
+        MemoryMode::Auto
+    );
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("LegacyCustom", settings.memory_mode),
+        MemoryMode::Manual
+    );
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("Same", settings.memory_mode),
+        MemoryMode::Auto
+    );
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("ForcedManual", settings.memory_mode),
+        MemoryMode::Manual
+    );
+    let mut settings = store.select(&second.id).unwrap();
+    assert_eq!(settings.memory_mode, MemoryMode::Auto);
+    assert_eq!(settings.memory_gib, 14);
+    assert!(settings.memory_mode_overrides.is_empty());
+    settings
+        .memory_mode_overrides
+        .insert("Same".into(), MemoryMode::Manual);
+    store.save(settings).unwrap();
+    store.select_installed(&first, "Same").unwrap();
+    let (settings, roots) = store.view();
+    assert_eq!(settings.root_id, second.id);
+    assert_eq!(
+        store
+            .registered(&settings.root_id)
+            .unwrap()
+            .resolved_memory_mode("Same", settings.memory_mode),
+        MemoryMode::Manual
+    );
+    let first_root = store.registered(&first).unwrap();
+    assert_eq!(first_root.selected.as_deref(), Some("Same"));
+    assert_eq!(
+        first_root.resolved_memory_mode("Same", settings.memory_mode),
+        MemoryMode::Auto
+    );
+    assert_eq!(first_root.overrides["Same"], 8);
+    assert_eq!(
+        roots
+            .iter()
+            .find(|root| root.id == first)
+            .unwrap()
+            .memory_mode_overrides,
+        first_root.memory_mode_overrides
+    );
+    let mut settings = store.select(&first).unwrap();
+    settings.memory_mode = MemoryMode::Manual;
+    store.save(settings).unwrap();
+    assert_eq!(
+        store
+            .registered(&first)
+            .unwrap()
+            .resolved_memory_mode("Same", store.snapshot().memory_mode),
+        MemoryMode::Auto
+    );
+    // Removing both entries expresses inheritance; the global manual choice is retained.
+    let mut settings = store.snapshot();
+    settings.overrides.remove("Same");
+    settings.memory_mode_overrides.remove("Same");
+    store.save(settings).unwrap();
+    assert_eq!(
+        store
+            .registered(&first)
+            .unwrap()
+            .resolved_memory_mode("Same", store.snapshot().memory_mode),
+        MemoryMode::Manual
+    );
+    assert_eq!(store.snapshot().memory_gib, 14);
+    let (reloaded, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    assert_eq!(
+        projection(reloaded.snapshot()),
+        projection(store.snapshot())
+    );
+    assert_eq!(
+        reloaded.registered(&second.id).unwrap(),
+        store.registered(&second.id).unwrap()
+    );
+}
+
+#[test]
+fn memory_mode_config_serialization_roundtrip_keeps_explicit_and_dormant_choices() {
+    let fixture = Fixture::new();
+    let mut config = defaults(&fixture.0);
+    config.memory_mode = MemoryMode::Auto;
+    config.memory_gib = 12;
+    config.roots[0].memory_mode_overrides = BTreeMap::from([
+        ("Auto".into(), MemoryMode::Auto),
+        ("Manual".into(), MemoryMode::Manual),
+    ]);
+    config.roots[0].overrides.insert("Auto".into(), 8);
+    let bytes = encode(&config).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(document["memory_mode"], "auto");
+    assert_eq!(
+        document["roots"][0]["memory_mode_overrides"],
+        json!({"Auto":"auto","Manual":"manual"})
+    );
+    let (decoded, migration) = decode_settings(&bytes).unwrap();
+    assert!(migration.is_none());
+    assert_eq!(encode(&decoded).unwrap(), bytes);
+    let settings = project_settings(&decoded, "fixture");
+    let transported: Settings =
+        serde_json::from_slice(&serde_json::to_vec(&settings).unwrap()).unwrap();
+    assert_eq!(transported, settings);
+    assert_eq!(transported.overrides["Auto"], 8);
+    assert_eq!(
+        decoded.roots[0].resolved_memory_mode("Auto", transported.memory_mode),
+        MemoryMode::Auto
+    );
+    assert_eq!(
+        decoded.roots[0].resolved_memory_mode("Manual", transported.memory_mode),
+        MemoryMode::Manual
+    );
+}
+
+#[test]
+fn invalid_memory_modes_preserve_original_and_block_saves() {
+    for (field, value) in [
+        ("global", json!("future")),
+        ("instance", json!({"Example":"future"})),
+        ("instance", json!({"../outside":"auto"})),
+        ("instance", json!(null)),
+    ] {
+        let fixture = Fixture::new();
+        let mut document = serde_json::to_value(defaults(&fixture.0)).unwrap();
+        if field == "global" {
+            document["memory_mode"] = value;
+        } else {
+            document["roots"][0]["memory_mode_overrides"] = value;
+        }
+        let original = serde_json::to_vec(&document).unwrap();
+        fixture.write(&original);
+        let (store, warning) = ConfigStore::load(&fixture.0);
+        assert!(warning.is_some());
+        assert!(store.save(store.snapshot()).is_err());
+        assert_eq!(fs::read(fixture.file()).unwrap(), original);
+    }
+}
+
+#[test]
+fn memory_mode_map_limits_and_dormant_manual_validation_preserve_previous_state() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let mut settings = store.snapshot();
+    settings.memory_mode = MemoryMode::Auto;
+    settings.memory_mode_overrides = (0..4096)
+        .map(|n| (format!("Instance-{n}"), MemoryMode::Auto))
+        .collect();
+    store.save(settings).unwrap();
+    let before = store.snapshot();
+    let original = fs::read(fixture.file()).unwrap();
+    let mut too_many = before.clone();
+    too_many
+        .memory_mode_overrides
+        .insert("Excess".into(), MemoryMode::Auto);
+    assert!(store.save(too_many).unwrap_err().contains("4096"));
+    for memory in [1, 65] {
+        let mut invalid = before.clone();
+        invalid.overrides.insert("Instance-0".into(), memory);
+        assert!(store.save(invalid).unwrap_err().contains("2–64"));
+        let mut invalid = before.clone();
+        invalid.memory_gib = memory;
+        assert!(store.save(invalid).unwrap_err().contains("2–64"));
+    }
+    let mut invalid = before.clone();
+    invalid.memory_mode_overrides.remove("Instance-0");
+    invalid
+        .memory_mode_overrides
+        .insert("../outside".into(), MemoryMode::Auto);
+    assert!(store.save(invalid).is_err());
+    assert_eq!(store.snapshot(), before);
+    assert_eq!(fs::read(fixture.file()).unwrap(), original);
+}
+
+#[test]
+fn mode_only_deleted_instance_reference_stays_reserved_in_its_own_root() {
+    let fixture = Fixture::new();
+    let (store, _) = ConfigStore::load(&fixture.0);
+    let second = store
+        .register(fixture.root("second-reservation"), None)
+        .unwrap();
+    let mut settings = store.snapshot();
+    settings
+        .memory_mode_overrides
+        .insert("Reserved".into(), MemoryMode::Auto);
+    let first = settings.root_id.clone();
+    let root = PathBuf::from(&settings.root);
+    store.save(settings).unwrap();
+    let bytes = fs::read(fixture.file()).unwrap();
+    check_delete_dependencies(&bytes, &first, &root, "Reserved").unwrap();
+    assert!(store.ensure_new_instance_name(&first, "Reserved").is_err());
+    assert!(store
+        .ensure_new_instance_name(&second.id, "Reserved")
+        .is_ok());
     assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
 }

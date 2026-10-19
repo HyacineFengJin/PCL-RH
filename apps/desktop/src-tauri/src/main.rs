@@ -49,6 +49,7 @@ mod launcher_local;
 mod launcher_local_commands;
 mod launcher_log_commands;
 mod launcher_logs;
+mod launcher_memory;
 mod launcher_minecraft_update_commands;
 mod launcher_minecraft_updates;
 mod launcher_monitor_runtime;
@@ -1944,8 +1945,13 @@ fn launch_game(
                     );
                     return Ok(());
                 }
-                let memory = *root.overrides.get(&id).unwrap_or(&cfg.memory_gib);
                 let plan = preparation.prepare_with(&s, &cfg, |launch_settings| {
+                    let memory = launcher_memory::allocation(
+                        launch_settings,
+                        &root,
+                        &id,
+                        game_options.isolation,
+                    )?;
                     match s.accounts.identity()? {
                         Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
                             Path::new(&root.path),
@@ -2416,6 +2422,7 @@ fn main() {
             launcher_asset_commands::launcher_home_open_link,
             ui_catalog::instance_servers,
             ui_data::system_info,
+            launcher_memory::memory_preview,
             java_commands::java_catalog,
             java_commands::java_add,
             java_download_commands::java_download_catalog,

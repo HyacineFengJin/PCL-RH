@@ -164,6 +164,9 @@ fn title_arguments_and_memory_saves_keep_ordinary_behavior_during_game_and_file_
         };
         let mut next = before.clone();
         next.memory_gib = 10;
+        next.memory_mode = pcl_core::memory::MemoryMode::Auto;
+        next.memory_mode_overrides
+            .insert("Example".into(), pcl_core::memory::MemoryMode::Auto);
         next.argument_overrides.insert(
             "Example".into(),
             pcl_core::launch_options::LaunchArgumentOverrides {
@@ -175,6 +178,11 @@ fn title_arguments_and_memory_saves_keep_ordinary_behavior_during_game_and_file_
             .insert("Example".into(), String::new());
         let saved = save(&shared, next).unwrap();
         assert_eq!(saved.memory_gib, 10);
+        assert_eq!(saved.memory_mode, pcl_core::memory::MemoryMode::Auto);
+        assert_eq!(
+            saved.memory_mode_overrides["Example"],
+            pcl_core::memory::MemoryMode::Auto
+        );
         assert_eq!(
             saved.argument_overrides["Example"].jvm_args.as_deref(),
             Some("-Dexample=value")

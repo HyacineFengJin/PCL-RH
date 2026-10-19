@@ -1,12 +1,13 @@
 import { CeSelect } from "./CeSelect";
-import { t, formatNumber } from "./i18n";
-import { useEffect, useState } from "react";
+import { t } from "./i18n";
+import { useState } from "react";
 import { ArrowRight, ChevronDown } from "lucide-react";
 import "./settings-panel.css";
 import { Collapse } from "./Collapse";
 import { JavaPanel } from "./JavaPanel";
 import { GameTitleField, IsolationField } from "./GameIdentityFields";
 import { GameLaunchFields } from "./GameLaunchFields";
+import { MemoryControl } from "./MemoryControl";
 import {
   GameArgumentField,
   type GameArgumentField as ArgumentKey,
@@ -16,10 +17,6 @@ import type {
   LauncherPreferencePatch,
 } from "./launcherTypes";
 import type { Api, Settings } from "./types";
-type SystemInfo = {
-  total_memory_bytes: number;
-  available_memory_bytes: number;
-};
 type Props = {
   section: string;
   settings: Settings;
@@ -90,31 +87,7 @@ export function SettingsPanel({
   javaRecommendation,
   onInstanceJava,
 }: Props) {
-  const [memory, setMemory] = useState(settings.memory_gib);
   const [advanced, setAdvanced] = useState(false);
-  const [system, setSystem] = useState<SystemInfo | null>(null);
-  useEffect(() => {
-    setMemory(settings.memory_gib);
-  }, [settings.memory_gib]);
-  useEffect(() => {
-    let current = true;
-    api<SystemInfo>("system_info")
-      .then((v) => {
-        if (current) setSystem(v);
-      })
-      .catch(() => {});
-    return () => {
-      current = false;
-    };
-  }, [api, native]);
-  const saveMemory = async () => {
-    if (memory === settings.memory_gib || disabled) return;
-    try {
-      await onSave({ ...settings, memory_gib: memory });
-    } catch (e) {
-      onNotify(String(e));
-    }
-  };
   function argumentField(field: ArgumentKey) {
     return (
       <GameArgumentField
@@ -159,14 +132,6 @@ export function SettingsPanel({
         <h2 className="ce-card-title">{t("settings.pageUnavailable")}</h2>
       </section>
     );
-  const gib = (bytes: number) =>
-    formatNumber(bytes / 1073741824, {
-      minimumFractionDigits: 1,
-      maximumFractionDigits: 1,
-    });
-  const used = system
-    ? system.total_memory_bytes - system.available_memory_bytes
-    : 0;
   return (
     <div className="ce-settings-panel">
       <section className="ce-card">
@@ -263,67 +228,14 @@ export function SettingsPanel({
           />
         </div>
       </section>
-      <section className="ce-card ce-memory-card">
-        <h2 className="ce-card-title">{t("instance.memory")}</h2>
-        {system && memory * 1073741824 > system.available_memory_bytes && (
-          <div className="ce-memory-warning">{t("settings.memoryWarning")}</div>
-        )}
-        <label className="ce-memory-mode" title={unavailable()}>
-          <input type="radio" disabled checked={false} readOnly />
-          {t("settings.auto")}
-        </label>
-        <div className="ce-memory-custom">
-          <label className="ce-memory-mode">
-            <input type="radio" checked readOnly />
-            {t("settings.custom")}
-          </label>
-          <input
-            aria-label={t("settings.memoryGib")}
-            type="range"
-            min="2"
-            max={Math.max(14, settings.memory_gib)}
-            step="1"
-            value={memory}
-            disabled={disabled}
-            onChange={(e) => setMemory(Number(e.target.value))}
-            onPointerUp={() => void saveMemory()}
-            onKeyUp={() => void saveMemory()}
-            onBlur={() => void saveMemory()}
-          />
-        </div>
-        <div className="ce-memory-labels">
-          <span>{t("settings.usedTotal")}</span>
-          <span>{t("settings.allocated")}</span>
-        </div>
-        <div className="ce-memory-bar">
-          <span
-            style={{
-              width: system
-                ? `${Math.min(100, (used / system.total_memory_bytes) * 100)}%`
-                : "0%",
-            }}
-          />
-        </div>
-        <div className="ce-memory-values">
-          <span>
-            {system
-              ? `${gib(used)} GiB / ${gib(system.total_memory_bytes)} GiB`
-              : t("settings.memoryUnavailable")}
-          </span>
-          <span>
-            {formatNumber(memory, {
-              minimumFractionDigits: 1,
-              maximumFractionDigits: 1,
-            })}{" "}
-            GiB
-            {system
-              ? t("settings.availableMemory", {
-                  memory: gib(system.available_memory_bytes),
-                })
-              : ""}
-          </span>
-        </div>
-      </section>
+      <MemoryControl
+        settings={settings}
+        api={api}
+        native={native}
+        disabled={disabled || !!downloadDisabled}
+        onSave={onSave}
+        onNotify={onNotify}
+      />
       <section className="ce-card ce-advanced-card">
         <button
           className="ce-advanced-heading"
