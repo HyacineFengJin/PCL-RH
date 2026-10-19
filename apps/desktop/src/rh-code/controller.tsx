@@ -42,7 +42,11 @@ type MetadataDraft<T> = {
 // Only the tiny selection locator survives a controller lifetime. Large state
 // belongs to the mounted service and is released after successful suspension.
 const lastProject = new Map<string, string>();
-export function useController(hostApi: Api, native: boolean) {
+export function useController(
+  hostApi: Api,
+  native: boolean,
+  engineRequested = true,
+) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null),
     [projectId, setProjectId] = useState(lastProject.get("selected") ?? ""),
     [layout, setLayout] = useState<Layout>(preset("conversation")),
@@ -51,7 +55,8 @@ export function useController(hostApi: Api, native: boolean) {
     [epoch, update] = useState(0),
     [jobs, setJobs] = useState<Record<string, JobView>>({}),
     [filesEpoch, setFilesEpoch] = useState(0),
-    [engine, setEngine] = useState<EngineStatus | null>(null);
+    [engine, setEngine] = useState<EngineStatus | null>(null),
+    [engineActivated, setEngineActivated] = useState(false);
   const latest = useRef<Snapshot | null>(null),
     serial = useRef(Promise.resolve()),
     revision = useRef<string | null>(null),
@@ -127,6 +132,7 @@ export function useController(hostApi: Api, native: boolean) {
           "catalog",
           "maker_threads",
           "extensions_list",
+          "extensions_cards",
           "rh_code_harness_reviews",
           "harness_build_log",
         ].includes(operation);
@@ -652,6 +658,9 @@ export function useController(hostApi: Api, native: boolean) {
   }
   async function refreshEngine() {
     if (!native || !usable()) return;
+    // Plugin management needs the project registry without starting AI. Once
+    // requested, the controller keeps ownership of jobs across surface changes.
+    setEngineActivated(true);
     const end = lifecycle.begin("read", false);
     try {
       const next = await experimentalCall<EngineStatus>(api, "status", {});
@@ -662,10 +671,11 @@ export function useController(hostApi: Api, native: boolean) {
     }
   }
   useEffect(() => {
-    void refreshEngine().catch((e) => {
-      if (usable()) setError(String(e));
-    });
-  }, [native]);
+    if (engineRequested)
+      void refreshEngine().catch((e) => {
+        if (usable()) setError(String(e));
+      });
+  }, [native, engineRequested]);
   async function readHarnessProposals(
     jobId: string,
   ): Promise<HarnessProposalSet> {
@@ -753,6 +763,7 @@ export function useController(hostApi: Api, native: boolean) {
     // Reserve the conversation in the renderer before yielding. Other views of
     // the same conversation cannot accidentally submit a second paid run.
     if (settling.current.has(conversationId) || conversation.activeJob) return;
+    setEngineActivated(true);
     settling.current.add(conversationId);
     const end = lifecycle.begin("operation");
     setBusy((v) => v + 1);
@@ -823,7 +834,7 @@ export function useController(hostApi: Api, native: boolean) {
     void areaId;
   }
   useEffect(() => {
-    if (!native || !snapshot) return;
+    if (!native || !(engineRequested || engineActivated) || !snapshot) return;
     const active = snapshot.projects.flatMap((p) =>
       p.conversations
         .filter((c) => c.activeJob)
@@ -901,7 +912,7 @@ export function useController(hostApi: Api, native: boolean) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [native, snapshot]);
+  }, [native, snapshot, engineRequested, engineActivated]);
   async function adoptSource(jobId: string, operationId: string) {
     assertUsable();
     const ownedProject = projectId,
@@ -934,6 +945,7 @@ export function useController(hostApi: Api, native: boolean) {
   }
   const stop = async (id: string) => {
     assertUsable();
+    setEngineActivated(true);
     const end = lifecycle.begin("operation");
     try {
       await experimentalCall(api, "job_cancel", { jobId: id });

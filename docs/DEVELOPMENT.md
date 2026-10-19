@@ -322,7 +322,7 @@ schema 2 记录显式实例 ID，schema 1 不从文件名补猜身份。schema 3
 
 `apps/desktop/src-tauri/src/experimental.rs` 管理一个独占的本地 Node 子进程，固定命令枚举通过有界 JSON 行通信。应用关闭先停止任务和受管 Python 子进程；传输损坏后丢弃会话，避免把旧回复当作下一命令的结果。项目路径来自宿主，实例摘要在 Rust 内投影，第三方声明不能获得完整 `Api` 或 bootstrap。
 
-`experimental/host.mjs` 是接线入口。共享运行时在 `experimental/runtime/src/`，确定性的 Python 工具在 `vendor/maker`、`vendor/porter`。`SOURCES.json` 记录集成版本与当前发布的工具源码哈希；修改工具后运行 `node experimental/scripts/sync-sources.mjs`，发布前用 `--check` 检查，组件版本须单独同步。引擎管理工程任务、产物哈希与修改确认，模型只能提出修改；授权和应用仍由宿主 UI 调用。制作器恢复和模板更新通过宿主选择的工程副本进入源码编辑器；模型的源码编辑工具只接受原有补丁结构，不接受恢复路径。
+`experimental/host.mjs` 是轻量 stdio 与插件接线入口，首次请求 AI 服务时才导入 `agent-host.mjs`。两层共用一个 `ExtensionStore`，插件卡片请求不会初始化 AI 引擎。共享运行时在 `experimental/runtime/src/`，确定性的 Python 工具在 `vendor/maker`、`vendor/porter`。`SOURCES.json` 记录集成版本与当前发布的工具源码哈希；修改工具后运行 `node experimental/scripts/sync-sources.mjs`，发布前用 `--check` 检查，组件版本须单独同步。引擎管理工程任务、产物哈希与修改确认，模型只能提出修改；授权和应用仍由宿主 UI 调用。制作器恢复和模板更新通过宿主选择的工程副本进入源码编辑器；模型的源码编辑工具只接受原有补丁结构，不接受恢复路径。
 
 `ExperimentalTools` 分发制作器与搬运工作区，`ExperimentalMaker` 负责物品表单，`ExperimentalProjects` 管理制作器产物登记与项目说明，`ExperimentalProjectFiles` 提供只读文件索引。`ExperimentalPorterWorkspace` 管理持续搬运项目与讨论，`ExperimentalExtensions` 负责授权与纯文本卡片，`ExperimentalAi` 负责预设与共享引擎状态；它们使用现有 CE 控件与中英消息目录。异步结果只更新所属页面和选择；页面退役不撤销已提交的宿主事务。
 

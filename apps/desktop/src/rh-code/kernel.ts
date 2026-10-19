@@ -23,6 +23,10 @@ export type ProductPlugin = {
   loadError?: string;
 };
 export type PluginRuntime = {
+  /** Fixed product destinations only; a card never receives the native Api. */
+  navigate?: (
+    target: "launch" | "instances" | "downloads" | "tools" | "settings",
+  ) => void;
   /** Hold an RH Code controller lease for background work. The plugin owns its
    * release and must register it with ctx.effect so retirement releases it. */
   keepAwake?: () => () => void;

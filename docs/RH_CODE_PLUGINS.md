@@ -1,6 +1,6 @@
 # RH Code 内置插件开发
 
-内置插件与 PCL RH 一起编译发布。现有对话、源码、图谱、目标和输出组件已经有各自的插件入口；组件选择器和布局菜单读取注册表。社区入口目前仍只接收声明型插件，不能加载这些 TypeScript 模块。
+内置插件与 PCL RH 一起编译发布。现有对话、源码、图谱、目标和输出组件已经有各自的插件入口；组件选择器和布局菜单读取注册表。社区入口接收带范围标签的声明型插件，可管理启停、授权与卸载，不能加载这些 TypeScript 模块；格式见[社区插件指南](PLUGINS.md)。
 
 ## 添加一个组件
 
@@ -78,7 +78,7 @@ AI 工具使用单独的 Node 登记边界。工具名为小写命名空间与�
 ]
 ```
 
-在随应用发布的宿主初始化模块中，使用 `HarnessToolCatalog.forPlugin("rh.example")` 登记实现。工具对象包含相同的 `owner`、`capability`、`modes`，以及 `name`、`description`、`inputSchema`、`validate(args)`、`replaySafety` 和 `execute(args, context)`。当前内置工具可参考 `experimental/runtime/src/harness-tools.mjs`；宿主装配入口是 `experimental/host.mjs`。
+在随应用发布的宿主初始化模块中，使用 `HarnessToolCatalog.forPlugin("rh.example")` 登记实现。工具对象包含相同的 `owner`、`capability`、`modes`，以及 `name`、`description`、`inputSchema`、`validate(args)`、`replaySafety` 和 `execute(args, context)`。当前内置工具可参考 `experimental/runtime/src/harness-tools.mjs`；AI 宿主装配入口是 `experimental/agent-host.mjs`，由轻量入口 `experimental/host.mjs` 按需导入。
 
 `replaySafety` 支持只读、幂等或需人工协调。询问模式的工具必须只读。参数校验、文件范围、取消检查和结果边界由实现负责，能力声明本身不执行这些检查。需要紧凑回执的只读或幂等工具可提供 `projectReceipt(result)` 和 `replayCompleted: true`；重放必须验证原快照或已提交的不可变操作版本，重建原结果，不能再次修改数据。
 
@@ -151,3 +151,9 @@ apply(ctx) {
 `rh.build` 的视图、命令和工具共用同一插件身份，依赖必需的 `rh.project`。AI 的 `build.run` 额外检查本轮原生捕获的项目构建许可、Execute 模式及已完成计划；插件启用本身不授予执行许可。`build.read_log` 只读取本任务的运行日志。
 
 模型只能选择 `javac` 或 `gradle` 和固定目标，可附带同任务的精确提案 ID/digest。接口不接受 shell、任意参数、工作目录、可执行路径或网络权限。执行器由 Rust 宿主提供，不能通过社区声明替换。构建回执和日志是执行证据，不能成为新权限或自动批准源码改动。
+
+## 社区卡片区域
+
+`rh.extensions` 是一个可停用的可信内置模块，贡献 `rh.extensions.cards` 视图，读取社区宿主的 `rh-code.cards` 插槽。社区声明只提供文字和固定操作，不会取得 `ViewHost`、项目控制器或原生 IPC。`PluginRuntime.navigate` 由产品宿主提供，只接受固定页面目标；加载与休眠仍遵循内核范围。
+
+社区声明和授权由独立 `ExtensionStore` 保存，不写入仅允许内置 ID 的 `disabledPlugins`。状态变更发布无载荷的前端通知，各插槽立即撤回旧卡片并重新读取；已保留的旧按钮不继续导航。工作区卡片请求是只读活动，不把轮询算作新的编辑。

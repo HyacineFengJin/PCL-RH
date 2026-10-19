@@ -30,6 +30,10 @@
       "minLength": 1,
       "maxLength": 80
     },
+    "scope": {
+      "description": "Running surface. Older manifests without this field use launcher; the original manifest digest is retained.",
+      "enum": ["launcher", "rh-code", "both"]
+    },
     "api": {
       "type": "object",
       "additionalProperties": false,
@@ -100,7 +104,8 @@
               "slot": {
                 "enum": [
                   "home.secondary",
-                  "tools.cards"
+                  "tools.cards",
+                  "rh-code.cards"
                 ]
               },
               "title": {
@@ -193,6 +198,32 @@
       ]
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "scope": { "const": "launcher" } } },
+      "then": {
+        "properties": {
+          "contributions": {
+            "properties": {
+              "cards": { "items": { "properties": { "slot": { "enum": ["home.secondary", "tools.cards"] } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "required": ["scope"], "properties": { "scope": { "const": "rh-code" } } },
+      "then": {
+        "properties": {
+          "contributions": {
+            "properties": {
+              "cards": { "items": { "properties": { "slot": { "const": "rh-code.cards" } } } }
+            }
+          }
+        }
+      }
+    }
+  ],
   "required": [
     "format",
     "schemaVersion",

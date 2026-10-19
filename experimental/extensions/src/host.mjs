@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readManifest, actionCapability, compareVersions } from './manifest.mjs';
+import { readManifest, actionCapability, compareVersions, extensionScope } from './manifest.mjs';
 import { fail, freeze } from './json.mjs';
 import { readPackage } from './package.mjs';
 
@@ -19,9 +19,46 @@ export class ExtensionHost {
   #contextGeneration = 0;
   #generation = 0;
   #safeMode = false;
+  #consentEpoch = 0;
   #clock;
 
   constructor({ clock = Date.now } = {}) { this.#clock = clock; }
+
+  /** Trusted persistence uses an isolated candidate. Ephemeral request/context
+   * ownership stays with the published host while its bytes are being saved. */
+  fork() {
+    const copy = new ExtensionHost({ clock: this.#clock });
+    copy.#entries = new Map([...this.#entries].map(([id, entry]) => [id, { ...entry, grants: new Set(entry.grants) }]));
+    copy.#reviews = new Map(this.#reviews);
+    copy.#actions = new Map(this.#actions);
+    copy.#context = this.#context;
+    copy.#contextGeneration = this.#contextGeneration;
+    copy.#generation = this.#generation;
+    copy.#safeMode = this.#safeMode;
+    copy.#consentEpoch = this.#consentEpoch;
+    return copy;
+  }
+
+  publishState(candidate) {
+    if (!(candidate instanceof ExtensionHost)) fail('HOST_STATE', 'Expected a trusted host candidate.');
+    const changed = new Set([...this.#entries.keys(), ...candidate.#entries.keys()].filter(id =>
+      this.#entries.get(id)?.generation !== candidate.#entries.get(id)?.generation));
+    this.#entries = candidate.#entries;
+    this.#generation = candidate.#generation;
+    this.#safeMode = candidate.#safeMode;
+    if (this.#consentEpoch !== candidate.#consentEpoch) {
+      this.#reviews.clear(); this.#actions.clear();
+    } else {
+      for (const [token, review] of this.#reviews)
+        if (changed.has(review.loaded.manifest.id)) this.#reviews.delete(token);
+      for (const [token, action] of this.#actions)
+        if (changed.has(action.extensionId)) this.#actions.delete(token);
+    }
+    this.#consentEpoch = candidate.#consentEpoch;
+  }
+
+  get safeMode() { return this.#safeMode; }
+  hasReview(token) { this.#clean(this.#reviews); return this.#reviews.has(token); }
 
   #clean(map) {
     for (const [token, value] of map) if (value.expiresAt <= this.#clock()) map.delete(token);
@@ -65,6 +102,7 @@ export class ExtensionHost {
     }, REVIEW_TTL);
     return freeze({
       token, id: manifest.id, name: manifest.name, version: manifest.version, digest,
+      scope: extensionScope(manifest), slots: [...new Set(manifest.contributions.cards.map(card => card.slot))].sort(),
       publisher: manifest.publisher, publisherVerified: false,
       package: loaded.package ?? null,
       mode: previous ? (previous.digest === digest ? 'review-grants' : 'update') : 'install',
@@ -123,6 +161,8 @@ export class ExtensionHost {
     return freeze({
       id: e.manifest.id, name: e.manifest.name, version: e.manifest.version, digest: e.digest,
       state: this.#state(e), grants: [...e.grants].sort(), generation: e.generation,
+      enabled: e.enabled, scope: extensionScope(e.manifest),
+      slots: [...new Set(e.manifest.contributions.cards.map(card => card.slot))].sort(),
       publisher: e.manifest.publisher, publisherVerified: false,
       package: e.package,
     });
@@ -144,9 +184,29 @@ export class ExtensionHost {
     return this.inspect(id);
   }
 
+  enable(id) {
+    const e = this.#entry(id);
+    // Stored consent is retained. Missing required grants keep it suspended
+    // until a fresh trusted permission review succeeds.
+    e.enabled = true; e.generation = ++this.#generation;
+    return this.inspect(id);
+  }
+
+  remove(id) {
+    this.#entry(id);
+    this.#entries.delete(id);
+    ++this.#generation;
+    for (const [token, review] of this.#reviews)
+      if (review.loaded.manifest.id === id) this.#reviews.delete(token);
+    for (const [token, action] of this.#actions)
+      if (action.extensionId === id) this.#actions.delete(token);
+    return freeze({ id, removed: true });
+  }
+
   setSafeMode(enabled) {
     if (typeof enabled !== 'boolean') fail('HOST_STATE', 'Safe mode requires a boolean.');
     this.#safeMode = enabled;
+    this.#consentEpoch++;
     // A leave/reenter of safe mode may not revive an old action or consent.
     this.#actions.clear(); this.#reviews.clear();
     return this.list();
@@ -182,6 +242,7 @@ export class ExtensionHost {
         result.push({
           extensionId: e.manifest.id, extensionName: e.manifest.name,
           publisherVerified: false, digest: e.digest,
+          generation: e.generation, scope: extensionScope(e.manifest),
           id: card.id, title: card.title, text: card.text,
           actions: card.actions.map(action => ({
             id: action.id, label: action.label,

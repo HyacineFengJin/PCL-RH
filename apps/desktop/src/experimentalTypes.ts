@@ -9,6 +9,7 @@ export type ToolsPage =
 export type ExperimentalNavigate = (
   target: "launch" | "instances" | "downloads" | "tools" | "settings",
 ) => void;
+export type ExtensionScope = "launcher" | "rh-code" | "both";
 export type ExtensionEntry = {
   id: string;
   name: string;
@@ -17,6 +18,10 @@ export type ExtensionEntry = {
   grants: string[];
   publisher: string;
   digest: string;
+  enabled: boolean;
+  scope: ExtensionScope;
+  slots: string[];
+  generation: number;
 };
 export type ExtensionReview = {
   token: string;
@@ -25,6 +30,8 @@ export type ExtensionReview = {
   version: string;
   publisher: string;
   digest: string;
+  scope: ExtensionScope;
+  slots: string[];
   capabilities: {
     id: string;
     reason: string;
@@ -82,6 +89,9 @@ export type ExtensionCard = {
   title: string;
   text: string;
   actions: { id: string; label: string; enabled: boolean }[];
+  digest?: string;
+  generation?: number;
+  scope?: ExtensionScope;
 };
 export type JobSummary = {
   jobId: string;
@@ -254,6 +264,8 @@ export type ExperimentalOperation =
   | "extensions_cancel"
   | "extensions_revoke"
   | "extensions_disable"
+  | "extensions_enable"
+  | "extensions_remove"
   | "extensions_rereview"
   | "extensions_safe_mode"
   | "extensions_cards"

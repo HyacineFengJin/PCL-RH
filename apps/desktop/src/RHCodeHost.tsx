@@ -66,6 +66,10 @@ export function RHCodeHost(props: Props) {
         },
         undefined,
         leases.acquire,
+        (target) => {
+          if (alive.current && mounted.current && current.current.visible)
+            current.current.onNavigate(target);
+        },
       ),
     );
     kernel.current = owner;

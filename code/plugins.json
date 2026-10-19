@@ -422,5 +422,19 @@
         ]
       }
     ]
+  },
+  {
+    "id": "rh.extensions",
+    "name": "Community cards",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "rh-code",
+    "dependencies": [],
+    "capabilities": [
+      "extensions.cards"
+    ],
+    "views": [
+      "rh.extensions.cards"
+    ]
   }
 ]

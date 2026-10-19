@@ -9,7 +9,11 @@ export const CAPABILITIES = freeze({
   'instances.summary': { label: 'Show the selected instance summary', data: 'Minecraft version, loader, mod count, isolation flag; no name, path, account, or token', risk: 'read-only' },
 });
 export const NAVIGATION_TARGETS = freeze(['launch', 'instances', 'downloads', 'tools', 'settings']);
-export const CARD_SLOTS = freeze(['home.secondary', 'tools.cards']);
+export const CARD_SLOTS = freeze(['home.secondary', 'tools.cards', 'rh-code.cards']);
+export const EXTENSION_SCOPES = freeze(['launcher', 'rh-code', 'both']);
+// Older manifests remain byte-for-byte authoritative. Reading their default
+// scope must not insert a field and change a previously approved digest.
+export const extensionScope = manifest => manifest.scope ?? 'launcher';
 // JS `$` also matches just before a final line terminator. These contracts
 // require the actual end of input, including for ASCII IDs and versions.
 const ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,7}(?![\s\S])/;
@@ -40,9 +44,11 @@ function id(value, pattern, max) {
 /** Untrusted input is JSON text, never a plugin-supplied JavaScript object. */
 export function readManifest(source) {
   const m = parseJson(source);
-  object(m, ['format', 'schemaVersion', 'id', 'name', 'version', 'publisher', 'api', 'capabilities', 'contributions']);
+  object(m, ['format', 'schemaVersion', 'id', 'name', 'version', 'publisher', 'api', 'capabilities', 'contributions'], ['scope']);
   if (m.format !== FORMAT || m.schemaVersion !== 1) fail('MANIFEST_FORMAT', 'This is not a supported PCL RH declarative extension manifest.');
   id(m.id, ID, 128); text(m.name, 80); text(m.publisher, 80);
+  if (Object.hasOwn(m, 'scope') && !EXTENSION_SCOPES.includes(m.scope))
+    fail('MANIFEST_SCOPE', 'Extension scope must be launcher, rh-code, or both.');
   if (typeof m.version !== 'string' || !VERSION.test(m.version)) fail('MANIFEST_VERSION', 'Use three bounded stable version numbers, such as 1.0.0.');
   object(m.api, ['min', 'maxExclusive']);
   if (![m.api.min, m.api.maxExclusive].every(n => Number.isSafeInteger(n) && n >= 1 && n <= 1000) || m.api.min >= m.api.maxExclusive)
@@ -65,6 +71,9 @@ export function readManifest(source) {
     object(card, ['id', 'slot', 'title', 'text', 'actions']);
     id(card.id, LOCAL_ID, 48); text(card.title, 100); text(card.text, 2000, true);
     if (!CARD_SLOTS.includes(card.slot)) fail('CONTRIBUTION_SLOT', 'Contributions may only use an additive, host-owned card slot.');
+    const slotScope = card.slot === 'rh-code.cards' ? 'rh-code' : 'launcher';
+    if (extensionScope(m) !== 'both' && extensionScope(m) !== slotScope)
+      fail('CONTRIBUTION_SCOPE', 'This card slot is outside the extension running scope.');
     array(card.actions, 4); unique(card.actions.map(action => action?.id));
     for (const action of card.actions) {
       object(action, ['id', 'label', 'kind'], ['target']);

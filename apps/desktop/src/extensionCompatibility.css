@@ -14,3 +14,18 @@
 .extension-compatibility li + li {
   margin-block-start: 0.5em;
 }
+.extension-scope-filter {
+  flex-wrap: wrap;
+}
+.extension-scope-label {
+  overflow-wrap: anywhere;
+}
+.extension-permissions {
+  margin-block-start: 1em;
+}
+.extension-permissions summary {
+  cursor: pointer;
+}
+.extension-permissions[open] summary {
+  margin-block-end: 0.75em;
+}

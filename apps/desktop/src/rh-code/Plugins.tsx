@@ -6,6 +6,7 @@ import { ExperimentalExtensions } from "../ExperimentalExtensions";
 import type { ExperimentalNavigate } from "../experimentalTypes";
 import type { Kernel } from "./kernel";
 import type { PluginScope, PluginStatus } from "./types";
+import { useCodeSurfaceVisible } from "./surface";
 const scopeNames: Record<PluginScope, [string, string]> = {
   launcher: ["启动器", "Launcher"],
   "rh-code": ["RH Code", "RH Code"],
@@ -36,6 +37,7 @@ const names: Record<string, [string, string]> = {
   "rh.overview": ["项目概览", "Project overview"],
   "rh.pixel": ["像素材质", "Pixel textures"],
   "rh.model": ["方块模型", "Cuboid models"],
+  "rh.extensions": ["社区插件卡片", "Community cards"],
 };
 export function Plugins({
   kernel,
@@ -45,6 +47,7 @@ export function Plugins({
   onNavigate: ExperimentalNavigate;
 }) {
   const c = useCode(),
+    surfaceVisible = useCodeSurfaceVisible(),
     [page, setPage] = useState("builtin"),
     [scope, setScope] = useState<"all" | PluginScope>("all");
   const visible = c.snapshot?.plugins.filter(
@@ -287,15 +290,9 @@ export function Plugins({
         </>
       ) : page === "community" ? (
         <div className="rc-plugin-community">
-          <p className="rc-plugin-community-note">
-            {label(
-              "社区插件目前支持声明型扩展，暂不支持加载可执行插件代码。",
-              "Community plugins currently support declarative extensions. Executable plugin code is not supported yet.",
-            )}
-          </p>
           <ExperimentalExtensions
             api={c.api}
-            native={c.native}
+            native={c.native && surfaceVisible}
             onNavigate={onNavigate}
           />
         </div>

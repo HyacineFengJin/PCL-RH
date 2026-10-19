@@ -1,0 +1,24 @@
+{
+  "format": "pcl-linux.declarative-extension",
+  "schemaVersion": 1,
+  "id": "local.workspace-notes",
+  "name": "工作区提示 · Workspace Notes",
+  "version": "1.0.0",
+  "publisher": "Local example (unverified)",
+  "scope": "rh-code",
+  "api": { "min": 1, "maxExclusive": 2 },
+  "capabilities": [
+    { "id": "ui.cards", "required": true, "reason": "在 RH Code 的插件面板显示本地纯文字提示卡片。" }
+  ],
+  "contributions": {
+    "cards": [
+      {
+        "id": "workspace-note",
+        "slot": "rh-code.cards",
+        "title": "记录当前目标",
+        "text": "开始修改前，确认项目使用的游戏版本与加载器。此提示不读取项目文件，也不会执行代码。",
+        "actions": []
+      }
+    ]
+  }
+}

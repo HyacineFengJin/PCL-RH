@@ -21,7 +21,7 @@ function deferred() {
 
 /** Each driver loads fresh source modules, including module-owned buffers and
  * selections. Only React scheduling and unused external host seams are mocked. */
-function controllerDriver(api) {
+function controllerDriver(api, engineRequested) {
   let hooks = [];
   const modules = new Map();
   let cursor = 0,
@@ -104,13 +104,17 @@ function controllerDriver(api) {
     cursor = 0;
     dirty = false;
     pending = [];
-    value = useController(api, true);
+    value = useController(api, true, engineRequested);
     for (const effect of pending) effect();
   }
   render();
   return {
     get value() {
       return value;
+    },
+    requestEngine(value) {
+      engineRequested = value;
+      render();
     },
     async flush() {
       for (let index = 0; index < 30; index++) {
@@ -288,6 +292,105 @@ async function fixture(t) {
   await ui.flush();
   return { host, ui };
 }
+
+function runningJob(jobId = "restored-job") {
+  return {
+    summary: { jobId, revision: 1, status: "running", updatedAt: 1 },
+    result: null,
+    output: "",
+    activity: [],
+  };
+}
+async function pluginsFixture(t) {
+  const host = hostFixture();
+  host.data.projects[0].conversations[0].activeJob = "restored-job";
+  host.handlers.set("job_read", async () => runningJob());
+  const ui = controllerDriver(host.api, false);
+  t.after(() => ui.close());
+  await ui.flush();
+  return { host, ui };
+}
+
+test("cold plugin management reads its registry without starting AI or polling saved jobs", async (t) => {
+  const { host, ui } = await pluginsFixture(t);
+  assert.ok(ui.value.snapshot);
+  assert.equal(ui.value.engine, null);
+  assert.deepEqual(
+    host.calls.map((call) => call.operation),
+    ["bootstrap"],
+  );
+  await ui.value.read();
+  await ui.flush();
+  assert.equal(
+    host.calls.some((call) => call.operation === "status"),
+    false,
+  );
+  assert.equal(
+    host.calls.some((call) => call.operation === "job_read"),
+    false,
+  );
+});
+
+test("entering Code recovers saved jobs and keeps their owner after leaving the surface", async (t) => {
+  const { host, ui } = await pluginsFixture(t);
+  ui.requestEngine(true);
+  await ui.flush();
+  assert.equal(
+    host.calls.filter((call) => call.operation === "status").length,
+    1,
+  );
+  assert.ok(ui.value.jobs["restored-job"]);
+  assert.equal(ui.value.getLifecycleState().activeJobs, 1);
+  const before = host.calls.filter(
+    (call) => call.operation === "job_read",
+  ).length;
+  ui.requestEngine(false);
+  await ui.value.read();
+  await ui.flush();
+  assert.ok(
+    host.calls.filter((call) => call.operation === "job_read").length > before,
+  );
+  assert.equal(
+    host.calls.some((call) => call.operation === "job_cancel"),
+    false,
+  );
+  assert.equal(await ui.value.prepareSuspend(), false);
+  host.handlers.set("job_cancel", async () => ({}));
+  await ui.value.stop("restored-job");
+  assert.equal(host.calls.at(-1).operation, "job_cancel");
+});
+
+test("explicit engine refresh from Plugins activates recovery and retains background polling", async (t) => {
+  const { host, ui } = await pluginsFixture(t);
+  await ui.value.refreshEngine();
+  await ui.flush();
+  assert.equal(
+    host.calls.filter((call) => call.operation === "status").length,
+    1,
+  );
+  assert.ok(ui.value.jobs["restored-job"]);
+  const before = host.calls.filter(
+    (call) => call.operation === "job_read",
+  ).length;
+  await ui.value.read();
+  await ui.flush();
+  assert.ok(
+    host.calls.filter((call) => call.operation === "job_read").length > before,
+  );
+});
+
+test("explicit cancellation from a cold Plugins controller activates job ownership", async (t) => {
+  const { host, ui } = await pluginsFixture(t);
+  host.handlers.set("job_cancel", async () => ({}));
+  await ui.value.stop("restored-job");
+  await ui.flush();
+  assert.equal(
+    host.calls.some((call) => call.operation === "job_cancel"),
+    true,
+  );
+  assert.ok(ui.value.jobs["restored-job"]);
+  assert.equal(await ui.value.prepareSuspend(), false);
+});
 
 test("pending layout geometry and per-view state survive A -> B -> A before save acknowledgement", async (t) => {
   const { host, ui } = await fixture(t),

@@ -3,6 +3,27 @@ import app from "./appZh";
 import pages from "./pagesZh";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 const messages = {
+  "experimental.communityTitle": "社区扩展",
+  "experimental.communityHelp":
+    "导入数据型扩展以添加卡片；PCL N / Nex 文件仅提供兼容报告。",
+  "experimental.communityScopeFilter": "扩展范围",
+  "experimental.communityScopeAll": "全部",
+  "experimental.communityScope.launcher": "启动器",
+  "experimental.communityScope.rh-code": "RH Code",
+  "experimental.communityScope.both": "启动器与 RH Code",
+  "experimental.communitySlot.home": "主页卡片",
+  "experimental.communitySlot.tools": "工具卡片",
+  "experimental.communitySlot.code": "RH Code 卡片",
+  "experimental.communityNoMatches": "此范围内暂无扩展",
+  "experimental.communityReviewPermissions": "查看权限",
+  "experimental.communityReviewScope": "作用范围：{scope}",
+  "experimental.communityEnable": "启用",
+  "experimental.communityReauthorize": "授予必需权限",
+  "experimental.communityRemove": "卸载",
+  "experimental.communityRemoveTitle": "卸载扩展",
+  "experimental.communityRemoveConfirm":
+    "卸载“{name}”？其卡片和已授予权限将被移除。",
+  "experimental.communityNoGrants": "尚未授予权限",
   "memory.previewChanged": "设置已变化，请刷新预估。",
   "memory.previewFailed": "预估失败：{error}",
   "memory.loading": "正在预估内存…",

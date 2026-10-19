@@ -35,7 +35,9 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 | `rh_code/assets.rs`、`harness/manual_assets.rs` | 手动资产校验、PNG/Java 导出与共用原生发布事务 |
 | `rh_code/context.rs` | 上下文字段边界、连续历史片段及原生传输预算 |
 | `rh_code/layout.rs` | 布局及组件状态校验、可移植预设投影 |
-| `experimental/host.mjs` | 既有 Pi 执行、预设、审阅、任务产物和兼容接口 |
+| `experimental/host.mjs` | 轻量 stdio 入口、社区插件与按需 Agent 加载 |
+| `experimental/agent-host.mjs` | AI 执行、预设、审阅与任务产物 |
+| `rh-code/surface.tsx` | 工作区可见性；隐藏时退役社区界面的异步请求 |
 | `experimental/job-snapshot.mjs` | 同一次读取生成任务状态与结果，避免跨代完成回执 |
 
 表中缩写路径分别相对于 `apps/desktop/src/` 和 `apps/desktop/src-tauri/src/`。
@@ -115,6 +117,7 @@ node apps/desktop/scripts/check-rh-code.mjs
 node apps/desktop/scripts/check-rh-code-presets.mjs
 node apps/desktop/scripts/check-rh-code-controller.mjs
 node apps/desktop/scripts/check-rh-code-host.mjs
+node apps/desktop/scripts/check-rh-code-surfaces.mjs
 node apps/desktop/scripts/check-rh-code-scopes.mjs
 node --test experimental/runtime/tests/idle-host.test.mjs
 node --test code/tests/*.test.mjs
@@ -128,3 +131,13 @@ cargo test --locked -p pcl-desktop --features custom-protocol code_runner
 ```
 
 这些检查覆盖 Cordis 卸载与恢复、布局身份、原生存储冲突、对话归属和源码保护。构建服务测试使用模拟 helper；原生 runner 的 Linux 检查使用隔离 Java 和 wrapper 夹具，依赖本机 JDK/bubblewrap。它们不证明真实模型服务、任意模组工程或游戏运行已经通过。
+
+## 社区插件与按需引擎
+
+`experimental/host.mjs` 保持原生 stdio 入口，直接处理社区插件请求；`ExtensionStore` 是声明和授权的单一持久来源。内置模块配置仍只保存发布时编译的 ID，社区插件不能通过此字段取得内置能力。
+
+首个 Agent 操作才导入 `experimental/agent-host.mjs` 并创建 AI 宿主。两层共用同一个插件 store；轻量入口保留协议大小限制和顺序处理。空闲退出和关闭在没有 Agent 时不导入它；已加载时交回原有任务、审阅和子进程生命周期。延迟到达的预设恢复定位会在首次创建 Agent 后核对恢复，不在插件请求中读取模型密钥。
+
+控制器的 `engineRequested` 在进入 Code 或打开 AI 设置时激活状态读取和任务轮询。仅打开插件管理不会恢复磁盘中的旧任务轮询；显式 AI 操作激活后，控制器持续持有后台任务。隐藏工作区会通过 `CodeSurfaceVisibility` 退役社区卡片和导入界面的请求，返回页面也不会重新接受此前的结果。
+
+`extensions/src/store.mjs` 串行构建候选状态，先同步临时文件、核对原存储并原子替换，再发布运行状态；写入失败保留旧声明、权限与卡片。持久安全模式允许轻宿主空闲退出，待确认的授权仍在有效期内持有宿主。失效令牌不会永久阻止休眠。

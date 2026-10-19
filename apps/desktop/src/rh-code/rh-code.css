@@ -2246,3 +2246,53 @@
     max-height: 34px;
   }
 }
+
+/* External card data uses the workspace surface without changing launcher cards. */
+.rc-plugin-community .ce-card,
+.rc-community-cards .ce-card {
+  color: var(--rc-ink);
+  background: var(--rc-surface);
+  border: 1px solid var(--rc-line);
+  border-radius: 12px;
+  box-shadow: none;
+  padding: 16px;
+  margin-bottom: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rc-plugin-community .ce-card-title,
+.rc-community-cards .ce-card-title {
+  font-size: 14px;
+  margin: 0 0 10px;
+}
+.rc-plugin-community .ce-button,
+.rc-community-cards .ce-button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 12px;
+  color: var(--rc-ink);
+  background: var(--rc-surface);
+  border-color: var(--rc-line);
+  border-radius: 8px;
+}
+.rc-plugin-community .ce-actions,
+.rc-community-cards .ce-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rc-plugin-community .ce-button:hover:not(:disabled),
+.rc-community-cards .ce-button:hover:not(:disabled) {
+  color: var(--rc-orange);
+  border-color: var(--rc-orange);
+}
+.rc-community-cards .experimental-card p,
+.rc-community-cards > p {
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.rc-plugin-community .extension-scope-filter .ce-button[aria-pressed="true"] {
+  color: var(--rc-orange);
+  background: color-mix(in srgb, var(--rc-orange) 10%, var(--rc-surface));
+  border-color: var(--rc-orange);
+}

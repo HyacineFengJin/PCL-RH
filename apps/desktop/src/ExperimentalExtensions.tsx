@@ -1,9 +1,13 @@
 import { ExperimentalVersion } from "./ExperimentalVersion";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
 import { t, serviceError, type MessageKey } from "./i18n";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 import "./extensionCompatibility.css";
+import {
+  notifyExtensionsChanged,
+  subscribeExtensionsChanged,
+} from "./extensionEvents";
 import {
   useExtensionRequestScope,
   useExtensionView,
@@ -15,6 +19,7 @@ import {
   type ExtensionReview,
   type ExtensionCompatibilityReport,
   type ExtensionCard,
+  type ExtensionScope,
   type ExperimentalNavigate,
 } from "./experimentalTypes";
 const capabilityLabel = (id: string) =>
@@ -27,6 +32,32 @@ const capabilityLabel = (id: string) =>
       } as Record<string, MessageKey>
     )[id],
   );
+const scopeLabel = (scope: ExtensionScope = "launcher") =>
+  t(`experimental.communityScope.${scope}`);
+const slotLabel = (slot: string) => {
+  const labels: Record<string, MessageKey> = {
+    "home.secondary": "experimental.communitySlot.home",
+    "tools.cards": "experimental.communitySlot.tools",
+    "rh-code.cards": "experimental.communitySlot.code",
+  };
+  return labels[slot] ? t(labels[slot]) : slot;
+};
+type ScopeFilter = "all" | "launcher" | "rh-code";
+const matchesScope = (entry: ExtensionEntry, filter: ScopeFilter) =>
+  filter === "all" ||
+  entry.scope === "both" ||
+  (entry.scope ?? "launcher") === filter;
+const expectedEntry = (entry: ExtensionEntry) => ({
+  digest: entry.digest,
+  generation: entry.generation,
+});
+type ExtensionMutation =
+  | "extensions_enable"
+  | "extensions_disable"
+  | "extensions_revoke"
+  | "extensions_remove"
+  | "extensions_confirm"
+  | "extensions_safe_mode";
 
 // Retirement does not depend on a successful cleanup RPC. The host's review
 // TTL is the fallback if an old API is already unavailable.
@@ -43,11 +74,13 @@ export function ExperimentalCards({
   native,
   slot,
   onNavigate,
+  emptyText,
 }: {
   api: Api;
   native: boolean;
-  slot: "tools.cards" | "home.secondary";
+  slot: "tools.cards" | "home.secondary" | "rh-code.cards";
   onNavigate: ExperimentalNavigate;
+  emptyText?: string;
 }) {
   type Summary = {
     minecraftVersion: string;
@@ -55,23 +88,54 @@ export function ExperimentalCards({
     modCount: number;
     isolated: boolean;
   };
-  const scope = useExtensionRequestScope(api, native, slot);
+  const [epoch, setEpoch] = useState(0);
+  const scope = useExtensionRequestScope(api, native, `${slot}:${epoch}`);
   const view = useExtensionView<{
     cards: ExtensionCard[];
     summary: Summary | null;
     error: string;
     busy: boolean;
-  }>(scope.owner, { cards: [], summary: null, error: "", busy: false });
-  const { cards, summary, error, busy } = view.value;
+    loaded: boolean;
+  }>(scope.owner, {
+    cards: [],
+    summary: null,
+    error: "",
+    busy: false,
+    loaded: false,
+  });
+  const { cards, summary, error, busy, loaded } = view.value;
   const navigate = useRef(onNavigate);
   navigate.current = onNavigate;
+  useEffect(
+    () =>
+      subscribeExtensionsChanged(() => {
+        // Retire requests and visible actions synchronously, before React renders
+        // the next owner. A late intent cannot navigate during that gap.
+        scope.retireOperation();
+        view.update({
+          cards: [],
+          summary: null,
+          busy: false,
+          error: "",
+          loaded: false,
+        });
+        setEpoch((value) => value + 1);
+      }),
+    [scope.owner],
+  );
   useEffect(() => {
     const request = scope.beginRead();
     if (request) {
-      view.update({ cards: [], summary: null, error: "", busy: false });
+      view.update({
+        cards: [],
+        summary: null,
+        error: "",
+        busy: false,
+        loaded: false,
+      });
       void call<ExtensionCard[]>(api, "extensions_cards", { slot })
         .then((v) => {
-          if (request.current()) view.update({ cards: v });
+          if (request.current()) view.update({ cards: v, loaded: true });
         })
         .catch((e) => {
           if (request.current()) view.update({ error: serviceError(e) });
@@ -99,6 +163,7 @@ export function ExperimentalCards({
         extensionId: card.extensionId,
         cardId: card.id,
         actionId,
+        expected: { digest: card.digest, generation: card.generation },
       });
       if (!request.current() || !view.current()?.cards.includes(card)) return;
       if (intent.kind === "navigate") navigate.current(intent.target);
@@ -113,6 +178,9 @@ export function ExperimentalCards({
   }
   return (
     <>
+      {emptyText && loaded && cards.length === 0 && !error && (
+        <p className="experimental-origin">{emptyText}</p>
+      )}
       {cards.map((card) => (
         <section
           key={`${card.extensionId}:${card.id}`}
@@ -135,7 +203,7 @@ export function ExperimentalCards({
           </div>
         </section>
       ))}
-      {error && cards.length > 0 && (
+      {error && (
         <p className="experimental-error" role="alert">
           {error}
         </p>
@@ -189,27 +257,41 @@ export function ExperimentalExtensions({
     released: boolean;
     committing: boolean;
   };
+  type Removal = {
+    owner: object;
+    lifetime: object;
+    entry: ExtensionEntry;
+    valid: boolean;
+    committing: boolean;
+  };
   const scope = useExtensionRequestScope(api, native, "extensions-manager");
   const view = useExtensionView<{
     entries: ExtensionEntry[];
     dialog: Dialog | null;
+    removal: Removal | null;
+    filter: ScopeFilter;
     safeMode: boolean;
     busy: boolean;
     error: string;
-    revision: number;
+    cardsRevision: number;
   }>(scope.owner, {
     entries: [],
     dialog: null,
+    removal: null,
+    filter: "all",
     safeMode: false,
     busy: false,
     error: "",
-    revision: 0,
+    cardsRevision: 0,
   });
-  const { entries, dialog, safeMode, busy, error, revision } = view.value;
+  const { entries, dialog, removal, filter, safeMode, busy, error } =
+    view.value;
+  const visibleEntries = entries.filter((entry) => matchesScope(entry, filter));
   const review = dialog && !("kind" in dialog.value) ? dialog.value : null;
   const compatibility = dialog && "kind" in dialog.value ? dialog.value : null;
   const grants = dialog?.grants ?? [];
   const activeDialog = useRef<Dialog | null>(null);
+  const activeRemoval = useRef<Removal | null>(null);
 
   const ownsDialog = (value: Dialog) =>
     value.valid &&
@@ -231,6 +313,15 @@ export function ExperimentalExtensions({
       cancelReview(value.api, value.value.token);
     }
   }
+  function retireRemoval(value: Removal) {
+    value.valid = false;
+    if (activeRemoval.current === value) activeRemoval.current = null;
+  }
+  const ownsRemoval = (value: Removal) =>
+    value.valid &&
+    activeRemoval.current === value &&
+    value.owner === scope.owner &&
+    scope.ownsLifetime(value.lifetime);
   async function refresh(parent?: ExtensionRequest) {
     if (parent && !parent.current()) return;
     const request = scope.beginRead();
@@ -246,8 +337,8 @@ export function ExperimentalExtensions({
           entries: result.entries,
           safeMode: result.safeMode,
           error: result.warning || "",
-          revision: (view.current()?.revision ?? 0) + 1,
         });
+      return request.current() && (!parent || parent.current());
     } catch (e) {
       if (request.current() && (!parent || parent.current()))
         view.update({ error: serviceError(e) });
@@ -257,12 +348,14 @@ export function ExperimentalExtensions({
   }
   useEffect(() => {
     if (scope.current()) {
-      view.update({ dialog: null, busy: false });
+      view.update({ dialog: null, removal: null, busy: false });
       void refresh();
     }
     return () => {
       const pending = activeDialog.current;
       if (pending?.owner === scope.owner) retireDialog(pending);
+      const removing = activeRemoval.current;
+      if (removing?.owner === scope.owner) retireRemoval(removing);
     };
   }, [scope.owner]);
   async function perform(
@@ -284,6 +377,16 @@ export function ExperimentalExtensions({
       request.finish();
     }
   }
+  async function mutate<T = unknown>(
+    operation: ExtensionMutation,
+    args: Record<string, unknown>,
+  ) {
+    const result = await call<T>(api, operation, args);
+    // Publication can succeed after this page retires; every mounted surface
+    // still needs to drop actions based on the previously published state.
+    notifyExtensionsChanged();
+    return result;
+  }
   function acceptReview(
     value: ExtensionReview | ExtensionCompatibilityReport,
     request: ExtensionRequest,
@@ -295,6 +398,7 @@ export function ExperimentalExtensions({
       return;
     }
     if (activeDialog.current) retireDialog(activeDialog.current);
+    if (activeRemoval.current) retireRemoval(activeRemoval.current);
     const next: Dialog = {
       owner: scope.owner,
       lifetime: request.lifetime,
@@ -311,7 +415,7 @@ export function ExperimentalExtensions({
       committing: false,
     };
     activeDialog.current = next;
-    view.update({ dialog: next });
+    view.update({ dialog: next, removal: null });
   }
   function dismiss(value: Dialog) {
     if (!ownsDialog(value) || value.committing) return;
@@ -342,8 +446,87 @@ export function ExperimentalExtensions({
     operation: (request: ExtensionRequest) => Promise<unknown>,
     refreshAfter = true,
   ) {
-    if (scope.current() && view.current()?.entries.includes(entry))
+    const current = view.current();
+    if (
+      scope.current() &&
+      current?.entries.includes(entry) &&
+      matchesScope(entry, current.filter)
+    )
       void perform(operation, refreshAfter);
+  }
+  async function reviewEntry(entry: ExtensionEntry, request: ExtensionRequest) {
+    acceptReview(
+      await call<ExtensionReview>(api, "extensions_rereview", { id: entry.id }),
+      request,
+    );
+  }
+  function enableEntry(entry: ExtensionEntry) {
+    performForEntry(
+      entry,
+      async (request) => {
+        if (entry.state === "suspended") {
+          await reviewEntry(entry, request);
+          return;
+        }
+        const result = await mutate<ExtensionEntry>("extensions_enable", {
+          id: entry.id,
+          expected: expectedEntry(entry),
+        });
+        await refresh(request);
+        if (request.current() && result.state === "suspended")
+          await reviewEntry(result, request);
+      },
+      false,
+    );
+  }
+  function requestRemoval(entry: ExtensionEntry) {
+    const current = view.current();
+    if (
+      !scope.current() ||
+      scope.busy() ||
+      !current?.entries.includes(entry) ||
+      !matchesScope(entry, current.filter)
+    )
+      return;
+    if (activeDialog.current) retireDialog(activeDialog.current);
+    if (activeRemoval.current) retireRemoval(activeRemoval.current);
+    const next: Removal = {
+      owner: scope.owner,
+      lifetime: scope.owner.lifetime!,
+      entry,
+      valid: true,
+      committing: false,
+    };
+    activeRemoval.current = next;
+    view.update({ dialog: null, removal: next });
+  }
+  function dismissRemoval(value: Removal) {
+    if (!ownsRemoval(value) || value.committing) return;
+    scope.retireOperation();
+    retireRemoval(value);
+    view.update({ removal: null, busy: false });
+  }
+  function confirmRemoval(value: Removal) {
+    if (
+      !ownsRemoval(value) ||
+      value.committing ||
+      !view.current()?.entries.includes(value.entry)
+    )
+      return;
+    void perform(async (request) => {
+      if (!request.current() || !ownsRemoval(value)) return;
+      value.committing = true;
+      view.update({ removal: value });
+      try {
+        await mutate("extensions_remove", {
+          id: value.entry.id,
+          expected: expectedEntry(value.entry),
+        });
+      } finally {
+        retireRemoval(value);
+        if (request.current()) view.update({ removal: null });
+      }
+    });
   }
   function confirm(value: Dialog) {
     if (
@@ -361,7 +544,7 @@ export function ExperimentalExtensions({
       value.committing = true;
       view.update({ dialog: value });
       try {
-        await call(api, "extensions_confirm", {
+        await mutate("extensions_confirm", {
           token,
           grants: [...value.grants],
         });
@@ -376,8 +559,8 @@ export function ExperimentalExtensions({
   return (
     <>
       <section className="ce-card">
-        <h2 className="ce-card-title">{t("experimental.extensions")}</h2>
-        <p>{t("experimental.extensionsHelp")}</p>
+        <h2 className="ce-card-title">{t("experimental.communityTitle")}</h2>
+        <p>{t("experimental.communityHelp")}</p>
         <div className="ce-actions">
           <button
             className="ce-button"
@@ -389,7 +572,14 @@ export function ExperimentalExtensions({
           <button
             className="ce-button"
             disabled={busy || !native}
-            onClick={() => void perform(refresh, false)}
+            onClick={() =>
+              void perform(async (request) => {
+                if (await refresh(request))
+                  view.update({
+                    cardsRevision: (view.current()?.cardsRevision ?? 0) + 1,
+                  });
+              }, false)
+            }
           >
             {t("experimental.refresh")}
           </button>
@@ -401,26 +591,53 @@ export function ExperimentalExtensions({
             disabled={busy || !native}
             onChange={(e) => {
               const enabled = e.target.checked;
-              void perform(() =>
-                call(api, "extensions_safe_mode", { enabled }),
-              );
+              void perform(() => mutate("extensions_safe_mode", { enabled }));
             }}
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
-        <ExperimentalVersion version="0.6.2" />
+        <ExperimentalVersion version="0.7.0" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">
           {error}
         </p>
       )}
-      {entries.length === 0 && (
+      <div
+        className="ce-actions extension-scope-filter"
+        role="group"
+        aria-label={t("experimental.communityScopeFilter")}
+      >
+        {(["all", "launcher", "rh-code"] as const).map((value) => (
+          <button
+            key={value}
+            className={filter === value ? "ce-button primary" : "ce-button"}
+            aria-pressed={filter === value}
+            disabled={busy || !native}
+            onClick={() => {
+              if (!scope.current() || scope.busy()) return;
+              if (activeRemoval.current) retireRemoval(activeRemoval.current);
+              view.update({ filter: value, removal: null });
+            }}
+          >
+            {value === "all"
+              ? t("experimental.communityScopeAll")
+              : scopeLabel(value)}
+          </button>
+        ))}
+      </div>
+      {visibleEntries.length === 0 && (
         <section className="ce-card">
-          <p>{t("experimental.noExtensions")}</p>
+          <p>
+            {t(
+              entries.length === 0
+                ? "experimental.noExtensions"
+                : "experimental.communityNoMatches",
+            )}
+          </p>
         </section>
       )}
-      {entries.map((entry) => (
+      {visibleEntries.map((entry) => (
         <section className="ce-card" key={entry.id}>
           <h2 className="ce-card-title">
             {entry.name}{" "}
@@ -432,6 +649,12 @@ export function ExperimentalExtensions({
           <p className="experimental-origin">
             {t("experimental.publisher")}: {entry.publisher}
           </p>
+          <p className="experimental-origin extension-scope-label">
+            {scopeLabel(entry.scope)}
+            {(entry.slots?.length ?? 0) > 0 && (
+              <span> · {entry.slots.map(slotLabel).join(" · ")}</span>
+            )}
+          </p>
           <div className="ce-actions">
             <button
               className="ce-button"
@@ -439,62 +662,112 @@ export function ExperimentalExtensions({
               onClick={() =>
                 performForEntry(
                   entry,
-                  async (request) =>
-                    acceptReview(
-                      await call<ExtensionReview>(api, "extensions_rereview", {
-                        id: entry.id,
-                      }),
-                      request,
-                    ),
+                  (request) => reviewEntry(entry, request),
                   false,
                 )
               }
             >
-              {t("experimental.reviewPermissions")}
+              {t("experimental.communityReviewPermissions")}
             </button>
+            {(!(entry.enabled ?? entry.state !== "disabled") ||
+              entry.state === "suspended") && (
+              <button
+                className="ce-button"
+                disabled={busy || !native}
+                onClick={() => enableEntry(entry)}
+              >
+                {t(
+                  entry.state === "suspended"
+                    ? "experimental.communityReauthorize"
+                    : "experimental.communityEnable",
+                )}
+              </button>
+            )}
             <button
               className="ce-button"
-              disabled={busy || !native || entry.state === "disabled"}
+              disabled={
+                busy ||
+                !native ||
+                !(entry.enabled ?? entry.state !== "disabled")
+              }
               onClick={() =>
                 performForEntry(entry, () =>
-                  call(api, "extensions_disable", { id: entry.id }),
+                  mutate("extensions_disable", {
+                    id: entry.id,
+                    expected: expectedEntry(entry),
+                  }),
                 )
               }
             >
               {t("experimental.disable")}
             </button>
+            <button
+              className="ce-button"
+              disabled={busy || !native}
+              onClick={() => requestRemoval(entry)}
+            >
+              {t("experimental.communityRemove")}
+            </button>
           </div>
-          <h3 className="experimental-subtitle">
-            {t("experimental.permissions")}
-          </h3>
-          {entry.grants.map((cap) => (
-            <div className="experimental-permission" key={cap}>
-              <span>{capabilityLabel(cap)}</span>
-              <button
-                className="ce-button"
-                disabled={busy || !native}
-                onClick={() =>
-                  performForEntry(entry, () =>
-                    call(api, "extensions_revoke", {
-                      id: entry.id,
-                      capability: cap,
-                    }),
-                  )
-                }
-              >
-                {t("experimental.revoke")}
-              </button>
-            </div>
-          ))}
+          <details className="extension-permissions">
+            <summary>
+              {t("experimental.permissions")} ({entry.grants.length})
+            </summary>
+            {entry.grants.length === 0 && (
+              <p className="experimental-origin">
+                {t("experimental.communityNoGrants")}
+              </p>
+            )}
+            {entry.grants.map((cap) => (
+              <div className="experimental-permission" key={cap}>
+                <span>{capabilityLabel(cap)}</span>
+                <button
+                  className="ce-button"
+                  disabled={busy || !native}
+                  onClick={() =>
+                    performForEntry(entry, () =>
+                      mutate("extensions_revoke", {
+                        id: entry.id,
+                        capability: cap,
+                        expected: expectedEntry(entry),
+                      }),
+                    )
+                  }
+                >
+                  {t("experimental.revoke")}
+                </button>
+              </div>
+            ))}
+          </details>
         </section>
       ))}
       <ExperimentalCards
-        key={revision}
+        key={view.value.cardsRevision}
         api={api}
         native={native}
         slot="tools.cards"
         onNavigate={onNavigate}
       />
+      {removal && (
+        <InstanceOperationDialog
+          title={t("experimental.communityRemoveTitle")}
+          titleId="experimental-extension-remove-title"
+          busy={busy}
+          committing={removal.committing}
+          confirmLabel={t("experimental.communityRemove")}
+          confirmDisabled={
+            !native || !ownsRemoval(removal) || !entries.includes(removal.entry)
+          }
+          onClose={() => dismissRemoval(removal)}
+          onConfirm={() => confirmRemoval(removal)}
+        >
+          <p>
+            {t("experimental.communityRemoveConfirm", {
+              name: removal.entry.name,
+            })}
+          </p>
+        </InstanceOperationDialog>
+      )}
       {compatibility && dialog && (
         <ExtensionCompatibilityDialog
           report={compatibility}
@@ -522,6 +795,14 @@ export function ExperimentalExtensions({
           </h3>
           <p>
             {t("experimental.publisher")}: {review.publisher}
+          </p>
+          <p className="experimental-origin">
+            {t("experimental.communityReviewScope", {
+              scope: scopeLabel(review.scope),
+            })}
+            {(review.slots?.length ?? 0) > 0 && (
+              <span> · {review.slots.map(slotLabel).join(" · ")}</span>
+            )}
           </p>
           {review.capabilities.map((cap) => (
             <label className="ce-check experimental-capability" key={cap.id}>

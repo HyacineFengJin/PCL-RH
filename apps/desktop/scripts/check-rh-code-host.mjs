@@ -30,6 +30,8 @@ function hostDriver(options = {}) {
     configurations = [],
     controllers = [],
     kernels = [];
+  const destinations = [];
+  let navigate;
   const manifests = options.manifests ?? shipped;
   let cursor = 0,
     dirty = false,
@@ -197,7 +199,10 @@ function hostDriver(options = {}) {
       if (id === "./rh-code/plugins") {
         imports.push("plugins");
         return {
-          productPlugins: () => manifests.map((manifest) => ({ manifest })),
+          productPlugins: (...args) => {
+            navigate = args[3];
+            return manifests.map((manifest) => ({ manifest }));
+          },
         };
       }
       if (id === "./rh-code/RHCode") {
@@ -275,11 +280,13 @@ function hostDriver(options = {}) {
     native: options.native ?? true,
     visible: false,
     section: "code",
-    onNavigate() {},
+    onNavigate: (target) => destinations.push(target),
   };
   render();
   return {
     calls,
+    destinations,
+    navigate: (target) => navigate(target),
     imports,
     configurations,
     controllers,
@@ -370,6 +377,21 @@ test("ordinary navigation leaves the exact RH Code/controller instance mounted d
     driver.calls.some((c) => c.command === "experimental_suspend"),
     false,
   );
+});
+
+test("plugin runtime navigation requires the retained Code surface to be visible", async (t) => {
+  const driver = await fixture(t);
+  await enter(driver);
+  driver.navigate("downloads");
+  assert.deepEqual(driver.destinations, ["downloads"]);
+  driver.visible(false);
+  await driver.flush();
+  assert.ok(driver.child, "Ordinary departure retains the plugin runtime");
+  driver.navigate("settings");
+  assert.deepEqual(driver.destinations, ["downloads"]);
+  await enter(driver);
+  driver.navigate("instances");
+  assert.deepEqual(driver.destinations, ["downloads", "instances"]);
 });
 
 test("idle departure saves dirty work and retires RH Code scopes only after preparation succeeds", async (t) => {

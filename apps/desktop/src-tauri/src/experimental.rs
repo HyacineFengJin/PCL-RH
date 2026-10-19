@@ -49,6 +49,8 @@ pub enum Operation {
     ExtensionsCancel,
     ExtensionsRevoke,
     ExtensionsDisable,
+    ExtensionsEnable,
+    ExtensionsRemove,
     ExtensionsRereview,
     ExtensionsSafeMode,
     ExtensionsCards,

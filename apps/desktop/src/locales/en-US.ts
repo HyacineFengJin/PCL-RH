@@ -4,6 +4,27 @@ import pages from "./pagesEn";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 import type zhCN from "./zh-CN";
 const messages = {
+  "experimental.communityTitle": "Community extensions",
+  "experimental.communityHelp":
+    "Import data extensions to add cards. PCL N / Nex files provide compatibility reports.",
+  "experimental.communityScopeFilter": "Extension scope",
+  "experimental.communityScopeAll": "All",
+  "experimental.communityScope.launcher": "Launcher",
+  "experimental.communityScope.rh-code": "RH Code",
+  "experimental.communityScope.both": "Launcher and RH Code",
+  "experimental.communitySlot.home": "Home cards",
+  "experimental.communitySlot.tools": "Tools cards",
+  "experimental.communitySlot.code": "RH Code cards",
+  "experimental.communityNoMatches": "No extensions in this scope",
+  "experimental.communityReviewPermissions": "Review permissions",
+  "experimental.communityReviewScope": "Scope: {scope}",
+  "experimental.communityEnable": "Enable",
+  "experimental.communityReauthorize": "Authorize required permissions",
+  "experimental.communityRemove": "Uninstall",
+  "experimental.communityRemoveTitle": "Uninstall extension",
+  "experimental.communityRemoveConfirm":
+    "Uninstall “{name}”? Its cards and permission grants will be removed.",
+  "experimental.communityNoGrants": "No permissions granted",
   "memory.previewChanged": "Settings changed. Refresh the estimate.",
   "memory.previewFailed": "Estimate failed: {error}",
   "memory.loading": "Estimating memory…",
