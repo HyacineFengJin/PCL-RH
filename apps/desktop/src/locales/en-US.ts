@@ -419,7 +419,7 @@ const messages = {
   "about.attribution": "Sources and license boundaries",
   "about.assetSources": "Code and artwork sources",
   "about.attributionText":
-    "Original PCL RH work is MIT licensed. Third-party code and fonts retain their own licenses. Bundled generic icons are drawn for this project; primary branding artwork was made with GPT.",
+    "Original PCL RH work is MIT licensed. Game and loader artwork, third-party code and fonts retain their own sources and licenses. Primary branding artwork was made with GPT.",
   "about.noLobby":
     "Design references, incorporated code and dependencies are listed separately in the copyright notice.",
   "about.upstream": "View upstream project",

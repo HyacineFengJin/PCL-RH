@@ -22,6 +22,11 @@ DOCUMENTS = (
     "THIRDPARTY.generated.json", "LICENSES/DEPENDENCIES.txt", "LICENSES/CORDIS.txt",
     "apps/desktop/src/assets/fonts/LICENSE", "apps/desktop/src/assets/fonts/NOTICE",
     "apps/desktop/src/assets/game-icons/NOTICE", "apps/desktop/src/assets/credits/NOTICE",
+    "apps/desktop/src/assets/game-icons/SOURCES.json",
+    "apps/desktop/src/assets/game-icons/FABRIC-CC0.md",
+    "apps/desktop/src/assets/game-icons/NEOFORGE-CC-BY.txt",
+    "apps/desktop/src/assets/game-icons/MINECRAFT-LICENSE.md",
+    "apps/desktop/src/assets/game-icons/HMCL-GPL.txt",
     "experimental/NOTICE.md", "experimental/runtime/vendor/maker/LICENSE",
     "experimental/runtime/vendor/porter/LICENSE",
 )
@@ -44,6 +49,14 @@ def checked_documents():
     for item in inventory["inputs"]:
         if hashlib.sha256(source_bytes(item["path"])).hexdigest() != item["sha256"]:
             raise ValueError("Stale dependency inventory input: " + item["path"])
+    artwork_root = "apps/desktop/src/assets/game-icons/"
+    artwork = json.loads(contents[artwork_root + "SOURCES.json"])
+    for item in artwork["assets"]:
+        name = item["file"]
+        if not isinstance(name, str) or Path(name).name != name:
+            raise ValueError("Invalid artwork provenance filename")
+        if hashlib.sha256(source_bytes(artwork_root + name)).hexdigest() != item["sha256"]:
+            raise ValueError("Artwork differs from its recorded source: " + name)
     return contents, dict(sorted(Counter(issue["code"] for issue in inventory["issues"]).items()))
 
 

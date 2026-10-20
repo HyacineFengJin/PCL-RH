@@ -17,8 +17,8 @@ import {
 import { createTranslator } from "./i18n";
 import { ArrowUp } from "lucide-react";
 import type { Api, Settings } from "./types";
-import commandIcon from "./assets/game-icons/command.svg";
-import lampTexture from "./assets/game-icons/redstone-lamp.svg";
+import commandIcon from "./assets/game-icons/command.png";
+import lampTexture from "./assets/game-icons/redstone-lamp.png";
 import launcherIcon from "../../../assets/pcl-rh.png";
 import { LegalDocuments } from "./LegalDocuments";
 

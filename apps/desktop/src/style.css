@@ -623,6 +623,10 @@ button.resource-row:hover {
 .instance-icon.loader {
   color: var(--ce-danger-text, #ba652a);
 }
+/* Preserve the Minecraft anvil colors while separating its dark silhouette. */
+:root[data-launcher-theme="dark"] .game-icon-anvil {
+  filter: drop-shadow(0 0 1px rgb(255 255 255 / 65%));
+}
 .instance-summary {
   display: flex;
   align-items: center;

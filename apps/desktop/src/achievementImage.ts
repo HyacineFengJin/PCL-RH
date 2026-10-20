@@ -1,8 +1,8 @@
-import grass from "./assets/game-icons/grass.svg";
-import command from "./assets/game-icons/command.svg";
-import lamp from "./assets/game-icons/redstone-lamp.svg";
+import grass from "./assets/game-icons/grass.png";
+import command from "./assets/game-icons/command.png";
+import lamp from "./assets/game-icons/redstone-lamp.png";
 import type { MessageKey } from "./i18n";
-/** Only these project-drawn generic interface symbols are available. Item IDs
+/** Only these bundled Minecraft item images are available. Item IDs
  * never select an unrelated launcher/loader icon or request arbitrary URLs. */
 export const achievementIcons = {
   "minecraft:grass_block": grass,
@@ -30,7 +30,7 @@ export function achievementError(input: AchievementInput): MessageKey | null {
     return "images.englishOnly";
   return null;
 }
-/** A local achievement badge, rendered from actual input and a project-drawn symbol.
+/** A local achievement badge, rendered from actual input and a bundled item image.
  * The reference screenshot specifies the form, not exact generated pixels. */
 export async function renderAchievement(
   input: AchievementInput,

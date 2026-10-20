@@ -30,8 +30,8 @@ import type { ResourceSummary } from "./ResourceDetails";
 import type { ResourceBrowseRequest } from "./resourceBrowse";
 import { communityAliases, communityIcon } from "./communityResources";
 import { CommunityPages, type CommunityPage } from "./communityPagination";
-import grassIcon from "./assets/game-icons/grass.svg";
-import commandIcon from "./assets/game-icons/command.svg";
+import grassIcon from "./assets/game-icons/grass.png";
+import commandIcon from "./assets/game-icons/command.png";
 import "./community-loading.css";
 import "./community-resources.css";
 

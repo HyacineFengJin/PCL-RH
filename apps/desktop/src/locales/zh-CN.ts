@@ -369,7 +369,7 @@ const messages = {
   "about.attribution": "来源与许可边界",
   "about.assetSources": "代码与素材来源",
   "about.attributionText":
-    "PCL RH 原创实现采用 MIT；第三方代码与字体保留各自许可。内置通用图标已改为本项目绘制，主要品牌美术使用 GPT 制作。",
+    "PCL RH 原创实现采用 MIT；游戏、加载器图像及字体保留各自来源与许可。主要品牌美术使用 GPT 制作。",
   "about.noLobby": "设计参考、直接复用和第三方依赖在版权说明中分别列出。",
   "about.upstream": "查看上游项目",
   "about.assetNotice": "资源来源说明",

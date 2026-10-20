@@ -16,6 +16,16 @@ const documents = {
   "fonts/LICENSE": () => import("./assets/fonts/LICENSE?raw"),
   "fonts/NOTICE": () => import("./assets/fonts/NOTICE?raw"),
   "game-icons/NOTICE": () => import("./assets/game-icons/NOTICE?raw"),
+  "game-icons/SOURCES.json": () =>
+    import("./assets/game-icons/SOURCES.json?raw"),
+  "game-icons/FABRIC-CC0.md": () =>
+    import("./assets/game-icons/FABRIC-CC0.md?raw"),
+  "game-icons/NEOFORGE-CC-BY.txt": () =>
+    import("./assets/game-icons/NEOFORGE-CC-BY.txt?raw"),
+  "game-icons/MINECRAFT-LICENSE.md": () =>
+    import("./assets/game-icons/MINECRAFT-LICENSE.md?raw"),
+  "game-icons/HMCL-GPL.txt": () =>
+    import("./assets/game-icons/HMCL-GPL.txt?raw"),
   "credits/NOTICE": () => import("./assets/credits/NOTICE?raw"),
   "experimental/NOTICE.md": () => import("../../../experimental/NOTICE.md?raw"),
   "maker/LICENSE": () =>

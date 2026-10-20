@@ -31,11 +31,12 @@ import { MemoryControl } from "./MemoryControl";
 import { InstanceDelete } from "./InstanceTrash";
 import { ResourcePanel, type LocalResourceDetails } from "./LocalResources";
 export type { LocalResourceDetails } from "./LocalResources";
-import commandIcon from "./assets/game-icons/command.svg";
-import lampTexture from "./assets/game-icons/redstone-lamp.svg";
-import grassIcon from "./assets/game-icons/grass.svg";
-import neoForgeIcon from "./assets/game-icons/neoforge.svg";
-import forgeIcon from "./assets/game-icons/forge.svg";
+import commandIcon from "./assets/game-icons/command.png";
+import lampTexture from "./assets/game-icons/redstone-lamp.png";
+import grassIcon from "./assets/game-icons/grass.png";
+import neoForgeIcon from "./assets/game-icons/neoforge.png";
+import forgeIcon from "./assets/game-icons/forge.png";
+import fabricIcon from "./assets/game-icons/fabric.png";
 import playerIcon from "./assets/game-icons/player-skin.png";
 import type {
   Api,
@@ -182,11 +183,23 @@ export function InstanceIcon({
         ? neoForgeIcon
         : loader.startsWith("Forge")
           ? forgeIcon
-          : null;
+          : loader.startsWith("Fabric") || loader.startsWith("Legacy Fabric")
+            ? fabricIcon
+            : null;
   const image = icon === "auto" ? automaticIcon : builtInIcons[icon];
+  const anvil =
+    icon === "forge" || (icon === "auto" && loader.startsWith("Forge"));
   return (
     <span className="instance-icon" aria-hidden="true">
-      {image ? <img src={image} alt="" /> : <Box size={29} strokeWidth={1.4} />}
+      {image ? (
+        <img
+          className={anvil ? "game-icon-anvil" : undefined}
+          src={image}
+          alt=""
+        />
+      ) : (
+        <Box size={29} strokeWidth={1.4} />
+      )}
     </span>
   );
 }

@@ -13,6 +13,7 @@
 | `@earendil-works/pi-coding-agent` 1.0.4 及 Pi 模块 | 模型调用和 Agent 适配 | MIT，原版权 `2025 Mario Zechner`；补文依据为对应版本的上游提交，并记录在清单中 |
 | `experimental/runtime/vendor/maker/` | 直接纳入并适配 | MIT，Mod Creator Lab contributors；[原文](experimental/runtime/vendor/maker/LICENSE) |
 | `experimental/runtime/vendor/porter/` | 直接纳入并适配 | MIT，Mod Port Lab contributors；[原文](experimental/runtime/vendor/porter/LICENSE) |
+| 游戏 / 加载器图像 | 用于界面识别 | Minecraft 原权利及 EULA；Fabric 标志 CC0-1.0（unascribed）；NeoForged 网站图像 CC-BY-4.0。详见[素材声明](apps/desktop/src/assets/game-icons/NOTICE)及[固定来源](apps/desktop/src/assets/game-icons/SOURCES.json) |
 | Noto Sans CJK SC 子集 | 随包字体 | OFL-1.1，Adobe；[许可](apps/desktop/src/assets/fonts/LICENSE)及[来源与修改说明](apps/desktop/src/assets/fonts/NOTICE) |
 
 PCL / PCL CE、HMCL、PCL N / Nex 和 DSH 的参考关系另见版权说明。参考项目不是上述自写代码的统一版权人；同样，参考关系不赋予重新授权其源码或标志的权利。

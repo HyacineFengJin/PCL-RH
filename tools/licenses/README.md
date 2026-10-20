@@ -86,7 +86,7 @@ For a source-only check or CI without installed dependencies:
 python3 tools/licenses/release.py --check
 ```
 
-This checks the 14 bundled documents and recorded dependency-input hashes. It
+This checks the 19 bundled documents and recorded dependency-input hashes. It
 does not replace a fresh `generate.py --check` or upgrade evidence gaps to passes.
 The license workflow runs this check and the scanner's evidence regressions.
 

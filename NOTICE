@@ -10,13 +10,15 @@ Included third-party work keeps its original licenses and copyright notices:
 - Pi SDK and npm / Cargo dependencies: THIRD_PARTY_NOTICES.md,
   THIRDPARTY.generated.json and LICENSES/DEPENDENCIES.txt.
 - Noto Sans CJK SC subsets: SIL Open Font License 1.1; fonts/LICENSE and NOTICE.
+- Game and loader identification artwork: game-icons/NOTICE and SOURCES.json;
+  Minecraft rights/EULA, Fabric CC0 and NeoForged website CC-BY-4.0.
 
 PCL / PCL CE, HMCL, PCL N / Nex and DeepSeek Harness are credited as design,
 protocol or architecture references where described in COPYRIGHT.md. Such
 references do not relicense their code, artwork, names or trademarks.
 
-Primary project artwork was made with GPT. Generic bundled icons, cursors
-and the example player skin are project artwork; third-party fonts remain OFL.
+Primary project artwork was made with GPT. Cursors and the example player
+skin are project artwork; game/loader images and fonts retain their own terms.
 
 NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG
 OR MICROSOFT. Minecraft, game/mod content, user-imported assets and third-party

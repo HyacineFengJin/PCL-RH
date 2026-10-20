@@ -3,9 +3,9 @@ name: License attribution
 on:
   push:
     branches: [master]
-    paths: ['LICENSE', 'NOTICE', 'COPYRIGHT.md', 'THIRD_PARTY_NOTICES.md', 'THIRDPARTY.generated.json', 'LICENSES/**', 'tools/licenses/**', '**/Cargo.toml', 'Cargo.lock', '**/package.json', '**/package-lock.json', 'apps/desktop/src/assets/**/NOTICE', 'apps/desktop/src/assets/fonts/LICENSE', 'experimental/NOTICE.md', 'experimental/runtime/vendor/**/LICENSE', '.github/workflows/licenses.yml']
+    paths: ['LICENSE', 'NOTICE', 'COPYRIGHT.md', 'THIRD_PARTY_NOTICES.md', 'THIRDPARTY.generated.json', 'LICENSES/**', 'tools/licenses/**', '**/Cargo.toml', 'Cargo.lock', '**/package.json', '**/package-lock.json', 'apps/desktop/src/assets/game-icons/**', 'apps/desktop/src/assets/**/NOTICE', 'apps/desktop/src/assets/fonts/LICENSE', 'experimental/NOTICE.md', 'experimental/runtime/vendor/**/LICENSE', '.github/workflows/licenses.yml']
   pull_request:
-    paths: ['LICENSE', 'NOTICE', 'COPYRIGHT.md', 'THIRD_PARTY_NOTICES.md', 'THIRDPARTY.generated.json', 'LICENSES/**', 'tools/licenses/**', '**/Cargo.toml', 'Cargo.lock', '**/package.json', '**/package-lock.json', 'apps/desktop/src/assets/**/NOTICE', 'apps/desktop/src/assets/fonts/LICENSE', 'experimental/NOTICE.md', 'experimental/runtime/vendor/**/LICENSE', '.github/workflows/licenses.yml']
+    paths: ['LICENSE', 'NOTICE', 'COPYRIGHT.md', 'THIRD_PARTY_NOTICES.md', 'THIRDPARTY.generated.json', 'LICENSES/**', 'tools/licenses/**', '**/Cargo.toml', 'Cargo.lock', '**/package.json', '**/package-lock.json', 'apps/desktop/src/assets/game-icons/**', 'apps/desktop/src/assets/**/NOTICE', 'apps/desktop/src/assets/fonts/LICENSE', 'experimental/NOTICE.md', 'experimental/runtime/vendor/**/LICENSE', '.github/workflows/licenses.yml']
   workflow_dispatch:
 
 permissions:

@@ -7,15 +7,15 @@ import {
   Download,
   Gauge,
   LoaderCircle,
-  ScrollText,
   X,
 } from "lucide-react";
 import type { Api } from "./types";
 import { Collapse } from "./Collapse";
 import { loaderCandidates } from "./loaderCandidates";
-import grass from "./assets/game-icons/grass.svg";
-import forge from "./assets/game-icons/forge.svg";
-import neoForge from "./assets/game-icons/neoforge.svg";
+import grass from "./assets/game-icons/grass.png";
+import forge from "./assets/game-icons/forge.png";
+import neoForge from "./assets/game-icons/neoforge.png";
+import fabric from "./assets/game-icons/fabric.png";
 import "./install-selection.css";
 const providers = ["Forge", "NeoForge", "Fabric", "LabyMod", "OptiFine"];
 const unavailableProviders: Record<string, MessageKey> = {
@@ -48,10 +48,15 @@ export function installNameError(name: string, installed: { id: string }[]) {
 }
 
 function ComponentIcon({ name }: { name: string }) {
-  if (name === "Forge" || name === "NeoForge")
-    return <img src={name === "Forge" ? forge : neoForge} alt="" />;
-  const Icon =
-    name === "Fabric" ? ScrollText : name === "OptiFine" ? Gauge : Box;
+  if (name === "Forge" || name === "NeoForge" || name === "Fabric")
+    return (
+      <img
+        className={name === "Forge" ? "game-icon-anvil" : undefined}
+        src={name === "Forge" ? forge : name === "NeoForge" ? neoForge : fabric}
+        alt=""
+      />
+    );
+  const Icon = name === "OptiFine" ? Gauge : Box;
   return <Icon size={29} strokeWidth={1.6} />;
 }
 export function InstallSelection({

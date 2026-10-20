@@ -26,7 +26,7 @@ fn main() {
         "tools/licenses",
         "apps/desktop/src/assets/fonts/LICENSE",
         "apps/desktop/src/assets/fonts/NOTICE",
-        "apps/desktop/src/assets/game-icons/NOTICE",
+        "apps/desktop/src/assets/game-icons",
         "apps/desktop/src/assets/credits/NOTICE",
         "experimental/NOTICE.md",
         "experimental/runtime/vendor/maker/LICENSE",

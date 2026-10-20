@@ -1,2 +1,8 @@
 # Preserve upstream notice bytes, including mixed CRLF and original spaces.
 LICENSES/DEPENDENCIES.txt -text -whitespace
+
+# These are verbatim artwork license notices, separate from the project MIT.
+apps/desktop/src/assets/game-icons/FABRIC-CC0.md -text -whitespace
+apps/desktop/src/assets/game-icons/NEOFORGE-CC-BY.txt -text -whitespace
+apps/desktop/src/assets/game-icons/MINECRAFT-LICENSE.md -text -whitespace
+apps/desktop/src/assets/game-icons/HMCL-GPL.txt -text -whitespace

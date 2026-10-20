@@ -7,14 +7,14 @@ import {
   LoaderCircle,
   Pencil,
   RotateCcw,
-  ScrollText,
   X,
 } from "lucide-react";
 import { Collapse } from "./Collapse";
 import { loaderCandidates } from "./loaderCandidates";
-import grassIcon from "./assets/game-icons/grass.svg";
-import forgeIcon from "./assets/game-icons/forge.svg";
-import neoForgeIcon from "./assets/game-icons/neoforge.svg";
+import grassIcon from "./assets/game-icons/grass.png";
+import forgeIcon from "./assets/game-icons/forge.png";
+import neoForgeIcon from "./assets/game-icons/neoforge.png";
+import fabricIcon from "./assets/game-icons/fabric.png";
 import type { Api, Instance } from "./types";
 import "./instance-operations.css";
 
@@ -250,13 +250,17 @@ function VersionIcon({ name }: { name: string }) {
         ? forgeIcon
         : name === "NeoForge"
           ? neoForgeIcon
-          : null;
+          : name === "Fabric"
+            ? fabricIcon
+            : null;
   return (
     <span className="ce-operation-version-icon" aria-hidden="true">
       {image ? (
-        <img src={image} alt="" />
-      ) : name === "Fabric" ? (
-        <ScrollText size={21} />
+        <img
+          className={name === "Forge" ? "game-icon-anvil" : undefined}
+          src={image}
+          alt=""
+        />
       ) : name === "OptiFine" ? (
         <Gauge size={21} />
       ) : (

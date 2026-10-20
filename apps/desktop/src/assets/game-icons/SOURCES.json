@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "scope": "Identification artwork; these third-party images are not covered by the project MIT grant. Original player-skin.svg/png remain project MIT artwork.",
+  "assets": [
+    {
+      "file": "grass.png",
+      "source": "https://raw.githubusercontent.com/Mojang/bedrock-samples/46ba6ea985fb5a92d79a9419198f10dda14c199d/resource_pack/pack_icon.png",
+      "sha256": "a3d18b7a1a58657d2e55798d46fe1f76231143b8453969b9e0dbde9d23a01012",
+      "rights": "Minecraft EULA and Usage Guidelines",
+      "attribution": "Mojang AB / Microsoft",
+      "use": "Minecraft grass block",
+      "modifications": "Image bytes unchanged; display size set by the interface."
+    },
+    {
+      "file": "redstone-lamp.png",
+      "source": "https://raw.githubusercontent.com/Mojang/bedrock-samples/46ba6ea985fb5a92d79a9419198f10dda14c199d/resource_pack/textures/blocks/redstone_lamp_off.png",
+      "sha256": "293719cf75ab6cc548ed02158f25d59d8b92e72eac6dad25b4d43395ef3de191",
+      "rights": "Minecraft EULA and Usage Guidelines",
+      "attribution": "Mojang AB / Microsoft",
+      "use": "Minecraft redstone lamp",
+      "modifications": "Image bytes unchanged; display size set by the interface."
+    },
+    {
+      "file": "fabric.png",
+      "source": "https://raw.githubusercontent.com/FabricMC/community/077b92869e1bc96e810748d800d8b69ec93f3871/media/unascribed/png/fabric.png",
+      "sha256": "ac515a68cb15da4c5ca2766e47a8db166ad86300a03c5b53f6c2f81a5f23679b",
+      "rights": "CC0-1.0",
+      "attribution": "unascribed",
+      "use": "Fabric logo",
+      "modifications": "Image bytes unchanged; display size set by the interface."
+    },
+    {
+      "file": "neoforge.png",
+      "source": "https://raw.githubusercontent.com/NeoForged/websites/4d38126b8b02c7aeb668bb26b2c01a25d1521728/static/img/authors/neoforged.png",
+      "sha256": "884d0637dda196443b5b277fc1bb607678f813923fb703273ed05aab89076226",
+      "rights": "CC-BY-4.0",
+      "attribution": "The NeoForged project and artwork contributors",
+      "use": "NeoForged team mark",
+      "modifications": "Image bytes unchanged; display size set by the interface."
+    },
+    {
+      "file": "command.png",
+      "source": "https://raw.githubusercontent.com/HMCL-dev/HMCL/5789f82617601d7f10f057c2c8161022c768f8ec/HMCL/src/main/resources/assets/img/command.png",
+      "sha256": "55057bca5da2985b06ac1e8f62dc77eef60ed6a97fc728f3101aab56966ec843",
+      "rights": "Minecraft underlying artwork; retain HMCL GPL notice for any separately protected upstream contributions. Not MIT.",
+      "attribution": "Mojang AB / Microsoft; distributed by HMCL contributors",
+      "use": "Minecraft command block",
+      "modifications": "Image bytes unchanged.",
+      "embedded_original_source": null
+    },
+    {
+      "file": "forge.png",
+      "source": "https://raw.githubusercontent.com/HMCL-dev/HMCL/5789f82617601d7f10f057c2c8161022c768f8ec/HMCL/src/main/resources/assets/img/forge.png",
+      "sha256": "e8da53d1965f28cdc9b2f544f62dc14583f681d9da06760c1e203c8690d5bcb5",
+      "rights": "Minecraft underlying artwork; retain HMCL GPL notice for any separately protected upstream contributions. Not MIT.",
+      "attribution": "Mojang AB / Microsoft; distributed by HMCL contributors",
+      "use": "Minecraft anvil used to identify Forge, not an assertion that this is the official Forge logo.",
+      "modifications": "Image bytes unchanged. Interface controls sizing and adds a subtle contrast shadow on dark surfaces.",
+      "embedded_original_source": "https://minecraft.gamepedia.com/File:Anvil.png"
+    }
+  ]
+}

@@ -1,19 +1,58 @@
-Original PCL RH interface artwork
-Copyright (c) 2026 PCL RH contributors
-SPDX-License-Identifier: MIT
+Minecraft and loader identification artwork
 
-The SVG files in this directory are original geometric interface symbols:
-a landscape block, a control panel, a signal lamp, an anvil and an experiment
-flask. Their filenames identify the interface roles in which they are used.
-They do not reproduce Minecraft textures or Forge / NeoForge project logos.
+These third-party PNGs are NOT covered by the PCL RH MIT license. SOURCES.json
+records their immutable source URLs and file hashes. They identify the game,
+loaders or items inside this Minecraft launcher; they are not PCL RH branding.
+Names, logos and trademarks remain with their respective owners. No endorsement
+is implied.
 
-player-skin.svg is the original source for player-skin.png, a blue-violet
-explorer character authored on a 64 x 64 skin atlas. It contains no pixels
-from the Minecraft default skin. Both source and rendered PNG use MIT.
+Minecraft
+---------
+Copyright (c) Mojang AB / Microsoft. All rights reserved.
+grass.png is the unchanged resource-pack icon from the official
+Mojang/bedrock-samples repository. redstone-lamp.png is its unchanged
+redstone_lamp_off texture. See MINECRAFT-LICENSE.md, the Minecraft EULA and
+https://www.minecraft.net/en-us/usage-guidelines . These are game assets,
+not project-owned MIT artwork and not HMCL-created symbols merely because
+another launcher also distributes similar images.
 
-See the repository root LICENSE for the MIT license text. Minecraft, Forge
-and NeoForge names identify their respective games or projects; their
-trademarks remain with their owners. No endorsement is implied.
+command.png and forge.png are the previous Minecraft command-block/anvil
+renderings, distributed via HMCL at the commit recorded in SOURCES.json.
+forge.png's embedded original source is
+https://minecraft.gamepedia.com/File:Anvil.png . The anvil identifies Forge
+in the interface; this is not an assertion that it is the official Forge logo.
+Retain HMCL-GPL.txt for any separately protected upstream contributions;
+that license does not relicense Mojang's underlying game artwork. Shared
+Minecraft subject matter alone does not establish HMCL authorship.
 
-Regenerate the skin PNG with an SVG renderer, for example:
+NeoForge
+--------
+neoforge.png is the unchanged NeoForged team artwork from the official
+neoforged/websites repository, static/img/authors/neoforged.png.
+Attribution: The NeoForged project and artwork contributors.
+The website repository publishes its contents under CC-BY-4.0 except its
+separately licensed theme. This image is outside the theme. See
+NEOFORGE-CC-BY.txt and the pinned source in SOURCES.json. Display sizing is
+controlled by the interface; image bytes, colors and proportions are unchanged.
+Project: https://neoforged.net/
+
+Fabric
+------
+fabric.png is the unchanged Fabric logo created by unascribed, released as
+CC0-1.0 in FabricMC/community/media/unascribed. See FABRIC-CC0.md and the
+pinned source in SOURCES.json. This is the logo's own license, not an assumption
+based on the website's general code or content license.
+Artist: https://unascribed.com/
+Project: https://fabricmc.net/
+
+Project artwork
+---------------
+Only player-skin.svg and its rendered player-skin.png are original PCL RH
+artwork in this directory, Copyright (c) 2026 PCL RH contributors, MIT.
+The original blue-violet example character contains no Minecraft skin pixels.
+Regenerate it with:
 rsvg-convert --width 64 --height 64 --output player-skin.png player-skin.svg
+
+NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG
+OR MICROSOFT. This notice records sources and licensing boundaries; it does not
+provide a blanket grant for redistributing game content as a standalone asset pack.
