@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, MutexGuard,
     },
     time::{Duration, Instant},
 };
@@ -111,6 +111,33 @@ fn args() -> Value {
 fn appearance(values: Value) -> Value {
     json!({"kind":"set-launcher-appearance","extensionId":"example.fixture","values":values})
 }
+fn downloads(values: Value) -> Value {
+    json!({"kind":"set-launcher-downloads","extensionId":"example.fixture","values":values})
+}
+
+/// Serialize scheduler replacements with the existing policy readers as well
+/// as other effects, and restore the exact original Arc even during unwinding.
+struct DownloadIsolation {
+    _lock: MutexGuard<'static, ()>,
+    original: Arc<pcl_network::DownloadScheduler>,
+}
+impl DownloadIsolation {
+    fn new() -> Self {
+        let lock = crate::launcher_commands::test_download_scheduler_guard();
+        let original = pcl_network::install_download_snapshot(
+            pcl_network::DownloadScheduler::new(pcl_network::DownloadPolicy::default()).unwrap(),
+        );
+        Self {
+            _lock: lock,
+            original,
+        }
+    }
+}
+impl Drop for DownloadIsolation {
+    fn drop(&mut self) {
+        pcl_network::install_download_snapshot(self.original.clone());
+    }
+}
 fn copy(text: &str) -> Value {
     json!({"kind":"copy-text","extensionId":"example.fixture","text":text})
 }
@@ -138,6 +165,7 @@ fn settings_rpc_is_additive_and_effects_are_not_renderer_operations() {
     for operation in [
         "copy-text",
         "set-launcher-appearance",
+        "set-launcher-downloads",
         "launcher_preferences_update",
     ] {
         assert!(serde_json::from_value::<Operation>(json!(operation)).is_err());
@@ -280,6 +308,49 @@ fn appearance_revalidates_only_six_concrete_values() {
 }
 
 #[test]
+fn downloads_revalidate_only_two_bounded_concrete_integers() {
+    for invalid in [
+        json!(null),
+        json!({}),
+        json!([]),
+        json!({"max_concurrent_transfers":null}),
+        json!({"max_concurrent_transfers":{"setting":"threads"}}),
+        json!({"max_concurrent_transfers":"4"}),
+        json!({"max_concurrent_transfers":true}),
+        json!({"max_concurrent_transfers":4.0}),
+        json!({"max_concurrent_transfers":4.5}),
+        json!({"max_concurrent_transfers":-1}),
+        json!({"max_concurrent_transfers":0}),
+        json!({"max_concurrent_transfers":65}),
+        json!({"max_concurrent_transfers":u64::MAX}),
+        json!({"total_rate_limit_mib_per_second":null}),
+        json!({"total_rate_limit_mib_per_second":"0"}),
+        json!({"total_rate_limit_mib_per_second":0.0}),
+        json!({"total_rate_limit_mib_per_second":-1}),
+        json!({"total_rate_limit_mib_per_second":1025}),
+        json!({"total_rate_limit_mib_per_second":u64::MAX}),
+        json!({"max_concurrent_transfers":4,"quick_download":"auto"}),
+        json!({"forbid_download_copy":true}),
+        json!({"management":{"max_concurrent_transfers":4}}),
+        json!({"max_concurrent_transfers":4,"total_rate_limit_mib_per_second":0,"theme":"dark"}),
+    ] {
+        assert!(
+            downloads_patch(invalid.clone()).is_err(),
+            "accepted {invalid}"
+        );
+    }
+    for valid in [
+        json!({"max_concurrent_transfers":1}),
+        json!({"max_concurrent_transfers":64}),
+        json!({"total_rate_limit_mib_per_second":0}),
+        json!({"total_rate_limit_mib_per_second":1024}),
+        json!({"max_concurrent_transfers":12,"total_rate_limit_mib_per_second":7}),
+    ] {
+        assert!(downloads_patch(valid).is_ok());
+    }
+}
+
+#[test]
 fn forged_intents_never_write_preferences_or_call_clipboard() {
     let fixture = Fixture::new();
     let shared = fixture.shared();
@@ -287,9 +358,14 @@ fn forged_intents_never_write_preferences_or_call_clipboard() {
     for intent in [
         json!({"kind":"set-launcher-appearance","extensionId":"example.other","values":{"theme":"dark"}}),
         json!({"kind":"set-launcher-appearance","extensionId":"example.fixture","values":{"theme":"dark"},"ipc":"anything"}),
+        json!({"kind":"set-launcher-downloads","extensionId":"example.other","values":{"max_concurrent_transfers":12}}),
+        json!({"kind":"set-launcher-downloads","extensionId":"example.fixture","values":{"max_concurrent_transfers":12},"ipc":"anything"}),
+        downloads(json!({"max_concurrent_transfers":null})),
+        downloads(json!({"max_concurrent_transfers":12,"quick_download":"auto"})),
         json!({"kind":"copy-text","extensionId":"example.other","text":"private"}),
         json!({"kind":"copy-text","extensionId":"example.fixture","text":"private","read":true}),
         json!({"kind":"launcher-appearance-applied","extensionId":"example.fixture"}),
+        json!({"kind":"launcher-downloads-applied","extensionId":"example.fixture"}),
         json!({"kind":"text-copied","extensionId":"example.fixture"}),
         json!({"kind":"arbitrary-ipc","command":"launch"}),
     ] {
@@ -346,6 +422,165 @@ fn appearance_commits_real_preferences_preserves_unrelated_values_and_returns_co
     // Disable/removal/revoke never restores the previous launcher appearance.
     host.call("extensions_revoke", json!({})).unwrap();
     assert_eq!(shared.launcher_preferences.snapshot().preferences, expected);
+}
+
+#[test]
+fn downloads_commit_preferences_and_scheduler_under_the_same_native_and_host_ownership() {
+    let _isolation = DownloadIsolation::new();
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let host = fixture.host();
+    let initial = shared.launcher_preferences.snapshot();
+    let before = shared.launcher_preferences.update(&initial.revision, serde_json::from_value(json!({
+        "game_launch":{"custom_info":"download-fixture"},
+        "appearance":{"opacity_percent":73,"theme":"dark"},
+        "management":{"clipboard_resource_detection":false,"minecraft_release_notifications":false},
+        "advanced":{"forbid_download_copy":true},"local_diagnostics_enabled":true
+    })).unwrap()).unwrap().preferences;
+    let old_scheduler = pcl_network::download_snapshot();
+    let checked_scheduler = old_scheduler.clone();
+    let checked_shared = shared.clone();
+    let checked_host = host.clone();
+    shared.launcher_preferences.test_before_replace(move |_| {
+        assert!(checked_shared.operations.try_lock().is_err());
+        assert!(checked_host.session.try_lock().is_err());
+        assert!(checked_host.suspend().unwrap().busy);
+        assert!(Arc::ptr_eq(
+            &pcl_network::download_snapshot(),
+            &checked_scheduler
+        ));
+        Ok(())
+    });
+    fixture.intent(downloads(
+        json!({"max_concurrent_transfers":12,"total_rate_limit_mib_per_second":7}),
+    ));
+    assert_eq!(
+        execute(&host, &shared, args(), no_copy).unwrap(),
+        json!({"kind":"launcher-downloads-applied","extensionId":"example.fixture"})
+    );
+    let mut expected = before;
+    expected.management.max_concurrent_transfers = 12;
+    expected.management.total_rate_limit_mib_per_second = 7;
+    let fresh = LauncherPreferencesStore::load(fixture.root()).snapshot();
+    assert!(fresh.warning.is_none());
+    assert_eq!(fresh.preferences, expected);
+    let applied = pcl_network::download_snapshot();
+    assert!(!Arc::ptr_eq(&old_scheduler, &applied));
+    assert_eq!(
+        applied.policy(),
+        &crate::launcher_commands::download_policy(&expected)
+    );
+    assert!(applied.policy().forbid_cross_root_cache_copy);
+    // A partial action preserves the other download budget and all unrelated
+    // management values; the same saved policy retains its shared scheduler.
+    fixture.intent(downloads(json!({"max_concurrent_transfers":12})));
+    execute(&host, &shared, args(), no_copy).unwrap();
+    assert!(Arc::ptr_eq(&applied, &pcl_network::download_snapshot()));
+    assert_eq!(shared.launcher_preferences.snapshot().preferences, expected);
+    host.call("extensions_revoke", json!({})).unwrap();
+    assert!(execute(&host, &shared, args(), no_copy).is_err());
+    assert_eq!(shared.launcher_preferences.snapshot().preferences, expected);
+    assert!(Arc::ptr_eq(&applied, &pcl_network::download_snapshot()));
+}
+
+#[test]
+fn downloads_failed_publication_or_external_cas_never_install_the_prepared_scheduler() {
+    let _isolation = DownloadIsolation::new();
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let host = fixture.host();
+    let initial = shared.launcher_preferences.snapshot();
+    let initial = shared
+        .launcher_preferences
+        .update(
+            &initial.revision,
+            serde_json::from_value(json!({"appearance":{"opacity_percent":85}})).unwrap(),
+        )
+        .unwrap();
+    let bytes = fs::read(fixture.prefs_file()).unwrap();
+    let original = pcl_network::download_snapshot();
+    fixture.intent(downloads(
+        json!({"max_concurrent_transfers":64,"total_rate_limit_mib_per_second":9}),
+    ));
+    shared
+        .launcher_preferences
+        .test_before_replace(|_| Err("fixture download publication failure".into()));
+    let error = execute(&host, &shared, args(), no_copy).unwrap_err();
+    assert!(error.contains("fixture download publication failure"));
+    assert_eq!(fs::read(fixture.prefs_file()).unwrap(), bytes);
+    let after = shared.launcher_preferences.snapshot();
+    assert_eq!(after.revision, initial.revision);
+    assert_eq!(after.preferences, initial.preferences);
+    assert!(Arc::ptr_eq(&original, &pcl_network::download_snapshot()));
+    // A retry can use the same host session and commits both native consumers.
+    assert!(execute(&host, &shared, args(), no_copy).is_ok());
+    let committed = pcl_network::download_snapshot();
+    assert!(!Arc::ptr_eq(&original, &committed));
+    fixture.intent(downloads(json!({"total_rate_limit_mib_per_second":11})));
+    let external = b"{\"schema_version\":999}";
+    shared
+        .launcher_preferences
+        .test_before_replace(move |project| {
+            fs::write(
+                project.join(".pcl-rust/launcher-preferences.json"),
+                external,
+            )
+            .unwrap();
+            Ok(())
+        });
+    assert!(execute(&host, &shared, args(), no_copy).is_err());
+    assert_eq!(fs::read(fixture.prefs_file()).unwrap(), external);
+    assert!(Arc::ptr_eq(&committed, &pcl_network::download_snapshot()));
+    assert!(shared.launcher_preferences.snapshot().warning.is_some());
+    assert!(execute(&host, &shared, args(), no_copy).is_err());
+    assert!(Arc::ptr_eq(&committed, &pcl_network::download_snapshot()));
+    assert_eq!(host.call("extensions_list", json!({})).unwrap(), true);
+}
+
+#[test]
+fn downloads_reuse_idle_guards_for_queued_work_games_monitor_and_close() {
+    let _isolation = DownloadIsolation::new();
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let host = fixture.host();
+    fixture.intent(downloads(json!({"max_concurrent_transfers":64})));
+    let original = pcl_network::download_snapshot();
+    let before = shared.launcher_preferences.snapshot();
+    let assert_unchanged = || {
+        assert!(!fixture.prefs_file().exists());
+        let after = shared.launcher_preferences.snapshot();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.preferences, before.preferences);
+        assert!(Arc::ptr_eq(&original, &pcl_network::download_snapshot()));
+    };
+    let root = shared.config.resolve(None).unwrap();
+    let task = shared
+        .tasks
+        .admit_queued(
+            crate::tasks::TaskTarget {
+                root_id: root.id,
+                root_path: root.path.clone(),
+                instance_id: None,
+            },
+            crate::tasks::TaskKind::Install,
+            crate::tasks::TaskScope::root(Path::new(&root.path)).unwrap(),
+        )
+        .unwrap();
+    assert!(execute(&host, &shared, args(), no_copy).is_err());
+    assert_unchanged();
+    drop(task);
+    for stage in ["preparing", "running"] {
+        shared.status.lock().unwrap().stage = stage.into();
+        assert!(execute(&host, &shared, args(), no_copy).is_err());
+        assert_unchanged();
+    }
+    shared.status.lock().unwrap().stage = "idle".into();
+    crate::launcher_monitor_runtime::test_attach(&shared);
+    assert!(execute(&host, &shared, args(), no_copy).is_err());
+    assert_unchanged();
+    shared.closing.store(true, Ordering::SeqCst);
+    assert!(execute(&host, &shared, args(), no_copy).is_err());
+    assert_unchanged();
 }
 
 #[test]
@@ -673,6 +908,257 @@ fn real_imported_appearance_notes_and_checklist_examples_cross_native_boundary_w
         AppearancePreferences::default()
     );
     assert!(fixture.prefs_file().exists());
+    assert!(!fixture.root().join("experimental/agent-host.mjs").exists());
+}
+
+#[test]
+fn real_launcher_samples_save_project_widgets_and_apply_downloads_across_host_reopen_and_revoke() {
+    let _isolation = DownloadIsolation::new();
+    let fixture = Fixture::new();
+    fixture.use_real_light_host();
+    let shared = fixture.shared();
+    let host = fixture.host();
+    let original = pcl_network::download_snapshot();
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../experimental/extensions/examples");
+    let mut entries = serde_json::Map::new();
+    let saved_downloads = json!({"connections":23,"limit":37});
+    let saved_dashboard = json!({"done":4,"note":"已检查 Java\nNative sample saved note"});
+    for (file, values) in [
+        ("download-presets.json", saved_downloads.clone()),
+        ("launcher-dashboard.json", saved_dashboard.clone()),
+    ] {
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(source.join(file)).unwrap()).unwrap();
+        let review = host
+            .call("extensions_review", json!({"source":manifest.to_string()}))
+            .unwrap();
+        let grants: Vec<_> = manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|capability| capability["id"].clone())
+            .collect();
+        let entry = host
+            .call(
+                "extensions_confirm",
+                json!({"token":review["token"],"grants":grants}),
+            )
+            .unwrap();
+        let entry = host
+            .call(
+                "extensions_settings",
+                json!({"id":manifest["id"],"expected":expected(&entry),"values":values}),
+            )
+            .unwrap();
+        entries.insert(manifest["id"].as_str().unwrap().into(), entry);
+    }
+    let cards =
+        |host: &Host, slot: &str| host.call("extensions_cards", json!({"slot":slot})).unwrap();
+    let card = |cards: &Value, extension_id: &str| {
+        cards
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|card| card["extensionId"] == extension_id)
+            .unwrap()
+            .clone()
+    };
+    let content = |mut cards: Value| {
+        // Generations belong to one live host. Reopening restores saved content
+        // while creating fresh action identities, which callers must reread.
+        for card in cards.as_array_mut().unwrap() {
+            card.as_object_mut().unwrap().remove("generation");
+        }
+        cards
+    };
+    let entry = |host: &Host| {
+        host.call("extensions_list", json!({})).unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "local.download-presets")
+            .unwrap()
+            .clone()
+    };
+    let quick = cards(&host, "home.quick-actions");
+    assert_eq!(quick.as_array().unwrap().len(), 2);
+    let download_quick = card(&quick, "local.download-presets");
+    assert_eq!(download_quick["id"], "quick");
+    assert_eq!(download_quick["presentation"], "compact");
+    assert_eq!(download_quick["actions"][0]["enabled"], true);
+    assert_eq!(
+        download_quick["widgets"],
+        json!([
+            {"id":"connections","kind":"value","label":"预设并发","value":23},
+            {"id":"limit","kind":"value","label":"预设限速","value":37,"suffix":"MiB/s"}
+        ])
+    );
+    let manage = cards(&host, "settings.manage");
+    assert_eq!(manage.as_array().unwrap().len(), 1);
+    assert_eq!(manage[0]["id"], "downloads");
+    assert_eq!(manage[0]["fields"][0]["value"], 23);
+    assert_eq!(manage[0]["fields"][1]["value"], 37);
+    assert_eq!(manage[0]["widgets"][0]["kind"], "notice");
+    assert_eq!(manage[0]["widgets"][0]["tone"], "info");
+    let checklist = cards(&host, "settings.launch");
+    assert_eq!(checklist[0]["fields"][0]["value"], saved_dashboard["done"]);
+    assert_eq!(checklist[0]["fields"][1]["value"], saved_dashboard["note"]);
+    assert_eq!(
+        checklist[0]["widgets"],
+        json!([
+            {"id":"done","kind":"progress","label":"已保存的检查进度","value":4,"max":5},
+            {"id":"note","kind":"value","label":"已保存备注","value":saved_dashboard["note"]}
+        ])
+    );
+    assert_eq!(
+        cards(&host, "home.banner")[0]["widgets"][0]["kind"],
+        "notice"
+    );
+    // Import, Save and card projection never apply launcher preferences. Only
+    // an explicitly admitted action crosses the native publication boundary.
+    assert!(!fixture.prefs_file().exists());
+    assert!(Arc::ptr_eq(&original, &pcl_network::download_snapshot()));
+    assert_eq!(
+        execute(
+            &host,
+            &shared,
+            json!({"extensionId":"local.launcher-dashboard",
+            "cardId":"shortcuts","actionId":"manage",
+            "expected":expected(&entries["local.launcher-dashboard"])}),
+            no_copy
+        )
+        .unwrap(),
+        json!({"kind":"navigate","target":"settings.manage","extensionId":"local.launcher-dashboard"})
+    );
+    let request = |entry: &Value, card_id: &str| {
+        json!({"extensionId":"local.download-presets","cardId":card_id,
+            "actionId":"apply","expected":expected(entry)})
+    };
+    assert_eq!(
+        execute(
+            &host,
+            &shared,
+            request(&entries["local.download-presets"], "downloads"),
+            no_copy
+        )
+        .unwrap(),
+        json!({"kind":"launcher-downloads-applied","extensionId":"local.download-presets"})
+    );
+    let applied = shared.launcher_preferences.snapshot();
+    assert_eq!(applied.preferences.management.max_concurrent_transfers, 23);
+    assert_eq!(
+        applied
+            .preferences
+            .management
+            .total_rate_limit_mib_per_second,
+        37
+    );
+    let scheduler = pcl_network::download_snapshot();
+    assert!(!Arc::ptr_eq(&original, &scheduler));
+    assert_eq!(
+        scheduler.policy(),
+        &crate::launcher_commands::download_policy(&applied.preferences)
+    );
+    let bytes = fs::read(fixture.prefs_file()).unwrap();
+    let store: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .root()
+                .join(".pcl-rust/experimental/extensions.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    for (id, values) in [
+        ("local.download-presets", &saved_downloads),
+        ("local.launcher-dashboard", &saved_dashboard),
+    ] {
+        assert_eq!(
+            &store["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["id"] == id)
+                .unwrap()["settings"],
+            values
+        );
+    }
+    assert!(host.suspend().unwrap().released);
+    let reopened = fixture.host();
+    assert_eq!(
+        content(cards(&reopened, "home.quick-actions")),
+        content(quick)
+    );
+    assert_eq!(
+        content(cards(&reopened, "settings.manage")),
+        content(manage)
+    );
+    assert_eq!(
+        content(cards(&reopened, "settings.launch")),
+        content(checklist)
+    );
+    assert_eq!(
+        LauncherPreferencesStore::load(fixture.root())
+            .snapshot()
+            .preferences,
+        applied.preferences
+    );
+    // Both actual download cards resolve the same persisted values after the
+    // new host has opened its own store; an unchanged policy keeps one budget.
+    let reopened_entry = entry(&reopened);
+    execute(
+        &reopened,
+        &shared,
+        request(&reopened_entry, "quick"),
+        no_copy,
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&scheduler, &pcl_network::download_snapshot()));
+    let revoked = reopened
+        .call(
+            "extensions_revoke",
+            json!({"id":"local.download-presets",
+        "capability":"launcher.downloads","expected":expected(&reopened_entry)}),
+        )
+        .unwrap();
+    for entry in [&reopened_entry, &revoked] {
+        assert!(execute(&reopened, &shared, request(entry, "downloads"), no_copy).is_err());
+    }
+    assert_eq!(
+        cards(&reopened, "settings.manage")[0]["actions"][0]["enabled"],
+        false
+    );
+    assert_eq!(
+        card(
+            &cards(&reopened, "home.quick-actions"),
+            "local.download-presets"
+        )["widgets"],
+        download_quick["widgets"]
+    );
+    assert_eq!(fs::read(fixture.prefs_file()).unwrap(), bytes);
+    assert_eq!(
+        shared.launcher_preferences.snapshot().preferences,
+        applied.preferences
+    );
+    assert!(Arc::ptr_eq(&scheduler, &pcl_network::download_snapshot()));
+    assert!(reopened.suspend().unwrap().released);
+    let restored = fixture.host();
+    let restored_quick = card(
+        &cards(&restored, "home.quick-actions"),
+        "local.download-presets",
+    );
+    assert_eq!(restored_quick["widgets"], download_quick["widgets"]);
+    assert_eq!(restored_quick["actions"][0]["enabled"], false);
+    assert!(execute(
+        &restored,
+        &shared,
+        request(&entry(&restored), "quick"),
+        no_copy
+    )
+    .is_err());
+    assert_eq!(fs::read(fixture.prefs_file()).unwrap(), bytes);
+    assert!(Arc::ptr_eq(&scheduler, &pcl_network::download_snapshot()));
     assert!(!fixture.root().join("experimental/agent-host.mjs").exists());
 }
 

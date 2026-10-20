@@ -1,4 +1,4 @@
-//! Native consumers for the two declarative extension effects. The host resolves
+//! Native consumers for declarative extension effects. The host resolves
 //! saved settings and grants; Rust repeats the narrow type/identity checks and
 //! consumes the intent while that host session is exclusively owned. No intent
 //! can supply a general preference patch, native command or clipboard read.
@@ -15,6 +15,12 @@ const INVALID: &str = "插件操作返回了无效的原生作用请求";
 enum Intent {
     #[serde(rename = "set-launcher-appearance")]
     Appearance {
+        #[serde(rename = "extensionId")]
+        extension_id: String,
+        values: Value,
+    },
+    #[serde(rename = "set-launcher-downloads")]
+    Downloads {
         #[serde(rename = "extensionId")]
         extension_id: String,
         values: Value,
@@ -96,6 +102,33 @@ fn appearance_patch(values: Value) -> Result<LauncherPreferencesPatch, String> {
     })
 }
 
+fn downloads_patch(values: Value) -> Result<LauncherPreferencesPatch, String> {
+    let values = values.as_object().ok_or(INVALID)?;
+    if !(1..=2).contains(&values.len()) {
+        return Err(INVALID.into());
+    }
+    let mut patch = ManagementPatch::default();
+    for (key, value) in values {
+        // Only concrete JSON integers cross the native boundary. Deserializing
+        // an Option would accept null; accepting a binding would trust the host
+        // to choose a different preference after its permission decision.
+        let value = value.as_u64().ok_or(INVALID)?;
+        match key.as_str() {
+            "max_concurrent_transfers" if (1..=64).contains(&value) => {
+                patch.max_concurrent_transfers = Some(value as u16)
+            }
+            "total_rate_limit_mib_per_second" if value <= 1024 => {
+                patch.total_rate_limit_mib_per_second = Some(value as u32)
+            }
+            _ => return Err(INVALID.into()),
+        }
+    }
+    Ok(LauncherPreferencesPatch {
+        management: Some(patch),
+        ..Default::default()
+    })
+}
+
 /// Caller holds operations before host.session. The store verifies its existing
 /// disk identity and performs the same durable CAS used by launcher settings.
 /// Runtime publication follows the successful commit and never runs on failure.
@@ -112,6 +145,29 @@ fn apply_appearance(shared: &Shared, values: Value) -> Result<(), String> {
     // These six appearance fields are applied by the existing renderer hook.
     // The completion causes an independent reread; no queued full snapshot is
     // exposed here and none of these fields changes native window hints.
+    Ok(())
+}
+
+/// Operations and the host session remain owned through durable publication.
+/// Preparing the existing shared scheduler first enforces all native idle
+/// guards; installing it only after CAS keeps failed saves on the old budget.
+fn apply_downloads(shared: &Shared, values: Value) -> Result<(), String> {
+    let patch = downloads_patch(values)?;
+    let current = shared.launcher_preferences.snapshot();
+    if let Some(warning) = current.warning {
+        return Err(warning);
+    }
+    let mut next = current.preferences;
+    patch.clone().apply(&mut next);
+    next.validate()?;
+    let downloads = crate::launcher_commands::prepare_download_change(shared, &next)?;
+    let view = shared
+        .launcher_preferences
+        .update(&current.revision, patch)?;
+    if let Some(downloads) = downloads {
+        pcl_network::install_download_snapshot(downloads);
+    }
+    shared.launcher_local.apply_preferences(&view.preferences);
     Ok(())
 }
 
@@ -150,6 +206,16 @@ pub(super) fn execute(
                     }
                     apply_appearance(shared, values)?;
                     Ok(json!({"kind":"launcher-appearance-applied","extensionId":extension_id}))
+                }
+                Intent::Downloads {
+                    extension_id,
+                    values,
+                } => {
+                    if extension_id != expected_id {
+                        return Err(INVALID.into());
+                    }
+                    apply_downloads(shared, values)?;
+                    Ok(json!({"kind":"launcher-downloads-applied","extensionId":extension_id}))
                 }
                 Intent::CopyText { extension_id, text } => {
                     if extension_id != expected_id || !clipboard_text(&text) {

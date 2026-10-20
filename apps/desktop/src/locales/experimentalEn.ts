@@ -1,4 +1,17 @@
 const messages = {
+  "experimental.capDownloads":
+    "Change download concurrency and total speed limit when clicked",
+  "experimental.downloadsApplied": "Download policy applied",
+  "experimental.widgetYes": "Yes",
+  "experimental.widgetNo": "No",
+  "experimental.communitySlot.homeBanner": "Home notices",
+  "experimental.communitySlot.homeActions": "Home quick actions",
+  "experimental.communitySlot.launch": "Launch settings components",
+  "experimental.communitySlot.java": "Java settings components",
+  "experimental.communitySlot.manage": "Management settings components",
+  "experimental.communitySlot.language": "Language settings components",
+  "experimental.communitySlot.misc": "Miscellaneous settings components",
+
   "experimental.refreshPanels": "Refresh plugins",
   "experimental.savedActionsHelp": "Actions use saved settings.",
   "experimental.actionsSearch": "Find a plugin action",

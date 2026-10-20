@@ -13,6 +13,93 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.extension-cards,
+.extension-widgets {
+  min-width: 0;
+}
+.extension-slot-home-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.extension-slot-home-quick-actions > .ce-card {
+  margin: 0;
+}
+.ce-card.extension-card-compact {
+  padding: 14px 18px;
+}
+.extension-card-compact .ce-card-title {
+  margin-bottom: 8px;
+}
+.extension-widgets {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+.extension-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-left: 3px solid currentColor;
+  border-radius: 5px;
+  padding: 10px 12px;
+  color: var(--ce-link, #247acb);
+  background: var(--ce-tinted-surface, #edf5ff);
+}
+.extension-notice > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.extension-notice > span {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.extension-notice-success {
+  color: #257d65;
+}
+.extension-notice-warning {
+  color: #9d5b1f;
+}
+:root[data-launcher-theme="dark"] .extension-notice-success {
+  color: #80c5b0;
+}
+:root[data-launcher-theme="dark"] .extension-notice-warning {
+  color: #ffbd81;
+}
+.extension-value {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  margin: 0;
+}
+.extension-value dt {
+  color: var(--ce-muted-text, #7e8996);
+  overflow-wrap: anywhere;
+}
+.extension-value dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.extension-value-suffix {
+  color: var(--ce-muted-text, #7e8996);
+}
+.extension-progress > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.extension-progress > progress {
+  display: block;
+  width: 100%;
+  height: 7px;
+  margin-top: 8px;
+  accent-color: var(--ce-link, #2585e7);
+}
 .experimental-error {
   color: var(--ce-danger-text, #bf4335);
   overflow-wrap: anywhere;

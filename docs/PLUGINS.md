@@ -62,8 +62,11 @@ PCL N / Nex 文件仍只提供兼容性报告，不会变成可执行插件。
 
 | `kind` | 所需权限 | 其他字段 |
 | --- | --- | --- |
-| `navigate` | `launcher.navigate` | `target` 为 `launch`、`instances`、`downloads`、`tools` 或 `settings` |
+| `navigate` | `launcher.navigate` | 固定主页面或设置子页，完整列表见插件规范 |
 | `show-instance-summary` | `instances.summary` | 不接受目标路径；使用启动器当前选择 |
+| `set-launcher-appearance` | `launcher.appearance` | 应用限定的主题、光标和右键菜单外观 |
+| `set-launcher-downloads` | `launcher.downloads` | 应用 1～64 并发、0～1024 MiB/s 总限速 |
+| `copy-text` | `clipboard.write` | 复制本插件保存的文字 |
 
 所有声明都需要必需的 `ui.cards` 权限。实例摘要仅包含游戏版本、加载器、模组数量和隔离状态，不包含实例名、文件路径或账号。没有选中实例或缺少操作权限时，相应按钮不可用。
 
@@ -86,3 +89,13 @@ PCL N / Nex 文件仍只提供兼容性报告，不会变成可执行插件。
 在任意区域顶部的「区域内容」中选择插件卡片，就能只显示该面板；名称显示卡片标题，标题与插件名称不同时会附上插件名称。可拆分成多个区域，也可与文件、图谱或 AI 对话并排。「插件卡片」仍可显示全部工作区卡片。
 
 选择「插件操作」可搜索并执行已授权的操作；这些操作使用已保存设置。停用或卸载插件后，布局位置保留为不可用占位，之后重新启用相同面板会恢复。示例[工作区快捷操作](../experimental/extensions/examples/workspace-shortcuts.json)可以与工作区笔记同时导入，分别摆放。
+
+
+## 扩展首页与设置子页
+
+插件可以在首页提示区、快捷操作区添加组件，也可以在启动、Java、管理、个性化、语言和杂项设置中添加卡片。卡片可使用紧凑布局、语义提示、保存值和个人进度条；它们沿用启动器的主题与控件。
+
+- [启动助手](../experimental/extensions/examples/launcher-dashboard.json)：在首页显示快捷设置入口，在启动设置记录自己的检查进度与备注。
+- [下载预设](../experimental/extensions/examples/download-presets.json)：在设置 → 管理保存并发数和限速，再点击「应用下载配置」；首页快捷卡片也能应用已保存预设。需要授予下载配置权限，0 表示不限速。
+
+保存插件预设和应用启动器配置是两个操作。有进行中的文件任务、游戏、更新或登录时，请结束后再切换下载策略。插件不会自动发起下载，停用后已应用配置保持原值。

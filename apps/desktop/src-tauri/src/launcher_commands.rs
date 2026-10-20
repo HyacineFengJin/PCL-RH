@@ -73,6 +73,14 @@ pub fn download_policy(prefs: &LauncherPreferences) -> pcl_network::DownloadPoli
     }
 }
 
+/// All desktop tests that observe or replace the process-wide scheduler share
+/// this guard. Per-module locks would still let a policy reader race an effect.
+#[cfg(test)]
+pub(crate) fn test_download_scheduler_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
@@ -95,6 +103,7 @@ mod policy_tests {
 
     #[test]
     fn a_live_queue_cannot_split_the_shared_download_budget() {
+        let _scheduler = test_download_scheduler_guard();
         let fixture = crate::integration_tests::Fixture::new();
         let shared = fixture.shared();
         let root = shared.config.resolve(None).unwrap();
@@ -126,7 +135,7 @@ mod policy_tests {
         assert!(prepare_download_change(&shared, &next).unwrap().is_some());
     }
 }
-fn prepare_download_change(
+pub(crate) fn prepare_download_change(
     shared: &Shared,
     next: &LauncherPreferences,
 ) -> Result<Option<Arc<pcl_network::DownloadScheduler>>, String> {

@@ -6,9 +6,50 @@ import type {
 export type ExperimentalPage = "extensions" | "maker" | "porter";
 export type ToolsPage =
   "toolbox" | ExperimentalPage | "ai" | "marketplace" | "projects";
+export type ExperimentalNavigationTarget =
+  | "launch"
+  | "instances"
+  | "downloads"
+  | "tools"
+  | "settings"
+  | "settings.launch"
+  | "settings.java"
+  | "settings.manage"
+  | "settings.personalize"
+  | "settings.language"
+  | "settings.misc";
 export type ExperimentalNavigate = (
-  target: "launch" | "instances" | "downloads" | "tools" | "settings",
+  target: ExperimentalNavigationTarget,
 ) => void;
+export type ExtensionCardSlot =
+  | "home.secondary"
+  | "home.banner"
+  | "home.quick-actions"
+  | "tools.cards"
+  | "rh-code.cards"
+  | "settings.cards"
+  | "settings.launch"
+  | "settings.java"
+  | "settings.manage"
+  | "settings.language"
+  | "settings.misc";
+/** Values have already been resolved by the host from saved plugin settings.
+ * These are display data, never expressions or references into launcher state. */
+export type ExtensionWidget =
+  | {
+      id: string;
+      kind: "notice";
+      text: string;
+      tone: "info" | "success" | "warning";
+    }
+  | {
+      id: string;
+      kind: "value";
+      label: string;
+      value: string | number | boolean;
+      suffix?: string;
+    }
+  | { id: string; kind: "progress"; label: string; value: number; max: number };
 export type ExtensionScope = "launcher" | "rh-code" | "both";
 export type ExtensionEntry = {
   id: string;
@@ -93,6 +134,8 @@ export type ExtensionCard = {
   generation?: number;
   scope?: ExtensionScope;
   fields?: ExtensionField[];
+  presentation?: "card" | "compact";
+  widgets?: ExtensionWidget[];
 };
 export type ExtensionCardFilter = { extensionId: string; cardId: string };
 /** Read-only RH Code metadata. Executable views and native intent arguments

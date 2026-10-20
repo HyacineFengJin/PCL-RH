@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PCL RH plugin manifest v1",
-  "description": "Editor-assist structural schema. Runtime additionally rejects duplicate object keys, reserved keys, control/bidi characters, whitespace, incompatible API intervals, duplicate IDs and undeclared capabilities, and enforces byte/complexity limits.",
+  "description": "Editor-assist structural schema. Runtime additionally rejects duplicate object keys, reserved keys, control/bidi characters, whitespace, incompatible API intervals, duplicate IDs and undeclared capabilities, validates declared setting references, setting types and complete binding/progress range compatibility, and enforces byte/complexity/projection limits.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -61,7 +61,7 @@
     "capabilities": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 6,
+      "maxItems": 7,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -73,6 +73,7 @@
               "instances.summary",
               "storage.settings",
               "launcher.appearance",
+              "launcher.downloads",
               "clipboard.write"
             ]
           },
@@ -113,7 +114,14 @@
                   "home.secondary",
                   "tools.cards",
                   "rh-code.cards",
-                  "settings.cards"
+                  "settings.cards",
+                  "home.banner",
+                  "home.quick-actions",
+                  "settings.launch",
+                  "settings.java",
+                  "settings.manage",
+                  "settings.language",
+                  "settings.misc"
                 ]
               },
               "title": {
@@ -153,7 +161,13 @@
                             "instances",
                             "downloads",
                             "tools",
-                            "settings"
+                            "settings",
+                            "settings.launch",
+                            "settings.java",
+                            "settings.manage",
+                            "settings.personalize",
+                            "settings.language",
+                            "settings.misc"
                           ]
                         }
                       },
@@ -366,6 +380,83 @@
                           "maxLength": 64
                         },
                         "kind": {
+                          "const": "set-launcher-downloads"
+                        },
+                        "values": {
+                          "description": "Only these launcher limits may change. Bindings must reference declared number settings whose entire min/max range fits the destination; runtime validates that cross-reference.",
+                          "type": "object",
+                          "minProperties": 1,
+                          "maxProperties": 2,
+                          "additionalProperties": false,
+                          "properties": {
+                            "max_concurrent_transfers": {
+                              "oneOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 64
+                                },
+                                {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "setting": {
+                                      "type": "string",
+                                      "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "setting"
+                                  ]
+                                }
+                              ]
+                            },
+                            "total_rate_limit_mib_per_second": {
+                              "oneOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 1024
+                                },
+                                {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "setting": {
+                                      "type": "string",
+                                      "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "setting"
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "kind",
+                        "values"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "kind": {
                           "const": "copy-text"
                         },
                         "setting": {
@@ -390,6 +481,120 @@
                 "items": {
                   "type": "string",
                   "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                }
+              },
+              "presentation": {
+                "description": "Optional host presentation; absence retains the legacy card projection.",
+                "enum": [
+                  "card",
+                  "compact"
+                ]
+              },
+              "widgets": {
+                "description": "Optional saved-value display widgets. Runtime enforces unique widget IDs, declared setting references and types, and full progress range containment; no expressions or HTML execution.",
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                        },
+                        "kind": {
+                          "const": "notice"
+                        },
+                        "text": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1000
+                        },
+                        "tone": {
+                          "enum": [
+                            "info",
+                            "success",
+                            "warning"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "kind",
+                        "text",
+                        "tone"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                        },
+                        "kind": {
+                          "const": "value"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "setting": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                        },
+                        "suffix": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 24
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "kind",
+                        "label",
+                        "setting"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                        },
+                        "kind": {
+                          "const": "progress"
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "setting": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])"
+                        },
+                        "max": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 1000000
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "kind",
+                        "label",
+                        "setting",
+                        "max"
+                      ]
+                    }
+                  ]
                 }
               }
             },
@@ -594,7 +799,14 @@
                       "enum": [
                         "home.secondary",
                         "tools.cards",
-                        "settings.cards"
+                        "settings.cards",
+                        "home.banner",
+                        "home.quick-actions",
+                        "settings.launch",
+                        "settings.java",
+                        "settings.manage",
+                        "settings.language",
+                        "settings.misc"
                       ]
                     }
                   }

@@ -14,15 +14,19 @@ export function notifyExtensionsChanged() {
   for (const listener of [...listeners]) listener();
 }
 
-// Native has committed appearance changes. Consumers must read the latest
+// Native has committed a preference change. Consumers must read the latest
 // preference store; a queued full snapshot could overwrite a newer local edit.
-const appearanceListeners = new Set<() => void>();
-export function subscribeLauncherAppearanceApplied(listener: () => void) {
-  appearanceListeners.add(listener);
+const preferenceListeners = new Set<() => void>();
+export function subscribeLauncherPreferencesApplied(listener: () => void) {
+  preferenceListeners.add(listener);
   return () => {
-    appearanceListeners.delete(listener);
+    preferenceListeners.delete(listener);
   };
 }
-export function notifyLauncherAppearanceApplied() {
-  for (const listener of [...appearanceListeners]) listener();
+export function notifyLauncherPreferencesApplied() {
+  for (const listener of [...preferenceListeners]) listener();
 }
+// Existing appearance consumers share this stream rather than a second cache.
+export const subscribeLauncherAppearanceApplied =
+  subscribeLauncherPreferencesApplied;
+export const notifyLauncherAppearanceApplied = notifyLauncherPreferencesApplied;

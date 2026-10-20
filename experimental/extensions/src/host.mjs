@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { readManifest, actionCapability, compareVersions, extensionScope, CARD_SLOTS } from './manifest.mjs';
 import { fail, freeze } from './json.mjs';
 import { readPackage } from './package.mjs';
-import { defaultSettings, retainSettings, validateSettingsPatch, resolveAppearance } from './settings.mjs';
+import { defaultSettings, retainSettings, validateSettingsPatch, resolveAppearance, resolveDownloads } from './settings.mjs';
 
 const REVIEW_TTL = 5 * 60_000;
 const ACTION_TTL = 30_000;
@@ -286,6 +286,17 @@ export class ExtensionHost {
           publisherVerified: false, digest: e.digest,
           generation: e.generation, scope: extensionScope(e.manifest),
           id: card.id, title: card.title, text: card.text,
+          // Absence remains absence: old manifests, approval digests and card
+          // projections must not gain defaults when the host is upgraded.
+          ...(Object.hasOwn(card, 'presentation') ? { presentation: card.presentation } : {}),
+          ...(Object.hasOwn(card, 'widgets') ? { widgets: card.widgets.map(widget => {
+            if (widget.kind === 'notice') return { ...widget };
+            return {
+              id: widget.id, kind: widget.kind, label: widget.label, value: e.settings[widget.setting],
+              ...(Object.hasOwn(widget, 'suffix') ? { suffix: widget.suffix } : {}),
+              ...(widget.kind === 'progress' ? { max: widget.max } : {}),
+            };
+          }) } : {}),
           ...(card.fields ? { fields: card.fields.map(key => ({
             ...e.manifest.settings.find(definition => definition.id === key), value: e.settings[key],
           })) } : {}),
@@ -316,13 +327,13 @@ export class ExtensionHost {
     return freeze({ panels, actions });
   }
 
-  /** Repeated field references amplify saved text across cards. Bound each
+  /** Repeated field/widget references amplify saved text across cards. Bound each
    * published surface below the protocol's 1 MB response envelope, with room
    * for context-dependent action availability and native envelope metadata. */
   validateProjectionBudget() {
     for (const slot of CARD_SLOTS)
       if (Buffer.byteLength(JSON.stringify(this.cards(slot)), 'utf8') > 768 * 1024)
-        fail('HOST_PROJECTION_LIMIT', 'Plugin cards exceed the display budget; shorten text or remove repeated fields. Previous state retained.');
+        fail('HOST_PROJECTION_LIMIT', 'Plugin cards exceed the display budget; shorten text or remove repeated fields or widgets. Previous state retained.');
     if (Buffer.byteLength(JSON.stringify(this.catalog()), 'utf8') > 768 * 1024)
       fail('HOST_PROJECTION_LIMIT', 'Plugin component catalog exceeds the display budget. Previous state retained.');
   }
@@ -358,6 +369,7 @@ export class ExtensionHost {
       case 'navigate': return freeze({ ...base, target: request.action.target });
       case 'show-instance-summary': return freeze({ ...base, summary: { ...this.#context.summary } });
       case 'set-launcher-appearance': return freeze({ ...base, values: resolveAppearance(request.action.values, e.settings) });
+      case 'set-launcher-downloads': return freeze({ ...base, values: resolveDownloads(request.action.values, e.settings) });
       case 'copy-text': return freeze({ ...base, text: e.settings[request.action.setting] });
       default: fail('HOST_ACTION', 'Unsupported plugin action kind.');
     }

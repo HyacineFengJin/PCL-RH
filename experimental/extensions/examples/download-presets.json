@@ -1,0 +1,122 @@
+{
+  "format": "pcl-linux.declarative-extension",
+  "schemaVersion": 1,
+  "id": "local.download-presets",
+  "name": "下载预设",
+  "version": "1.0.0",
+  "publisher": "PCL RH Examples",
+  "scope": "launcher",
+  "api": {
+    "min": 1,
+    "maxExclusive": 2
+  },
+  "capabilities": [
+    {
+      "id": "ui.cards",
+      "required": true,
+      "reason": "显示首页快捷组件与管理设置组件。"
+    },
+    {
+      "id": "storage.settings",
+      "required": true,
+      "reason": "保存此插件的并发和限速预设。"
+    },
+    {
+      "id": "launcher.downloads",
+      "required": false,
+      "reason": "点击应用时调整启动器的下载并发与总限速。"
+    }
+  ],
+  "settings": [
+    {
+      "id": "connections",
+      "label": "并发文件数",
+      "type": "number",
+      "min": 1,
+      "max": 64,
+      "default": 8
+    },
+    {
+      "id": "limit",
+      "label": "总限速（MiB/s，0 为不限）",
+      "type": "number",
+      "min": 0,
+      "max": 1024,
+      "default": 0
+    }
+  ],
+  "contributions": {
+    "cards": [
+      {
+        "id": "quick",
+        "slot": "home.quick-actions",
+        "title": "下载预设",
+        "text": "应用已保存的并发和限速；0 表示不限速。",
+        "actions": [
+          {
+            "id": "apply",
+            "label": "应用下载配置",
+            "kind": "set-launcher-downloads",
+            "values": {
+              "max_concurrent_transfers": {
+                "setting": "connections"
+              },
+              "total_rate_limit_mib_per_second": {
+                "setting": "limit"
+              }
+            }
+          }
+        ],
+        "presentation": "compact",
+        "widgets": [
+          {
+            "id": "connections",
+            "kind": "value",
+            "label": "预设并发",
+            "setting": "connections"
+          },
+          {
+            "id": "limit",
+            "kind": "value",
+            "label": "预设限速",
+            "setting": "limit",
+            "suffix": "MiB/s"
+          }
+        ]
+      },
+      {
+        "id": "downloads",
+        "slot": "settings.manage",
+        "title": "下载预设",
+        "text": "保存选择后点击应用。",
+        "actions": [
+          {
+            "id": "apply",
+            "label": "应用下载配置",
+            "kind": "set-launcher-downloads",
+            "values": {
+              "max_concurrent_transfers": {
+                "setting": "connections"
+              },
+              "total_rate_limit_mib_per_second": {
+                "setting": "limit"
+              }
+            }
+          }
+        ],
+        "fields": [
+          "connections",
+          "limit"
+        ],
+        "widgets": [
+          {
+            "id": "hint",
+            "kind": "notice",
+            "tone": "info",
+            "text": "文件任务、游戏或登录进行期间无法切换下载策略。"
+          }
+        ]
+      }
+    ]
+  }
+}

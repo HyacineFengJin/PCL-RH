@@ -5,7 +5,10 @@
  * Reconciliation is serialized, and request versions cancel late imports/apply
  * results when a newer surface configuration or host disposal supersedes them. */
 import { Context, type Fiber } from "@deepseek-ai/cordis";
-import type { ExtensionCatalog } from "../experimentalTypes";
+import type {
+  ExperimentalNavigate,
+  ExtensionCatalog,
+} from "../experimentalTypes";
 import type {
   ActivePluginScope,
   CommandContribution,
@@ -32,9 +35,7 @@ export type ProductPlugin = {
 };
 export type PluginRuntime = {
   /** Fixed product destinations only; a card never receives the native Api. */
-  navigate?: (
-    target: "launch" | "instances" | "downloads" | "tools" | "settings",
-  ) => void;
+  navigate?: ExperimentalNavigate;
   /** Hold an RH Code controller lease for background work. The plugin owns its
    * release and must register it with ctx.effect so retirement releases it. */
   keepAwake?: () => () => void;

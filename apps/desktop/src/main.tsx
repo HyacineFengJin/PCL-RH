@@ -82,6 +82,10 @@ import {
 import type { AuthState } from "./accountTypes";
 import { useAccountPresentation } from "./useAccountPresentation";
 import { ExperimentalCards } from "./ExperimentalExtensions";
+import {
+  launcherSettingsPluginSlot,
+  pluginSettingsDestination,
+} from "./launcherExtensionSlots";
 import type { ExperimentalNavigate, ToolsPage } from "./experimentalTypes";
 import type { PorterIntake } from "./experimentalPorterTypes";
 import { Toolbox } from "./Toolbox";
@@ -2102,7 +2106,15 @@ function App() {
     ));
   }
   // Extensions can request fixed page navigation only, never trigger a task.
+  const settingsPluginSlot = launcherSettingsPluginSlot(settingsPage);
   const navigateExperimental: ExperimentalNavigate = (target) => {
+    const destination = pluginSettingsDestination(target);
+    if (destination) {
+      setSettingsPage(destination);
+      setScreen("home");
+      setTab("settings");
+      return;
+    }
     switch (target) {
       case "launch":
         setScreen("home");
@@ -2846,6 +2858,15 @@ function App() {
                   hidden={screen === "home" && tab === "tools"}
                   className="ce-page-enter ce-main-page"
                 >
+                  {screen === "home" && tab === "launch" && (
+                    <ExperimentalCards
+                      api={api}
+                      native={native && !tasks.closing}
+                      slot="home.banner"
+                      onNavigate={navigateExperimental}
+                    />
+                  )}
+
                   {screen === "resource" && resource ? (
                     <ResourceDetails
                       key={`${rootKey}:${resource.source}:${resource.project_id || resource.local_path}`}
@@ -3105,6 +3126,14 @@ function App() {
                         <ExperimentalCards
                           api={api}
                           native={native && !tasks.closing}
+                          slot="home.quick-actions"
+                          onNavigate={navigateExperimental}
+                        />
+                      )}
+                      {tab === "launch" && (
+                        <ExperimentalCards
+                          api={api}
+                          native={native && !tasks.closing}
                           slot="home.secondary"
                           onNavigate={navigateExperimental}
                         />
@@ -3207,11 +3236,11 @@ function App() {
                             native={native}
                           />
                         ))}
-                      {tab === "settings" && settingsPage === "personalize" && (
+                      {tab === "settings" && settingsPluginSlot && (
                         <ExperimentalCards
                           api={api}
                           native={native && !tasks.closing}
-                          slot="settings.cards"
+                          slot={settingsPluginSlot}
                           onNavigate={navigateExperimental}
                         />
                       )}

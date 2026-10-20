@@ -1,0 +1,185 @@
+{
+  "format": "pcl-linux.declarative-extension",
+  "schemaVersion": 1,
+  "id": "local.launcher-dashboard",
+  "name": "启动助手",
+  "version": "1.0.0",
+  "publisher": "PCL RH Examples",
+  "scope": "launcher",
+  "api": {
+    "min": 1,
+    "maxExclusive": 2
+  },
+  "capabilities": [
+    {
+      "id": "ui.cards",
+      "required": true,
+      "reason": "在首页与设置子页添加组件。"
+    },
+    {
+      "id": "storage.settings",
+      "required": true,
+      "reason": "保存个人检查进度和备注。"
+    },
+    {
+      "id": "launcher.navigate",
+      "required": false,
+      "reason": "点击后切换到指定设置子页或实例管理。"
+    }
+  ],
+  "settings": [
+    {
+      "id": "done",
+      "label": "已检查项目数",
+      "type": "number",
+      "min": 0,
+      "max": 5,
+      "default": 0
+    },
+    {
+      "id": "note",
+      "label": "检查备注",
+      "type": "text",
+      "default": "",
+      "maxLength": 1000,
+      "multiline": true
+    }
+  ],
+  "contributions": {
+    "cards": [
+      {
+        "id": "welcome",
+        "slot": "home.banner",
+        "title": "启动助手",
+        "text": "常用入口与个人检查记录。",
+        "actions": [],
+        "presentation": "compact",
+        "widgets": [
+          {
+            "id": "hint",
+            "kind": "notice",
+            "tone": "info",
+            "text": "检查实例、Java 与下载设置后，开始游戏。"
+          }
+        ]
+      },
+      {
+        "id": "shortcuts",
+        "slot": "home.quick-actions",
+        "title": "常用设置",
+        "text": "快速进入启动器的设置子页。",
+        "actions": [
+          {
+            "id": "java",
+            "label": "Java 管理",
+            "kind": "navigate",
+            "target": "settings.java"
+          },
+          {
+            "id": "launch",
+            "label": "启动设置",
+            "kind": "navigate",
+            "target": "settings.launch"
+          },
+          {
+            "id": "manage",
+            "label": "下载管理",
+            "kind": "navigate",
+            "target": "settings.manage"
+          }
+        ],
+        "presentation": "compact"
+      },
+      {
+        "id": "checklist",
+        "slot": "settings.launch",
+        "title": "启动前检查记录",
+        "text": "此处记录你自己的检查进度。",
+        "actions": [
+          {
+            "id": "java",
+            "label": "Java 管理",
+            "kind": "navigate",
+            "target": "settings.java"
+          }
+        ],
+        "fields": [
+          "done",
+          "note"
+        ],
+        "widgets": [
+          {
+            "id": "done",
+            "kind": "progress",
+            "label": "已保存的检查进度",
+            "setting": "done",
+            "max": 5
+          },
+          {
+            "id": "note",
+            "kind": "value",
+            "label": "已保存备注",
+            "setting": "note"
+          }
+        ]
+      },
+      {
+        "id": "java",
+        "slot": "settings.java",
+        "title": "常用入口",
+        "text": "按游戏版本选择合适的 Java。",
+        "actions": [
+          {
+            "id": "instances",
+            "label": "实例管理",
+            "kind": "navigate",
+            "target": "instances"
+          },
+          {
+            "id": "launch",
+            "label": "启动设置",
+            "kind": "navigate",
+            "target": "settings.launch"
+          }
+        ],
+        "presentation": "compact"
+      },
+      {
+        "id": "language",
+        "slot": "settings.language",
+        "title": "外观入口",
+        "text": "调整启动器外观。",
+        "actions": [
+          {
+            "id": "appearance",
+            "label": "个性化",
+            "kind": "navigate",
+            "target": "settings.personalize"
+          }
+        ],
+        "presentation": "compact"
+      },
+      {
+        "id": "misc",
+        "slot": "settings.misc",
+        "title": "检查记录",
+        "text": "返回检查记录或管理实例。",
+        "actions": [
+          {
+            "id": "launch",
+            "label": "检查记录",
+            "kind": "navigate",
+            "target": "settings.launch"
+          },
+          {
+            "id": "instances",
+            "label": "实例管理",
+            "kind": "navigate",
+            "target": "instances"
+          }
+        ],
+        "presentation": "compact"
+      }
+    ]
+  }
+}

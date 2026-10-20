@@ -12,7 +12,7 @@ import {
 } from "./experimentalTypes";
 import {
   notifyExtensionsChanged,
-  notifyLauncherAppearanceApplied,
+  notifyLauncherPreferencesApplied,
   subscribeExtensionsChanged,
 } from "./extensionEvents";
 import {
@@ -135,23 +135,29 @@ export function ExtensionActions({
         actionId: action.id,
         expected: { digest: action.digest, generation: action.generation },
       });
-      // A committed native appearance change must reach preferences even if
+      // A committed native preference change must reach preferences even if
       // its originating page/search has already retired.
-      if (intent.kind === "launcher-appearance-applied")
-        notifyLauncherAppearanceApplied();
+      if (
+        intent.kind === "launcher-appearance-applied" ||
+        intent.kind === "launcher-downloads-applied"
+      )
+        notifyLauncherPreferencesApplied();
       if (!request.current() || !currentAction(action, queryEpoch)) return;
       if (intent.kind === "navigate") navigate.current(intent.target);
       else if (intent.kind === "show-instance-summary")
         view.update({ summary: intent.summary });
       else if (
         intent.kind === "text-copied" ||
-        intent.kind === "launcher-appearance-applied"
+        intent.kind === "launcher-appearance-applied" ||
+        intent.kind === "launcher-downloads-applied"
       )
         view.update({
           feedback: t(
             intent.kind === "text-copied"
               ? "experimental.textCopied"
-              : "experimental.appearanceApplied",
+              : intent.kind === "launcher-downloads-applied"
+                ? "experimental.downloadsApplied"
+                : "experimental.appearanceApplied",
           ),
         });
     } catch (error) {

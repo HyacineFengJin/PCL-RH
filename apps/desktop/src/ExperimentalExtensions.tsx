@@ -1,3 +1,4 @@
+import { ExtensionWidgets } from "./ExtensionWidgets";
 import { ExperimentalVersion } from "./ExperimentalVersion";
 import { useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
@@ -6,7 +7,7 @@ import { InstanceOperationDialog } from "./instanceOperationUi";
 import "./extensionCompatibility.css";
 import {
   notifyExtensionsChanged,
-  notifyLauncherAppearanceApplied,
+  notifyLauncherPreferencesApplied,
   subscribeExtensionsChanged,
 } from "./extensionEvents";
 import {
@@ -33,6 +34,7 @@ import {
   type ExtensionCard,
   type ExtensionScope,
   type ExtensionCardFilter,
+  type ExtensionCardSlot,
   type ExperimentalNavigate,
 } from "./experimentalTypes";
 const capabilityLabel = (id: string) =>
@@ -44,6 +46,7 @@ const capabilityLabel = (id: string) =>
         "instances.summary": "experimental.capSummary",
         "storage.settings": "experimental.capSettings",
         "launcher.appearance": "experimental.capAppearance",
+        "launcher.downloads": "experimental.capDownloads",
         "clipboard.write": "experimental.capClipboard",
       } as Record<string, MessageKey>
     )[id],
@@ -56,6 +59,13 @@ const slotLabel = (slot: string) => {
     "tools.cards": "experimental.communitySlot.tools",
     "rh-code.cards": "experimental.communitySlot.code",
     "settings.cards": "experimental.communitySlot.settings",
+    "home.banner": "experimental.communitySlot.homeBanner",
+    "home.quick-actions": "experimental.communitySlot.homeActions",
+    "settings.launch": "experimental.communitySlot.launch",
+    "settings.java": "experimental.communitySlot.java",
+    "settings.manage": "experimental.communitySlot.manage",
+    "settings.language": "experimental.communitySlot.language",
+    "settings.misc": "experimental.communitySlot.misc",
   };
   return labels[slot] ? t(labels[slot]) : slot;
 };
@@ -97,7 +107,7 @@ export function ExperimentalCards({
 }: {
   api: Api;
   native: boolean;
-  slot: "tools.cards" | "home.secondary" | "rh-code.cards" | "settings.cards";
+  slot: ExtensionCardSlot;
   onNavigate: ExperimentalNavigate;
   emptyText?: string;
   filter?: ExtensionCardFilter;
@@ -287,11 +297,15 @@ export function ExperimentalCards({
         actionId,
         expected: { digest: card.digest, generation: card.generation },
       });
-      if (intent.kind === "launcher-appearance-applied")
-        notifyLauncherAppearanceApplied();
+      if (
+        intent.kind === "launcher-appearance-applied" ||
+        intent.kind === "launcher-downloads-applied"
+      )
+        notifyLauncherPreferencesApplied();
       if (!request.current() || !view.current()?.cards.includes(card)) return;
       if (
         intent.kind === "launcher-appearance-applied" ||
+        intent.kind === "launcher-downloads-applied" ||
         intent.kind === "text-copied"
       )
         view.update({
@@ -300,7 +314,9 @@ export function ExperimentalCards({
             text: t(
               intent.kind === "text-copied"
                 ? "experimental.textCopied"
-                : "experimental.appearanceApplied",
+                : intent.kind === "launcher-downloads-applied"
+                  ? "experimental.downloadsApplied"
+                  : "experimental.appearanceApplied",
             ),
           },
         });
@@ -332,87 +348,96 @@ export function ExperimentalCards({
       {emptyText && loaded && cards.length === 0 && !error && (
         <p className="experimental-origin">{emptyText}</p>
       )}
-      {cards.map((card) => {
-        const fields = card.fields ?? [],
-          draft = view.value.drafts.get(card) ?? {},
-          dirty = dirtyFields(fields, draft);
-        return (
-          <section
-            key={`${card.extensionId}:${card.id}`}
-            className="ce-card experimental-card"
-          >
-            <h2 className="ce-card-title">{card.title}</h2>
-            <p className="experimental-origin">{card.extensionName}</p>
-            <p className="experimental-body">{card.text}</p>
-            {fields.length > 0 && (
-              <>
-                <ExtensionFields
-                  fields={fields}
-                  draft={draft}
-                  disabled={busy || !native}
-                  onChange={(id, value) => {
-                    if (!fields.some((field) => field.id === id)) return;
-                    changeDraft(card, {
-                      ...view.current()?.drafts.get(card),
-                      [id]: value,
-                    });
-                  }}
-                />
-                <div className="ce-actions extension-form-actions">
-                  <button
-                    className="ce-button primary"
-                    disabled={
-                      busy ||
-                      !native ||
-                      !dirty ||
-                      !fields.every((field) => validField(field, draft))
-                    }
-                    onClick={() => void save(card)}
-                  >
-                    {t("experimental.settingsSave")}
-                  </button>
-                  <button
-                    className="ce-button"
-                    disabled={busy || !native}
-                    onClick={() =>
-                      changeDraft(
-                        card,
-                        Object.fromEntries(
-                          fields.map((field) => [field.id, field.default]),
-                        ),
-                      )
-                    }
-                  >
-                    {t("experimental.settingsReset")}
-                  </button>
-                  {dirty && (
-                    <span className="experimental-origin" role="status">
-                      {t("experimental.settingsUnsaved")}
-                    </span>
-                  )}
+      {cards.length > 0 && (
+        <div
+          className={`extension-cards extension-slot-${slot.replaceAll(".", "-")}`}
+        >
+          {cards.map((card) => {
+            const fields = card.fields ?? [],
+              draft = view.value.drafts.get(card) ?? {},
+              dirty = dirtyFields(fields, draft);
+            return (
+              <section
+                key={`${card.extensionId}:${card.id}`}
+                className={`ce-card experimental-card${card.presentation === "compact" ? " extension-card-compact" : ""}`}
+              >
+                <h2 className="ce-card-title">{card.title}</h2>
+                <p className="experimental-origin">{card.extensionName}</p>
+                <p className="experimental-body">{card.text}</p>
+                {!!card.widgets?.length && (
+                  <ExtensionWidgets widgets={card.widgets} />
+                )}
+                {fields.length > 0 && (
+                  <>
+                    <ExtensionFields
+                      fields={fields}
+                      draft={draft}
+                      disabled={busy || !native}
+                      onChange={(id, value) => {
+                        if (!fields.some((field) => field.id === id)) return;
+                        changeDraft(card, {
+                          ...view.current()?.drafts.get(card),
+                          [id]: value,
+                        });
+                      }}
+                    />
+                    <div className="ce-actions extension-form-actions">
+                      <button
+                        className="ce-button primary"
+                        disabled={
+                          busy ||
+                          !native ||
+                          !dirty ||
+                          !fields.every((field) => validField(field, draft))
+                        }
+                        onClick={() => void save(card)}
+                      >
+                        {t("experimental.settingsSave")}
+                      </button>
+                      <button
+                        className="ce-button"
+                        disabled={busy || !native}
+                        onClick={() =>
+                          changeDraft(
+                            card,
+                            Object.fromEntries(
+                              fields.map((field) => [field.id, field.default]),
+                            ),
+                          )
+                        }
+                      >
+                        {t("experimental.settingsReset")}
+                      </button>
+                      {dirty && (
+                        <span className="experimental-origin" role="status">
+                          {t("experimental.settingsUnsaved")}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+                <div className="ce-actions">
+                  {card.actions.map((a) => (
+                    <button
+                      key={a.id}
+                      className="ce-button"
+                      disabled={!a.enabled || busy || !native || dirty}
+                      onClick={() => void act(card, a.id)}
+                    >
+                      {a.label}
+                    </button>
+                  ))}
                 </div>
-              </>
-            )}
-            <div className="ce-actions">
-              {card.actions.map((a) => (
-                <button
-                  key={a.id}
-                  className="ce-button"
-                  disabled={!a.enabled || busy || !native || dirty}
-                  onClick={() => void act(card, a.id)}
-                >
-                  {a.label}
-                </button>
-              ))}
-            </div>
-            {view.value.feedback?.card === card && (
-              <p className="experimental-origin" role="status">
-                {view.value.feedback.text}
-              </p>
-            )}
-          </section>
-        );
-      })}
+                {view.value.feedback?.card === card && (
+                  <p className="experimental-origin" role="status">
+                    {view.value.feedback.text}
+                  </p>
+                )}
+              </section>
+            );
+          })}
+        </div>
+      )}
       {error && (
         <p className="experimental-error" role="alert">
           {error}
@@ -806,7 +831,7 @@ export function ExperimentalExtensions({
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
-        <ExperimentalVersion version="0.9.0" />
+        <ExperimentalVersion version="0.10.0" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">

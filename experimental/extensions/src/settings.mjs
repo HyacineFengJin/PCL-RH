@@ -15,6 +15,10 @@ export const APPEARANCE_FIELDS = Object.freeze({
   custom_context_menu: 'boolean',
   context_menu_density: ['comfortable', 'compact'],
 });
+export const DOWNLOAD_FIELDS = Object.freeze({
+  max_concurrent_transfers: Object.freeze({ min: 1, max: 64 }),
+  total_rate_limit_mib_per_second: Object.freeze({ min: 0, max: 1024 }),
+});
 
 function object(value, required, optional = []) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -126,6 +130,30 @@ export function validateAppearanceAction(values, definitions) {
 }
 
 export function resolveAppearance(values, settings) {
+  return Object.fromEntries(Object.entries(values).map(([field, value]) =>
+    [field, value && typeof value === 'object' ? settings[value.setting] : value]));
+}
+
+/** Check the whole binding range at consent time, so a later valid settings
+ * save cannot broaden the two preference fields approved by this action. */
+export function validateDownloadsAction(values, definitions) {
+  if (!values || typeof values !== 'object' || Array.isArray(values) ||
+      Object.keys(values).length < 1 || Object.keys(values).length > 2)
+    fail('ACTION_DOWNLOADS', 'Download actions need one or two supported limit fields.');
+  for (const [field, value] of Object.entries(values)) {
+    if (!Object.hasOwn(DOWNLOAD_FIELDS, field)) fail('ACTION_DOWNLOADS', 'Unsupported launcher download field.');
+    const range = DOWNLOAD_FIELDS[field];
+    if (value && typeof value === 'object') {
+      object(value, ['setting']);
+      const definition = definitions.find(definition => definition.id === value.setting);
+      if (definition?.type !== 'number' || definition.min < range.min || definition.max > range.max)
+        fail('ACTION_BINDING', 'A download binding must fit the destination integer range.');
+    } else if (!Number.isSafeInteger(value) || value < range.min || value > range.max)
+      fail('ACTION_DOWNLOADS', 'Unsupported launcher download limit.');
+  }
+}
+
+export function resolveDownloads(values, settings) {
   return Object.fromEntries(Object.entries(values).map(([field, value]) =>
     [field, value && typeof value === 'object' ? settings[value.setting] : value]));
 }

@@ -12,7 +12,7 @@ import {
 } from "./launcherTypes";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 import { animateLauncher } from "./launcherAnimation";
-import { subscribeLauncherAppearanceApplied } from "./extensionEvents";
+import { subscribeLauncherPreferencesApplied } from "./extensionEvents";
 import "./launcher-theme.css";
 
 export const LauncherNavigationContext = createContext({
@@ -129,7 +129,7 @@ export function useLauncherPreferences(
     owner.live = true;
     owner.refreshPending = true;
     refresh();
-    const unsubscribe = subscribeLauncherAppearanceApplied(() => {
+    const unsubscribe = subscribeLauncherPreferencesApplied(() => {
       ++owner.epoch;
       owner.refreshPending = true;
       refresh();

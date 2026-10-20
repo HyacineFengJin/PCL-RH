@@ -1,6 +1,6 @@
 # PCL RH 插件规范 v1
 
-本规范描述 PCL RH 的 0.9.0 插件模块提供的声明接口。清单的 `schemaVersion` 和宿主 API 仍为 `1`；新增字段、组件及能力采用增量扩展。旧宿主遇到不认识的字段或能力会拒绝导入。这里的 0.9.0 是插件模块版本，并非启动器的整体版本。
+本规范描述 PCL RH 的 0.10.0 插件模块提供的声明接口。清单的 `schemaVersion` 和宿主 API 仍为 `1`；新增字段、组件及能力采用增量扩展。旧宿主遇到不认识的字段或能力会拒绝导入。这里的 0.10.0 是插件模块版本，并非启动器的整体版本。
 
 ## 1. 两种扩展方式
 
@@ -58,7 +58,17 @@
 }
 ```
 
-`fields` 可省略，最多引用 8 个不同设置 ID。宿主按引用顺序渲染组件；同一设置可以出现在多张卡片中，共用已保存值。卡片标题最多 100 字符，正文最多 2000 字符，每张卡片最多 4 个不同 ID 的操作，操作标签最多 64 字符。所有内容都按文字呈现，不接受 HTML、自定义 CSS 或动态表达式。
+`fields` 可省略，最多引用 8 个不同设置 ID。宿主按引用顺序渲染组件；同一设置可以出现在多张卡片中，共用已保存值。卡片标题最多 100 字符，正文最多 2000 字符，每张卡片最多 4 个不同 ID 的操作，操作标签最多 64 字符。`presentation` 可选 `card`（默认）或 `compact`，紧凑卡片沿用宿主主题和控件。所有内容都按文字呈现，不接受 HTML、自定义 CSS 或动态表达式。
+
+卡片还可声明最多 8 个 `widgets`，每项有唯一局部 `id`，支持以下纯数据组件：
+
+| `kind` | 字段 | 用途 |
+| --- | --- | --- |
+| `notice` | `text`（最多 1000 字符）、`tone`：`info` / `success` / `warning` | 带宿主图标和语义颜色的提示 |
+| `value` | `label`、`setting`、可选 `suffix`（最多 24 字符） | 显示一个已保存设置值，保留文字、数字或布尔类型 |
+| `progress` | `label`、`setting`、`max`（1～1000000 的整数） | 展示插件自己的已保存进度；引用数字设置，定义范围须在 0～`max` 内 |
+
+组件标签最多 100 字符，`setting` 必须引用已声明设置。`widgets` 不会查询下载、账号或系统状态，也不会执行操作；输入中的 HTML 和 `${...}` 均按文字显示。进度组件适合手动清单，不代表游戏安装的实际进度。字段草稿不影响展示组件，保存成功并重新投影后才更新。
 
 组件编辑只更新草稿。用户点击「保存」后，宿主验证类型与当前清单，再原子保存。失败保留原数据与当前草稿。「恢复默认」只改草稿，仍需保存。卡片有未保存修改时，操作按钮暂停，防止执行时误用旧的保存值。
 
@@ -68,9 +78,16 @@
 
 | `slot` | 可用范围 | 位置 |
 | --- | --- | --- |
-| `home.secondary` | `launcher` / `both` | 启动器首页 |
+| `home.banner` | `launcher` / `both` | 首页内容顶部的提示区 |
+| `home.quick-actions` | `launcher` / `both` | 首页快捷操作网格 |
+| `home.secondary` | `launcher` / `both` | 首页补充卡片 |
 | `tools.cards` | `launcher` / `both` | 社区插件页预览 |
-| `settings.cards` | `launcher` / `both` | 设置 → 个性化 |
+| `settings.cards` | `launcher` / `both` | 设置 → 个性化（保留原标识） |
+| `settings.launch` | `launcher` / `both` | 设置 → 启动 |
+| `settings.java` | `launcher` / `both` | 设置 → Java |
+| `settings.manage` | `launcher` / `both` | 设置 → 管理 |
+| `settings.language` | `launcher` / `both` | 设置 → 语言 |
+| `settings.misc` | `launcher` / `both` | 设置 → 杂项 |
 | `rh-code.cards` | `rh-code` / `both` | RH Code 的「插件卡片」区域，可拆分、移动或关闭 |
 
 `scope` 决定可使用的展示位置，不是新权限。插件管理和卡片通过轻量宿主工作，不需要加载 AI 引擎。页面隐藏或被替换后，旧事件和迟到结果不能导航或修改新页面。插件声明不持有页面对象、原生接口或后台线程。
@@ -86,13 +103,14 @@
 | `launcher.navigate` | 用户点击后进入固定启动器页面 |
 | `instances.summary` | 用户点击后查看所选实例的受限摘要 |
 | `launcher.appearance` | 用户点击后修改限定的启动器外观字段 |
+| `launcher.downloads` | 用户点击后调整下载并发和总限速 |
 | `clipboard.write` | 用户点击后复制本插件已保存的文本；不允许读剪贴板 |
 
 每个操作必须声明对应能力。未授予可选能力时，只禁用相应操作；插件不能自行授予能力。保存、点击和原生执行都核对当前插件状态；渲染过的按钮不构成持续授权。
 
 ### 固定页面与实例摘要
 
-- `navigate`：附带 `target`，仅支持 `launch`、`instances`、`downloads`、`tools`、`settings`。
+- `navigate`：附带 `target`，支持 `launch`、`instances`、`downloads`、`tools`、`settings`，以及明确的设置子页：`settings.launch`、`settings.java`、`settings.manage`、`settings.personalize`、`settings.language`、`settings.misc`。不接受任意路由或 URL。
 - `show-instance-summary`：不附带路径或目标。只显示当前实例的游戏版本、加载器、模组数、隔离状态，不包含名称、路径或账号。
 
 ### 修改启动器外观
@@ -119,6 +137,29 @@
 
 执行读取已保存的插件设置，经 Rust 再次验证后只更新这些外观字段，其他启动器设置保持原值。成功后立即刷新启动器外观。停用或卸载插件不会撤销已经应用的外观；可随时从个性化设置修改。
 
+### 修改下载配置
+
+```json
+{
+  "id": "apply-downloads",
+  "label": "应用下载配置",
+  "kind": "set-launcher-downloads",
+  "values": {
+    "max_concurrent_transfers": {"setting": "connections"},
+    "total_rate_limit_mib_per_second": 0
+  }
+}
+```
+
+需要 `launcher.downloads`。`values` 只接受以下一项或两项整数：
+
+- `max_concurrent_transfers`：1～64，同时传输的文件数。
+- `total_rate_limit_mib_per_second`：0～1024，总速度限制，0 表示不限速。
+
+也可用精确的 `{ "setting": "设置ID" }` 引用数字设置，其整个声明范围必须属于目标允许范围。动作读取已保存值；保存插件预设本身不修改启动器下载策略。
+
+真实修改复用启动器的下载调度器。文件任务、更新、游戏或 Microsoft 登录进行时不能切换策略；相同策略无需替换调度器。设置原子保存成功后才生效，失败保留旧设置和调度器。它不会开始下载、修改下载地址、代理或读取网络凭据。已应用的配置不会因停用插件而撤销，可从设置 → 管理调整。
+
 ### 复制笔记
 
 `copy-text` 必须用 `setting` 引用一个 `text` 定义。宿主只复制该项已保存的文字，不接受点击参数临时替换内容。系统不支持剪贴板或调度失败时显示错误，不伪报完成；没有读取剪贴板、自动粘贴或发送内容的权限。
@@ -130,27 +171,29 @@
 - `extensions_review` / `extensions_confirm`：确认令牌绑定精确清单和所选能力，具有有效期且只能使用一次。
 - `extensions_cards`：按插槽读取当前投影；只投影该卡片引用的设置定义及保存值。
 - `extensions_settings`：参数 `{id, expected:{digest,generation}, values}`，部分更新 1～16 项。必须携带当前展示的快照，不接受未知键或错误类型。此操作的完整请求上限为 512 KiB，其他普通请求仍为 128000 字节。
-- `extensions_action`：参数 `{extensionId, cardId, actionId, expected}`；从已安装清单寻找操作，不接受调用者提供原生命令或外观补丁。
+- `extensions_action`：参数 `{extensionId, cardId, actionId, expected}`；从已安装清单寻找操作，不接受调用者提供原生命令、外观补丁或下载配置。
 - `extensions_enable` / `extensions_disable` / `extensions_revoke` / `extensions_remove`：管理已安装声明；界面携带当前快照以拒绝过期操作。
 
 `digest` 标识清单内容，`generation` 标识当前宿主中的状态代次；不能把代次保存为跨重启的永久授权。数据提交后才发布新卡片及代次。保存失败不会先改变正在运行的值。更改设置、授权或启停状态都会使旧动作失效。
 
-原生外观和复制操作在同一次宿主准入中验证授权并执行；已经准入并完成的作用不会因之后的撤权自动回滚。界面使用完成通知重新读取当前外观，避免过时快照覆盖较新的设置。
+原生外观、下载配置和复制操作在同一次宿主准入中验证授权并执行；已经准入并完成的作用不会因之后的撤权自动回滚。界面使用完成通知重新读取当前启动器偏好，避免过时快照覆盖较新的设置。
 
 ## 7. 示例与检查
 
-三个可直接导入的例子：
+可直接导入的例子：
 
 - [外观切换](../experimental/extensions/examples/appearance-switcher.json)：首页与个性化设置中的选择器和开关，能实际应用启动器外观。
 - [启动检查清单](../experimental/extensions/examples/launch-checklist.json)：持久开关与整数备忘，附实例管理入口。它不会替用户备份存档、修改帧率或阻止启动。
 - [工作区笔记](../experimental/extensions/examples/workspace-notes.json)：多行文本、阶段选择器与原生复制。
+- [启动助手](../experimental/extensions/examples/launcher-dashboard.json)：首页提示、快捷入口和设置子页中的个人检查进度与备注。
+- [下载预设](../experimental/extensions/examples/download-presets.json)：保存并应用下载并发与限速，可从首页和管理页使用。
 
 开发时可运行：
 
 ```sh
-node --test experimental/extensions/tests/settings.test.mjs
+node --test experimental/extensions/tests/settings.test.mjs experimental/extensions/tests/launcher-components.test.mjs experimental/extensions/tests/schema-sync.test.mjs
 node --test experimental/extensions/tests/store-lifecycle.test.mjs experimental/extensions/tests/lightweight-host.test.mjs
-node --test apps/desktop/scripts/extensions-settings-ui.test.mjs
+node --test apps/desktop/scripts/extensions-settings-ui.test.mjs apps/desktop/scripts/extensions-launcher-ui.test.mjs
 ```
 
 这些检查覆盖清单、授权、保存与组件事件，不替代使用者对本机桌面集成的验证。安装操作见[插件使用说明](PLUGINS.md)。

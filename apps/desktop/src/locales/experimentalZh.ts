@@ -1,4 +1,16 @@
 const messages = {
+  "experimental.capDownloads": "点击后调整下载并发和总限速",
+  "experimental.downloadsApplied": "已应用下载配置",
+  "experimental.widgetYes": "是",
+  "experimental.widgetNo": "否",
+  "experimental.communitySlot.homeBanner": "首页提示区",
+  "experimental.communitySlot.homeActions": "首页快捷操作区",
+  "experimental.communitySlot.launch": "启动设置组件",
+  "experimental.communitySlot.java": "Java 设置组件",
+  "experimental.communitySlot.manage": "管理设置组件",
+  "experimental.communitySlot.language": "语言设置组件",
+  "experimental.communitySlot.misc": "杂项设置组件",
+
   "experimental.refreshPanels": "刷新插件",
   "experimental.savedActionsHelp": "操作使用已保存的设置。",
   "experimental.actionsSearch": "查找插件操作",

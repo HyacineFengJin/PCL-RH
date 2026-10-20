@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { parseJson, fail, canonicalJson, freeze } from './json.mjs';
-import { validateSettings, validateAppearanceAction } from './settings.mjs';
+import { validateSettings, validateAppearanceAction, validateDownloadsAction } from './settings.mjs';
 
 export const HOST_API = 1;
 export const FORMAT = 'pcl-linux.declarative-extension';
@@ -10,10 +10,13 @@ export const CAPABILITIES = freeze({
   'instances.summary': { label: 'Show the selected instance summary', data: 'Minecraft version, loader, mod count, isolation flag; no name, path, account, or token', risk: 'read-only' },
   'storage.settings': { label: 'Save this plugin’s own settings', data: 'Only values declared by this plugin; no account or project files', risk: 'local-write' },
   'launcher.appearance': { label: 'Change launcher appearance when clicked', data: 'Theme, cursor and context-menu style only', risk: 'local-write' },
+  'launcher.downloads': { label: 'Change launcher download limits when clicked', data: 'Maximum concurrent transfers and total rate limit only', risk: 'local-write' },
   'clipboard.write': { label: 'Copy saved plugin text when clicked', data: 'Write-only clipboard; no clipboard reads', risk: 'local-write' },
 });
-export const NAVIGATION_TARGETS = freeze(['launch', 'instances', 'downloads', 'tools', 'settings']);
-export const CARD_SLOTS = freeze(['home.secondary', 'tools.cards', 'rh-code.cards', 'settings.cards']);
+export const NAVIGATION_TARGETS = freeze(['launch', 'instances', 'downloads', 'tools', 'settings',
+  'settings.launch', 'settings.java', 'settings.manage', 'settings.personalize', 'settings.language', 'settings.misc']);
+export const CARD_SLOTS = freeze(['home.secondary', 'tools.cards', 'rh-code.cards', 'settings.cards',
+  'home.banner', 'home.quick-actions', 'settings.launch', 'settings.java', 'settings.manage', 'settings.language', 'settings.misc']);
 export const EXTENSION_SCOPES = freeze(['launcher', 'rh-code', 'both']);
 // Older manifests remain byte-for-byte authoritative. Reading their default
 // scope must not insert a field and change a previously approved digest.
@@ -43,6 +46,41 @@ function unique(values) {
 }
 function id(value, pattern, max) {
   if (typeof value !== 'string' || value.length > max || !pattern.test(value)) fail('MANIFEST_ID', 'Invalid manifest identifier.');
+}
+
+/** Widgets only display literals or one declared saved setting. Keeping each
+ * shape exact prevents future renderers from interpreting undeclared fields. */
+function validateWidgets(widgets, settings) {
+  array(widgets, 8); unique(widgets.map(widget => widget?.id));
+  for (const widget of widgets) {
+    object(widget, ['id', 'kind'], ['text', 'tone', 'label', 'setting', 'suffix', 'max']);
+    id(widget.id, LOCAL_ID, 48);
+    switch (widget.kind) {
+      case 'notice':
+        object(widget, ['id', 'kind', 'text', 'tone']);
+        text(widget.text, 1000, true);
+        if (!['info', 'success', 'warning'].includes(widget.tone))
+          fail('CONTRIBUTION_WIDGET', 'Notices require a supported host tone.');
+        break;
+      case 'value':
+        object(widget, ['id', 'kind', 'label', 'setting'], ['suffix']);
+        text(widget.label, 100);
+        if (Object.hasOwn(widget, 'suffix')) text(widget.suffix, 24);
+        if (!settings.some(definition => definition.id === widget.setting))
+          fail('CONTRIBUTION_WIDGET', 'Value widgets must reference a declared plugin setting.');
+        break;
+      case 'progress': {
+        object(widget, ['id', 'kind', 'label', 'setting', 'max']);
+        text(widget.label, 100);
+        const definition = settings.find(definition => definition.id === widget.setting);
+        if (!Number.isSafeInteger(widget.max) || widget.max < 1 || widget.max > 1_000_000 ||
+            definition?.type !== 'number' || definition.min < 0 || definition.max > widget.max)
+          fail('CONTRIBUTION_WIDGET', 'Progress widgets require a bounded nonnegative number setting.');
+        break;
+      }
+      default: fail('CONTRIBUTION_WIDGET', 'Unsupported plugin widget kind.');
+    }
+  }
 }
 
 /** Untrusted input is JSON text, never a plugin-supplied JavaScript object. */
@@ -75,12 +113,15 @@ export function readManifest(source) {
   array(m.contributions.cards, 12, 1);
   unique(m.contributions.cards.map(card => card?.id));
   for (const card of m.contributions.cards) {
-    object(card, ['id', 'slot', 'title', 'text', 'actions'], ['fields']);
+    object(card, ['id', 'slot', 'title', 'text', 'actions'], ['fields', 'presentation', 'widgets']);
     id(card.id, LOCAL_ID, 48); text(card.title, 100); text(card.text, 2000, true);
     if (!CARD_SLOTS.includes(card.slot)) fail('CONTRIBUTION_SLOT', 'Contributions may only use an additive, host-owned card slot.');
     const slotScope = card.slot === 'rh-code.cards' ? 'rh-code' : 'launcher';
     if (extensionScope(m) !== 'both' && extensionScope(m) !== slotScope)
       fail('CONTRIBUTION_SCOPE', 'This card slot is outside the extension running scope.');
+    if (Object.hasOwn(card, 'presentation') && !['card', 'compact'].includes(card.presentation))
+      fail('CONTRIBUTION_PRESENTATION', 'Card presentation must be card or compact.');
+    if (Object.hasOwn(card, 'widgets')) validateWidgets(card.widgets, settings);
     if (Object.hasOwn(card, 'fields')) {
       array(card.fields, 8); unique(card.fields);
       if (card.fields.some(key => typeof key !== 'string' || !settings.some(definition => definition.id === key)))
@@ -100,6 +141,10 @@ export function readManifest(source) {
         object(action, ['id', 'label', 'kind', 'values']);
         validateAppearanceAction(action.values, settings);
       }
+      if (action.kind === 'set-launcher-downloads') {
+        object(action, ['id', 'label', 'kind', 'values']);
+        validateDownloadsAction(action.values, settings);
+      }
       if (action.kind === 'copy-text') {
         object(action, ['id', 'label', 'kind', 'setting']);
         if (!settings.some(definition => definition.id === action.setting && definition.type === 'text'))
@@ -115,6 +160,7 @@ export function actionCapability(action) {
   if (action.kind === 'navigate') return 'launcher.navigate';
   if (action.kind === 'show-instance-summary') return 'instances.summary';
   if (action.kind === 'set-launcher-appearance') return 'launcher.appearance';
+  if (action.kind === 'set-launcher-downloads') return 'launcher.downloads';
   if (action.kind === 'copy-text') return 'clipboard.write';
   fail('ACTION_KIND', 'Unsupported plugin action kind.');
 }
