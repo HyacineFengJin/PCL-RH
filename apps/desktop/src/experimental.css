@@ -313,3 +313,40 @@
 .experimental-porter-comparison summary {
   overflow-wrap: anywhere;
 }
+
+/* Legal text remains selectable and bounded without changing the about cards. */
+.extra-license-reader {
+  margin-bottom: 18px;
+}
+.extra-license-reader summary {
+  color: var(--ce-link, #2585e7);
+  cursor: pointer;
+}
+.extra-license-reader > .ce-select {
+  margin-top: 12px;
+  width: 100%;
+  max-width: 560px;
+}
+.extra-license-reader pre {
+  user-select: text;
+  cursor: text;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border: 1px solid var(--ce-border, #d6e3f3);
+  border-radius: 6px;
+  font: 12px/1.6 monospace;
+}
+.extra-contributors .extra-contributor-monogram {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: var(--ce-tinted-surface, #e8f2ff);
+  color: var(--ce-link, #2585e7);
+  font-size: 18px;
+  font-weight: 600;
+}

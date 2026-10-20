@@ -1,6 +1,16 @@
-Noto Sans CJK SC, Google / Adobe, under the SIL Open Font License 1.1.
-https://github.com/notofonts/noto-cjk
+Noto Sans CJK SC
+Copyright 2014-2021 Adobe (http://www.adobe.com/).
+Noto is a trademark of Google Inc.
+Licensed under the SIL Open Font License 1.1; see LICENSE.
+Source: https://github.com/notofonts/noto-cjk
 
-pcl-ui-400.woff2 and pcl-ui-600.woff2 are subsets of the original Regular
-and Bold fonts, converted to WOFF2 for the launcher interface. Glyphs
-outside the subset use the system's CJK fallback font. See LICENSE.
+pcl-ui-400.woff2 and pcl-ui-600.woff2 are subsets of Noto Sans CJK
+version 2.004, converted to WOFF2 for the launcher interface. Both retain
+the upstream copyright notice in their font metadata.
+Glyphs outside the subset use the system's CJK fallback font.
+
+pcl-ui-400.woff2 is Regular, with an internal weight of 400.
+pcl-ui-600.woff2 is Bold, with an internal weight of 700; the filename
+and the interface CSS map this Bold subset to the interface's 600 weight.
+These font files remain under OFL 1.1 and are not covered by the project's
+MIT license.

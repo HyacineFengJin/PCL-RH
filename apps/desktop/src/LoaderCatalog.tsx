@@ -9,9 +9,9 @@ import {
 } from "lucide-react";
 import type { Api } from "./types";
 import { Collapse } from "./Collapse";
-import forge from "./assets/game-icons/forge.png";
-import grass from "./assets/game-icons/grass.png";
-import neoForge from "./assets/game-icons/neoforge.png";
+import forge from "./assets/game-icons/forge.svg";
+import grass from "./assets/game-icons/grass.svg";
+import neoForge from "./assets/game-icons/neoforge.svg";
 export { Favorites } from "./LauncherFavorites";
 type Group = { minecraft: string; versions: string[]; labelKey?: MessageKey };
 type VersionEntry = { id: string; kind: string; release_time: string };

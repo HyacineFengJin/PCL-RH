@@ -10,7 +10,28 @@ fn main() {
             .output()
             .ok()
     };
-    for reference in [".git/HEAD", ".git/refs/heads/master", ".git/packed-refs"] {
+    // Frontend assets and legal documents also belong to this build identity.
+    // Tauri's build helper does not track this custom frontendDist for us.
+    for reference in [
+        ".git/HEAD",
+        ".git/refs/heads/master",
+        ".git/packed-refs",
+        "apps/desktop/dist",
+        "LICENSE",
+        "NOTICE",
+        "COPYRIGHT.md",
+        "THIRD_PARTY_NOTICES.md",
+        "THIRDPARTY.generated.json",
+        "LICENSES",
+        "tools/licenses",
+        "apps/desktop/src/assets/fonts/LICENSE",
+        "apps/desktop/src/assets/fonts/NOTICE",
+        "apps/desktop/src/assets/game-icons/NOTICE",
+        "apps/desktop/src/assets/credits/NOTICE",
+        "experimental/NOTICE.md",
+        "experimental/runtime/vendor/maker/LICENSE",
+        "experimental/runtime/vendor/porter/LICENSE",
+    ] {
         println!(
             "cargo:rerun-if-changed={}",
             project.join(reference).display()
@@ -28,6 +49,13 @@ fn main() {
         "assets",
         "code",
         "experimental",
+        "LICENSE",
+        "NOTICE",
+        "COPYRIGHT.md",
+        "THIRD_PARTY_NOTICES.md",
+        "THIRDPARTY.generated.json",
+        "LICENSES",
+        "tools/licenses",
     ])
     .is_some_and(|result| result.status.success() && result.stdout.is_empty());
     let commit = if clean {

@@ -102,6 +102,14 @@ Microsoft sign-in supports remembered accounts through the system credential ser
 
 RH Code provides configurable workspace areas, multiple AI conversations per project, source editing, and a generic project Harness. Its tools inspect frozen text files, search, record plans and propose changes for review. Explicitly approved changes can be applied to the original project with hash checks, backups and interruption recovery. Trusted built-in modules use Cordis; community extensions remain declarative and permission-controlled. An optional build plugin runs fixed javac/Gradle tasks on private project copies with compiler logs and collected artifacts. The current runner requires Linux, bubblewrap and a compatible system JDK. Arbitrary shell execution and game tests are not connected yet. See [RH Code](docs/RH_CODE.md).
 
+## 许可证与版权
+
+PCL RH 的原创代码和文档采用 **[MIT License](LICENSE)**，允许商业使用、修改和闭源复用，分发时保留版权及许可声明。第三方代码和字体保留各自许可，不一并改成 MIT。
+
+[版权与来源](COPYRIGHT.md)区分自写实现、直接纳入、设计参考和素材；[第三方说明](THIRD_PARTY_NOTICES.md)、[精确依赖清单](THIRDPARTY.generated.json)及[许可全文](LICENSES/DEPENDENCIES.txt)记录依赖条款和采集缺口。旧版借用的游戏图片和头像已换成项目自绘通用图标，当前字体仍为 OFL-1.1。
+
+Original PCL RH code and documentation are MIT licensed. Third-party components retain their own licenses; see the copyright scope, dependency inventory and collected license texts above. This does not relicense game content, external plugins, system libraries or third-party trademarks.
+
 ## 致谢
 
 项目图标及主要美术由 GPT 制作。Project icons and primary artwork are created with GPT.

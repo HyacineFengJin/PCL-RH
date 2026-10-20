@@ -435,7 +435,7 @@ const messages = {
   "images.exportWarning": "图片已保存至 {path}；服务提示：{warning}",
   "images.exported": "图片已保存至 {path}",
   "images.supportedItems":
-    "使用仓库内已有的真实物品图片，仅支持草方块、命令方块和红石灯。支持上述命名空间 ID 或其短名称。",
+    "使用本项目绘制的通用方块、控制台和灯图标，分别对应 grass_block、command_block、redstone_lamp；支持命名空间 ID 或短名称。",
   "images.avatarPreview": "所选本地皮肤的头像预览",
   "images.localSkinHelp":
     "由本地皮肤的头部和帽子层生成；不上传皮肤、不修改原文件。",

@@ -13,9 +13,9 @@ import {
 import type { Api } from "./types";
 import { Collapse } from "./Collapse";
 import { loaderCandidates } from "./loaderCandidates";
-import grass from "./assets/game-icons/grass.png";
-import forge from "./assets/game-icons/forge.png";
-import neoForge from "./assets/game-icons/neoforge.png";
+import grass from "./assets/game-icons/grass.svg";
+import forge from "./assets/game-icons/forge.svg";
+import neoForge from "./assets/game-icons/neoforge.svg";
 import "./install-selection.css";
 const providers = ["Forge", "NeoForge", "Fabric", "LabyMod", "OptiFine"];
 const unavailableProviders: Record<string, MessageKey> = {

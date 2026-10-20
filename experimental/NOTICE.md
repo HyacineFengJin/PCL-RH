@@ -1,7 +1,16 @@
-# Included components
+# Shared components and adaptations
 
-The experimental launcher integration includes the supplied Extension 0.6, Mod Creator 0.4, Mod Porter 0.5.1 and shared Pi runtime v7 modules. `SOURCES.json` records their versions and the included Python tool hashes.
+The launcher's own extension host, Agent adapters and integration code follow the project's [MIT License](../LICENSE). Directly incorporated modules retain their own notices:
 
-The Maker and Porter modules retain their original MIT license notices in `runtime/vendor/maker/LICENSE` and `runtime/vendor/porter/LICENSE`. The Pi SDK and its dependencies retain their own package licenses and are installed from the pinned npm lockfile.
+| Component | Attribution and license |
+| --- | --- |
+| `runtime/vendor/maker/` | Mod Creator Lab contributors, MIT; [original notice](runtime/vendor/maker/LICENSE) |
+| `runtime/vendor/porter/` | Mod Port Lab contributors, MIT; [original notice](runtime/vendor/porter/LICENSE) |
+| Pi SDK | Fixed npm dependency; original package license and upstream copyright, not PCL RH copyright |
+| Cordis | Used by RH Code through `@deepseek-ai/cordis`; MIT, Shigma; [notice](../LICENSES/CORDIS.txt) |
 
-The launcher adapters reuse these modules for declarations, source generation, source ownership and limited migration proposals. Standalone lab servers, demonstrations and testing records are not part of the desktop integration.
+[SOURCES.json](SOURCES.json) records the current adapted module versions and included vendor fingerprints. The original module's license and attribution remain in force for adapted code. Package versions do not imply that all current files are unchanged upstream copies.
+
+The project borrows architecture and workflow ideas from DeepSeek Harness; it does not bundle the complete DSH Agent. Standalone lab servers, demonstration archives, user projects and local test records are outside this integration.
+
+See [copyright scope](../COPYRIGHT.md) and [third-party dependencies](../THIRD_PARTY_NOTICES.md) for source, package and distribution boundaries.

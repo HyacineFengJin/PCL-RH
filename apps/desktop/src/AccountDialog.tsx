@@ -17,7 +17,7 @@ import type {
   AuthState,
   DeviceAssist,
 } from "./accountTypes";
-import defaultSkin from "./assets/game-icons/steve.png";
+import defaultSkin from "./assets/game-icons/player-skin.png";
 import "./account-dialog.css";
 
 export function AccountAvatar({

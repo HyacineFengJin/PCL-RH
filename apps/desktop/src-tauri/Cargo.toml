@@ -2,6 +2,8 @@
 name = "pcl-desktop"
 version = "0.2.0"
 edition = "2021"
+license.workspace = true
+repository.workspace = true
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

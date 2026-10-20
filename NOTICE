@@ -1,0 +1,29 @@
+PCL RH
+Copyright (c) 2026 PCL RH contributors
+
+Original project code and documentation are provided under the MIT License.
+See LICENSE for the complete grant and disclaimer, and COPYRIGHT.md for scope.
+
+Included third-party work keeps its original licenses and copyright notices:
+- Mod Creator Lab / Mod Port Lab adapted modules: their vendor MIT licenses.
+- Cordis: MIT, Copyright (c) 2021-present Shigma; LICENSES/CORDIS.txt.
+- Pi SDK and npm / Cargo dependencies: THIRD_PARTY_NOTICES.md,
+  THIRDPARTY.generated.json and LICENSES/DEPENDENCIES.txt.
+- Noto Sans CJK SC subsets: SIL Open Font License 1.1; fonts/LICENSE and NOTICE.
+
+PCL / PCL CE, HMCL, PCL N / Nex and DeepSeek Harness are credited as design,
+protocol or architecture references where described in COPYRIGHT.md. Such
+references do not relicense their code, artwork, names or trademarks.
+
+Primary project artwork was made with GPT. Generic bundled icons, cursors
+and the example player skin are project artwork; third-party fonts remain OFL.
+
+NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG
+OR MICROSOFT. Minecraft, game/mod content, user-imported assets and third-party
+marks retain their respective rights and are not relicensed by this notice.
+
+Nested vendored code and system libraries may have additional terms, including
+MPL-2.0, AFL-2.1 / GPL for dbus, OpenSSL/BoringSSL, Unicode and LGPL system
+libraries. See THIRD_PARTY_NOTICES.md; package-level MIT metadata does not
+replace those terms. The inventory explicitly records uncollected texts and
+optional packages; it is not a complete binary compliance certification.

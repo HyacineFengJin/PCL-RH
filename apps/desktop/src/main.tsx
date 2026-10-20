@@ -73,7 +73,7 @@ import {
   idleDownload,
   type DownloadStatus,
 } from "./DownloadPanel";
-import defaultSkin from "./assets/game-icons/steve.png";
+import defaultSkin from "./assets/game-icons/player-skin.png";
 import {
   AccountDialog,
   AccountAppearanceDialog,

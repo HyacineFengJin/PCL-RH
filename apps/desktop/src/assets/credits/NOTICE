@@ -1,11 +1,15 @@
-Unmodified public profile images retrieved from GitHub:
-https://github.com/LTCatt.png?size=80
-https://github.com/PCL-Community.png?size=80
-https://github.com/bangbang93.png?size=80
-https://github.com/Pysio2007.png?size=80
-https://github.com/EasyTier.png?size=80
-https://github.com/z0z0r4.png?size=80
+Text acknowledgements
 
-MC百科 icon: https://www.mcmod.cn/images/favicon.ico
-These images identify the upstream authors and projects credited by PCL CE.
-Copyright belongs to their respective owners. No endorsement is implied.
+The launcher credits these upstream authors and projects by name and link:
+
+LTCatt: https://github.com/LTCatt
+PCL Community: https://github.com/PCL-Community
+bangbang93: https://github.com/bangbang93
+Pysio2007: https://github.com/Pysio2007
+EasyTier: https://github.com/EasyTier
+z0z0r4: https://github.com/z0z0r4
+MC百科: https://www.mcmod.cn/
+
+This directory contains no upstream profile images or project icons.
+Interface initials are text labels. The names and links identify the
+credited parties and do not imply endorsement or transfer trademark rights.

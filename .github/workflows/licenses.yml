@@ -1,0 +1,21 @@
+name: License attribution
+
+on:
+  push:
+    branches: [master]
+    paths: ['LICENSE', 'NOTICE', 'COPYRIGHT.md', 'THIRD_PARTY_NOTICES.md', 'THIRDPARTY.generated.json', 'LICENSES/**', 'tools/licenses/**', '**/Cargo.toml', 'Cargo.lock', '**/package.json', '**/package-lock.json', 'apps/desktop/src/assets/**/NOTICE', 'apps/desktop/src/assets/fonts/LICENSE', 'experimental/NOTICE.md', 'experimental/runtime/vendor/**/LICENSE', '.github/workflows/licenses.yml']
+  pull_request:
+    paths: ['LICENSE', 'NOTICE', 'COPYRIGHT.md', 'THIRD_PARTY_NOTICES.md', 'THIRDPARTY.generated.json', 'LICENSES/**', 'tools/licenses/**', '**/Cargo.toml', 'Cargo.lock', '**/package.json', '**/package-lock.json', 'apps/desktop/src/assets/**/NOTICE', 'apps/desktop/src/assets/fonts/LICENSE', 'experimental/NOTICE.md', 'experimental/runtime/vendor/**/LICENSE', '.github/workflows/licenses.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # No Cargo/npm installation or package scripts are needed for these checks.
+      - run: python3 tools/licenses/release.py --check
+      - run: python3 tools/licenses/test_generate.py

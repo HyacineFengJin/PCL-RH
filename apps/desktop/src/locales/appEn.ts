@@ -481,7 +481,7 @@ const messages = {
   "images.exportWarning": "Image saved to {path}. Service warning: {warning}",
   "images.exported": "Image saved to {path}",
   "images.supportedItems":
-    "Uses genuine bundled item images: grass block, command block and redstone lamp. Enter their namespaced IDs or short names.",
+    "Uses project-drawn block, console and lamp symbols for grass_block, command_block and redstone_lamp. Enter their namespaced IDs or short names.",
   "images.avatarPreview": "Avatar preview from the selected local skin",
   "images.localSkinHelp":
     "Generated from the local skin's head and hat layers. The skin is not uploaded or changed.",

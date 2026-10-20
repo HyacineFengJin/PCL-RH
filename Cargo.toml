@@ -2,6 +2,10 @@
 members = ["crates/auth", "crates/core", "crates/install", "crates/cli", "crates/network", "apps/desktop/src-tauri"]
 resolver = "2"
 
+[workspace.package]
+license = "MIT"
+repository = "https://github.com/HyacineFengJin/PCL-RH"
+
 [profile.dev]
 debug = 0
 incremental = false

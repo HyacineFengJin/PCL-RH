@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" shape-rendering="crispEdges">
+  <!-- SPDX-License-Identifier: MIT -->
+  <!-- Copyright (c) 2026 PCL RH contributors. -->
+  <title>Original blue and violet explorer skin</title>
+  <desc>64 by 64 classic-width skin atlas. Head front is at 8,8; its transparent overlay is at 40,8. Blue-violet helmet, amber visor, violet suit and blue boots.</desc>
+  <!-- Head base: right, front, left, back, top, bottom. -->
+  <rect x="0" y="8" width="8" height="8" fill="#565c9d"/>
+  <rect x="8" y="8" width="8" height="8" fill="#7276ba"/>
+  <rect x="16" y="8" width="8" height="8" fill="#4e518b"/>
+  <rect x="24" y="8" width="8" height="8" fill="#545b9a"/>
+  <rect x="8" y="0" width="8" height="8" fill="#858ad2"/>
+  <rect x="16" y="0" width="8" height="8" fill="#474a7d"/>
+  <!-- Original amber visor and dark faceplate. Pixel features use integers. -->
+  <rect x="8" y="10" width="8" height="4" fill="#d78939"/>
+  <rect x="9" y="10" width="6" height="3" fill="#ffd17b"/>
+  <rect x="10" y="11" width="1" height="1" fill="#35455c"/>
+  <rect x="13" y="11" width="1" height="1" fill="#35455c"/>
+  <rect x="10" y="15" width="4" height="1" fill="#4b4d86"/>
+  <rect x="0" y="10" width="2" height="4" fill="#87b9d7"/>
+  <rect x="22" y="10" width="2" height="4" fill="#6da1c1"/>
+  <rect x="27" y="9" width="2" height="5" fill="#838bd0"/>
+  <rect x="9" y="1" width="2" height="5" fill="#aab3ee"/>
+  <!-- Head overlay has transparent padding; front overlays only a helmet rim and earpieces. -->
+  <rect x="40" y="8" width="8" height="1" fill="#b7c5f2"/>
+  <rect x="40" y="9" width="1" height="4" fill="#b7c5f2"/>
+  <rect x="47" y="9" width="1" height="4" fill="#87a6d3"/>
+  <rect x="40" y="14" width="1" height="1" fill="#81c5df"/>
+  <rect x="47" y="14" width="1" height="1" fill="#81c5df"/>
+  <!-- Body base: right, front, left, back, top, bottom. -->
+  <rect x="16" y="20" width="4" height="12" fill="#55518a"/>
+  <rect x="20" y="20" width="8" height="12" fill="#7870b6"/>
+  <rect x="28" y="20" width="4" height="12" fill="#56518c"/>
+  <rect x="32" y="20" width="8" height="12" fill="#635d9e"/>
+  <rect x="20" y="16" width="8" height="4" fill="#8a83ce"/>
+  <rect x="28" y="16" width="8" height="4" fill="#454477"/>
+  <rect x="23" y="20" width="2" height="10" fill="#b7c5f2"/>
+  <rect x="20" y="29" width="8" height="2" fill="#404775"/>
+  <rect x="25" y="23" width="2" height="3" fill="#f3b65d"/>
+  <rect x="34" y="23" width="4" height="4" fill="#7fb4cf"/>
+  <rect x="35" y="24" width="2" height="2" fill="#bad8e6"/>
+  <!-- Right arm, four pixels wide. -->
+  <rect x="44" y="16" width="4" height="4" fill="#8a83ce"/>
+  <rect x="48" y="16" width="4" height="4" fill="#444777"/>
+  <rect x="40" y="20" width="4" height="12" fill="#56588f"/>
+  <rect x="44" y="20" width="4" height="12" fill="#7774b9"/>
+  <rect x="48" y="20" width="4" height="12" fill="#51558d"/>
+  <rect x="52" y="20" width="4" height="12" fill="#6565a2"/>
+  <rect x="40" y="27" width="16" height="2" fill="#e9ad59"/>
+  <rect x="40" y="29" width="16" height="3" fill="#4b7397"/>
+  <rect x="45" y="21" width="2" height="3" fill="#a2b8df"/>
+  <!-- Left arm, four pixels wide. -->
+  <rect x="36" y="48" width="4" height="4" fill="#8a83ce"/>
+  <rect x="40" y="48" width="4" height="4" fill="#444777"/>
+  <rect x="32" y="52" width="4" height="12" fill="#56588f"/>
+  <rect x="36" y="52" width="4" height="12" fill="#7774b9"/>
+  <rect x="40" y="52" width="4" height="12" fill="#51558d"/>
+  <rect x="44" y="52" width="4" height="12" fill="#6565a2"/>
+  <rect x="32" y="59" width="16" height="2" fill="#e9ad59"/>
+  <rect x="32" y="61" width="16" height="3" fill="#4b7397"/>
+  <rect x="37" y="53" width="2" height="3" fill="#a2b8df"/>
+  <!-- Right leg and boot. -->
+  <rect x="4" y="16" width="4" height="4" fill="#66619f"/>
+  <rect x="8" y="16" width="4" height="4" fill="#344969"/>
+  <rect x="0" y="20" width="4" height="12" fill="#4c5688"/>
+  <rect x="4" y="20" width="4" height="12" fill="#6666a2"/>
+  <rect x="8" y="20" width="4" height="12" fill="#454e81"/>
+  <rect x="12" y="20" width="4" height="12" fill="#53588f"/>
+  <rect x="0" y="28" width="16" height="4" fill="#426a90"/>
+  <rect x="4" y="28" width="4" height="1" fill="#8ab8d5"/>
+  <rect x="5" y="21" width="1" height="5" fill="#9298cf"/>
+  <!-- Left leg and boot. -->
+  <rect x="20" y="48" width="4" height="4" fill="#66619f"/>
+  <rect x="24" y="48" width="4" height="4" fill="#344969"/>
+  <rect x="16" y="52" width="4" height="12" fill="#4c5688"/>
+  <rect x="20" y="52" width="4" height="12" fill="#6666a2"/>
+  <rect x="24" y="52" width="4" height="12" fill="#454e81"/>
+  <rect x="28" y="52" width="4" height="12" fill="#53588f"/>
+  <rect x="16" y="60" width="16" height="4" fill="#426a90"/>
+  <rect x="20" y="60" width="4" height="1" fill="#8ab8d5"/>
+  <rect x="22" y="53" width="1" height="5" fill="#9298cf"/>
+</svg>

@@ -17,25 +17,10 @@ import {
 import { createTranslator } from "./i18n";
 import { ArrowUp } from "lucide-react";
 import type { Api, Settings } from "./types";
-import commandIcon from "./assets/game-icons/command.png";
-import lampTexture from "./assets/game-icons/redstone-lamp.png";
+import commandIcon from "./assets/game-icons/command.svg";
+import lampTexture from "./assets/game-icons/redstone-lamp.svg";
 import launcherIcon from "../../../assets/pcl-rh.png";
-
-import ltcAvatar from "./assets/credits/ltcatt.jpg";
-import communityAvatar from "./assets/credits/community.png";
-import bangAvatar from "./assets/credits/bangbang93.jpg";
-import pysioAvatar from "./assets/credits/pysio.jpg";
-import easyTierAvatar from "./assets/credits/easytier.png";
-import zAvatar from "./assets/credits/z0z0r4.jpg";
-import mcmodIcon from "./assets/credits/mcmod.ico";
-const avatars: Record<string, string> = {
-  LTCatt: ltcAvatar,
-  "PCL-Community": communityAvatar,
-  bangbang93: bangAvatar,
-  Pysio2007: pysioAvatar,
-  EasyTier: easyTierAvatar,
-  z0z0r4: zAvatar,
-};
+import { LegalDocuments } from "./LegalDocuments";
 
 const TranslationContext = createContext(createTranslator());
 function Field({
@@ -644,7 +629,6 @@ function ExtraSettingsContent({
           <Credit
             name="龙腾猫跃"
             description={tr.t("about.originalAuthor")}
-            avatar="LTCatt"
             action={tr.t("about.author")}
             api={api}
             url="https://github.com/LTCatt"
@@ -652,7 +636,6 @@ function ExtraSettingsContent({
           <Credit
             name="PCL Community"
             description={tr.t("about.community")}
-            avatar="PCL-Community"
             action={tr.t("about.github")}
             api={api}
             url="https://github.com/PCL-Community"
@@ -670,14 +653,12 @@ function ExtraSettingsContent({
           <Credit
             name="bangbang93"
             description={tr.t("about.bmclapi")}
-            avatar="bangbang93"
             action={tr.t("about.author")}
             api={api}
             url="https://github.com/bangbang93"
           />
           <Credit
             name="MC 百科"
-            image={mcmodIcon}
             description={tr.t("about.mcmod")}
             action={tr.t("about.openWiki")}
             api={api}
@@ -686,7 +667,6 @@ function ExtraSettingsContent({
           <Credit
             name="Pysio @ Akaere Network"
             description={tr.t("about.cloud")}
-            avatar="Pysio2007"
             action={tr.t("about.contributor")}
             api={api}
             url="https://github.com/Pysio2007"
@@ -701,21 +681,12 @@ function ExtraSettingsContent({
           <Credit
             name="EasyTier"
             description={tr.t("about.easytier")}
-            avatar="EasyTier"
             action={tr.t("about.project")}
             api={api}
             url="https://github.com/EasyTier"
           />
-          <Credit
-            name="z0z0r4"
-            description={tr.t("about.mcim")}
-            avatar="z0z0r4"
-          />
-          <Credit
-            name="Emperornummy"
-            description={tr.t("about.icons")}
-            image={launcherIcon}
-          />
+          <Credit name="z0z0r4" description={tr.t("about.mcim")} />
+          <Credit name="Emperornummy" description={tr.t("about.icons")} />
         </Card>
         <Card title={tr.t("about.contributors")}>
           {contributorError && (
@@ -735,7 +706,9 @@ function ExtraSettingsContent({
                   )
                 }
               >
-                <img src={v.avatar} alt="" />
+                <span className="extra-contributor-monogram" aria-hidden="true">
+                  {v.login.slice(0, 2)}
+                </span>
                 <span>{v.login}</span>
               </button>
             ))}
@@ -785,45 +758,41 @@ function ExtraSettingsContent({
             <LinkButton api={api} url="https://github.com/PCL-Community/PCL-CE">
               {tr.t("about.upstream")}
             </LinkButton>
-            <LinkButton
-              api={api}
-              url={
-                project +
-                "/blob/master/apps/desktop/src/assets/game-icons/NOTICE"
-              }
-            >
+            <LinkButton api={api} url={project + "/blob/master/COPYRIGHT.md"}>
               {tr.t("about.assetNotice")}
             </LinkButton>
           </div>
         </Card>
         <Card title={tr.t("about.licenses")} collapse>
+          <LegalDocuments
+            title={tr.t("about.offlineNotices")}
+            loading={tr.t("about.documentLoading")}
+            unavailable={tr.t("about.documentUnavailable")}
+            retry={tr.t("about.documentRetry")}
+          />
           {[
             {
               name: "Noto Sans CJK SC",
-              copyright: "Copyright © Google / Adobe",
+              copyright:
+                "Copyright 2014–2021 Adobe. Noto is a Google trademark.",
               license: "SIL Open Font License 1.1",
               source: "https://github.com/notofonts/noto-cjk",
               document:
                 project + "/blob/master/apps/desktop/src/assets/fonts/LICENSE",
             },
             {
-              name: tr.t("about.hmclImages"),
-              copyright: "Copyright © HMCL contributors",
-              license: "GNU General Public License v3",
-              source: "https://github.com/HMCL-dev/HMCL",
-              document:
-                project +
-                "/blob/master/apps/desktop/src/assets/game-icons/LICENSE",
+              name: "PCL RH",
+              copyright: "Copyright (c) 2026 PCL RH contributors",
+              license: "MIT",
+              source: project,
+              document: project + "/blob/master/LICENSE",
             },
             {
-              name: tr.t("about.minecraftImages"),
-              copyrightOnly: true,
-              copyright: "Copyright © Mojang",
-              license: tr.t("about.imageRights"),
-              source: "https://www.minecraft.net",
-              document:
-                project +
-                "/blob/master/apps/desktop/src/assets/game-icons/NOTICE",
+              name: "Third-party dependencies",
+              copyright: tr.t("about.thirdPartyRights"),
+              license: tr.t("about.thirdPartyLicenses"),
+              source: project + "/blob/master/THIRDPARTY.generated.json",
+              document: project + "/blob/master/LICENSES/DEPENDENCIES.txt",
             },
             {
               name: "React",
@@ -852,9 +821,7 @@ function ExtraSettingsContent({
                     {tr.t("about.sourceSite")}
                   </LinkButton>
                   <LinkButton api={api} url={v.document}>
-                    {v.copyrightOnly
-                      ? tr.t("about.copyright")
-                      : tr.t("about.license")}
+                    {tr.t("about.license")}
                   </LinkButton>
                 </div>
               </div>
@@ -879,7 +846,6 @@ function ExtraSettingsContent({
 function Credit({
   name,
   description,
-  avatar,
   image,
   action,
   api,
@@ -887,7 +853,6 @@ function Credit({
 }: {
   name: string;
   description: string;
-  avatar?: string;
   image?: string;
   action?: string;
   api?: Api;
@@ -897,12 +862,8 @@ function Credit({
   const [failed, setFailed] = useState(false);
   return (
     <div className="extra-credit">
-      {(image || avatar) && !failed ? (
-        <img
-          src={image || avatars[avatar!]}
-          onError={() => setFailed(true)}
-          alt=""
-        />
+      {image && !failed ? (
+        <img src={image} onError={() => setFailed(true)} alt="" />
       ) : (
         <span className="extra-credit-fallback">{name.slice(0, 2)}</span>
       )}

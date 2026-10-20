@@ -4,6 +4,15 @@ import pages from "./pagesEn";
 /** Fixed launcher UI messages. Keep names, paths, and remote descriptions in caller values. */
 import type zhCN from "./zh-CN";
 const messages = {
+  "about.offlineNotices": "Offline licenses and source notices",
+  "about.documentUnavailable": "Unable to load the bundled document",
+  "about.documentLoading": "Loading…",
+  "about.documentRetry": "Retry",
+  "instance.explorer": "Example explorer",
+  "about.thirdPartyLicenses":
+    "Each component retains its own license; see the inventory",
+  "about.thirdPartyRights":
+    "Copyright belongs to the respective authors and contributors",
   "experimental.communityTitle": "Community extensions",
   "experimental.communityHelp":
     "Import data extensions to add cards. PCL N / Nex files provide compatibility reports.",
@@ -373,13 +382,13 @@ const messages = {
   "feedback.loading": "Loading feedback…",
   "feedback.empty": "No feedback",
   "about.contributorsUnavailable": "Unable to load contributors right now",
-  "about.originalAuthor": "Original author of Plain Craft Launcher!",
+  "about.originalAuthor": "Original PCL author; interface design reference",
   "about.author": "Author profile",
-  "about.community": "The Plain Craft Launcher Community Edition team!",
+  "about.community": "PCL CE team; interface design reference",
   "about.github": "GitHub profile",
   "about.version": "Current version: 0.2.0 (experimental native Linux build)",
   "about.source": "View source code",
-  "about.thanks": "Special thanks",
+  "about.thanks": "Acknowledgements from upstream PCL CE",
   "about.bmclapi":
     "Provides the BMCLAPI mirror and Forge installation tools: https://bmclapi.bangbang93.com",
   "about.mcmod":
@@ -394,7 +403,7 @@ const messages = {
   "about.mcim":
     "Provides the MCIM China mod mirror and help library image hosting!",
   "about.icons": "Designed and created the PCL CE icons",
-  "about.contributors": "Upstream contributors",
+  "about.contributors": "PCL CE contributors (reference project)",
   "about.legal": "Copyright and legal information",
   "about.privacy": "Privacy information",
   "about.privacyText":
@@ -407,21 +416,16 @@ const messages = {
   "about.linuxSource": "PCL RH source code",
   "about.accounts": "Privacy and account information",
   "about.guide": "Project usage guide",
-  "about.attribution": "Upstream resource attribution",
-  "about.assetSources": "Interface and image sources",
+  "about.attribution": "Sources and license boundaries",
+  "about.assetSources": "Code and artwork sources",
   "about.attributionText":
-    "PCL RH is an independent native Linux implementation. Its interface is based on PCL CE; some images come from HMCL, Minecraft, and loader projects. Attribution is retained under each resource's copyright and license terms.",
+    "Original PCL RH work is MIT licensed. Third-party code and fonts retain their own licenses. Bundled generic icons are drawn for this project; primary branding artwork was made with GPT.",
   "about.noLobby":
-    "This project does not use the PCL CE multiplayer lobby or Natayark OpenID service.",
+    "Design references, incorporated code and dependencies are listed separately in the copyright notice.",
   "about.upstream": "View upstream project",
   "about.assetNotice": "Resource source notice",
   "about.licenses": "Licenses and copyright notices",
-  "about.hmclImages": "HMCL image assets",
-  "about.minecraftImages": "Minecraft image assets",
-  "about.imageRights":
-    "Image copyright belongs to the respective rights holders",
   "about.sourceSite": "View source website",
-  "about.copyright": "View copyright notice",
   "about.license": "View license",
   "logs.preview": "Browser preview cannot modify or export real logs",
   "logs.unavailable": "Log export and recovery are not connected",

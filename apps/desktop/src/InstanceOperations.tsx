@@ -12,9 +12,9 @@ import {
 } from "lucide-react";
 import { Collapse } from "./Collapse";
 import { loaderCandidates } from "./loaderCandidates";
-import grassIcon from "./assets/game-icons/grass.png";
-import forgeIcon from "./assets/game-icons/forge.png";
-import neoForgeIcon from "./assets/game-icons/neoforge.png";
+import grassIcon from "./assets/game-icons/grass.svg";
+import forgeIcon from "./assets/game-icons/forge.svg";
+import neoForgeIcon from "./assets/game-icons/neoforge.svg";
 import type { Api, Instance } from "./types";
 import "./instance-operations.css";
 

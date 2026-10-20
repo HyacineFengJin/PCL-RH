@@ -1,10 +1,19 @@
-Unmodified image resources from Hello Minecraft! Launcher (HMCL):
-https://github.com/HMCL-dev/HMCL/tree/main/HMCL/src/main/resources/assets/img
+Original PCL RH interface artwork
+Copyright (c) 2026 PCL RH contributors
+SPDX-License-Identifier: MIT
 
-Source files: grass@2x.png, command@2x.png, neoforge@2x.png, forge.png.
-HMCL's accompanying GNU GPL version 3 is included as LICENSE in this directory.
-Minecraft imagery belongs to Mojang; NeoForge and Forge logos belong to their
-respective projects. Their inclusion does not imply endorsement.
+The SVG files in this directory are original geometric interface symbols:
+a landscape block, a control panel, a signal lamp, an anvil and an experiment
+flask. Their filenames identify the interface roles in which they are used.
+They do not reproduce Minecraft textures or Forge / NeoForge project logos.
 
-redstone-lamp.png is an unmodified Minecraft block texture from the game files.
-steve.png is the default Minecraft skin, from HMCLCore/assets/img/skin/wide.
+player-skin.svg is the original source for player-skin.png, a blue-violet
+explorer character authored on a 64 x 64 skin atlas. It contains no pixels
+from the Minecraft default skin. Both source and rendered PNG use MIT.
+
+See the repository root LICENSE for the MIT license text. Minecraft, Forge
+and NeoForge names identify their respective games or projects; their
+trademarks remain with their owners. No endorsement is implied.
+
+Regenerate the skin PNG with an SVG renderer, for example:
+rsvg-convert --width 64 --height 64 --output player-skin.png player-skin.svg
