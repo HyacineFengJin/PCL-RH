@@ -81,6 +81,8 @@ async function dispatch(operation, a) {
       return extensions.rereview(a.id);
     case "extensions_safe_mode":
       return extensions.setSafeMode(a.enabled);
+    case "extensions_settings":
+      return extensions.updateSettings(a.id, a.values, a.expected);
     case "extensions_cards":
       extensions.setContext(a.context ?? null);
       return extensions.cards(a.slot);
@@ -126,8 +128,9 @@ for await (const line of input) {
     const request = JSON.parse(line);
     if (request.operation === "rh_code_harness_export")
       replyLimit = 24 * 1024 * 1024;
-    if (request.operation !== "rh_code_run" && Buffer.byteLength(line) > 128000)
-      throw new Error("Request exceeds 128 KB");
+    const requestLimit = request.operation === "extensions_settings" ? 512 * 1024 : 128000;
+    if (request.operation !== "rh_code_run" && Buffer.byteLength(line) > requestLimit)
+      throw new Error("Request exceeds the operation input limit");
     reply = {
       ok: true,
       result: await dispatch(request.operation, request.args ?? {}),

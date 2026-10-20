@@ -6,8 +6,20 @@ import { InstanceOperationDialog } from "./instanceOperationUi";
 import "./extensionCompatibility.css";
 import {
   notifyExtensionsChanged,
+  notifyLauncherAppearanceApplied,
   subscribeExtensionsChanged,
 } from "./extensionEvents";
+import {
+  ExtensionFields,
+  dirtyFields,
+  fieldValue,
+  validField,
+  type ExtensionDraft,
+  type CachedExtensionDraft,
+  extensionDraftKey,
+  reconcileExtensionDrafts,
+  markExtensionDraftSaved,
+} from "./ExtensionFields";
 import {
   useExtensionRequestScope,
   useExtensionView,
@@ -29,6 +41,9 @@ const capabilityLabel = (id: string) =>
         "ui.cards": "experimental.capCards",
         "launcher.navigate": "experimental.capNavigate",
         "instances.summary": "experimental.capSummary",
+        "storage.settings": "experimental.capSettings",
+        "launcher.appearance": "experimental.capAppearance",
+        "clipboard.write": "experimental.capClipboard",
       } as Record<string, MessageKey>
     )[id],
   );
@@ -39,6 +54,7 @@ const slotLabel = (slot: string) => {
     "home.secondary": "experimental.communitySlot.home",
     "tools.cards": "experimental.communitySlot.tools",
     "rh-code.cards": "experimental.communitySlot.code",
+    "settings.cards": "experimental.communitySlot.settings",
   };
   return labels[slot] ? t(labels[slot]) : slot;
 };
@@ -78,7 +94,7 @@ export function ExperimentalCards({
 }: {
   api: Api;
   native: boolean;
-  slot: "tools.cards" | "home.secondary" | "rh-code.cards";
+  slot: "tools.cards" | "home.secondary" | "rh-code.cards" | "settings.cards";
   onNavigate: ExperimentalNavigate;
   emptyText?: string;
 }) {
@@ -89,6 +105,21 @@ export function ExperimentalCards({
     isolated: boolean;
   };
   const [epoch, setEpoch] = useState(0);
+  // Publication refreshes change the request owner, but drafts belong to the
+  // mounted API/native/slot surface. Hidden surfaces never revive old drafts.
+  const cacheRef = useRef({
+    api,
+    native,
+    slot,
+    entries: new Map<string, CachedExtensionDraft>(),
+  });
+  if (
+    cacheRef.current.api !== api ||
+    cacheRef.current.native !== native ||
+    cacheRef.current.slot !== slot
+  )
+    cacheRef.current = { api, native, slot, entries: new Map() };
+  const cache = cacheRef.current.entries;
   const scope = useExtensionRequestScope(api, native, `${slot}:${epoch}`);
   const view = useExtensionView<{
     cards: ExtensionCard[];
@@ -96,12 +127,16 @@ export function ExperimentalCards({
     error: string;
     busy: boolean;
     loaded: boolean;
+    drafts: Map<ExtensionCard, ExtensionDraft>;
+    feedback: { card: ExtensionCard; text: string } | null;
   }>(scope.owner, {
     cards: [],
     summary: null,
     error: "",
     busy: false,
     loaded: false,
+    drafts: new Map(),
+    feedback: null,
   });
   const { cards, summary, error, busy, loaded } = view.value;
   const navigate = useRef(onNavigate);
@@ -118,6 +153,8 @@ export function ExperimentalCards({
           busy: false,
           error: "",
           loaded: false,
+          drafts: new Map(),
+          feedback: null,
         });
         setEpoch((value) => value + 1);
       }),
@@ -132,10 +169,17 @@ export function ExperimentalCards({
         error: "",
         busy: false,
         loaded: false,
+        drafts: new Map(),
+        feedback: null,
       });
       void call<ExtensionCard[]>(api, "extensions_cards", { slot })
         .then((v) => {
-          if (request.current()) view.update({ cards: v, loaded: true });
+          if (request.current())
+            view.update({
+              cards: v,
+              loaded: true,
+              drafts: reconcileExtensionDrafts(v, cache),
+            });
         })
         .catch((e) => {
           if (request.current()) view.update({ error: serviceError(e) });
@@ -144,16 +188,73 @@ export function ExperimentalCards({
     }
     return () => request?.finish();
   }, [scope.owner]);
+  function ownsCard(card: ExtensionCard) {
+    return scope.current() && !!view.current()?.cards.includes(card);
+  }
+  function isDirty(card: ExtensionCard) {
+    return dirtyFields(
+      card.fields ?? [],
+      view.current()?.drafts.get(card) ?? {},
+    );
+  }
+  function changeDraft(card: ExtensionCard, next: ExtensionDraft) {
+    if (!ownsCard(card) || scope.busy()) return;
+    cache.set(extensionDraftKey(card), {
+      digest: card.digest,
+      fields: card.fields ?? [],
+      draft: next,
+    });
+    view.update({
+      drafts: new Map(view.current()!.drafts).set(card, next),
+      feedback: null,
+    });
+  }
+  async function save(card: ExtensionCard) {
+    const fields = card.fields ?? [],
+      draft = view.current()?.drafts.get(card);
+    if (
+      !ownsCard(card) ||
+      !draft ||
+      !isDirty(card) ||
+      !fields.every((field) => validField(field, draft))
+    )
+      return;
+    const request = scope.beginOperation();
+    if (!request) return;
+    const values = Object.fromEntries(
+      fields
+        .filter((field) => fieldValue(field, draft) !== field.value)
+        .map((field) => [field.id, fieldValue(field, draft)!]),
+    );
+    view.update({ busy: true, error: "", feedback: null });
+    try {
+      await call(api, "extensions_settings", {
+        id: card.extensionId,
+        expected: { digest: card.digest, generation: card.generation },
+        values,
+      });
+      markExtensionDraftSaved(cache, card, values);
+      // Publication survives the originating view. Every surviving card must
+      // retire its previous generation even when this request was hidden.
+      notifyExtensionsChanged();
+    } catch (e) {
+      if (request.current()) view.update({ error: serviceError(e) });
+    } finally {
+      if (request.current()) view.update({ busy: false });
+      request.finish();
+    }
+  }
   async function act(card: ExtensionCard, actionId: string) {
     if (
       !scope.current() ||
       !view.current()?.cards.includes(card) ||
+      isDirty(card) ||
       !card.actions.some((a) => a.id === actionId && a.enabled)
     )
       return;
     const request = scope.beginOperation();
     if (!request) return;
-    view.update({ busy: true, error: "" });
+    view.update({ busy: true, error: "", feedback: null });
     try {
       const intent = await call<{
         kind: string;
@@ -165,7 +266,23 @@ export function ExperimentalCards({
         actionId,
         expected: { digest: card.digest, generation: card.generation },
       });
+      if (intent.kind === "launcher-appearance-applied")
+        notifyLauncherAppearanceApplied();
       if (!request.current() || !view.current()?.cards.includes(card)) return;
+      if (
+        intent.kind === "launcher-appearance-applied" ||
+        intent.kind === "text-copied"
+      )
+        view.update({
+          feedback: {
+            card,
+            text: t(
+              intent.kind === "text-copied"
+                ? "experimental.textCopied"
+                : "experimental.appearanceApplied",
+            ),
+          },
+        });
       if (intent.kind === "navigate") navigate.current(intent.target);
       else if (intent.kind === "show-instance-summary")
         view.update({ summary: intent.summary });
@@ -181,28 +298,87 @@ export function ExperimentalCards({
       {emptyText && loaded && cards.length === 0 && !error && (
         <p className="experimental-origin">{emptyText}</p>
       )}
-      {cards.map((card) => (
-        <section
-          key={`${card.extensionId}:${card.id}`}
-          className="ce-card experimental-card"
-        >
-          <h2 className="ce-card-title">{card.title}</h2>
-          <p className="experimental-origin">{card.extensionName}</p>
-          <p className="experimental-body">{card.text}</p>
-          <div className="ce-actions">
-            {card.actions.map((a) => (
-              <button
-                key={a.id}
-                className="ce-button"
-                disabled={!a.enabled || busy || !native}
-                onClick={() => void act(card, a.id)}
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
-        </section>
-      ))}
+      {cards.map((card) => {
+        const fields = card.fields ?? [],
+          draft = view.value.drafts.get(card) ?? {},
+          dirty = dirtyFields(fields, draft);
+        return (
+          <section
+            key={`${card.extensionId}:${card.id}`}
+            className="ce-card experimental-card"
+          >
+            <h2 className="ce-card-title">{card.title}</h2>
+            <p className="experimental-origin">{card.extensionName}</p>
+            <p className="experimental-body">{card.text}</p>
+            {fields.length > 0 && (
+              <>
+                <ExtensionFields
+                  fields={fields}
+                  draft={draft}
+                  disabled={busy || !native}
+                  onChange={(id, value) => {
+                    if (!fields.some((field) => field.id === id)) return;
+                    changeDraft(card, {
+                      ...view.current()?.drafts.get(card),
+                      [id]: value,
+                    });
+                  }}
+                />
+                <div className="ce-actions extension-form-actions">
+                  <button
+                    className="ce-button primary"
+                    disabled={
+                      busy ||
+                      !native ||
+                      !dirty ||
+                      !fields.every((field) => validField(field, draft))
+                    }
+                    onClick={() => void save(card)}
+                  >
+                    {t("experimental.settingsSave")}
+                  </button>
+                  <button
+                    className="ce-button"
+                    disabled={busy || !native}
+                    onClick={() =>
+                      changeDraft(
+                        card,
+                        Object.fromEntries(
+                          fields.map((field) => [field.id, field.default]),
+                        ),
+                      )
+                    }
+                  >
+                    {t("experimental.settingsReset")}
+                  </button>
+                  {dirty && (
+                    <span className="experimental-origin" role="status">
+                      {t("experimental.settingsUnsaved")}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+            <div className="ce-actions">
+              {card.actions.map((a) => (
+                <button
+                  key={a.id}
+                  className="ce-button"
+                  disabled={!a.enabled || busy || !native || dirty}
+                  onClick={() => void act(card, a.id)}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+            {view.value.feedback?.card === card && (
+              <p className="experimental-origin" role="status">
+                {view.value.feedback.text}
+              </p>
+            )}
+          </section>
+        );
+      })}
       {error && (
         <p className="experimental-error" role="alert">
           {error}
@@ -596,7 +772,7 @@ export function ExperimentalExtensions({
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
-        <ExperimentalVersion version="0.7.0" />
+        <ExperimentalVersion version="0.8.0" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">

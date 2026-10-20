@@ -605,7 +605,7 @@ const messages = {
   "experimental.disable": "Disable",
   "experimental.reviewPermissions": "Review permissions / enable",
   "experimental.safeMode": "Safe mode: suspend all extension cards",
-  "experimental.capCards": "Display feature cards",
+  "experimental.capCards": "Display cards and controls",
   "experimental.capNavigate": "Navigate to launcher pages",
   "experimental.capSummary": "Read instance summary",
   "experimental.state.active": "Active",

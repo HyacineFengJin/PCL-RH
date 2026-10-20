@@ -13,3 +13,16 @@ export function subscribeExtensionsChanged(listener: () => void) {
 export function notifyExtensionsChanged() {
   for (const listener of [...listeners]) listener();
 }
+
+// Native has committed appearance changes. Consumers must read the latest
+// preference store; a queued full snapshot could overwrite a newer local edit.
+const appearanceListeners = new Set<() => void>();
+export function subscribeLauncherAppearanceApplied(listener: () => void) {
+  appearanceListeners.add(listener);
+  return () => {
+    appearanceListeners.delete(listener);
+  };
+}
+export function notifyLauncherAppearanceApplied() {
+  for (const listener of [...appearanceListeners]) listener();
+}

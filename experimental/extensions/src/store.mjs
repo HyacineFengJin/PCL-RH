@@ -98,7 +98,7 @@ function loadDocument(source, clock) {
     throw new Error('Invalid extension store');
   const host = new ExtensionHost({ clock }), records = new Map();
   for (const record of saved.entries) {
-    if (!exact(record, ['id', 'digest', 'source', 'grants', 'enabled']) || records.has(record.id) ||
+    if (!exact(record, ['id', 'digest', 'source', 'grants', 'enabled'], ['settings']) || records.has(record.id) ||
         typeof record.source !== 'string' || !Array.isArray(record.grants) ||
         new Set(record.grants).size !== record.grants.length || typeof record.enabled !== 'boolean')
       throw new Error('Invalid stored extension');
@@ -112,11 +112,13 @@ function loadDocument(source, clock) {
     const review = JSON.parse(record.source).packageFormat === PACKAGE_FORMAT
       ? host.preparePackageReview(record.source) : host.prepareReview(record.source);
     host.confirmReview(review.token, declared);
+    if (Object.hasOwn(record, 'settings')) host.restoreSettings(record.id, record.settings);
     for (const capability of declared) if (!record.grants.includes(capability)) host.revoke(record.id, capability);
     if (!record.enabled) host.disable(record.id);
     records.set(record.id, { ...record, grants: [...record.grants] });
   }
   host.setSafeMode(saved.safeMode ?? false);
+  host.validateProjectionBudget();
   return { host, records };
 }
 
@@ -209,10 +211,13 @@ export class ExtensionStore {
       try {
         const candidate = this.#host.fork(), sources = new Map(this.#records);
         const result = operation(candidate, sources);
+        candidate.validateProjectionBudget();
         const entries = candidate.list().map(entry => {
           const record = sources.get(entry.id);
           if (!record) throw new Error('Installed extension source is unavailable');
-          return { id: entry.id, digest: entry.digest, source: record.source, grants: [...entry.grants], enabled: entry.enabled };
+          const settings = candidate.settingsValues(entry.id);
+          return { id: entry.id, digest: entry.digest, source: record.source, grants: [...entry.grants], enabled: entry.enabled,
+            ...(Object.keys(settings).length ? { settings } : {}) };
         });
         const bytes = Buffer.from(JSON.stringify({ schemaVersion: 1, entries, safeMode: candidate.safeMode }));
         if (bytes.length > STORE_LIMIT) fail('STORE_SIZE', 'Extension store exceeds the supported size; previous state retained.');
@@ -259,6 +264,13 @@ export class ExtensionStore {
     });
   }
   setSafeMode(enabled) { return this.#mutate(candidate => candidate.setSafeMode(enabled)); }
+  updateSettings(id, values, expected) {
+    return this.#mutate(candidate => {
+      if (expected === undefined) fail('HOST_STALE_ENTRY', 'Plugin settings require the displayed entry snapshot.');
+      this.#expected(id, expected);
+      return candidate.updateSettings(id, values);
+    });
+  }
 
   setContext(context) { return this.#host.setContext(context); }
   cards(slot) { return this.#host.cards(slot); }

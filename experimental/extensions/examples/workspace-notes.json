@@ -2,23 +2,27 @@
   "format": "pcl-linux.declarative-extension",
   "schemaVersion": 1,
   "id": "local.workspace-notes",
-  "name": "工作区提示 · Workspace Notes",
-  "version": "1.0.0",
-  "publisher": "Local example (unverified)",
+  "name": "工作区笔记",
+  "version": "1.1.0",
+  "publisher": "PCL RH Examples",
   "scope": "rh-code",
   "api": { "min": 1, "maxExclusive": 2 },
   "capabilities": [
-    { "id": "ui.cards", "required": true, "reason": "在 RH Code 的插件面板显示本地纯文字提示卡片。" }
+    { "id": "ui.cards", "required": true, "reason": "在 RH Code 显示工作区笔记组件。" },
+    { "id": "storage.settings", "required": true, "reason": "保存笔记与当前阶段。" },
+    { "id": "clipboard.write", "required": false, "reason": "点击复制时将已保存的笔记写入剪贴板。" }
   ],
-  "contributions": {
-    "cards": [
-      {
-        "id": "workspace-note",
-        "slot": "rh-code.cards",
-        "title": "记录当前目标",
-        "text": "开始修改前，确认项目使用的游戏版本与加载器。此提示不读取项目文件，也不会执行代码。",
-        "actions": []
-      }
-    ]
-  }
+  "settings": [
+    { "id": "note", "label": "笔记", "type": "text", "default": "", "maxLength": 4000, "multiline": true },
+    { "id": "stage", "label": "阶段", "type": "select", "default": "design", "options": [
+      { "value": "design", "label": "设计" },
+      { "value": "build", "label": "实现" },
+      { "value": "verify", "label": "验证" }
+    ] }
+  ],
+  "contributions": { "cards": [
+    { "id": "notes", "slot": "rh-code.cards", "title": "工作区笔记", "text": "笔记由此插件独立保存；不会读取项目文件，也不会自动发送给 AI。", "fields": ["stage", "note"], "actions": [
+      { "id": "copy", "label": "复制笔记", "kind": "copy-text", "setting": "note" }
+    ] }
+  ] }
 }

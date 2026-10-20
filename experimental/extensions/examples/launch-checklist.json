@@ -1,0 +1,25 @@
+{
+  "format": "pcl-linux.declarative-extension",
+  "schemaVersion": 1,
+  "id": "local.launch-checklist",
+  "name": "启动检查清单",
+  "version": "1.0.0",
+  "publisher": "PCL RH Examples",
+  "scope": "launcher",
+  "api": { "min": 1, "maxExclusive": 2 },
+  "capabilities": [
+    { "id": "ui.cards", "required": true, "reason": "在首页提供启动前检查组件。" },
+    { "id": "storage.settings", "required": true, "reason": "保存清单勾选与目标帧率。" },
+    { "id": "launcher.navigate", "required": false, "reason": "点击后打开游戏实例管理。" }
+  ],
+  "settings": [
+    { "id": "backup", "label": "已备份存档", "type": "toggle", "default": false },
+    { "id": "mods", "label": "已确认模组版本", "type": "toggle", "default": false },
+    { "id": "fps", "label": "目标帧率备忘", "type": "number", "default": 120, "min": 30, "max": 360 }
+  ],
+  "contributions": { "cards": [
+    { "id": "checklist", "slot": "home.secondary", "title": "启动检查清单", "text": "清单仅作个人备忘，不会阻止游戏启动或修改游戏选项。", "fields": ["backup", "mods", "fps"], "actions": [
+      { "id": "instances", "label": "管理实例", "kind": "navigate", "target": "instances" }
+    ] }
+  ] }
+}

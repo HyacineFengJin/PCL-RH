@@ -572,7 +572,7 @@ const messages = {
   "experimental.disable": "禁用",
   "experimental.reviewPermissions": "重新授权 / 启用",
   "experimental.safeMode": "安全模式：暂停全部插件卡片",
-  "experimental.capCards": "显示功能卡片",
+  "experimental.capCards": "显示卡片与控件",
   "experimental.capNavigate": "切换到启动器页面",
   "experimental.capSummary": "读取实例摘要",
   "experimental.state.active": "已启用",

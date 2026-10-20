@@ -13,7 +13,7 @@ export function createAuthorManifest(input) {
   if(!/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,7}(?![\s\S])/.test(id))fail('扩展 ID 请使用小写英文、数字、短横线和至少一个点，如 local.my-tool');
   const version=text('版本',input.version,20);
   if(!/^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})(?![\s\S])/.test(version))fail('版本请使用 1.0.0 这样的三段稳定版本号');
-  if(!['home.secondary','tools.cards','rh-code.cards'].includes(input.slot))fail('请选择已知卡片位置');
+  if(!['home.secondary','tools.cards','rh-code.cards','settings.cards'].includes(input.slot))fail('请选择已知卡片位置');
   const scope=Object.hasOwn(input,'scope')?input.scope:(input.slot==='rh-code.cards'?'rh-code':'launcher');
   if(!['launcher','rh-code','both'].includes(scope)||(scope!=='both'&&scope!==(input.slot==='rh-code.cards'?'rh-code':'launcher')))
     fail('运行范围与卡片位置不匹配');

@@ -1,15 +1,19 @@
 import { createHash } from 'node:crypto';
 import { parseJson, fail, canonicalJson, freeze } from './json.mjs';
+import { validateSettings, validateAppearanceAction } from './settings.mjs';
 
 export const HOST_API = 1;
 export const FORMAT = 'pcl-linux.declarative-extension';
 export const CAPABILITIES = freeze({
-  'ui.cards': { label: 'Add labeled text cards', data: 'No launcher data', risk: 'low' },
+  'ui.cards': { label: 'Add host-rendered cards and controls', data: 'No launcher data', risk: 'low' },
   'launcher.navigate': { label: 'Navigate to fixed launcher pages', data: 'No account, path, or process access', risk: 'low' },
   'instances.summary': { label: 'Show the selected instance summary', data: 'Minecraft version, loader, mod count, isolation flag; no name, path, account, or token', risk: 'read-only' },
+  'storage.settings': { label: 'Save this plugin’s own settings', data: 'Only values declared by this plugin; no account or project files', risk: 'local-write' },
+  'launcher.appearance': { label: 'Change launcher appearance when clicked', data: 'Theme, cursor and context-menu style only', risk: 'local-write' },
+  'clipboard.write': { label: 'Copy saved plugin text when clicked', data: 'Write-only clipboard; no clipboard reads', risk: 'local-write' },
 });
 export const NAVIGATION_TARGETS = freeze(['launch', 'instances', 'downloads', 'tools', 'settings']);
-export const CARD_SLOTS = freeze(['home.secondary', 'tools.cards', 'rh-code.cards']);
+export const CARD_SLOTS = freeze(['home.secondary', 'tools.cards', 'rh-code.cards', 'settings.cards']);
 export const EXTENSION_SCOPES = freeze(['launcher', 'rh-code', 'both']);
 // Older manifests remain byte-for-byte authoritative. Reading their default
 // scope must not insert a field and change a previously approved digest.
@@ -44,7 +48,7 @@ function id(value, pattern, max) {
 /** Untrusted input is JSON text, never a plugin-supplied JavaScript object. */
 export function readManifest(source) {
   const m = parseJson(source);
-  object(m, ['format', 'schemaVersion', 'id', 'name', 'version', 'publisher', 'api', 'capabilities', 'contributions'], ['scope']);
+  object(m, ['format', 'schemaVersion', 'id', 'name', 'version', 'publisher', 'api', 'capabilities', 'contributions'], ['scope', 'settings']);
   if (m.format !== FORMAT || m.schemaVersion !== 1) fail('MANIFEST_FORMAT', 'This is not a supported PCL RH declarative extension manifest.');
   id(m.id, ID, 128); text(m.name, 80); text(m.publisher, 80);
   if (Object.hasOwn(m, 'scope') && !EXTENSION_SCOPES.includes(m.scope))
@@ -63,25 +67,44 @@ export function readManifest(source) {
   }
   unique(m.capabilities.map(c => c.id));
   const declared = new Map(m.capabilities.map(c => [c.id, c]));
+  const settings = Object.hasOwn(m, 'settings') ? validateSettings(m.settings) : [];
+  if (settings.length && !declared.get('storage.settings')?.required)
+    fail('CAPABILITY_SETTINGS_REQUIRED', 'Plugin settings require explicit required storage permission.');
   if (!declared.get('ui.cards')?.required) fail('CAPABILITY_CARDS_REQUIRED', 'Text-card permission is required for this format.');
   object(m.contributions, ['cards']);
   array(m.contributions.cards, 12, 1);
   unique(m.contributions.cards.map(card => card?.id));
   for (const card of m.contributions.cards) {
-    object(card, ['id', 'slot', 'title', 'text', 'actions']);
+    object(card, ['id', 'slot', 'title', 'text', 'actions'], ['fields']);
     id(card.id, LOCAL_ID, 48); text(card.title, 100); text(card.text, 2000, true);
     if (!CARD_SLOTS.includes(card.slot)) fail('CONTRIBUTION_SLOT', 'Contributions may only use an additive, host-owned card slot.');
     const slotScope = card.slot === 'rh-code.cards' ? 'rh-code' : 'launcher';
     if (extensionScope(m) !== 'both' && extensionScope(m) !== slotScope)
       fail('CONTRIBUTION_SCOPE', 'This card slot is outside the extension running scope.');
+    if (Object.hasOwn(card, 'fields')) {
+      array(card.fields, 8); unique(card.fields);
+      if (card.fields.some(key => typeof key !== 'string' || !settings.some(definition => definition.id === key)))
+        fail('CONTRIBUTION_FIELD', 'Card fields must reference declared plugin settings.');
+    }
     array(card.actions, 4); unique(card.actions.map(action => action?.id));
     for (const action of card.actions) {
-      object(action, ['id', 'label', 'kind'], ['target']);
+      object(action, ['id', 'label', 'kind'], ['target', 'values', 'setting']);
       id(action.id, LOCAL_ID, 48); text(action.label, 64);
       const capability = actionCapability(action);
       if (!declared.has(capability)) fail('CAPABILITY_UNDECLARED', 'An action uses a capability that was not declared.');
       if (action.kind === 'navigate' && !NAVIGATION_TARGETS.includes(action.target)) fail('ACTION_TARGET', 'Navigation must use a fixed host page.');
       if (action.kind === 'show-instance-summary' && Object.hasOwn(action, 'target')) fail('ACTION_TARGET', 'Instance summary actions cannot supply a target or file path.');
+      if (action.kind === 'navigate' || action.kind === 'show-instance-summary')
+        object(action, ['id', 'label', 'kind'], action.kind === 'navigate' ? ['target'] : []);
+      if (action.kind === 'set-launcher-appearance') {
+        object(action, ['id', 'label', 'kind', 'values']);
+        validateAppearanceAction(action.values, settings);
+      }
+      if (action.kind === 'copy-text') {
+        object(action, ['id', 'label', 'kind', 'setting']);
+        if (!settings.some(definition => definition.id === action.setting && definition.type === 'text'))
+          fail('ACTION_BINDING', 'Copy actions must reference a declared text setting.');
+      }
     }
   }
   const digest = createHash('sha256').update(canonicalJson(m)).digest('hex');
@@ -91,7 +114,9 @@ export function readManifest(source) {
 export function actionCapability(action) {
   if (action.kind === 'navigate') return 'launcher.navigate';
   if (action.kind === 'show-instance-summary') return 'instances.summary';
-  fail('ACTION_KIND', 'Only fixed navigation and host-generated instance summaries are supported.');
+  if (action.kind === 'set-launcher-appearance') return 'launcher.appearance';
+  if (action.kind === 'copy-text') return 'clipboard.write';
+  fail('ACTION_KIND', 'Unsupported plugin action kind.');
 }
 
 export function compareVersions(left, right) {

@@ -15,6 +15,17 @@ const messages = {
   "experimental.communitySlot.home": "Home cards",
   "experimental.communitySlot.tools": "Tools cards",
   "experimental.communitySlot.code": "RH Code cards",
+  "experimental.communitySlot.settings": "Settings personalization cards",
+  "experimental.capSettings": "Save this plugin’s settings",
+  "experimental.capAppearance":
+    "Change launcher theme, cursor and context menu appearance",
+  "experimental.capClipboard":
+    "Write to the clipboard after clicking an action",
+  "experimental.settingsSave": "Save settings",
+  "experimental.settingsReset": "Restore defaults",
+  "experimental.settingsUnsaved": "Unsaved changes; save to use actions.",
+  "experimental.textCopied": "Copied",
+  "experimental.appearanceApplied": "Applied",
   "experimental.communityNoMatches": "No extensions in this scope",
   "experimental.communityReviewPermissions": "Review permissions",
   "experimental.communityReviewScope": "Scope: {scope}",

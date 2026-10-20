@@ -154,6 +154,8 @@ apply(ctx) {
 
 ## 社区卡片区域
 
-`rh.extensions` 是一个可停用的可信内置模块，贡献 `rh.extensions.cards` 视图，读取社区宿主的 `rh-code.cards` 插槽。社区声明只提供文字和固定操作，不会取得 `ViewHost`、项目控制器或原生 IPC。`PluginRuntime.navigate` 由产品宿主提供，只接受固定页面目标；加载与休眠仍遵循内核范围。
+`rh.extensions` 是一个可停用的可信内置模块，贡献 `rh.extensions.cards` 视图，读取社区宿主的 `rh-code.cards` 插槽。社区声明提供文字、宿主渲染的设置控件和固定操作，不会取得 `ViewHost`、项目控制器或原生 IPC。`PluginRuntime.navigate` 由产品宿主提供，只接受固定页面目标；加载与休眠仍遵循内核范围。
 
 社区声明和授权由独立 `ExtensionStore` 保存，不写入仅允许内置 ID 的 `disabledPlugins`。状态变更发布无载荷的前端通知，各插槽立即撤回旧卡片并重新读取；已保留的旧按钮不继续导航。工作区卡片请求是只读活动，不把轮询算作新的编辑。
+
+声明型组件的类型、持久数据与授权操作见[插件规范 v1](PLUGIN_SPEC.md)。新增原生作用必须同时经过 Node 的能力检查和 Rust 的类型化消费者，不能从社区字段选择原生命令。

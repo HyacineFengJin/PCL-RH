@@ -92,6 +92,35 @@ export type ExtensionCard = {
   digest?: string;
   generation?: number;
   scope?: ExtensionScope;
+  fields?: ExtensionField[];
+};
+export type ExtensionSetting =
+  | {
+      id: string;
+      label: string;
+      type: "text";
+      default: string;
+      maxLength: number;
+      multiline?: boolean;
+    }
+  | { id: string; label: string; type: "toggle"; default: boolean }
+  | {
+      id: string;
+      label: string;
+      type: "select";
+      default: string;
+      options: { value: string; label: string }[];
+    }
+  | {
+      id: string;
+      label: string;
+      type: "number";
+      default: number;
+      min: number;
+      max: number;
+    };
+export type ExtensionField = ExtensionSetting & {
+  value: string | boolean | number;
 };
 export type JobSummary = {
   jobId: string;
@@ -270,6 +299,7 @@ export type ExperimentalOperation =
   | "extensions_safe_mode"
   | "extensions_cards"
   | "extensions_action"
+  | "extensions_settings"
   | "source_import"
   | "provider_catalog"
   | "provider_presets"

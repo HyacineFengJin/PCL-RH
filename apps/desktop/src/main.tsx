@@ -3207,6 +3207,14 @@ function App() {
                             native={native}
                           />
                         ))}
+                      {tab === "settings" && settingsPage === "personalize" && (
+                        <ExperimentalCards
+                          api={api}
+                          native={native && !tasks.closing}
+                          slot="settings.cards"
+                          onNavigate={navigateExperimental}
+                        />
+                      )}
                       {tab === "settings" && settingsPage === "toolbox" && (
                         <Toolbox
                           onOpen={open}

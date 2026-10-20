@@ -1,0 +1,33 @@
+{
+  "format": "pcl-linux.declarative-extension",
+  "schemaVersion": 1,
+  "id": "local.appearance-switcher",
+  "name": "外观切换",
+  "version": "1.0.0",
+  "publisher": "PCL RH Examples",
+  "scope": "launcher",
+  "api": { "min": 1, "maxExclusive": 2 },
+  "capabilities": [
+    { "id": "ui.cards", "required": true, "reason": "在首页与个性化设置显示外观控制组件。" },
+    { "id": "storage.settings", "required": true, "reason": "保存主题与鼠标样式选择。" },
+    { "id": "launcher.appearance", "required": false, "reason": "点击应用时修改启动器的主题和鼠标样式。" }
+  ],
+  "settings": [
+    { "id": "theme", "label": "主题", "type": "select", "default": "system", "options": [
+      { "value": "system", "label": "跟随系统" },
+      { "value": "light", "label": "浅色" },
+      { "value": "dark", "label": "深色" }
+    ] },
+    { "id": "cursor", "label": "使用启动器鼠标样式", "type": "toggle", "default": true }
+  ],
+  "contributions": {
+    "cards": [
+      { "id": "appearance", "slot": "home.secondary", "title": "外观切换", "text": "保存选择后，点击应用。", "fields": ["theme", "cursor"], "actions": [
+        { "id": "apply", "label": "应用外观", "kind": "set-launcher-appearance", "values": { "theme": { "setting": "theme" }, "custom_cursor": { "setting": "cursor" } } }
+      ] },
+      { "id": "preferences", "slot": "settings.cards", "title": "外观切换", "text": "此组件由外观切换插件提供。", "fields": ["theme", "cursor"], "actions": [
+        { "id": "apply", "label": "应用外观", "kind": "set-launcher-appearance", "values": { "theme": { "setting": "theme" }, "custom_cursor": { "setting": "cursor" } } }
+      ] }
+    ]
+  }
+}

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { readManifest, actionCapability, compareVersions, extensionScope } from './manifest.mjs';
+import { readManifest, actionCapability, compareVersions, extensionScope, CARD_SLOTS } from './manifest.mjs';
 import { fail, freeze } from './json.mjs';
 import { readPackage } from './package.mjs';
+import { defaultSettings, retainSettings, validateSettingsPatch, resolveAppearance } from './settings.mjs';
 
 const REVIEW_TTL = 5 * 60_000;
 const ACTION_TTL = 30_000;
@@ -28,7 +29,7 @@ export class ExtensionHost {
    * ownership stays with the published host while its bytes are being saved. */
   fork() {
     const copy = new ExtensionHost({ clock: this.#clock });
-    copy.#entries = new Map([...this.#entries].map(([id, entry]) => [id, { ...entry, grants: new Set(entry.grants) }]));
+    copy.#entries = new Map([...this.#entries].map(([id, entry]) => [id, { ...entry, grants: new Set(entry.grants), settings: { ...entry.settings } }]));
     copy.#reviews = new Map(this.#reviews);
     copy.#actions = new Map(this.#actions);
     copy.#context = this.#context;
@@ -139,6 +140,7 @@ export class ExtensionHost {
     this.#entries.set(manifest.id, {
       manifest, digest, package: review.loaded.package ?? null,
       grants, enabled: true, generation: ++this.#generation,
+      settings: retainSettings(manifest, previous?.settings),
     });
     return this.inspect(manifest.id);
   }
@@ -169,6 +171,24 @@ export class ExtensionHost {
   }
 
   list() { return freeze([...this.#entries.keys()].sort().map(id => this.inspect(id))); }
+
+  /** Plugin state is separate from permissions and launcher preferences. The
+   * store calls restoreSettings only while reconstructing a private candidate. */
+  settingsValues(id) { return freeze({ ...this.#entry(id).settings }); }
+  restoreSettings(id, values) {
+    const entry = this.#entry(id);
+    validateSettingsPatch(entry.manifest, values, true);
+    entry.settings = { ...defaultSettings(entry.manifest), ...values };
+  }
+  updateSettings(id, values) {
+    const entry = this.#entry(id);
+    if (this.#state(entry) !== 'active') fail('HOST_INACTIVE', 'Extension is inactive.');
+    if (!entry.grants.has('storage.settings')) fail('HOST_PERMISSION', 'Plugin settings permission has not been granted.');
+    validateSettingsPatch(entry.manifest, values);
+    entry.settings = { ...entry.settings, ...values };
+    entry.generation = ++this.#generation;
+    return this.inspect(id);
+  }
 
   revoke(id, capability) {
     const e = this.#entry(id);
@@ -244,6 +264,9 @@ export class ExtensionHost {
           publisherVerified: false, digest: e.digest,
           generation: e.generation, scope: extensionScope(e.manifest),
           id: card.id, title: card.title, text: card.text,
+          ...(card.fields ? { fields: card.fields.map(key => ({
+            ...e.manifest.settings.find(definition => definition.id === key), value: e.settings[key],
+          })) } : {}),
           actions: card.actions.map(action => ({
             id: action.id, label: action.label,
             enabled: e.grants.has(actionCapability(action)) && (action.kind !== 'show-instance-summary' || this.#context !== null),
@@ -254,6 +277,15 @@ export class ExtensionHost {
       }
     }
     return freeze(result);
+  }
+
+  /** Repeated field references amplify saved text across cards. Bound each
+   * published surface below the protocol's 1 MB response envelope, with room
+   * for context-dependent action availability and native envelope metadata. */
+  validateProjectionBudget() {
+    for (const slot of CARD_SLOTS)
+      if (Buffer.byteLength(JSON.stringify(this.cards(slot)), 'utf8') > 768 * 1024)
+        fail('HOST_PROJECTION_LIMIT', 'Plugin cards exceed the display budget; shorten text or remove repeated fields. Previous state retained.');
   }
 
   prepareAction(extensionId, cardId, actionId) {
@@ -282,10 +314,13 @@ export class ExtensionHost {
     if (this.#contextGeneration !== request.contextGeneration)
       fail('HOST_STALE_CONTEXT', 'Selection changed; use the current card action again.');
     // Return only a fixed typed intent. There is no invoke/exec/fetch callback.
-    return freeze(request.action.kind === 'navigate' ? {
-      kind: 'navigate', target: request.action.target, extensionId: request.extensionId,
-    } : {
-      kind: 'show-instance-summary', summary: { ...this.#context.summary }, extensionId: request.extensionId,
-    });
+    const base = { kind: request.action.kind, extensionId: request.extensionId };
+    switch (request.action.kind) {
+      case 'navigate': return freeze({ ...base, target: request.action.target });
+      case 'show-instance-summary': return freeze({ ...base, summary: { ...this.#context.summary } });
+      case 'set-launcher-appearance': return freeze({ ...base, values: resolveAppearance(request.action.values, e.settings) });
+      case 'copy-text': return freeze({ ...base, text: e.settings[request.action.setting] });
+      default: fail('HOST_ACTION', 'Unsupported plugin action kind.');
+    }
   }
 }

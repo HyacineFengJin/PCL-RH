@@ -75,3 +75,13 @@ export function text(tree) {
   if (tree == null || typeof tree === 'boolean') return '';
   return typeof tree === 'object' ? text(tree.props?.children) : String(tree);
 }
+// Trusted CE child controls are inspected at their public props. These helpers
+// let actual card modules bundle without replacing their field event handlers.
+export const Children = { toArray: value => value == null ? [] : Array.isArray(value) ? value.flat(Infinity) : [value] };
+export const isValidElement = value => !!value && typeof value === 'object' && 'props' in value;
+export const useId = () => useRef('extension-test-control').current;
+export const useLayoutEffect = useEffect;
+export const createContext = value => ({ value });
+export const useContext = context => context.value;
+export const createPortal = children => children;
+export const forwardRef = render => props => render(props, null);

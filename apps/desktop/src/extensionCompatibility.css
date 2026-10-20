@@ -29,3 +29,56 @@
 .extension-permissions[open] summary {
   margin-block-end: 0.75em;
 }
+.extension-fields {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  margin-block: 16px;
+}
+.extension-field {
+  display: grid;
+  grid-template-columns: minmax(0, min(32%, 180px)) minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: center;
+  min-width: 0;
+}
+.extension-field > span,
+.extension-toggle > span,
+.extension-form-actions > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.extension-field .ce-field {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.extension-field-multiline {
+  grid-template-columns: minmax(0, 1fr);
+}
+.extension-field textarea {
+  resize: vertical;
+  min-height: 88px;
+}
+.extension-toggle {
+  align-items: center;
+}
+.extension-form-actions {
+  flex-wrap: wrap;
+  margin-block-end: 12px;
+}
+.experimental-card .ce-actions .ce-button {
+  width: auto;
+  min-width: min(120px, 100%);
+  max-width: 100%;
+  height: auto;
+  min-height: 28px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+  .extension-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

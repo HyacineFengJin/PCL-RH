@@ -141,3 +141,7 @@ cargo test --locked -p pcl-desktop --features custom-protocol code_runner
 控制器的 `engineRequested` 在进入 Code 或打开 AI 设置时激活状态读取和任务轮询。仅打开插件管理不会恢复磁盘中的旧任务轮询；显式 AI 操作激活后，控制器持续持有后台任务。隐藏工作区会通过 `CodeSurfaceVisibility` 退役社区卡片和导入界面的请求，返回页面也不会重新接受此前的结果。
 
 `extensions/src/store.mjs` 串行构建候选状态，先同步临时文件、核对原存储并原子替换，再发布运行状态；写入失败保留旧声明、权限与卡片。持久安全模式允许轻宿主空闲退出，待确认的授权仍在有效期内持有宿主。失效令牌不会永久阻止休眠。
+
+`extensions/src/settings.mjs` 定义组件类型、设置值边界与固定外观字段绑定。设置草稿属于当前界面，持久值属于 `ExtensionStore`；卡片只引用该插件声明的键。升级保留新定义仍接受的值，保存事务失败不发布候选值。
+
+`experimental/effects.rs` 消费外观和复制意图：Node 从已安装清单决定权限，Rust 在保留同一 session 的期间重新验证类型并执行。外观沿用偏好存储与运行时，复制在 GTK 主线程完成。锁顺序为 operations → session；session 忙时先释放 operations 再等待。复制等待 GTK 前也释放 operations，避免与主线程关闭路径形成等待环。完成仅返回标识；前端通过无载荷事件重读当前偏好，不采用迟到的完整快照。

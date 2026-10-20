@@ -38,7 +38,7 @@ test.before(async () => {
     platform: "node",
     format: "cjs",
     jsx: "automatic",
-    alias: { react: mock, "react/jsx-runtime": mock },
+    alias: { react: mock, "react/jsx-runtime": mock, "react-dom": mock },
     loader: { ".css": "empty" },
     write: false,
   });
@@ -272,6 +272,38 @@ test("enabling with revoked required permission leads to unchecked consent; susp
     assert.equal(invoke.count("extensions_confirm"), 0);
     harness.unmount();
   }
+});
+
+test("permission consent explains settings, appearance, clipboard and the personalization slot", async () => {
+  const invoke = api(),
+    harness = await manager(invoke);
+  const consent = await importReview(
+    harness,
+    invoke,
+    review({
+      scope: "launcher",
+      slots: ["settings.cards"],
+      capabilities: [
+        "storage.settings",
+        "launcher.appearance",
+        "clipboard.write",
+      ].map((id) => ({
+        id,
+        required: true,
+        currentlyGranted: false,
+        reason: `Reason: ${id}`,
+      })),
+    }),
+  );
+  const body = compiled.text(consent);
+  for (const key of [
+    "experimental.capSettings",
+    "experimental.capAppearance",
+    "experimental.capClipboard",
+    "experimental.communitySlot.settings",
+  ])
+    assert.ok(body.includes(compiled.t(key)), `Missing ${key}`);
+  assert.equal(consent.props.confirmDisabled, true);
 });
 
 test("uninstall requires current confirmation, closes once, and sends the displayed snapshot", async () => {

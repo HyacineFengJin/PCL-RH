@@ -31,5 +31,5 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: Check declarative storage and the lightweight host
-        run: node --test --test-reporter=tap experimental/extensions/tests/store-lifecycle.test.mjs experimental/extensions/tests/lightweight-host.test.mjs experimental/extensions/tests/compatibility.test.mjs experimental/extensions/tests/runtime-notices.test.mjs
+        run: node --test --test-reporter=tap experimental/extensions/tests/store-lifecycle.test.mjs experimental/extensions/tests/lightweight-host.test.mjs experimental/extensions/tests/compatibility.test.mjs experimental/extensions/tests/runtime-notices.test.mjs experimental/extensions/tests/settings.test.mjs
       # This job neither loads AI providers nor builds the desktop application.

@@ -12,10 +12,13 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
     },
 };
 use tauri::State;
+
+#[path = "experimental/effects.rs"]
+mod effects;
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +58,7 @@ pub enum Operation {
     ExtensionsSafeMode,
     ExtensionsCards,
     ExtensionsAction,
+    ExtensionsSettings,
     SourceImport,
     ProviderCatalog,
     ProviderPresets,
@@ -99,12 +103,13 @@ impl Session {
     fn call(&mut self, operation: &str, args: Value) -> Result<Value, String> {
         let text = serde_json::to_vec(&json!({"operation":operation,"args":args}))
             .map_err(|e| e.to_string())?;
-        // RH snapshots are captured by Rust, include bounded base64 bytes, and
-        // need more room than renderer-authored legacy requests.
-        let limit = if operation == "rh_code_run" {
-            24 * 1024 * 1024
-        } else {
-            128_000
+        // RH snapshots contain native-owned base64 bytes. A settings batch can
+        // contain sixteen 4000-character values, so Unicode also needs a larger
+        // bounded envelope than the older renderer requests.
+        let limit = match operation {
+            "rh_code_run" => 24 * 1024 * 1024,
+            "extensions_settings" => 512 * 1024,
+            _ => 128_000,
         };
         if text.len() > limit {
             return Err(format!("引擎请求超过 {} KB", limit / 1000));
@@ -283,9 +288,22 @@ impl Host {
         Ok(session)
     }
     fn call(&self, operation: &str, args: Value) -> Result<Value, String> {
+        self.call_with_effect(operation, args, None, |result, _| Ok(result))
+    }
+    /// An effect consumes a host permission decision before the session can
+    /// process revoke, disable, settings changes or shutdown. The optional game
+    /// admission lock is acquired first, but never held while waiting for a
+    /// busy host: a previous action may be awaiting GTK on the main thread.
+    fn call_with_effect<'a>(
+        &'a self,
+        operation: &str,
+        args: Value,
+        operations: Option<&'a Mutex<()>>,
+        effect: impl FnOnce(Value, Option<MutexGuard<'a, ()>>) -> Result<Value, String>,
+    ) -> Result<Value, String> {
         self.callers.fetch_add(1, Ordering::SeqCst);
         let _admission = CallAdmission(&self.callers);
-        let mut owner = self.session.lock().map_err(|_| "实验功能引擎状态不可用")?;
+        let (operation_guard, mut owner) = self.lock_effect_session(operations)?;
         if self.closing.load(Ordering::SeqCst) {
             return Err("启动器正在关闭".into());
         }
@@ -309,7 +327,39 @@ impl Host {
             drop(owner.take());
             self.stopped.store(true, Ordering::SeqCst);
         }
-        result
+        let result = result?;
+        effect(result, operation_guard)
+    }
+    fn lock_effect_session<'a>(
+        &'a self,
+        operations: Option<&'a Mutex<()>>,
+    ) -> Result<(Option<MutexGuard<'a, ()>>, MutexGuard<'a, Option<Session>>), String> {
+        let Some(operations) = operations else {
+            return self
+                .session
+                .lock()
+                .map(|owner| (None, owner))
+                .map_err(|_| "实验功能引擎状态不可用".into());
+        };
+        loop {
+            if self.closing.load(Ordering::SeqCst) {
+                return Err("启动器正在关闭".into());
+            }
+            let operation = operations.lock().map_err(|_| "启动器操作状态不可用")?;
+            match self.session.try_lock() {
+                Ok(owner) => return Ok((Some(operation), owner)),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("实验功能引擎状态不可用".into());
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    drop(operation);
+                    // Wait without operations, then retry in the original
+                    // order. No permission decision exists until both locks
+                    // have been acquired for the same action.
+                    drop(self.session.lock().map_err(|_| "实验功能引擎状态不可用")?);
+                }
+            }
+        }
     }
     /// Launcher diagnostics have their own native receipt boundary. Keep these
     /// operations out of the renderer's general experimental Operation enum.
@@ -416,6 +466,7 @@ fn extension_context(shared: &Shared) -> Value {
 }
 #[tauri::command]
 pub async fn experimental_call(
+    window: tauri::WebviewWindow,
     host: State<'_, Arc<Host>>,
     shared: State<'_, Arc<Shared>>,
     code: State<'_, Arc<crate::rh_code::Store>>,
@@ -440,10 +491,16 @@ pub async fn experimental_call(
         .unwrap()
         .to_owned();
     let host = host.inner().clone();
+    let shared = shared.inner().clone();
     let code = code.inner().clone();
     let admission = host.admit_native()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _admission = admission;
+        if operation == "extensions_action" {
+            return effects::execute(&host, &shared, args, |text| {
+                effects::copy_on_main_thread(&window, shared.clone(), text)
+            });
+        }
         let mut capture = None;
         if operation == "rh_code_start" {
             args = code.call("agent_bound", args)?;

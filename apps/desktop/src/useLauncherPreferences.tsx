@@ -12,6 +12,7 @@ import {
 } from "./launcherTypes";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 import { animateLauncher } from "./launcherAnimation";
+import { subscribeLauncherAppearanceApplied } from "./extensionEvents";
 import "./launcher-theme.css";
 
 export const LauncherNavigationContext = createContext({
@@ -53,58 +54,129 @@ export function useLauncherPreferences(
   native: boolean,
   notify: (message: string) => void,
 ) {
-  const [view, setView] = useState(defaultLauncherPreferenceView);
+  type Owner = {
+    api: Api;
+    native: boolean;
+    live: boolean;
+    epoch: number;
+    reading: boolean;
+    refreshPending: boolean;
+  };
+  const ownership = useRef<Owner>({
+    api,
+    native,
+    live: false,
+    epoch: 0,
+    reading: false,
+    refreshPending: false,
+  });
+  if (ownership.current.api !== api || ownership.current.native !== native) {
+    ownership.current.live = false;
+    ownership.current = {
+      api,
+      native,
+      live: false,
+      epoch: 0,
+      reading: false,
+      refreshPending: false,
+    };
+  }
+  const owner = ownership.current;
+  const [snapshot, setSnapshot] = useState(() => ({
+    owner,
+    value: defaultLauncherPreferenceView(),
+  }));
+  const view =
+    snapshot.owner === owner ? snapshot.value : defaultLauncherPreferenceView();
   const current = useRef(view);
   current.current = view;
-  const [busy, setBusy] = useState(false);
-  const working = useRef(false);
+  const [busyOwner, setBusyOwner] = useState<Owner | null>(null);
+  const busy = busyOwner === owner;
+  const working = useRef<{ owner: Owner; epoch: number } | null>(null);
+  if (working.current && working.current.owner !== owner)
+    working.current = null;
   const [revealed, setRevealed] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [importEpoch, setImportEpoch] = useState(0);
   const callbacks = useRef({ notify });
   callbacks.current = { notify };
-  useEffect(() => {
-    if (!native) return;
-    let live = true;
+  const owns = () => ownership.current === owner && owner.live && owner.native;
+  function publish(value: LauncherPreferenceView) {
+    current.current = value;
+    setSnapshot({ owner, value });
+    if (value.runtime_warning) callbacks.current.notify(value.runtime_warning);
+  }
+  function refresh() {
+    if (!owns() || working.current || owner.reading) return;
+    owner.refreshPending = false;
+    owner.reading = true;
+    const epoch = ++owner.epoch;
     void api<LauncherPreferenceView>("launcher_preferences")
       .then((value) => {
-        if (live && !working.current) {
-          current.current = value;
-          setView(value);
-        }
+        if (owns() && owner.epoch === epoch && !working.current) publish(value);
       })
       .catch((error) => {
-        if (live) callbacks.current.notify(String(error));
+        if (owns() && owner.epoch === epoch)
+          callbacks.current.notify(String(error));
+      })
+      .finally(() => {
+        owner.reading = false;
+        if (owner.refreshPending) refresh();
       });
+  }
+  useEffect(() => {
+    if (!native) return;
+    owner.live = true;
+    owner.refreshPending = true;
+    refresh();
+    const unsubscribe = subscribeLauncherAppearanceApplied(() => {
+      ++owner.epoch;
+      owner.refreshPending = true;
+      refresh();
+    });
     return () => {
-      live = false;
+      unsubscribe();
+      owner.live = false;
+      ++owner.epoch;
     };
-  }, [api, native]);
+  }, [owner]);
   function adopt(value: LauncherPreferenceView) {
-    current.current = value;
-    setView(value);
-    if (value.runtime_warning) callbacks.current.notify(value.runtime_warning);
+    if (owns() && (!working.current || working.current.epoch === owner.epoch))
+      publish(value);
   }
   async function run<T>(work: () => Promise<T>): Promise<T> {
     if (!native || !current.current.revision)
       throw new Error(t("prefs.desktop"));
     if (working.current) throw new Error(t("prefs.busy"));
-    working.current = true;
-    setBusy(true);
+    if (!owns()) throw new Error(t("prefs.desktop"));
+    owner.refreshPending ||= owner.reading;
+    const operation = { owner, epoch: ++owner.epoch };
+    working.current = operation;
+    setBusyOwner(owner);
     try {
       return await work();
     } catch (error) {
       // An outside edit or an ambiguous disk failure may have blocked writes.
       // Snapshot exposes that warning; an explicit reload is a separate action.
       try {
-        adopt(await api<LauncherPreferenceView>("launcher_preferences"));
+        if (owns() && working.current === operation) {
+          const value = await api<LauncherPreferenceView>(
+            "launcher_preferences",
+          );
+          if (working.current === operation) adopt(value);
+        }
       } catch {
         /* Preserve the last known revision when the IPC itself is unavailable. */
       }
       throw error;
     } finally {
-      working.current = false;
-      setBusy(false);
+      if (working.current === operation) {
+        working.current = null;
+        if (owns()) {
+          setBusyOwner(null);
+          if (owner.refreshPending) refresh();
+        }
+      }
     }
   }
   function patch(value: LauncherPreferencePatch) {

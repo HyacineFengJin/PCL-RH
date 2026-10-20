@@ -1,6 +1,6 @@
 # 插件使用与声明格式
 
-顶部橙色入口打开插件管理。内置模块可以按依赖启停；「社区插件」接收 JSON 声明或带摘要的 `.pclext.json` 包。社区插件目前提供纯文本卡片、页面跳转和经授权的实例摘要；内置组件开发见[RH Code 插件开发](RH_CODE_PLUGINS.md)。商店暂未开放。
+顶部橙色入口打开插件管理。内置模块可以按依赖启停；「社区插件」接收 JSON 声明或带摘要的 `.pclext.json` 包。社区插件可以提供输入框、笔记、开关、选择器和整数控件，并在授权后应用外观或复制笔记；也支持页面跳转和实例摘要；内置组件开发见[RH Code 插件开发](RH_CODE_PLUGINS.md)。商店暂未开放。
 
 ## 安装与管理
 
@@ -17,7 +17,7 @@ PCL N / Nex 文件仍只提供兼容性报告，不会变成可执行插件。
 
 | `scope` | 卡片位置 | 展示时机 |
 | --- | --- | --- |
-| `launcher` | `home.secondary`、`tools.cards` | 启动器首页或插件管理预览 |
+| `launcher` | `home.secondary`、`tools.cards`、`settings.cards` | 启动器首页、插件管理预览或个性化设置 |
 | `rh-code` | `rh-code.cards` | RH Code 的「插件卡片」区域 |
 | `both` | 上述任意位置 | 对应页面打开时 |
 
@@ -68,3 +68,15 @@ PCL N / Nex 文件仍只提供兼容性报告，不会变成可执行插件。
 所有声明都需要必需的 `ui.cards` 权限。实例摘要仅包含游戏版本、加载器、模组数量和隔离状态，不包含实例名、文件路径或账号。没有选中实例或缺少操作权限时，相应按钮不可用。
 
 打包工具可通过 `experimental/extensions/src/package.mjs` 的 `createPackage(source)` 生成带 SHA-256 摘要的 JSON 包。摘要用于发现内容不匹配，不验证发布者身份。
+
+## 可交互组件与示例
+
+组件有明确的保存按钮；修改后先保存，再执行卡片操作。恢复默认只重置草稿，不会直接覆盖已保存值。插件自己的数据会跨重启保留，卸载时删除；不要在笔记中保存密钥。
+
+可以直接导入以下 JSON：
+
+- [外观切换](../experimental/extensions/examples/appearance-switcher.json)：在首页和个性化设置选择主题、鼠标样式，保存后点击「应用外观」即可真正改变启动器。需要可选的外观授权。
+- [启动检查清单](../experimental/extensions/examples/launch-checklist.json)：保存备忘开关与目标帧率数字，附实例管理入口。清单不替你备份存档或修改游戏设置。
+- [工作区笔记](../experimental/extensions/examples/workspace-notes.json)：在 RH Code 的「插件卡片」区域编辑笔记与阶段，授权后可复制已保存笔记。
+
+停用或卸载外观插件后，已应用的主题保持原样；可在个性化设置中调整。完整的字段、权限、操作和生命周期契约见[插件规范 v1](PLUGIN_SPEC.md)。
