@@ -22,6 +22,8 @@ scopes, source-input hashes, license declarations, and explicit evidence gaps.
 notice files, including those nested inside vendored package sources. Identical
 texts share one SHA-256 reference. Upstream copyright notices remain intact.
 Generated sources use logical package paths rather than local cache paths.
+The collected text bundle keeps upstream line endings and whitespace; its
+narrow Git attributes prevent normalization or whitespace cleanup of originals.
 
 The npm lockfiles cover both desktop and experimental runtime dependencies.
 Installed package names, versions, and license declarations must match their

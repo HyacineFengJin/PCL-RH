@@ -1,0 +1,2 @@
+# Preserve upstream notice bytes, including mixed CRLF and original spaces.
+LICENSES/DEPENDENCIES.txt -text -whitespace
