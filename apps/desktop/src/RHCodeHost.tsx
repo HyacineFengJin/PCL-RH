@@ -6,6 +6,7 @@ import manifests from "../../../code/plugins.json";
 import { WorkRetention } from "./rh-code/retention";
 import { createWorkLeases, maySuspendCode } from "./rhCodeLifecycle";
 import { label } from "./rh-code/locale";
+import { createCommunityCatalogPort } from "./rh-code/communityCatalog";
 import type { Kernel } from "./rh-code/kernel";
 import type { Controller } from "./rh-code/controller";
 import type { Snapshot, Manifest } from "./rh-code/types";
@@ -32,11 +33,13 @@ export function RHCodeHost(props: Props) {
     visibilityEpoch = useRef(0),
     leases = useRef(createWorkLeases()).current,
     root = useRef<HTMLDivElement>(null);
+  const community = useRef(createCommunityCatalogPort(props)).current;
   if (current.current.visible !== props.visible) {
     visibilityEpoch.current++;
     awaySince.current = props.visible ? null : Date.now();
   }
   current.current = props;
+  community.setSurface(props);
   const enqueue = useCallback((operation: () => Promise<void>) => {
     queue.current = queue.current.then(operation).catch((e) => {
       if (alive.current) setError(String(e));
@@ -70,6 +73,7 @@ export function RHCodeHost(props: Props) {
           if (alive.current && mounted.current && current.current.visible)
             current.current.onNavigate(target);
         },
+        community.runtime,
       ),
     );
     kernel.current = owner;
@@ -103,14 +107,19 @@ export function RHCodeHost(props: Props) {
   );
   useEffect(() => {
     alive.current = true;
+    community.setSurface(current.current);
     return () => {
       alive.current = false;
+      community.retire();
       // Queue ownership also covers an entry import still in flight.
       enqueue(async () => {
         if (!alive.current) await kernel.current?.dispose();
       });
     };
-  }, [enqueue]);
+  }, [enqueue, community]);
+  useEffect(() => {
+    community.publishSurface();
+  }, [props.api, props.native, props.visible, community]);
   useEffect(() => {
     enqueue(async () => {
       if (!alive.current) return;

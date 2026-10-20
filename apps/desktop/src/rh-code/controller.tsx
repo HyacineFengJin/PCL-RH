@@ -133,6 +133,7 @@ export function useController(
           "maker_threads",
           "extensions_list",
           "extensions_cards",
+          "extensions_catalog",
           "rh_code_harness_reviews",
           "harness_build_log",
         ].includes(operation);

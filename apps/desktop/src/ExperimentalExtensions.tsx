@@ -32,6 +32,7 @@ import {
   type ExtensionCompatibilityReport,
   type ExtensionCard,
   type ExtensionScope,
+  type ExtensionCardFilter,
   type ExperimentalNavigate,
 } from "./experimentalTypes";
 const capabilityLabel = (id: string) =>
@@ -91,12 +92,16 @@ export function ExperimentalCards({
   slot,
   onNavigate,
   emptyText,
+  filter,
+  refreshable = false,
 }: {
   api: Api;
   native: boolean;
   slot: "tools.cards" | "home.secondary" | "rh-code.cards" | "settings.cards";
   onNavigate: ExperimentalNavigate;
   emptyText?: string;
+  filter?: ExtensionCardFilter;
+  refreshable?: boolean;
 }) {
   type Summary = {
     minecraftVersion: string;
@@ -105,22 +110,33 @@ export function ExperimentalCards({
     isolated: boolean;
   };
   const [epoch, setEpoch] = useState(0);
+  // Compare the pair by value: render closures may recreate the filter object,
+  // while changing A -> B -> A must still retire every earlier A callback.
+  const filterKey = JSON.stringify(
+    filter ? [filter.extensionId, filter.cardId] : null,
+  );
   // Publication refreshes change the request owner, but drafts belong to the
   // mounted API/native/slot surface. Hidden surfaces never revive old drafts.
   const cacheRef = useRef({
     api,
     native,
     slot,
+    filterKey,
     entries: new Map<string, CachedExtensionDraft>(),
   });
   if (
     cacheRef.current.api !== api ||
     cacheRef.current.native !== native ||
-    cacheRef.current.slot !== slot
+    cacheRef.current.slot !== slot ||
+    cacheRef.current.filterKey !== filterKey
   )
-    cacheRef.current = { api, native, slot, entries: new Map() };
+    cacheRef.current = { api, native, slot, filterKey, entries: new Map() };
   const cache = cacheRef.current.entries;
-  const scope = useExtensionRequestScope(api, native, `${slot}:${epoch}`);
+  const scope = useExtensionRequestScope(
+    api,
+    native,
+    JSON.stringify([slot, filterKey, epoch]),
+  );
   const view = useExtensionView<{
     cards: ExtensionCard[];
     summary: Summary | null;
@@ -172,7 +188,12 @@ export function ExperimentalCards({
         drafts: new Map(),
         feedback: null,
       });
-      void call<ExtensionCard[]>(api, "extensions_cards", { slot })
+      void call<ExtensionCard[]>(api, "extensions_cards", {
+        slot,
+        ...(filter && {
+          filter: { extensionId: filter.extensionId, cardId: filter.cardId },
+        }),
+      })
         .then((v) => {
           if (request.current())
             view.update({
@@ -295,6 +316,19 @@ export function ExperimentalCards({
   }
   return (
     <>
+      {refreshable && (
+        <div className="ce-actions">
+          <button
+            className="ce-button"
+            disabled={!native}
+            onClick={() => {
+              if (scope.current()) notifyExtensionsChanged();
+            }}
+          >
+            {t("experimental.refreshPanels")}
+          </button>
+        </div>
+      )}
       {emptyText && loaded && cards.length === 0 && !error && (
         <p className="experimental-origin">{emptyText}</p>
       )}
@@ -772,7 +806,7 @@ export function ExperimentalExtensions({
           />
           <span>{t("experimental.safeMode")}</span>
         </label>
-        <ExperimentalVersion version="0.8.0" />
+        <ExperimentalVersion version="0.9.0" />
       </section>
       {error && (
         <p className="experimental-error" role="alert">

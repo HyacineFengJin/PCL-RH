@@ -37,7 +37,7 @@ const names: Record<string, [string, string]> = {
   "rh.overview": ["项目概览", "Project overview"],
   "rh.pixel": ["像素材质", "Pixel textures"],
   "rh.model": ["方块模型", "Cuboid models"],
-  "rh.extensions": ["社区插件卡片", "Community cards"],
+  "rh.extensions": ["社区插件组件", "Community components"],
 };
 export function Plugins({
   kernel,

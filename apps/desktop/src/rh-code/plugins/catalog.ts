@@ -37,6 +37,8 @@ export function assemblePlugins(
       });
       Object.freeze(manifest.tools);
     }
+    if (source.dynamicViews !== undefined)
+      manifest.dynamicViews = Object.freeze({ ...source.dynamicViews });
     Object.freeze(manifest);
     // The array form supports already imported entries supplied by tests/hosts.
     // Production always supplies lazy module loaders.

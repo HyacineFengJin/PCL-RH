@@ -1,6 +1,6 @@
 # PCL RH 插件规范 v1
 
-本规范描述 PCL RH 的 0.8.0 插件模块提供的声明接口。清单的 `schemaVersion` 和宿主 API 仍为 `1`；新增字段、组件及能力采用增量扩展。旧宿主遇到不认识的字段或能力会拒绝导入。这里的 0.8.0 是插件模块版本，并非启动器的整体版本。
+本规范描述 PCL RH 的 0.9.0 插件模块提供的声明接口。清单的 `schemaVersion` 和宿主 API 仍为 `1`；新增字段、组件及能力采用增量扩展。旧宿主遇到不认识的字段或能力会拒绝导入。这里的 0.9.0 是插件模块版本，并非启动器的整体版本。
 
 ## 1. 两种扩展方式
 
@@ -154,3 +154,22 @@ node --test apps/desktop/scripts/extensions-settings-ui.test.mjs
 ```
 
 这些检查覆盖清单、授权、保存与组件事件，不替代使用者对本机桌面集成的验证。安装操作见[插件使用说明](PLUGINS.md)。
+
+## 8. RH Code 独立面板与操作目录
+
+每张当前启用且已授权的 `rh-code.cards` 卡片，都可以在 RH Code 的「区域内容」选择器单独选择。显示名为卡片标题，标题与插件名称不同时会附上插件名称；同一面板可以在多个区域展示，沿用区域的拆分、交换、最大化和关闭操作。原有「插件卡片」聚合组件继续保留。
+
+面板 ID 由宿主生成：`rh.extensions.panel.` 加上 `SHA256(JSON.stringify([extensionId, cardId]))` 的 64 位小写十六进制值。JSON 数组使用 UTF-8 字节。相同 ID 对跨设置变更、版本升级与重新安装保持相同面板 ID；改变卡片 ID 会产生新面板。布局只保存该标识及区域状态，不授予能力或执行代码。停用、必需权限撤销、安全模式或卸载后，面板不可用但布局占位保留；相同 ID 再次可用时恢复。
+
+「插件操作」是另一个可选区域组件，支持按操作名、卡片标题和插件名称搜索。它列出当前 RH Code 卡片声明的操作，不包含仅属于启动器范围的操作。未授权或缺少所选实例时显示不可用原因。选择操作使用已保存的设置；搜索、加载目录和刷新本身不执行操作。
+
+新增的宿主读取接口：
+
+- `extensions_catalog` 返回 `{panels, actions}`，只包含当前 RH Code 卡片的身份、标题、摘要与状态代次及操作是否可用，不包含设置值、笔记正文、账号、项目文件或目标路径。
+- `panels` 元素含 `viewId`、`extensionId`、`extensionName`、`cardId`、`title`、`digest`、`generation`。
+- `actions` 元素含 `extensionId`、`extensionName`、`cardId`、`cardTitle`、`id`、`label`、`kind`、`enabled`、`unavailableReason`、`digest`、`generation`。目录不是可执行回调；仍须通过原有 `extensions_action` 核对当前声明和授权。
+- `extensions_cards` 可附带 `filter: {extensionId, cardId}`，读取一个确切卡片；未知组合或不属于所求插槽的卡片返回空数组。省略过滤条件时沿用原有完整插槽读取。
+
+完整目录和每个卡片插槽各自受 768 KiB 投影预算约束。发布后才出现新组件；超限安装或保存会保留原状态。可信内置 `rh.extensions` 模块负责把目录转换成宿主视图，社区声明不会获得 React 渲染函数、Cordis 上下文或原生 API。隐藏时撤回动态视图，模块休眠或停用时取消订阅；重新进入后读取当前状态。
+
+[工作区快捷操作示例](../experimental/extensions/examples/workspace-shortcuts.json)演示一个 `both` 范围插件在首页提供入口、在 RH Code 提供独立面板与搜索操作。

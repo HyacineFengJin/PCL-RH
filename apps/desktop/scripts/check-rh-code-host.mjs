@@ -31,7 +31,7 @@ function hostDriver(options = {}) {
     controllers = [],
     kernels = [];
   const destinations = [];
-  let navigate;
+  let navigate, community;
   const manifests = options.manifests ?? shipped;
   let cursor = 0,
     dirty = false,
@@ -45,7 +45,8 @@ function hostDriver(options = {}) {
     acquire,
     props;
   const nativeResponses = [],
-    prepareResponses = [];
+    prepareResponses = [],
+    catalogResponses = [];
   const root = { querySelector: () => (dialog ? {} : null) };
   const react = {
     createContext(initial) {
@@ -136,6 +137,13 @@ function hostDriver(options = {}) {
       const response = nativeResponses.shift();
       return response ? await response : { released: true, busy: false };
     }
+    if (
+      command === "experimental_call" &&
+      args.operation === "extensions_catalog"
+    ) {
+      const response = catalogResponses.shift();
+      return response ? await response : { panels: [], actions: [] };
+    }
     throw new Error(`Unexpected synthetic command: ${command}`);
   }
   function newController() {
@@ -201,6 +209,7 @@ function hostDriver(options = {}) {
         return {
           productPlugins: (...args) => {
             navigate = args[3];
+            community = args[4];
             return manifests.map((manifest) => ({ manifest }));
           },
         };
@@ -293,6 +302,10 @@ function hostDriver(options = {}) {
     kernels,
     nativeResponses,
     prepareResponses,
+    catalogResponses,
+    get community() {
+      return community;
+    },
     get child() {
       return child;
     },
@@ -311,6 +324,10 @@ function hostDriver(options = {}) {
     acquireWork: () => acquire(),
     visible(visible) {
       props = { ...props, visible };
+      render();
+    },
+    updateProps(next) {
+      props = { ...props, ...next };
       render();
     },
     async flush() {
@@ -349,6 +366,72 @@ async function eligible(driver) {
   driver.tick(10 * 60_000);
   await driver.flush();
 }
+
+test("the host supplies a cold community port and publishes visibility/native/API changes without importing Agent services", async (t) => {
+  const driver = await fixture(t);
+  assert.equal(driver.community, undefined);
+  await enter(driver);
+  assert.equal(driver.community.isAvailable(), true);
+  assert.equal(
+    driver.calls.some((call) => call.args?.operation === "extensions_catalog"),
+    false,
+  );
+  const changes = [];
+  const unsubscribe = driver.community.subscribe(() =>
+    changes.push(driver.community.isAvailable()),
+  );
+  t.after(unsubscribe);
+  driver.visible(false);
+  await driver.flush();
+  assert.equal(driver.community.isAvailable(), false);
+  await assert.rejects(driver.community.readCatalog(), /unavailable/);
+  driver.visible(true);
+  await driver.flush();
+  assert.equal(driver.community.isAvailable(), true);
+  driver.updateProps({ native: false });
+  await driver.flush();
+  assert.equal(driver.community.isAvailable(), false);
+  const calls = [];
+  driver.updateProps({
+    native: true,
+    api: async (command, payload) => {
+      calls.push({ command, payload });
+      return { panels: [], actions: [] };
+    },
+  });
+  await driver.flush();
+  await driver.community.readCatalog();
+  assert.deepEqual(calls, [
+    {
+      command: "experimental_call",
+      payload: { operation: "extensions_catalog", args: {} },
+    },
+  ]);
+  assert.deepEqual(changes, [false, true, false, true]);
+  assert.ok(!driver.imports.some((name) => /agent/i.test(name)));
+});
+
+test("the retained host rejects an old community read after hide and return and publishes retirement on unmount", async (t) => {
+  const driver = await fixture(t),
+    pending = deferred();
+  await enter(driver);
+  driver.catalogResponses.push(pending.promise);
+  const read = driver.community.readCatalog(),
+    rejected = assert.rejects(read, /retired/);
+  driver.visible(false);
+  driver.visible(true);
+  pending.resolve({ panels: [], actions: [] });
+  await rejected;
+  await driver.flush();
+  let retirements = 0;
+  const unsubscribe = driver.community.subscribe(() => {
+    if (!driver.community.isAvailable()) retirements++;
+  });
+  t.after(unsubscribe);
+  driver.close();
+  assert.equal(driver.community.isAvailable(), false);
+  assert.equal(retirements, 1);
+});
 
 test("initial launcher startup neither bootstraps nor imports the RH Code service", async (t) => {
   const driver = await fixture(t);

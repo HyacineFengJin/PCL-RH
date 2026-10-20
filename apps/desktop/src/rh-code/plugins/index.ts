@@ -25,6 +25,7 @@ export function productPlugins(
   _owner?: () => Kernel,
   keepAwake?: PluginRuntime["keepAwake"],
   navigate?: PluginRuntime["navigate"],
+  community?: PluginRuntime["community"],
 ): LazyProductPlugin[] {
   return assemblePlugins(
     manifests as Manifest[],
@@ -33,6 +34,7 @@ export function productPlugins(
       commands,
       keepAwake,
       navigate,
+      community,
     },
   );
 }

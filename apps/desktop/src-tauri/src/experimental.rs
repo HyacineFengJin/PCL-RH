@@ -57,6 +57,7 @@ pub enum Operation {
     ExtensionsRereview,
     ExtensionsSafeMode,
     ExtensionsCards,
+    ExtensionsCatalog,
     ExtensionsAction,
     ExtensionsSettings,
     SourceImport,
@@ -481,7 +482,7 @@ pub async fn experimental_call(
     }
     if matches!(
         operation,
-        Operation::ExtensionsCards | Operation::ExtensionsAction
+        Operation::ExtensionsCards | Operation::ExtensionsCatalog | Operation::ExtensionsAction
     ) {
         args["context"] = extension_context(&shared);
     }

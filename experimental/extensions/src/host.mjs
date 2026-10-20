@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { readManifest, actionCapability, compareVersions, extensionScope, CARD_SLOTS } from './manifest.mjs';
 import { fail, freeze } from './json.mjs';
 import { readPackage } from './package.mjs';
@@ -9,6 +9,11 @@ const ACTION_TTL = 30_000;
 const MAX_PENDING = 64;
 const MAX_INSTALLED = 32;
 const SNAPSHOT = /^[A-Za-z0-9._+ -]{1,80}(?![\s\S])/;
+
+/** Layout identifiers cannot fit both maximum-length external IDs verbatim.
+ * Hash a length-unambiguous pair; settings/version changes retain the panel. */
+export const panelViewId = (extensionId, cardId) => 'rh.extensions.panel.' +
+  createHash('sha256').update(JSON.stringify([extensionId, cardId])).digest('hex');
 
 // This object belongs to trusted host code. Extensions supply only JSON text.
 // It is a reference policy implementation, not a JavaScript execution sandbox.
@@ -253,12 +258,29 @@ export class ExtensionHost {
     this.#contextGeneration++;
   }
 
-  cards(slot) {
+  #actionView(entry, action) {
+    const granted = entry.grants.has(actionCapability(action));
+    const selected = action.kind !== 'show-instance-summary' || this.#context !== null;
+    return {
+      id: action.id, label: action.label,
+      enabled: granted && selected,
+      unavailableReason: !granted ? 'permission-not-granted' : !selected ? 'no-selected-instance' : null,
+    };
+  }
+
+  cards(slot, filter) {
+    if (filter !== undefined && (!filter || typeof filter !== 'object' || Array.isArray(filter) ||
+        Object.keys(filter).length !== 2 || !Object.hasOwn(filter, 'extensionId') || !Object.hasOwn(filter, 'cardId') ||
+        typeof filter.extensionId !== 'string' || !filter.extensionId.length || filter.extensionId.length > 128 ||
+        typeof filter.cardId !== 'string' || !filter.cardId.length || filter.cardId.length > 48))
+      fail('HOST_FILTER', 'A panel filter must name one extension and one card.');
     const result = [];
     for (const e of this.#entries.values()) {
       if (this.#state(e) !== 'active') continue;
+      if (filter && e.manifest.id !== filter.extensionId) continue;
       for (const card of e.manifest.contributions.cards) {
         if (card.slot !== slot) continue;
+        if (filter && card.id !== filter.cardId) continue;
         result.push({
           extensionId: e.manifest.id, extensionName: e.manifest.name,
           publisherVerified: false, digest: e.digest,
@@ -267,16 +289,31 @@ export class ExtensionHost {
           ...(card.fields ? { fields: card.fields.map(key => ({
             ...e.manifest.settings.find(definition => definition.id === key), value: e.settings[key],
           })) } : {}),
-          actions: card.actions.map(action => ({
-            id: action.id, label: action.label,
-            enabled: e.grants.has(actionCapability(action)) && (action.kind !== 'show-instance-summary' || this.#context !== null),
-            unavailableReason: !e.grants.has(actionCapability(action)) ? 'permission-not-granted' :
-              action.kind === 'show-instance-summary' && !this.#context ? 'no-selected-instance' : null,
-          })),
+          actions: card.actions.map(action => this.#actionView(e, action)),
         });
       }
     }
     return freeze(result);
+  }
+
+  /** A lightweight catalog carries identities and labels, never saved text or
+   * render callbacks. The trusted UI alone creates views for these entries. */
+  catalog() {
+    const panels = [], actions = [];
+    for (const entry of this.#entries.values()) {
+      if (this.#state(entry) !== 'active') continue;
+      for (const card of entry.manifest.contributions.cards) {
+        if (card.slot !== 'rh-code.cards') continue;
+        const identity = {
+          extensionId: entry.manifest.id, extensionName: entry.manifest.name,
+          cardId: card.id, digest: entry.digest, generation: entry.generation,
+        };
+        panels.push({ ...identity, viewId: panelViewId(entry.manifest.id, card.id), title: card.title });
+        for (const action of card.actions)
+          actions.push({ ...identity, cardTitle: card.title, kind: action.kind, ...this.#actionView(entry, action) });
+      }
+    }
+    return freeze({ panels, actions });
   }
 
   /** Repeated field references amplify saved text across cards. Bound each
@@ -286,6 +323,8 @@ export class ExtensionHost {
     for (const slot of CARD_SLOTS)
       if (Buffer.byteLength(JSON.stringify(this.cards(slot)), 'utf8') > 768 * 1024)
         fail('HOST_PROJECTION_LIMIT', 'Plugin cards exceed the display budget; shorten text or remove repeated fields. Previous state retained.');
+    if (Buffer.byteLength(JSON.stringify(this.catalog()), 'utf8') > 768 * 1024)
+      fail('HOST_PROJECTION_LIMIT', 'Plugin component catalog exceeds the display budget. Previous state retained.');
   }
 
   prepareAction(extensionId, cardId, actionId) {

@@ -5,6 +5,7 @@
  * Reconciliation is serialized, and request versions cancel late imports/apply
  * results when a newer surface configuration or host disposal supersedes them. */
 import { Context, type Fiber } from "@deepseek-ai/cordis";
+import type { ExtensionCatalog } from "../experimentalTypes";
 import type {
   ActivePluginScope,
   CommandContribution,
@@ -13,12 +14,19 @@ import type {
   PluginStatus,
   ViewContribution,
 } from "./types";
+export type ProductPluginServices = {
+  /** Replace this activation's dynamic views in one registry publication. */
+  replaceViews(views: ViewContribution[]): void;
+};
 export type ProductPlugin = {
   manifest: Manifest;
   views?: ViewContribution[];
   commands?: CommandContribution[];
   layouts?: LayoutContribution[];
-  apply?: (ctx: Context) => void | Promise<void>;
+  apply?: (
+    ctx: Context,
+    services: ProductPluginServices,
+  ) => void | Promise<void>;
   /** A manifest without a usable bundled entry remains visible in settings. */
   loadError?: string;
 };
@@ -30,6 +38,12 @@ export type PluginRuntime = {
   /** Hold an RH Code controller lease for background work. The plugin owns its
    * release and must register it with ctx.effect so retirement releases it. */
   keepAwake?: () => () => void;
+  /** Metadata only. Community declarations never receive this trusted port. */
+  community?: {
+    readCatalog(): Promise<ExtensionCatalog>;
+    subscribe(listener: () => void): () => void;
+    isAvailable(): boolean;
+  };
   commands?: {
     run: (...args: any[]) => unknown;
     stop: (...args: any[]) => unknown;
@@ -56,6 +70,26 @@ const validId = (id: unknown): id is string =>
   typeof id === "string" &&
   id.length <= 120 &&
   /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id);
+const validComponent = (value: unknown) =>
+  typeof value === "function" ||
+  (typeof value === "object" &&
+    value !== null &&
+    "$$typeof" in value &&
+    [Symbol.for("react.forward_ref"), Symbol.for("react.memo")].includes(
+      value.$$typeof as symbol,
+    ));
+function validateView(view: ViewContribution) {
+  if (
+    typeof view.label !== "string" ||
+    !view.label.trim() ||
+    !validComponent(view.icon) ||
+    !validComponent(view.render) ||
+    (view.settings !== undefined && !validComponent(view.settings)) ||
+    (view.tone !== undefined &&
+      !["neutral", "blue", "purple", "orange"].includes(view.tone))
+  )
+    throw new Error(`Invalid view: ${view.id}`);
+}
 function ids(value: unknown, name: string): asserts value is string[] {
   if (
     !Array.isArray(value) ||
@@ -83,6 +117,25 @@ function validate(plugin: ProductPlugin) {
     throw new Error("Invalid plugin scope");
   ids(m.dependencies, "dependencies");
   ids(m.views, "view IDs");
+  if (m.dynamicViews !== undefined) {
+    const declaration = m.dynamicViews;
+    if (
+      typeof declaration !== "object" ||
+      declaration === null ||
+      Array.isArray(declaration) ||
+      Object.keys(declaration).length !== 2 ||
+      !Object.hasOwn(declaration, "prefix") ||
+      !Object.hasOwn(declaration, "limit") ||
+      typeof declaration.prefix !== "string" ||
+      declaration.prefix.length > 80 ||
+      !declaration.prefix.startsWith(`${m.id}.`) ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.$/.test(declaration.prefix) ||
+      !Number.isInteger(declaration.limit) ||
+      declaration.limit < 1 ||
+      declaration.limit > 384
+    )
+      throw new Error("Invalid dynamic view declaration");
+  }
   ids(m.commands ?? [], "command IDs");
   ids(m.layouts ?? [], "layout IDs");
   if (
@@ -125,14 +178,7 @@ function validate(plugin: ProductPlugin) {
       seen.add(item.id);
     }
   }
-  for (const view of plugin.views ?? [])
-    if (
-      typeof view.label !== "string" ||
-      !view.label.trim() ||
-      !view.icon ||
-      !view.render
-    )
-      throw new Error(`Invalid view: ${view.id}`);
+  for (const view of plugin.views ?? []) validateView(view);
   for (const command of plugin.commands ?? [])
     if (typeof command.handler !== "function")
       throw new Error(`Invalid command: ${command.id}`);
@@ -145,6 +191,12 @@ function validate(plugin: ProductPlugin) {
       throw new Error(`Invalid layout: ${layout.id}`);
   if (plugin.loadError) throw new Error(plugin.loadError);
 }
+type ViewListing = Pick<ViewContribution, "id" | "owner" | "label">;
+type ViewPublisher = {
+  live: boolean;
+  ready: boolean;
+  views: Map<string, ViewContribution>;
+};
 export class Kernel {
   readonly context = new Context();
   readonly views = new Map<string, ViewContribution>();
@@ -158,6 +210,8 @@ export class Kernel {
   private fibers = new Map<string, Fiber>();
   private owners = new WeakMap<Context, ProductPlugin>();
   private commandOwners = new Map<string, string>();
+  private knownViews = new Map<string, ViewListing>();
+  private viewPublishers = new Map<string, ViewPublisher>();
   private listeners = new Set<() => void>();
   private sequence: Promise<void> = Promise.resolve();
   private stopped = false;
@@ -167,12 +221,33 @@ export class Kernel {
       throw new Error("Duplicate product plugin");
     this.definitions = [...plugins];
     this.plugins = [...plugins];
-    for (const p of plugins)
+    for (const p of plugins) {
+      for (const id of p.manifest.views ?? [])
+        if (!this.knownViews.has(id))
+          this.knownViews.set(id, {
+            id,
+            owner: p.manifest.id,
+            label:
+              ("views" in p && p.views?.find((v) => v.id === id)?.label) || id,
+          });
       this.statuses.set(p.manifest.id, {
         id: p.manifest.id,
         state: "dormant",
         dependencies: [...dependencies(p)],
       });
+    }
+  }
+  /** Static metadata survives lazy scope retirement without retaining component
+   * closures. Dynamic metadata exists only for the current live publication. */
+  listViews(): ViewListing[] {
+    const entries = new Map(this.knownViews);
+    for (const view of this.views.values())
+      entries.set(view.id, {
+        id: view.id,
+        owner: view.owner,
+        label: view.label,
+      });
+    return [...entries.values()].map((view) => ({ ...view }));
   }
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -219,6 +294,100 @@ export class Kernel {
   private changed() {
     for (const listener of this.listeners) listener();
   }
+  private retireViews(id: string, publisher: ViewPublisher) {
+    publisher.live = false;
+    if (this.viewPublishers.get(id) === publisher)
+      this.viewPublishers.delete(id);
+    let removed = false;
+    for (const [key, view] of publisher.views)
+      if (this.views.get(key) === view) {
+        this.views.delete(key);
+        removed = true;
+      }
+    publisher.views.clear();
+    return removed;
+  }
+  private viewServices(
+    ctx: Context,
+    plugin: ProductPlugin,
+    current: () => boolean,
+  ): { services: ProductPluginServices; publisher: ViewPublisher } {
+    const id = plugin.manifest.id;
+    const publisher: ViewPublisher = {
+      live: false,
+      ready: false,
+      views: new Map(),
+    };
+    ctx.effect(() => {
+      publisher.live = true;
+      this.viewPublishers.set(id, publisher);
+      return () => {
+        if (this.retireViews(id, publisher)) this.changed();
+      };
+    });
+    const available = () => {
+      if (
+        this.stopped ||
+        ctx.fiber.uid === null ||
+        !publisher.live ||
+        this.viewPublishers.get(id) !== publisher ||
+        this.owners.get(ctx) !== plugin ||
+        (!publisher.ready && !current())
+      )
+        return false;
+      // A newly requested scope/disable takes effect before queued async
+      // reconciliation can dispose the old Cordis context.
+      return !this.definitions.some((definition) => {
+        const manifest = definition.manifest;
+        const scope = pluginScope(manifest);
+        const excluded =
+          (!manifest.required && this.disabled.includes(manifest.id)) ||
+          (scope === "both"
+            ? this.scopes.length === 0
+            : !this.scopes.includes(scope));
+        return excluded && this.dependents(manifest.id).has(id);
+      });
+    };
+    const services: ProductPluginServices = {
+      replaceViews: (views) => {
+        if (!available()) throw new Error(`Plugin views unavailable: ${id}`);
+        const declaration = plugin.manifest.dynamicViews;
+        if (!declaration) throw new Error(`Undeclared dynamic views: ${id}`);
+        if (!Array.isArray(views) || views.length > declaration.limit)
+          throw new Error(`Dynamic view quota exceeded: ${id}`);
+        const next = new Map<string, ViewContribution>();
+        // Copy before validation; mutations to the caller's descriptors cannot
+        // change the ID/owner that the registry validated and published.
+        for (const item of views) {
+          const view = { ...item };
+          if (
+            view.owner !== id ||
+            !validId(view.id) ||
+            !view.id.startsWith(declaration.prefix)
+          )
+            throw new Error(`Undeclared or foreign dynamic view: ${view.id}`);
+          validateView(view);
+          if (
+            next.has(view.id) ||
+            this.definitions.some((p) => p.manifest.views.includes(view.id)) ||
+            (this.views.has(view.id) &&
+              this.views.get(view.id) !== publisher.views.get(view.id))
+          )
+            throw new Error(`Duplicate view ${view.id}`);
+          next.set(view.id, Object.freeze(view));
+        }
+        // Getters on trusted descriptor objects may have triggered retirement
+        // or another publication while the candidate was being copied.
+        if (!available()) throw new Error(`Plugin views unavailable: ${id}`);
+        for (const [key, view] of publisher.views)
+          if (this.views.get(key) === view) this.views.delete(key);
+        for (const [key, view] of next) this.views.set(key, view);
+        publisher.views = next;
+        this.changed();
+      },
+    };
+    return { services, publisher };
+  }
   private status(
     id: string,
     state: PluginStatus["state"],
@@ -264,6 +433,8 @@ export class Kernel {
       remaining.delete(id);
       const fiber = this.fibers.get(id)!;
       this.fibers.delete(id);
+      const publisher = this.viewPublishers.get(id);
+      if (publisher) this.retireViews(id, publisher);
       // Remove published contributions before async disposal can yield to UI.
       for (const [key, view] of this.views)
         if (view.owner === id) this.views.delete(key);
@@ -410,6 +581,7 @@ export class Kernel {
               (p) => p.manifest.id === id,
             );
             this.plugins[index] = plugin;
+            let publisher: ViewPublisher | undefined;
             fiber = this.context.plugin({
               name: id,
               apply: async (ctx: Context) => {
@@ -436,7 +608,9 @@ export class Kernel {
                   });
                 for (const command of plugin.commands ?? [])
                   this.registerCommand(ctx, command.id, command.handler);
-                await plugin.apply?.(ctx);
+                const publication = this.viewServices(ctx, plugin, current);
+                publisher = publication.publisher;
+                await plugin.apply?.(ctx, publication.services);
               },
             });
             this.fibers.set(id, fiber);
@@ -445,6 +619,7 @@ export class Kernel {
               await this.unload(new Set([id]));
               return;
             }
+            if (publisher) publisher.ready = true;
             for (const viewId of plugin.manifest.views)
               if (this.views.get(viewId)?.owner !== id)
                 throw new Error(`Declared view missing: ${viewId}`);
@@ -458,6 +633,12 @@ export class Kernel {
               )
                 throw new Error(`Declared command missing: ${commandId}`);
             this.status(id, "active");
+            for (const view of plugin.views ?? [])
+              this.knownViews.set(view.id, {
+                id: view.id,
+                owner: view.owner,
+                label: view.label,
+              });
           } catch (error) {
             if (fiber) await this.unload(new Set([id]));
             const index = this.definitions.findIndex(

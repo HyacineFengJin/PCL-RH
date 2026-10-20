@@ -1,4 +1,16 @@
 const messages = {
+  "experimental.refreshPanels": "Refresh plugins",
+  "experimental.savedActionsHelp": "Actions use saved settings.",
+  "experimental.actionsSearch": "Find a plugin action",
+  "experimental.actionsSearchPlaceholder": "Action, plugin or card name…",
+  "experimental.actionsEnterHelp":
+    "Press Enter when one action matches, or choose Run.",
+  "experimental.actionsNoMatch": "No actions match your search.",
+  "experimental.actionsEmpty":
+    "No enabled workspace plugins contribute actions.",
+  "experimental.actionNoInstance": "Select an instance in the launcher first.",
+  "experimental.actionUnavailable": "Required permission is unavailable.",
+  "experimental.actionRun": "Run",
   "agent.olderRounds": "Show {count} earlier rounds",
   "agent.branchWarning":
     "This thread started from an earlier version. Archiving preserves its branch copy; it does not merge changes from other threads.",

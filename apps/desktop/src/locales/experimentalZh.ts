@@ -1,4 +1,14 @@
 const messages = {
+  "experimental.refreshPanels": "刷新插件",
+  "experimental.savedActionsHelp": "操作使用已保存的设置。",
+  "experimental.actionsSearch": "查找插件操作",
+  "experimental.actionsSearchPlaceholder": "操作、插件或卡片名称…",
+  "experimental.actionsEnterHelp": "仅匹配一项操作时可按回车，或点击执行。",
+  "experimental.actionsNoMatch": "没有符合搜索条件的操作。",
+  "experimental.actionsEmpty": "暂无已启用的工作区插件操作。",
+  "experimental.actionNoInstance": "请先在启动器中选择实例。",
+  "experimental.actionUnavailable": "所需权限当前不可用。",
+  "experimental.actionRun": "执行",
   "agent.olderRounds": "展开更早的 {count} 轮",
   "agent.branchWarning":
     "这个线程基于较早版本。存档会保留它的分支副本，不会自动合并其他线程的修改。",

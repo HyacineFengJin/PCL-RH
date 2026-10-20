@@ -2296,3 +2296,42 @@
   background: color-mix(in srgb, var(--rc-orange) 10%, var(--rc-surface));
   border-color: var(--rc-orange);
 }
+.extension-action-catalog,
+.extension-action-results,
+.extension-action-context {
+  min-width: 0;
+}
+.extension-action-search {
+  display: grid;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--rc-ink);
+}
+.extension-action-search .ce-field {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  color: var(--rc-ink);
+  background: var(--rc-surface);
+  border-color: var(--rc-line);
+}
+.rc-community-cards .extension-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.extension-action-context {
+  flex: 1 1 150px;
+  overflow-wrap: anywhere;
+}
+.extension-action-context .experimental-origin {
+  margin: 4px 0 0;
+}
+.extension-action-row > .ce-button {
+  flex: 0 1 auto;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

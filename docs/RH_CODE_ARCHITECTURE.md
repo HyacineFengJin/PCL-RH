@@ -118,6 +118,7 @@ node apps/desktop/scripts/check-rh-code-presets.mjs
 node apps/desktop/scripts/check-rh-code-controller.mjs
 node apps/desktop/scripts/check-rh-code-host.mjs
 node apps/desktop/scripts/check-rh-code-surfaces.mjs
+node apps/desktop/scripts/check-rh-code-dynamic-views.mjs
 node apps/desktop/scripts/check-rh-code-scopes.mjs
 node --test experimental/runtime/tests/idle-host.test.mjs
 node --test code/tests/*.test.mjs
@@ -145,3 +146,13 @@ cargo test --locked -p pcl-desktop --features custom-protocol code_runner
 `extensions/src/settings.mjs` 定义组件类型、设置值边界与固定外观字段绑定。设置草稿属于当前界面，持久值属于 `ExtensionStore`；卡片只引用该插件声明的键。升级保留新定义仍接受的值，保存事务失败不发布候选值。
 
 `experimental/effects.rs` 消费外观和复制意图：Node 从已安装清单决定权限，Rust 在保留同一 session 的期间重新验证类型并执行。外观沿用偏好存储与运行时，复制在 GTK 主线程完成。锁顺序为 operations → session；session 忙时先释放 operations 再等待。复制等待 GTK 前也释放 operations，避免与主线程关闭路径形成等待环。完成仅返回标识；前端通过无载荷事件重读当前偏好，不采用迟到的完整快照。
+
+## 声明面板目录与动态视图
+
+`experimental/extensions/src/host.mjs` 从当前启用的 RH Code 卡片生成轻量目录，使用稳定的 ID 对摘要映射到布局标识。目录不含笔记及设置值，过滤卡片读取仍通过已有授权服务。卡片和目录的投影预算在候选事务发布前检查。
+
+`rh-code/communityCatalog.ts` 是启动器拥有的轻量读取端口。可见性、API 或 native 边界改变时立即退役旧读取，通知放在 React effect 内；插件作用范围尚未激活时没有订阅或读取。`extensions.plugin.tsx` 在 Cordis effect 中订阅目录，以本次激活的 `replaceViews` 发布动态视图。异步响应核对代次与可见性，同一面板复用渲染闭包。
+
+Kernel 为每次插件激活创建独立发布拥有者；动态清单规定自己的命名空间和上限，整批校验后一次替换。退役先撤回拥有者，清理按精确注册引用执行，旧清理不能删除重试后的新视图。Workspace 只消费注册表，布局持久化不参与权限决定。
+
+`ExtensionActions.tsx` 负责搜索和明确点击操作，复用 `extensions_action` 与原生消费者。搜索代次和页面生命周期分别核对，迟到的导航不会覆盖之后的查询或页面；已经提交的外观完成仍通知偏好服务重新读取。

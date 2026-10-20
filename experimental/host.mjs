@@ -85,7 +85,10 @@ async function dispatch(operation, a) {
       return extensions.updateSettings(a.id, a.values, a.expected);
     case "extensions_cards":
       extensions.setContext(a.context ?? null);
-      return extensions.cards(a.slot);
+      return extensions.cards(a.slot, a.filter);
+    case "extensions_catalog":
+      extensions.setContext(a.context ?? null);
+      return extensions.catalog();
     case "extensions_action":
       extensions.setContext(a.context ?? null);
       return extensions.commitAction(

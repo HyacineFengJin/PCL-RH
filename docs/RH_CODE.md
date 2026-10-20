@@ -119,6 +119,6 @@ RH Code 是 PCL RH 的项目工作区与 AI Harness。一个项目把源码文�
 
 内置模块使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 所采用的 Cordis 生命周期机制。RH Code 接入了实际的 `@deepseek-ai/cordis`，Agent 执行由现有 Pi 适配器负责；没有装载 DSH 的整套默认插件，也不声明兼容 DSH 插件包。
 
-社区页支持导入、授权、直接启停与卸载，权限和安全模式随重启保留。RH Code 中在区域选择器打开「插件卡片」，即可显示作用范围包含 RH Code 的卡片，位置可随布局调整。仅展示卡片时使用轻量宿主，不加载 AI 引擎。社区声明不执行第三方 JavaScript。市场暂未开放。内置模块的能力声明不等于社区插件授权，Cordis 本身也不是代码执行沙箱。旧格式范围见[兼容功能说明](EXPERIMENTAL.md)。
+社区页支持导入、授权、直接启停与卸载，权限和安全模式随重启保留。RH Code 中在区域选择器打开「插件卡片」，即可显示作用范围包含 RH Code 的卡片，位置可随布局调整。每张工作区卡片也能在区域选择器中单独选择；「插件操作」组件可搜索当前已授权的操作。停用或卸载后保留布局占位，重新启用相同面板可恢复。仅展示卡片时使用轻量宿主，不加载 AI 引擎。社区声明不执行第三方 JavaScript。市场暂未开放。内置模块的能力声明不等于社区插件授权，Cordis 本身也不是代码执行沙箱。旧格式范围见[兼容功能说明](EXPERIMENTAL.md)。
 
 声明格式与示例见[插件指南](PLUGINS.md)。开发者可继续阅读[RH Code 模块结构](RH_CODE_ARCHITECTURE.md)及[内置插件开发](RH_CODE_PLUGINS.md)。

@@ -1,0 +1,25 @@
+{
+  "format": "pcl-linux.declarative-extension",
+  "schemaVersion": 1,
+  "id": "local.workspace-shortcuts",
+  "name": "工作区快捷操作",
+  "version": "1.0.0",
+  "publisher": "PCL RH Examples",
+  "scope": "both",
+  "api": { "min": 1, "maxExclusive": 2 },
+  "capabilities": [
+    { "id": "ui.cards", "required": true, "reason": "在首页和 RH Code 提供快捷入口。" },
+    { "id": "launcher.navigate", "required": false, "reason": "点击后切换到启动器已有页面。" },
+    { "id": "instances.summary", "required": false, "reason": "点击后查看当前实例的版本、加载器、模组数和隔离状态。" }
+  ],
+  "contributions": { "cards": [
+    { "id": "home", "slot": "home.secondary", "title": "工作区快捷操作", "text": "常用页面入口。", "actions": [
+      { "id": "settings", "label": "启动器设置", "kind": "navigate", "target": "settings" }
+    ] },
+    { "id": "workspace", "slot": "rh-code.cards", "title": "工作区快捷操作", "text": "常用启动器页面与所选实例信息。", "actions": [
+      { "id": "instances", "label": "管理实例", "kind": "navigate", "target": "instances" },
+      { "id": "downloads", "label": "下载资源", "kind": "navigate", "target": "downloads" },
+      { "id": "summary", "label": "查看实例摘要", "kind": "show-instance-summary" }
+    ] }
+  ] }
+}

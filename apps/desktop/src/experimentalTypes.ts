@@ -94,6 +94,37 @@ export type ExtensionCard = {
   scope?: ExtensionScope;
   fields?: ExtensionField[];
 };
+export type ExtensionCardFilter = { extensionId: string; cardId: string };
+/** Read-only RH Code metadata. Executable views and native intent arguments
+ * belong to the trusted host and never come from a community manifest. */
+export type ExtensionPanel = ExtensionCardFilter & {
+  viewId: string;
+  title: string;
+  extensionName: string;
+  digest: string;
+  generation: number;
+};
+export type ExtensionCatalogAction = ExtensionCardFilter & {
+  extensionName: string;
+  cardTitle: string;
+  id: string;
+  label: string;
+  kind: string;
+  enabled: boolean;
+  unavailableReason: string | null;
+  digest: string;
+  generation: number;
+};
+export type ExtensionCatalog = {
+  panels: ExtensionPanel[];
+  actions: ExtensionCatalogAction[];
+};
+export type ExtensionInstanceSummary = {
+  minecraftVersion: string;
+  loader: string;
+  modCount: number;
+  isolated: boolean;
+};
 export type ExtensionSetting =
   | {
       id: string;
@@ -298,6 +329,7 @@ export type ExperimentalOperation =
   | "extensions_rereview"
   | "extensions_safe_mode"
   | "extensions_cards"
+  | "extensions_catalog"
   | "extensions_action"
   | "extensions_settings"
   | "source_import"

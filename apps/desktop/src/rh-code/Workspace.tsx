@@ -52,9 +52,12 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
     [settingsArea, setSettingsArea] = useState<string | null>(null);
   const panes = leaves(c.layout),
     focused = panes.find((p) => p.id === maximized);
-  const contributions = kernel.plugins.flatMap((p) => p.views ?? []);
+  const contributions = kernel.listViews();
   const nameOf = (id: string) =>
-    contributions.find((v) => v.id === id)?.label ?? id;
+    contributions.find((v) => v.id === id)?.label ??
+    (id.startsWith("rh.extensions.panel.")
+      ? label("插件面板暂不可用", "Plugin panel unavailable")
+      : id);
   const settingsNode = panes.find((n) => n.id === settingsArea),
     Settings = settingsNode && kernel.views.get(settingsNode.view)?.settings;
   function pane(n: Area) {
@@ -77,7 +80,7 @@ export function Workspace({ kernel }: { kernel: Kernel }) {
           >
             {!contributions.some((v) => v.id === n.view) && (
               <option value={n.view} disabled>
-                {n.view}
+                {nameOf(n.view)}
               </option>
             )}
             {contributions.map((v) => (

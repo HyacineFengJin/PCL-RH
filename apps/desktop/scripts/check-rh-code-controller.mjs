@@ -331,6 +331,44 @@ test("cold plugin management reads its registry without starting AI or polling s
   );
 });
 
+test("community catalog reads pin only their pending request and never mark a cold controller edited or start AI", async (t) => {
+  const { host, ui } = await pluginsFixture(t),
+    pending = deferred(),
+    before = ui.value.getLifecycleState();
+  host.handlers.set("extensions_catalog", () => pending.promise);
+  const read = ui.value.api("experimental_call", {
+    operation: "extensions_catalog",
+    args: {},
+  });
+  assert.equal(ui.value.getLifecycleState().busy, before.busy + 1);
+  assert.equal(
+    ui.value.getLifecycleState().lastActivityAt,
+    before.lastActivityAt,
+  );
+  pending.resolve({ panels: [], actions: [] });
+  assert.deepEqual(await read, { panels: [], actions: [] });
+  assert.equal(
+    ui.value.getLifecycleState().lastActivityAt,
+    before.lastActivityAt,
+  );
+  assert.equal(ui.value.getLifecycleState().busy, before.busy);
+  assert.equal(ui.value.getLifecycleState().dirty, before.dirty);
+  assert.ok(
+    !host.calls.some((call) => ["status", "job_read"].includes(call.operation)),
+  );
+  host.handlers.set("extensions_catalog", async () => {
+    throw new Error("Synthetic catalog read failure");
+  });
+  await assert.rejects(
+    ui.value.api("experimental_call", {
+      operation: "extensions_catalog",
+      args: {},
+    }),
+    /Synthetic catalog read failure/,
+  );
+  assert.equal(ui.value.getLifecycleState().dirty, before.dirty);
+});
+
 test("entering Code recovers saved jobs and keeps their owner after leaving the surface", async (t) => {
   const { host, ui } = await pluginsFixture(t);
   ui.requestEngine(true);

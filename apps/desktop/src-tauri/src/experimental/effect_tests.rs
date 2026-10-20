@@ -145,6 +145,109 @@ fn settings_rpc_is_additive_and_effects_are_not_renderer_operations() {
 }
 
 #[test]
+fn community_catalog_filtered_cards_and_saved_layout_survive_plugin_retirement() {
+    let fixture = Fixture::new();
+    fixture.use_real_light_host();
+    let host = fixture.host();
+    let operation: Operation = serde_json::from_value(json!("extensions_catalog")).unwrap();
+    assert_eq!(
+        serde_json::to_value(operation).unwrap(),
+        "extensions_catalog"
+    );
+    let source = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../experimental/extensions/examples/workspace-shortcuts.json"),
+    )
+    .unwrap();
+    let review = host
+        .call("extensions_review", json!({"source":source}))
+        .unwrap();
+    let entry = host
+        .call(
+            "extensions_confirm",
+            json!({"token":review["token"],
+        "grants":["ui.cards","launcher.navigate","instances.summary"]}),
+        )
+        .unwrap();
+    let catalog = host.call("extensions_catalog", json!({})).unwrap();
+    let panel = &catalog["panels"][0];
+    let view = panel["viewId"].as_str().unwrap().to_owned();
+    assert!(view.starts_with("rh.extensions.panel.") && view.len() <= 120);
+    let cards = host
+        .call(
+            "extensions_cards",
+            json!({"slot":"rh-code.cards",
+        "filter":{"extensionId":panel["extensionId"],"cardId":panel["cardId"]}}),
+        )
+        .unwrap();
+    assert_eq!(cards.as_array().unwrap().len(), 1);
+    assert_eq!(cards[0]["id"], panel["cardId"]);
+    assert!(!fixture.root().join("experimental/agent-host.mjs").exists());
+
+    let folder = fixture.root().join("source-project");
+    fs::create_dir(&folder).unwrap();
+    let store = crate::rh_code::Store::new(fixture.root());
+    let bootstrap = store.call("bootstrap", json!({})).unwrap();
+    let created = store
+        .call(
+            "project_create",
+            json!({"name":"Panel layout",
+        "folder":folder,"expectedRevision":bootstrap["revision"]}),
+        )
+        .unwrap();
+    let mut state = serde_json::Map::new();
+    state.insert(view.clone(), json!({"collapsed":false}));
+    let layout = json!({"type":"area","id":"community-area","view":view,"state":state});
+    store
+        .call(
+            "layout_save",
+            json!({"projectId":created["projects"][0]["id"],
+        "expectedRevision":created["revision"],"layout":layout}),
+        )
+        .unwrap();
+    let disabled = host
+        .call(
+            "extensions_disable",
+            json!({"id":entry["id"],
+        "expected":{"digest":entry["digest"],"generation":entry["generation"]}}),
+        )
+        .unwrap();
+    assert_eq!(
+        host.call("extensions_catalog", json!({})).unwrap()["panels"],
+        json!([])
+    );
+    assert_eq!(
+        crate::rh_code::Store::new(fixture.root())
+            .call("bootstrap", json!({}))
+            .unwrap()["projects"][0]["layout"],
+        layout
+    );
+    host.call(
+        "extensions_enable",
+        json!({"id":entry["id"],
+        "expected":{"digest":disabled["digest"],"generation":disabled["generation"]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        host.call("extensions_catalog", json!({})).unwrap()["panels"][0]["viewId"],
+        view
+    );
+    let reopened_entry = host.call("extensions_list", json!({})).unwrap()["entries"][0].clone();
+    host.call(
+        "extensions_remove",
+        json!({"id":entry["id"],
+        "expected":{"digest":reopened_entry["digest"],"generation":reopened_entry["generation"]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::rh_code::Store::new(fixture.root())
+            .call("bootstrap", json!({}))
+            .unwrap()["projects"][0]["layout"],
+        layout
+    );
+}
+
+#[test]
 fn appearance_revalidates_only_six_concrete_values() {
     for invalid in [
         json!({}),

@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-/** View IDs are declared by their owning bundled plugin manifest. */
+/** View IDs are declared statically or within their bundled owner's namespace. */
 export type ViewId = string;
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -67,6 +67,8 @@ export type Manifest = {
   dependencies: string[];
   capabilities: string[];
   views: ViewId[];
+  /** Trusted bundled code may publish a bounded set of views in this namespace. */
+  dynamicViews?: { prefix: string; limit: number };
   commands?: string[];
   layouts?: string[];
   /** Native-captured grants are resolved by the trusted Node tool catalog. */
