@@ -103,6 +103,15 @@ impl Default for Document {
 pub struct Store {
     root: PathBuf,
     gate: Mutex<()>,
+    native_plugins: crate::plugin_host::Host,
+}
+// Read the shared control plane without loading or validating Code projects.
+// Keep the schema mandatory: a future document must not silently enable plugins.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginConfiguration {
+    schema_version: u32,
+    disabled_plugins: Vec<String>,
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -141,6 +150,32 @@ fn text(a: &Value, key: &str, max: usize) -> Result<String, String> {
 fn manifests() -> Value {
     serde_json::from_str(MANIFESTS).expect("bundled plugin manifests")
 }
+fn validate_disabled_plugins(disabled_plugins: &[String]) -> Result<(), String> {
+    let list = manifests();
+    let list = list.as_array().unwrap();
+    let mut disabled = HashSet::new();
+    for id in disabled_plugins {
+        let plugin = list
+            .iter()
+            .find(|p| p["id"] == *id)
+            .ok_or("Unknown stored product plugin")?;
+        if plugin["required"] == true || !disabled.insert(id) {
+            return Err("Invalid stored plugin state".into());
+        }
+    }
+    for p in list {
+        if !disabled_plugins.contains(&p["id"].as_str().unwrap().to_owned())
+            && p["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|id| disabled_plugins.contains(&id.as_str().unwrap().to_owned()))
+        {
+            return Err("Stored plugin dependency is disabled; retained for recovery".into());
+        }
+    }
+    Ok(())
+}
 fn ensure_plugin(d: &Document, plugin: &str) -> Result<(), String> {
     if d.disabled_plugins.iter().any(|v| v == plugin) {
         Err(format!("Plugin disabled: {plugin}"))
@@ -170,8 +205,68 @@ impl Store {
         Self {
             root: project.join(".pcl-rust/rh-code"),
             gate: Mutex::new(()),
+            native_plugins: crate::plugins::host(),
         }
     }
+    /// Launcher services read only shared plugin configuration. They do not
+    /// bootstrap project controllers or validate/read individual Code projects.
+    /// The historical document location and format are unchanged.
+    pub(crate) fn native_service<T: Send + Sync + 'static>(
+        &self,
+        provider: &str,
+        contract: crate::plugin_host::Contract<T>,
+    ) -> Result<crate::plugin_host::ServiceCall<T>, String> {
+        self.optional_native_service(provider, contract)?
+            .ok_or_else(|| format!("Plugin disabled: {provider}"))
+    }
+
+    /// Optional surfaces can disappear cleanly on an explicit disable. Factory
+    /// failures still propagate instead of being mistaken for that preference.
+    pub(crate) fn optional_native_service<T: Send + Sync + 'static>(
+        &self,
+        provider: &str,
+        contract: crate::plugin_host::Contract<T>,
+    ) -> Result<Option<crate::plugin_host::ServiceCall<T>>, String> {
+        let _gate = self
+            .gate
+            .lock()
+            .map_err(|_| "Product plugin configuration unavailable")?;
+        let (disabled, _) = self.plugin_configuration()?;
+        self.native_plugins.configure(&disabled, true, false)?;
+        if disabled.iter().any(|id| id == provider) {
+            return Ok(None);
+        }
+        self.native_plugins
+            .service(provider, contract)?
+            .begin()
+            .map(Some)
+    }
+
+    /// Caller holds the store gate. Atomic document publication permits a
+    /// read-only snapshot without creating the Code directory or a file lease.
+    fn plugin_configuration(&self) -> Result<(Vec<String>, String), String> {
+        let path = self.root.join("workspace.json");
+        let (disabled, revision) = match read(&path, LIMIT) {
+            Ok(bytes) => {
+                let config: PluginConfiguration = serde_json::from_slice(&bytes)
+                    .map_err(|_| "Plugin configuration unreadable; retained for recovery")?;
+                if config.schema_version != 1 {
+                    return Err("Unsupported plugin configuration; retained for recovery".into());
+                }
+                (config.disabled_plugins, hash(&bytes))
+            }
+            Err(_)
+                if fs::symlink_metadata(&path)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                (vec![], "new".into())
+            }
+            Err(error) => return Err(error),
+        };
+        validate_disabled_plugins(&disabled)?;
+        Ok((disabled, revision))
+    }
+
     fn load(&self) -> Result<(Document, String), String> {
         let path = self.root.join("workspace.json");
         let bytes = match read(&path, LIMIT) {
@@ -200,30 +295,7 @@ impl Store {
                 return Err("Invalid stored layout preset; retained for recovery".into());
             }
         }
-        let list = manifests();
-        let list = list.as_array().unwrap();
-        let mut disabled = HashSet::new();
-        for id in &d.disabled_plugins {
-            let plugin = list
-                .iter()
-                .find(|p| p["id"] == *id)
-                .ok_or("Unknown stored product plugin")?;
-            if plugin["required"] == true || !disabled.insert(id) {
-                return Err("Invalid stored plugin state".into());
-            }
-        }
-        for p in list {
-            if !d
-                .disabled_plugins
-                .contains(&p["id"].as_str().unwrap().to_owned())
-                && p["dependencies"].as_array().unwrap().iter().any(|id| {
-                    d.disabled_plugins
-                        .contains(&id.as_str().unwrap().to_owned())
-                })
-            {
-                return Err("Stored plugin dependency is disabled; retained for recovery".into());
-            }
-        }
+        validate_disabled_plugins(&d.disabled_plugins)?;
         let mut ids = HashSet::new();
         for p in &d.projects {
             if p.build_policy.network && !p.build_policy.enabled {
@@ -344,6 +416,28 @@ impl Store {
         source: Option<Value>,
     ) -> Result<Value, String> {
         let _gate = self.gate.lock().map_err(|_| "RH Code store unavailable")?;
+        if operation == "plugin_configuration" || operation == "native_plugin" {
+            let (disabled, revision) = self.plugin_configuration()?;
+            self.native_plugins.configure(&disabled, true, false)?;
+            if operation == "plugin_configuration" {
+                return Ok(
+                    json!({"disabledPlugins":disabled,"revision":revision,"plugins":manifests()}),
+                );
+            }
+            let key = text(&a, "id", 120)?;
+            let status = self
+                .native_plugins
+                .statuses()?
+                .into_iter()
+                .find(|status| status.id == key)
+                .ok_or("Unknown native plugin")?;
+            if status.state != crate::plugin_host::State::Active {
+                return Err(status
+                    .error
+                    .unwrap_or_else(|| format!("Plugin unavailable: {key}")));
+            }
+            return Ok(json!({"id":status.id,"state":status.state.as_str()}));
+        }
         fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
         // Share one native store lease across launcher processes. Taking the
         // lease before reading makes disk CAS meaningful across those processes.
@@ -366,6 +460,8 @@ impl Store {
             }
         }
         let (mut d, revision) = self.load()?;
+        self.native_plugins
+            .configure(&d.disabled_plugins, true, false)?;
         if operation == "bootstrap" {
             return Ok(snapshot(&d, &revision));
         }
@@ -845,6 +941,10 @@ impl Store {
         }
         let bytes = document_bytes(&d)?;
         atomic(&self.root.join("workspace.json"), &bytes)?;
+        if operation == "plugin_set" {
+            self.native_plugins
+                .configure(&d.disabled_plugins, true, false)?;
+        }
         Ok(snapshot(&d, &hash(&bytes)))
     }
 }

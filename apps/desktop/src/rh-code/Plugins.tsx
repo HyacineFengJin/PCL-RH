@@ -21,6 +21,8 @@ const statusNames: Record<PluginStatus["state"], [string, string]> = {
   stopped: ["已停止", "Stopped"],
 };
 const names: Record<string, [string, string]> = {
+  "launcher.home.announcements": ["启动器公告", "Launcher announcements"],
+  "launcher.diagnostics.analysis": ["启动失败分析", "Launch failure analysis"],
   "rh.compatibility": ["旧版项目兼容", "Previous project compatibility"],
   "rh.project": ["项目服务", "Project service"],
   "rh.conversation": ["对话工作区", "Conversations"],

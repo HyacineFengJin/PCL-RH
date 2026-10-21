@@ -58,6 +58,10 @@ export type PluginScope = "launcher" | "rh-code" | "both";
 /** Host surfaces that are currently alive; `both` is a manifest lifetime. */
 export type ActivePluginScope = Exclude<PluginScope, "both">;
 export type Manifest = {
+  /** Native interfaces implemented by the same product plugin, not UI cards. */
+  nativeServices?: { id: string; version: number }[];
+  /** Omitted legacy entries conservatively retain the Node runtime. */
+  runtimeNeeds?: ("native" | "node")[];
   id: string;
   name: string;
   version: string;

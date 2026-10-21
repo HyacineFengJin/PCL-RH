@@ -441,5 +441,47 @@
       "prefix": "rh.extensions.panel.",
       "limit": 384
     }
+  },
+  {
+    "id": "launcher.home.announcements",
+    "name": "Launcher announcements",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "launcher",
+    "dependencies": [],
+    "capabilities": [
+      "launcher.announcements.read"
+    ],
+    "views": [],
+    "nativeServices": [
+      {
+        "id": "launcher.announcements",
+        "version": 1
+      }
+    ],
+    "runtimeNeeds": [
+      "native"
+    ]
+  },
+  {
+    "id": "launcher.diagnostics.analysis",
+    "name": "Launch failure analysis",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "launcher",
+    "dependencies": [],
+    "capabilities": [
+      "launcher.diagnostics.analyze"
+    ],
+    "views": [],
+    "nativeServices": [
+      {
+        "id": "launcher.failure-analysis",
+        "version": 1
+      }
+    ],
+    "runtimeNeeds": [
+      "native"
+    ]
   }
 ]

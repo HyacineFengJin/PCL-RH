@@ -23,10 +23,17 @@ pub async fn launcher_announcements(
         AnnouncementMode::Important => AnnouncementScope::Important,
         AnnouncementMode::None => AnnouncementScope::None,
     };
-    Ok(state
-        .launcher_announcements
-        .read(scope, refresh.unwrap_or(false))
-        .await)
+    if scope == AnnouncementScope::None {
+        return Ok(AnnouncementView::disabled());
+    }
+    let Some(service) = state.product_plugins.optional_native_service(
+        crate::plugins::home::ID,
+        crate::plugins::home::ANNOUNCEMENTS,
+    )?
+    else {
+        return Ok(AnnouncementView::disabled());
+    };
+    Ok(service.0.read(scope, refresh.unwrap_or(false)).await)
 }
 
 #[tauri::command]

@@ -1,5 +1,5 @@
-/** Launcher-owned lifetime boundary. Initial startup reads only manifests;
- * neither the editor, its controllers nor its plugin entry points are imported
+/** Product plugin lifetime boundary. Startup reads shared plugin configuration
+ * for launcher entries; editor controllers and Code entries remain deferred
  * until their declared scope is needed. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import manifests from "../../../code/plugins.json";
@@ -74,6 +74,21 @@ export function RHCodeHost(props: Props) {
             current.current.onNavigate(target);
         },
         community.runtime,
+        current.current.native
+          ? {
+              activate: async (id) => {
+                const status = await current.current.api<{
+                  id: string;
+                  state: string;
+                }>("rh_code_call", {
+                  operation: "native_plugin",
+                  args: { id },
+                });
+                if (status.id !== id || status.state !== "active")
+                  throw new Error(`Native plugin unavailable: ${id}`);
+              },
+            }
+          : undefined,
       ),
     );
     kernel.current = owner;
@@ -81,10 +96,13 @@ export function RHCodeHost(props: Props) {
   };
   const readConfiguration = async () => {
     if (configurationRead.current) return;
-    const data = await current.current.api<Snapshot>("rh_code_call", {
-      operation: "bootstrap",
-      args: {},
-    });
+    const data = await current.current.api<Pick<Snapshot, "disabledPlugins">>(
+      "rh_code_call",
+      {
+        operation: "plugin_configuration",
+        args: {},
+      },
+    );
     disabled.current = data.disabledPlugins;
     configurationRead.current = true;
   };
@@ -181,6 +199,7 @@ export function RHCodeHost(props: Props) {
             (p) =>
               (p.manifest.scope === "launcher" ||
                 p.manifest.scope === "both") &&
+              (p.manifest.runtimeNeeds?.includes("node") ?? true) &&
               kernel.current?.statuses.get(p.manifest.id)?.state === "active",
           );
           if (current.current.native && !shared) {

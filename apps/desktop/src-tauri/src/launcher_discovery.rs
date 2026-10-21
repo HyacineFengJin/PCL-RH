@@ -6,8 +6,9 @@ mod announcements;
 #[path = "launcher_discovery/clipboard.rs"]
 mod clipboard;
 #[path = "launcher_discovery/provider.rs"]
+#[cfg(test)]
 mod provider;
-pub use announcements::{AnnouncementScope, AnnouncementStore, AnnouncementView};
+pub use announcements::{AnnouncementScope, AnnouncementView};
 pub use clipboard::{request_clipboard_link, ModrinthLink};
 
 #[cfg(test)]

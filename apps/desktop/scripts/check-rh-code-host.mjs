@@ -32,7 +32,13 @@ function hostDriver(options = {}) {
     kernels = [];
   const destinations = [];
   let navigate, community;
-  const manifests = options.manifests ?? shipped;
+  // Most cases isolate Code retention without launcher owners; the cold native
+  // case below uses the actual shipped catalog explicitly.
+  const manifests =
+    options.manifests ??
+    shipped.filter(
+      (plugin) => plugin.scope !== "launcher" && plugin.scope !== "both",
+    );
   let cursor = 0,
     dirty = false,
     pending = [],
@@ -127,6 +133,8 @@ function hostDriver(options = {}) {
   function View() {}
   async function api(command, args) {
     calls.push({ command, args });
+    if (command === "rh_code_call" && args.operation === "plugin_configuration")
+      return { disabledPlugins: [] };
     if (command === "rh_code_call" && args.operation === "bootstrap")
       return {
         revision: "synthetic-revision",
@@ -197,7 +205,7 @@ function hostDriver(options = {}) {
       if (id === "react") return react;
       if (id === "react/jsx-runtime")
         return { jsx, jsxs: jsx, Fragment: Symbol("Fragment") };
-      if (id.endsWith("plugins.json")) return manifests;
+      if (id.endsWith("plugins.json")) return { default: manifests };
       if (id === "./i18n" || id === "../i18n")
         return { t: (id) => id, currentLocale: () => ({ language: "en-US" }) };
       if (id === "./rh-code/kernel") {
@@ -433,7 +441,7 @@ test("the retained host rejects an old community read after hide and return and 
   assert.equal(retirements, 1);
 });
 
-test("initial launcher startup neither bootstraps nor imports the RH Code service", async (t) => {
+test("without launcher plugins startup neither bootstraps nor imports the RH Code service", async (t) => {
   const driver = await fixture(t);
   assert.deepEqual(driver.calls, []);
   assert.deepEqual(driver.imports, []);
@@ -639,6 +647,27 @@ test("launcher-scoped plugins retain their shared native host while Code retires
     driver.kernels[0].statuses.get("fixture.launcher").state,
     "active",
   );
+});
+
+test("native-only launcher plugins read shared configuration without bootstrapping Code or its controller", async (t) => {
+  const driver = await fixture(t, { manifests: shipped });
+  assert.deepEqual(
+    driver.calls.map((call) => [call.command, call.args.operation]),
+    [["rh_code_call", "plugin_configuration"]],
+  );
+  assert.equal(driver.child, null);
+  assert.equal(driver.controllers.length, 0);
+  assert.equal(driver.imports.includes("RHCode"), false);
+  assert.deepEqual(driver.configurations.at(-1).scopes, ["launcher"]);
+  await enter(driver);
+  await eligible(driver);
+  assert.equal(driver.child, null);
+  assert.ok(
+    driver.calls.some((call) => call.command === "experimental_suspend"),
+  );
+  for (const manifest of shipped.filter((plugin) => plugin.nativeServices)) {
+    assert.equal(driver.kernels[0].statuses.get(manifest.id).state, "active");
+  }
 });
 
 test("meaningful activity during a delayed native suspend restarts the controller idle cooldown", async (t) => {

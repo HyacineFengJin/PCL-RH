@@ -10,7 +10,7 @@ pub(super) mod export;
 
 use crate::{
     config::GameRoot,
-    launcher_failure_analysis::{self, FailureFinding},
+    launcher_failure_analysis::FailureFinding,
     launcher_local::filesystem::Dir,
     launcher_logs::{FailureLogCapture, FailureLogTail},
     launcher_monitor_runtime::{self, FailureSnapshot},
@@ -245,6 +245,10 @@ fn prepare_read_with(
     read: impl FnOnce(&mut FailureLogCapture, Option<u64>) -> Result<FailureLogTail, String>,
     redact: impl Fn(&str) -> String,
 ) -> Result<PreparedDiagnostic, String> {
+    let analyzer = shared.product_plugins.native_service(
+        crate::plugins::diagnostics::ID,
+        crate::plugins::diagnostics::ANALYSIS,
+    )?;
     let mut captured = capture(shared, root_id, expected)?;
     let (log_tail, log_error, log_truncated) =
         match read(&mut captured.log, captured.failure.log_start) {
@@ -259,7 +263,7 @@ fn prepare_read_with(
     let message = redact(&captured.failure.run.message);
     // A legacy file can contain earlier attempts. Keep it available for the
     // user to inspect, but never elevate its old errors into current findings.
-    let findings = launcher_failure_analysis::analyze(
+    let findings = analyzer.0.analyze(
         &message,
         (log_scope == FailureLogScope::Attempt)
             .then_some(log_tail.as_deref())

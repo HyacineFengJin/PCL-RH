@@ -66,6 +66,8 @@ mod local_resource_info;
 mod local_resource_info_commands;
 mod modrinth_install;
 mod platform;
+pub mod plugin_host;
+mod plugins;
 mod resource_details;
 mod resource_digest;
 mod resource_install_commands;
@@ -119,7 +121,7 @@ struct Shared {
     launcher_assets: launcher_assets::AssetStore,
     launcher_local: launcher_runtime::LocalRuntime,
     launcher_updates: launcher_update_commands::Updater,
-    launcher_announcements: launcher_discovery::AnnouncementStore,
+    product_plugins: Arc<rh_code::Store>,
     minecraft_updates: launcher_minecraft_updates::MinecraftUpdates,
     launcher_favorites: launcher_favorites::FavoriteStore,
     desktop: Arc<platform::Desktop>,
@@ -2228,7 +2230,7 @@ fn main() {
         launcher_assets: launcher_assets::AssetStore::new(project.clone()),
         launcher_local,
         launcher_updates,
-        launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+        product_plugins: Arc::new(rh_code::Store::new(&project)),
         minecraft_updates: launcher_minecraft_updates::MinecraftUpdates::new(project.clone()),
         launcher_favorites: launcher_favorites::FavoriteStore::load(&project),
         desktop: Arc::new(platform::Desktop::default()),
@@ -2258,7 +2260,7 @@ fn main() {
         )
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(experimental::Host::new(state.project.clone())))
-        .manage(Arc::new(rh_code::Store::new(&state.project)))
+        .manage(state.product_plugins.clone())
         .manage(state)
         .setup(|app| {
             let shared = app.state::<Arc<Shared>>().inner().clone();
@@ -2649,7 +2651,7 @@ mod integration_tests {
                 launcher_preferences: launcher_prefs::LauncherPreferencesStore::load(&self.0),
                 launcher_import: launcher_commands::ImportSession::default(),
                 launcher_assets: launcher_assets::AssetStore::new(self.0.clone()),
-                launcher_announcements: launcher_discovery::AnnouncementStore::default(),
+                product_plugins: Arc::new(rh_code::Store::new(&self.0)),
                 minecraft_updates: launcher_minecraft_updates::MinecraftUpdates::new(
                     self.0.clone(),
                 ),

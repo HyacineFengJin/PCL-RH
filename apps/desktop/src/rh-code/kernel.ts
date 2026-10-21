@@ -34,6 +34,8 @@ export type ProductPlugin = {
   loadError?: string;
 };
 export type PluginRuntime = {
+  /** Narrow native lifecycle bridge; never the general Tauri API. */
+  nativeServices?: { activate(owner: string): Promise<void> };
   /** Fixed product destinations only; a card never receives the native Api. */
   navigate?: ExperimentalNavigate;
   /** Hold an RH Code controller lease for background work. The plugin owns its
@@ -138,6 +140,30 @@ function validate(plugin: ProductPlugin) {
       throw new Error("Invalid dynamic view declaration");
   }
   ids(m.commands ?? [], "command IDs");
+  if (
+    m.runtimeNeeds !== undefined &&
+    (!Array.isArray(m.runtimeNeeds) ||
+      new Set(m.runtimeNeeds).size !== m.runtimeNeeds.length ||
+      m.runtimeNeeds.some(
+        (runtime) => runtime !== "native" && runtime !== "node",
+      ))
+  )
+    throw new Error("Invalid runtime requirements");
+  if (m.nativeServices !== undefined) {
+    if (!Array.isArray(m.nativeServices))
+      throw new Error("Invalid native service declarations");
+    ids(
+      m.nativeServices.map((service) => service?.id),
+      "native service IDs",
+    );
+    if (
+      m.nativeServices.some(
+        (service) =>
+          !Number.isSafeInteger(service.version) || service.version < 1,
+      )
+    )
+      throw new Error("Invalid native service version");
+  }
   ids(m.layouts ?? [], "layout IDs");
   if (
     !Array.isArray(m.capabilities) ||

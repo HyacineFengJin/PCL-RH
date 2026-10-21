@@ -42,6 +42,210 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+
+#[test]
+fn product_plugin_native_lookup_is_read_only_and_does_not_bootstrap_code() {
+    let f = Fixture::new();
+    assert!(!f.store.root.exists());
+    let config = f.store.call("plugin_configuration", json!({})).unwrap();
+    assert_eq!(config["revision"], "new");
+    assert!(config.get("projects").is_none());
+    assert_eq!(
+        f.store
+            .call(
+                "native_plugin",
+                json!({"id":crate::plugins::diagnostics::ID})
+            )
+            .unwrap()["state"],
+        "active"
+    );
+    assert!(!f.store.root.exists());
+    let _service = f
+        .store
+        .native_service(
+            crate::plugins::diagnostics::ID,
+            crate::plugins::diagnostics::ANALYSIS,
+        )
+        .unwrap();
+    assert!(!f.store.root.exists());
+}
+
+#[test]
+fn product_plugin_manager_controls_actual_native_service_and_persists_on_reopen() {
+    let f = Fixture::new();
+    let plugin = crate::plugins::diagnostics::ID;
+    let contract = crate::plugins::diagnostics::ANALYSIS;
+    let original = f.store.native_service(plugin, contract).unwrap();
+    f.write("plugin_set", json!({"id":plugin,"enabled":false}));
+    assert!(f.store.native_service(plugin, contract).is_err());
+    assert!(Store::new(&f.root)
+        .native_service(plugin, contract)
+        .is_err());
+    // Already accepted work remains usable after disabling; later work does not.
+    assert!(!original
+        .0
+        .analyze("java.lang.OutOfMemoryError", None)
+        .is_empty());
+    assert!(f.store.call("native_plugin", json!({"id":plugin})).is_err());
+    f.write("plugin_set", json!({"id":plugin,"enabled":true}));
+    assert!(Store::new(&f.root).native_service(plugin, contract).is_ok());
+    let before = fs::read(f.store.root.join("workspace.json")).unwrap();
+    assert_eq!(
+        f.store.call("native_plugin", json!({"id":plugin})).unwrap()["state"],
+        "active"
+    );
+    assert!(f
+        .store
+        .call("native_plugin", json!({"id":"rh.files"}))
+        .is_err());
+    assert_eq!(
+        fs::read(f.store.root.join("workspace.json")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn product_plugin_lookup_rejects_invalid_configuration_without_overwriting_it() {
+    for raw in [
+        json!(null),
+        json!({"schemaVersion":2,"disabledPlugins":[]}),
+        json!({"schemaVersion":1}),
+        json!({"schemaVersion":1,"disabledPlugins":["unknown.plugin"]}),
+        json!({"schemaVersion":1,"disabledPlugins":["launcher.home.announcements","launcher.home.announcements"]}),
+    ] {
+        let f = Fixture::new();
+        fs::create_dir_all(&f.store.root).unwrap();
+        let path = f.store.root.join("workspace.json");
+        let bytes = serde_json::to_vec(&raw).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(f
+            .store
+            .native_service(
+                crate::plugins::home::ID,
+                crate::plugins::home::ANNOUNCEMENTS
+            )
+            .is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn product_plugin_launcher_service_does_not_depend_on_code_project_validity() {
+    let f = Fixture::new();
+    fs::create_dir_all(&f.store.root).unwrap();
+    fs::write(
+        f.store.root.join("workspace.json"),
+        br#"{"schemaVersion":1,"disabledPlugins":[],"projects":"broken Code metadata"}"#,
+    )
+    .unwrap();
+    assert!(f.store.call("bootstrap", json!({})).is_err());
+    assert!(f.store.call("plugin_configuration", json!({})).is_ok());
+    assert!(f
+        .store
+        .native_service(
+            crate::plugins::home::ID,
+            crate::plugins::home::ANNOUNCEMENTS
+        )
+        .is_ok());
+}
+
+#[test]
+fn product_plugin_disabled_home_is_optional_but_failed_providers_are_errors() {
+    let f = Fixture::new();
+    f.write(
+        "plugin_set",
+        json!({"id":crate::plugins::home::ID,"enabled":false}),
+    );
+    assert!(f
+        .store
+        .optional_native_service(
+            crate::plugins::home::ID,
+            crate::plugins::home::ANNOUNCEMENTS
+        )
+        .unwrap()
+        .is_none());
+    assert!(f
+        .store
+        .optional_native_service("missing", crate::plugins::home::ANNOUNCEMENTS)
+        .is_err());
+}
+
+#[test]
+fn product_plugin_replaced_analyzer_changes_real_diagnostics_and_obeys_existing_manager() {
+    use crate::{
+        plugin_host::{Definition, Host, Registration, Scope},
+        plugins::diagnostics::{self, AnalysisService, FailureAnalyzer},
+    };
+    struct AlternateAnalyzer;
+    impl FailureAnalyzer for AlternateAnalyzer {
+        fn analyze(
+            &self,
+            _: &str,
+            _: Option<&str>,
+        ) -> Vec<crate::launcher_failure_analysis::FailureFinding> {
+            vec![crate::launcher_failure_analysis::FailureFinding {
+                code: "java_memory".into(),
+                evidence: vec!["replacement implementation".into()],
+            }]
+        }
+    }
+    fn start(registration: &mut Registration<'_>) -> Result<(), String> {
+        registration.provide(
+            diagnostics::ANALYSIS,
+            AnalysisService(std::sync::Arc::new(AlternateAnalyzer)),
+        )
+    }
+    let fixture = crate::integration_tests::Fixture::new();
+    let mut shared = fixture.shared();
+    std::sync::Arc::get_mut(&mut shared.product_plugins)
+        .unwrap()
+        .native_plugins = Host::new(vec![Definition {
+        id: diagnostics::ID,
+        scope: Scope::Launcher,
+        dependencies: vec![],
+        services: vec![diagnostics::ANALYSIS.declaration()],
+        start,
+    }])
+    .unwrap();
+    let root = shared.config.resolve(None).unwrap();
+    let run = crate::RunStatus {
+        stage: "error".into(),
+        message: "unknown synthetic failure".into(),
+        version: Some("fixture".into()),
+        exit_code: Some(1),
+        root_id: Some(root.id.clone()),
+        root_path: Some(root.path.clone()),
+        ..Default::default()
+    };
+    *shared.status.lock().unwrap() = run.clone();
+    crate::launcher_monitor_runtime::set_failure_log_start(&shared, Some(0));
+    let report = crate::launcher_failure::report(&shared, &root.id, &run).unwrap();
+    assert_eq!(report.findings[0].evidence, ["replacement implementation"]);
+    let store = &shared.product_plugins;
+    let snapshot = store.call("bootstrap", json!({})).unwrap();
+    store
+        .call(
+            "plugin_set",
+            json!({"id":diagnostics::ID,"enabled":false,"expectedRevision":snapshot["revision"]}),
+        )
+        .unwrap();
+    assert!(crate::launcher_failure::report(&shared, &root.id, &run).is_err());
+    assert!(*shared.status.lock().unwrap() == run);
+    let snapshot = store.call("bootstrap", json!({})).unwrap();
+    store
+        .call(
+            "plugin_set",
+            json!({"id":diagnostics::ID,"enabled":true,"expectedRevision":snapshot["revision"]}),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::launcher_failure::report(&shared, &root.id, &run)
+            .unwrap()
+            .findings[0]
+            .evidence,
+        ["replacement implementation"]
+    );
+}
 #[test]
 fn rh_code_cas_across_stores_retains_newer_state() {
     let f = Fixture::new();

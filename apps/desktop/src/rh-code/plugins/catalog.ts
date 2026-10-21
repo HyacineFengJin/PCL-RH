@@ -29,6 +29,11 @@ export function assemblePlugins(
         Object.freeze(values);
         manifest[key] = values;
       }
+    if (Array.isArray(source.runtimeNeeds)) {
+      const runtimes = [...source.runtimeNeeds];
+      Object.freeze(runtimes);
+      manifest.runtimeNeeds = runtimes;
+    }
     if (Array.isArray(source.tools)) {
       manifest.tools = source.tools.map((tool) => {
         const modes = [...tool.modes];
@@ -39,6 +44,12 @@ export function assemblePlugins(
     }
     if (source.dynamicViews !== undefined)
       manifest.dynamicViews = Object.freeze({ ...source.dynamicViews });
+    if (Array.isArray(source.nativeServices)) {
+      manifest.nativeServices = source.nativeServices.map((service) =>
+        Object.freeze({ ...service }),
+      );
+      Object.freeze(manifest.nativeServices);
+    }
     Object.freeze(manifest);
     // The array form supports already imported entries supplied by tests/hosts.
     // Production always supplies lazy module loaders.
