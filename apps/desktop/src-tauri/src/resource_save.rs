@@ -107,10 +107,12 @@ pub(crate) async fn save_captured(
             SaveSource::Modrinth => crate::modrinth_install::provider::cdn_url(&file.url)?,
             SaveSource::CurseForge => crate::community_curseforge::download_url(&file.url)?,
         };
-        Ok(provider
-            .client
-            .get(url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity"))
+        let request = if let Some(curseforge) = &curseforge {
+            curseforge.download_request(&url)?
+        } else {
+            provider.client.get(url)
+        };
+        Ok(request.header(reqwest::header::ACCEPT_ENCODING, "identity"))
     };
     let session = SaveSession {
         http: &provider,

@@ -1,0 +1,64 @@
+name: Official Linux build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: official-linux-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  desktop:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libdbus-1-dev librsvg2-dev
+          rustup toolchain install stable --profile minimal
+      - name: Build WebUI and prepare runtime dependencies
+        run: |
+          npm ci --prefix apps/desktop --ignore-scripts --no-audit --no-fund
+          npm ci --prefix experimental/runtime --ignore-scripts --no-audit --no-fund
+          npm run build --prefix apps/desktop
+          python3 tools/licenses/release.py --check
+          rustc +stable --edition=2021 --test apps/desktop/src-tauri/build_credentials.rs -o target-credential-tests
+          ./target-credential-tests
+      - name: Build native executables with the official service credential
+        env:
+          PCL_RH_CURSEFORGE_API_KEY: ${{ secrets.PCL_RH_CURSEFORGE_API_KEY }}
+        run: |
+          test -n "$PCL_RH_CURSEFORGE_API_KEY" || { echo 'Missing official CurseForge build secret' >&2; exit 1; }
+          cargo +stable build --release --locked -p pcl-desktop -p pcl-cli --features pcl-desktop/custom-protocol -j 2
+      - name: Assemble Linux archive
+        # Export only tracked source and explicit outputs. Never package the
+        # checkout, Cargo OUT_DIR, environment files or maintainer configuration.
+        run: |
+          mkdir -p target/package/PCL-RH/.pcl-rust/bin
+          git archive HEAD | tar -xf - -C target/package/PCL-RH
+          cp target/release/pcl-desktop target/release/pcl-cli target/package/PCL-RH/.pcl-rust/bin/
+          cp -a experimental/runtime/node_modules target/package/PCL-RH/experimental/runtime/
+          python3 tools/licenses/release.py --output target/package/PCL-RH/pcl-rh-license-notices.zip
+          tar -czf target/pcl-rh-linux-x86_64.tar.gz -C target/package PCL-RH
+          sha256sum target/pcl-rh-linux-x86_64.tar.gz > target/pcl-rh-linux-x86_64.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pcl-rh-linux-x86_64
+          path: |
+            target/pcl-rh-linux-x86_64.tar.gz
+            target/pcl-rh-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

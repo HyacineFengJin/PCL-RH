@@ -124,10 +124,7 @@ pub(crate) async fn response_into_file_digest(
     .await?
     .map_err(|_| "资源文件请求失败")?;
     if !response.status().is_success() {
-        return Err(format!(
-            "资源文件HTTP {}（不接受重定向）",
-            response.status().as_u16()
-        ));
+        return Err(format!("资源文件HTTP {}", response.status().as_u16()));
     }
     if response
         .headers()

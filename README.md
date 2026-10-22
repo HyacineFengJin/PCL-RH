@@ -10,10 +10,10 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 
 - Minecraft 原版版本目录、搜索、自定义实例名称，以及 Fabric、Forge、NeoForge 自动安装。
 - 最多 4 项并行下载、同目录任务队列、逐项取消与未完成文件清理，完整文件缓存复用及 SHA-1 校验。
-- 模组加载器目录与 Modrinth 资源搜索；新增 CurseForge 官方目录接入、MC 百科模组／整合包资料搜索，按明确来源链接归并同一项目。CurseForge 服务待开放。
+- 模组加载器目录与 Modrinth 资源搜索；新增 CurseForge 官方目录接入、MC 百科模组／整合包资料搜索，按明确来源链接归并同一项目。官方构建已配置 CurseForge 服务。
 - Modrinth 模组、资源包和光影安装，必要依赖规划、SHA-512 校验和相同内容复用。
 - 本地 Modrinth 模组正式版更新、前置替换确认、禁用状态保留与更新撤销。
-- Modrinth 版本文件独立另存、命名格式和本次会话的保存目录复用；CurseForge 服务启用后可保存作者允许分发的文件，使用官方 SHA-1 校验。
+- Modrinth 版本文件独立另存、命名格式和本次会话的保存目录复用；CurseForge 可保存作者允许分发的文件，使用官方 SHA-1 校验。
 - 社区资源收藏夹与文件夹管理，已识别本地 Mod 的批量收藏，以及资源信息 JSON 导出。
 - 游戏版本扫描、搜索、选择与实例设置。
 - 实例描述、内置图标、列表分类与收藏管理，以及可恢复的物理实例重命名。
@@ -37,7 +37,7 @@ RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎�
 - 可分别开启 Minecraft 正式版与快照更新提醒，按官方发布时间判断新版本并保存已读记录。
 - 工具箱自定义 URL 下载、成就图片预览与保存、本地皮肤头像 PNG 生成。
 
-项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。本地整合包格式及限制见[使用指南](docs/USAGE.md#导入本地整合包)。仅含模组编号的 CurseForge 包暂不能自动补齐；OptiFine、LabyMod 自动安装尚未提供；部分早期版本暂不支持自动安装。
+项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。本地整合包格式及限制见[使用指南](docs/USAGE.md#导入本地整合包)。CurseForge 清单包可通过官方文件服务补齐，作者禁止分发或缺少官方下载信息时会停止；OptiFine、LabyMod 自动安装尚未提供；部分早期版本暂不支持自动安装。
 
 完整桌面应用当前支持 Linux；Windows 和 macOS 正在适配，尚无可用发行包。核心模块的支持范围与独立检查入口见[平台支持](docs/PLATFORMS.md)。
 
@@ -92,9 +92,9 @@ Windows and macOS adaptation has started in the portable core. Complete desktop 
 
 Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances.
 
-Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Prism and complete game directories. Single-layer launcher archives are also recognized, including the exact HMCL bundled-package layout. Supported packs install under a custom instance name with optional-file choices, checked downloads and recoverable publication. CurseForge manifests are recognized, but packs requiring remote CurseForge file IDs cannot yet be completed automatically; custom launch commands and unsupported loader layouts are reported before installation.
+Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Prism and complete game directories. Single-layer launcher archives are also recognized, including the exact HMCL bundled-package layout. Supported packs install under a custom instance name with optional-file choices, checked downloads and recoverable publication. CurseForge manifests resolve exact project/file IDs through the official service, checking distribution permission and file integrity; custom launch commands and unsupported loader layouts are reported before installation.
 
-Community search supports Modrinth and MC百科 project information, with a CurseForge official API integration awaiting service activation. Explicit project links group verified cross-site matches; names alone never merge forks. CurseForge supports standalone checked downloads when the service is enabled; direct installation and CurseForge manifest completion remain unavailable.
+Community search supports Modrinth and MC百科 project information, with CurseForge service credentials included in official builds. Explicit project links group verified cross-site matches; names alone never merge forks. CurseForge supports standalone checked downloads and local manifest ZIP imports; direct installation from resource details remains unavailable.
 
 Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Modrinth modpacks can also be downloaded directly from version details, reviewed with a custom instance name and optional-file choices, and installed as new instances. Some legacy layouts and OptiFine/LabyMod installation are not yet available.
 

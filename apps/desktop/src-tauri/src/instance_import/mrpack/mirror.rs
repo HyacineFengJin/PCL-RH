@@ -91,7 +91,12 @@ pub(super) struct Chain {
     current: Url,
     visited: BTreeSet<String>,
     redirects: usize,
-    local: bool,
+    policy: Policy,
+}
+enum Policy {
+    Standard,
+    Local,
+    CurseForge,
 }
 impl Chain {
     pub(super) fn new(current: Url) -> Self {
@@ -99,12 +104,18 @@ impl Chain {
             visited: BTreeSet::from([current.as_str().to_owned()]),
             current,
             redirects: 0,
-            local: false,
+            policy: Policy::Standard,
         }
     }
     pub(super) fn local(current: Url) -> Self {
         Self {
-            local: true,
+            policy: Policy::Local,
+            ..Self::new(current)
+        }
+    }
+    pub(super) fn curseforge(current: Url) -> Self {
+        Self {
+            policy: Policy::CurseForge,
             ..Self::new(current)
         }
     }
@@ -135,10 +146,12 @@ impl Chain {
             .current
             .join(location)
             .map_err(|_| "mrpack 镜像重定向 URI 无效")?;
-        let next = if self.local {
-            local_declaration(next.as_str())
-        } else {
-            declaration(next.as_str())
+        let next = match self.policy {
+            Policy::Local => local_declaration(next.as_str()),
+            Policy::Standard => declaration(next.as_str()),
+            Policy::CurseForge => crate::community_curseforge::download_url(next.as_str())
+                .map(Some)
+                .map_err(|_| "CurseForge 官方文件重定向目标不受支持".to_owned()),
         }?
         .ok_or("mrpack 镜像重定向目标域名、路径或端口不受支持")?;
         if !self.visited.insert(next.as_str().to_owned()) {

@@ -344,7 +344,15 @@ schema 2 记录显式实例 ID，schema 1 不从文件名补猜身份。schema 3
 
 本地 CF ZIP 的清单保留精确 project/file ID，只有已配置的官方文件服务可将其转为下载依据。项目类型决定内容目录，官方 API 检查归属、许可、可用状态、URL、SHA1 和大小；归档不能自行授予 CDN 地址。整个清单解析成功后才更新确认内容和修订，工作线程在构建和发布前重新核对。服务未配置或文件被限制时保留阻止项，不跳过缺少的文件。
 
-CF 下载使用独立来源分支，拒绝 CDN 重定向，API Key 不进入文件请求；官方 SHA1 校验后另算本地 SHA512。Modrinth 原有双哈希、镜像和重定向策略保持各自语义。此入口只负责本地 CF ZIP，不扩展社区详情直接安装或 MCBBS 中的 CF 引用。
+CF 下载使用独立来源分支，仅接受允许的官方文件节点之间至多 5 次、无循环的 HTTPS 重定向；官方 SHA1 校验后另算本地 SHA512。API 与文件请求使用原生端捕获的凭据，文件鉴权限于明确允许的官方 HTTPS `/files/` 地址。Key 只放在敏感 `x-api-key` 请求头，不进入 URL、下载计划、回执或 WebUI。Modrinth 原有双哈希、镜像和重定向策略保持各自语义；本地清单跨站重定向重新构造请求，不携带 CF 鉴权。此入口只负责本地 CF ZIP，不扩展社区详情直接安装或 MCBBS 中的 CF 引用。
+
+### CurseForge 发行构建
+
+官方构建从 GitHub Actions 仓库 Secret `PCL_RH_CURSEFORGE_API_KEY` 注入项目自己的服务凭据。`build_credentials.rs` 将它写到 Cargo `OUT_DIR`，由 Rust 原生端编译使用，不写入源码、前端资源或 Cargo 日志指令。官方包的使用者无需申请或填写 Key。
+
+运行时的同名环境变量优先于内置值，供开发者覆盖。自行构建也可设置 `PCL_RH_CURSEFORGE_API_KEY_FILE` 指向自己的私有文件；构建时环境变量优先于文件。未提供凭据的源码构建仍可使用其他资源服务，CF 入口会报告未配置。无效覆盖不会静默回退到官方凭据。维护者应将私有文件置于版本管理之外，限制文件访问权限。
+
+`Official Linux build` 工作流仅由官方仓库 `master` 手动触发，生成含原生可执行文件、源码、RH Code 运行依赖及版权资料的 Linux x86_64 压缩包，不自动创建 Release。下载后解压到可写目录，运行 `./start-native.sh`；主机仍需 Node.js 22.19+、GTK 3、WebKitGTK 4.1 与系统密钥环等运行依赖。该构建不代表 Windows/macOS 桌面发行已完成。
 
 ## 多文件下载并发
 

@@ -2,6 +2,11 @@
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$project_dir"
+# Maintainer builds can reuse a local private file without putting the key in
+# command arguments. Explicit build credentials always take precedence.
+if [ "${PCL_RH_CURSEFORGE_API_KEY+x}" != x ] && [ "${PCL_RH_CURSEFORGE_API_KEY_FILE+x}" != x ] && [ -f "$project_dir/.pcl-rust/maintainer/curseforge-api-key" ]; then
+    export PCL_RH_CURSEFORGE_API_KEY_FILE="$project_dir/.pcl-rust/maintainer/curseforge-api-key"
+fi
 ./prepare-icon.sh
 npm ci --prefix apps/desktop --no-audit --no-fund
 # Pi stays in its own locked dependency tree; package lifecycle scripts are not needed.

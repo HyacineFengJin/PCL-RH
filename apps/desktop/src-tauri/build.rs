@@ -1,4 +1,8 @@
+mod build_credentials;
+
 fn main() {
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    build_credentials::generate(&out).unwrap_or_else(|error| panic!("{error}"));
     // Only a clean source build can truthfully bind the executable to a commit.
     // Source archives without Git still build, but same-version update ordering
     // remains unavailable rather than guessing identity from a later checkout.

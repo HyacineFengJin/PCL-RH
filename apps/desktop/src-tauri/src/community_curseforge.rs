@@ -1,11 +1,13 @@
 //! Bounded, read-only Minecraft catalog access through CurseForge's official API.
 //!
 //! The client captures the launcher's network policy and its process-provided
-//! API key once. Display metadata deliberately omits file URLs and hashes;
+//! API key (developer override or official build credential) once. Display metadata deliberately omits file URLs and hashes;
 //! downloading resolves an exact project/file pair again and checks the author
 //! distribution flag before exposing metadata to the native download service.
 //! API contract: <https://docs.curseforge.com/rest-api/>.
 
+#[path = "community_curseforge/credentials.rs"]
+pub(crate) mod credentials;
 #[path = "community_curseforge/mapping.rs"]
 mod mapping;
 #[path = "community_curseforge/transport.rs"]
@@ -39,7 +41,8 @@ pub struct CurseforgeSearchPage {
 }
 
 /// Trusted API metadata for the native file downloader. The API key never
-/// travels with this value and must never be attached to the CDN request.
+/// travels with this value. Official CDN authentication is attached separately
+/// by the native transport after validating the exact destination.
 #[derive(Debug)]
 pub struct CurseforgeDownload {
     pub title: String,
@@ -64,6 +67,12 @@ pub fn download_url(raw: &str) -> Result<reqwest::Url, String> {
 }
 
 impl CurseforgeClient {
+    pub(crate) fn download_request(
+        &self,
+        url: &reqwest::Url,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        self.transport.download_request(url)
+    }
     pub fn new(network: Arc<pcl_network::ClientFactory>) -> Result<Self, String> {
         Ok(Self {
             transport: Transport::new(network)?,

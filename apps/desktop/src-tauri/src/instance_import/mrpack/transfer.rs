@@ -47,6 +47,7 @@ pub(super) struct TransferProgress {
 }
 pub(super) struct Client {
     http: reqwest::Client,
+    curseforge_key: Result<crate::community_curseforge::credentials::Credential>,
     downloads: Arc<pcl_network::DownloadScheduler>,
     network_bytes: AtomicU64,
     // Serialize updates and callbacks across concurrent files so callbacks
@@ -83,6 +84,7 @@ impl Client {
             .map_err(|_| "无法创建 mrpack 下载客户端")?;
         Ok(Self {
             http,
+            curseforge_key: crate::community_curseforge::credentials::Credential::load(),
             downloads,
             network_bytes: AtomicU64::new(0),
             telemetry: Mutex::new(()),
@@ -97,6 +99,7 @@ impl Client {
     }
     #[cfg(test)]
     pub(super) fn with_test_route(mut self, route: reqwest::Url) -> Result<Self> {
+        self.curseforge_key = Ok(crate::community_curseforge::credentials::Credential::synthetic());
         self.http = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -292,7 +295,9 @@ impl Client {
         report: &impl Fn(TransferProgress),
         source: Source,
     ) -> Attempt<(String, String)> {
-        let mut chain = if self.local_mirrors {
+        let mut chain = if matches!(source, Source::CurseForge) {
+            mirror::Chain::curseforge(candidate)
+        } else if self.local_mirrors {
             mirror::Chain::local(candidate)
         } else {
             mirror::Chain::new(candidate)
@@ -300,21 +305,27 @@ impl Client {
         let mut response = loop {
             // Initial declarations and every Location have already passed the
             // same authority checks; reqwest never chooses a redirect itself.
+            let logical = chain.current();
+            let actual = self.request_url(logical);
+            let mut request = self.http.get(actual);
+            if crate::community_curseforge::download_url(logical.as_str()).is_ok() {
+                // Build a fresh request for every hop: CDN authentication must
+                // never follow a local manifest's redirect to another host.
+                let key = self
+                    .curseforge_key
+                    .as_ref()
+                    .map_err(|error| Failure::Local(error.clone()))?;
+                request = request.header("x-api-key", key.header());
+            }
             let response = wait(
                 cancel,
                 deadline.min(Instant::now() + HEADERS_TIMEOUT),
-                self.http
-                    .get(self.request_url(chain.current()))
+                request
                     .header(reqwest::header::ACCEPT_ENCODING, "identity")
                     .send(),
             )
             .await?
             .map_err(|_| Failure::Mirror("mrpack 镜像请求失败".into()))?;
-            if response.status().is_redirection() && matches!(source, Source::CurseForge) {
-                return Err(Failure::Mirror(
-                    "CurseForge 官方文件返回重定向，已停止下载".into(),
-                ));
-            }
             if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 let location = response
                     .headers()

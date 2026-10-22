@@ -1,5 +1,6 @@
-//! The credential belongs only to this fixed API client. Errors never include
+//! API and validated official CDN requests share a captured credential. Errors never include
 //! response bodies, request/debug output or provider-controlled parse values.
+use super::credentials::Credential;
 use reqwest::{header, Client};
 use serde::de::DeserializeOwned;
 use std::{sync::Arc, time::Duration};
@@ -7,11 +8,11 @@ use std::{sync::Arc, time::Duration};
 const API: &str = "https://api.curseforge.com/v1";
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OPERATION_BYTES: usize = 8 * 1024 * 1024;
-const KEY_ENV: &str = "PCL_RH_CURSEFORGE_API_KEY";
 
 pub(super) struct Transport {
     client: Client,
-    key: header::HeaderValue,
+    download_client: Client,
+    key: Credential,
     #[cfg(test)]
     loopback: Option<String>,
 }
@@ -30,25 +31,33 @@ impl Budget {
     }
 }
 
-fn key_header(value: Result<String, std::env::VarError>) -> Result<header::HeaderValue, String> {
-    let value = value.map_err(|_| "CurseForge 服务尚未配置，暂不可用".to_owned())?;
-    if value.is_empty() || value.len() > 4096 || !value.bytes().all(|ch| ch.is_ascii_graphic()) {
-        return Err("CurseForge 服务配置无效".to_owned());
-    }
-    let mut key =
-        header::HeaderValue::from_str(&value).map_err(|_| "CurseForge 服务配置无效".to_owned())?;
-    key.set_sensitive(true);
-    Ok(key)
-}
-
-fn client(network: &pcl_network::ClientFactory, https_only: bool) -> Result<Client, String> {
+fn client(
+    network: &pcl_network::ClientFactory,
+    https_only: bool,
+    downloads: bool,
+) -> Result<Client, String> {
     network
         .async_client()
         .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
         .https_only(https_only)
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(if downloads {
+            reqwest::redirect::Policy::custom(|attempt| {
+                if official_redirect(attempt.url(), attempt.previous()) {
+                    attempt.follow()
+                } else {
+                    attempt.error("CurseForge 官方文件重定向无效或超过限制")
+                }
+            })
+        } else {
+            reqwest::redirect::Policy::none()
+        })
+        .referer(false)
         .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(if downloads {
+            24 * 60 * 60
+        } else {
+            20
+        }))
         .no_gzip()
         .no_brotli()
         .no_deflate()
@@ -57,11 +66,24 @@ fn client(network: &pcl_network::ClientFactory, https_only: bool) -> Result<Clie
         .map_err(|_| "无法创建 CurseForge 网络客户端".into())
 }
 
+fn official_redirect(next: &reqwest::Url, previous: &[reqwest::Url]) -> bool {
+    // This policy runs before reqwest builds the next request. Custom headers
+    // survive cross-host redirects, so every destination must stay inside the
+    // exact official file authority; API requests use a separate no-redirect client.
+    previous.len() <= 5
+        && !previous.contains(next)
+        && super::download_url(next.as_str()).is_ok()
+        && previous
+            .iter()
+            .all(|url| super::download_url(url.as_str()).is_ok())
+}
+
 impl Transport {
     pub fn new(network: Arc<pcl_network::ClientFactory>) -> Result<Self, String> {
-        let key = key_header(std::env::var(KEY_ENV))?;
+        let key = Credential::load()?;
         Ok(Self {
-            client: client(&network, true)?,
+            client: client(&network, true, false)?,
+            download_client: client(&network, true, true)?,
             key,
             #[cfg(test)]
             loopback: None,
@@ -75,10 +97,18 @@ impl Transport {
         assert_eq!(parsed.host_str(), Some("127.0.0.1"));
         assert_eq!(parsed.path(), "/v1");
         Self {
-            client: client(&network, false).unwrap(),
-            key: key_header(Ok("synthetic-test-key".into())).unwrap(),
+            client: client(&network, false, false).unwrap(),
+            download_client: client(&network, true, true).unwrap(),
+            key: Credential::synthetic(),
             loopback: Some(address),
         }
+    }
+
+    pub(super) fn download_request(
+        &self,
+        url: &reqwest::Url,
+    ) -> Result<reqwest::RequestBuilder, String> {
+        self.key.download_request(&self.download_client, url)
     }
 
     pub async fn get<T: DeserializeOwned>(
@@ -102,7 +132,7 @@ impl Transport {
             .query(query)
             .header(header::ACCEPT, "application/json")
             .header(header::ACCEPT_ENCODING, "identity")
-            .header("x-api-key", self.key.clone())
+            .header("x-api-key", self.key.header())
             .send()
             .await
             .map_err(|_| "CurseForge 网络请求失败".to_owned())?;
@@ -165,21 +195,23 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn missing_or_malformed_credentials_have_closed_errors() {
-        assert!(key_header(Err(std::env::VarError::NotPresent))
-            .unwrap_err()
-            .contains("CurseForge 服务"));
-        for value in ["", "key with spaces", "key\r\nInjected: value", "密钥"] {
-            let error = key_header(Ok(value.into())).unwrap_err();
-            assert!(error.contains("CurseForge 服务"));
-            if !value.is_empty() {
-                assert!(!error.contains(value));
-            }
+    fn only_official_file_redirects_are_admitted_with_finite_acyclic_history() {
+        let url = |value: &str| reqwest::Url::parse(value).unwrap();
+        let start = url("https://edge.forgecdn.net/files/1/2/mod.jar");
+        let next = url("https://mediafilez.forgecdn.net/files/1/2/mod.jar");
+        assert!(official_redirect(&next, std::slice::from_ref(&start)));
+        assert!(!official_redirect(&start, std::slice::from_ref(&start)));
+        assert!(!official_redirect(&next, &vec![start.clone(); 6]));
+        for raw in [
+            "https://evil.test/files/mod.jar",
+            "https://edge.forgecdn.net.evil.test/files/mod.jar",
+            "http://edge.forgecdn.net/files/mod.jar",
+            "https://edge.forgecdn.net/images/mod.jar",
+        ] {
+            let bad = url(raw);
+            assert!(!official_redirect(&bad, std::slice::from_ref(&start)));
+            assert!(!official_redirect(&next, &[bad]));
         }
-        let key = key_header(Ok("synthetic-test-key".into())).unwrap();
-        assert!(key.is_sensitive());
-        assert!(!format!("{key:?}").contains("synthetic-test-key"));
     }
 }

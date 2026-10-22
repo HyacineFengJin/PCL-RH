@@ -285,6 +285,7 @@ fn scheduler(concurrent: u16, rate: u32) -> Arc<DownloadScheduler> {
 }
 fn client(server: &Server, scheduler: Arc<DownloadScheduler>) -> Client {
     let mut client = Client::new(&pcl_network::snapshot(), scheduler).unwrap();
+    client.curseforge_key = Ok(crate::community_curseforge::credentials::Credential::synthetic());
     client.http = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -912,7 +913,7 @@ fn curseforge_remote(body: &[u8]) -> super::super::curseforge::ResolvedFile {
 }
 
 #[test]
-fn curseforge_stream_uses_official_sha1_and_computes_local_sha512_without_credentials() {
+fn curseforge_stream_authenticates_official_files_and_checks_sha1_and_local_sha512() {
     let fixture = Fixture::new();
     let body = b"synthetic CurseForge payload";
     let server = Server::new([("/files/1/456/fixture.jar".into(), Response::body(body))]);
@@ -925,22 +926,19 @@ fn curseforge_stream_uses_official_sha1_and_computes_local_sha512_without_creden
     let mut bytes = Vec::new();
     verified.file.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, body);
-    assert!(server
-        .requests
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|request| !request.to_ascii_lowercase().contains("x-api-key")));
+    assert!(server.requests.lock().unwrap().iter().all(|request| request
+        .to_ascii_lowercase()
+        .contains("x-api-key: synthetic-test-key\r\n")));
 }
 
 #[test]
-fn curseforge_does_not_broaden_mrpack_authority_and_never_follows_cdn_redirects() {
+fn curseforge_does_not_broaden_mrpack_authority_and_rejects_external_redirects() {
     let fixture = Fixture::new();
     let body = b"synthetic";
     let file = curseforge_remote(body);
     let server = Server::new([(
         "/files/1/456/fixture.jar".into(),
-        Response::redirect("https://edge.forgecdn.net/files/1/456/redirect.jar"),
+        Response::redirect("https://cdn.modrinth.com/files/1/456/redirect.jar"),
     )]);
     let client = client(&server, scheduler(1, 0));
     assert!(super::super::mirror::declaration(&file.url)
@@ -964,6 +962,35 @@ fn curseforge_does_not_broaden_mrpack_authority_and_never_follows_cdn_redirects(
     ))
     .is_err());
     assert_eq!(server.paths().len(), 1);
+}
+
+#[test]
+fn curseforge_official_node_redirect_keeps_authentication_and_verifies_the_final_bytes() {
+    let fixture = Fixture::new();
+    let body = b"synthetic redirected CurseForge payload";
+    let server = Server::new([
+        (
+            "/files/1/456/fixture.jar".into(),
+            Response::redirect("https://mediafilez.forgecdn.net/files/1/456/final.jar"),
+        ),
+        ("/files/1/456/final.jar".into(), Response::body(body)),
+    ]);
+    let client = client(&server, scheduler(1, 0));
+    let verified = run(client.download_curseforge(
+        &curseforge_remote(body),
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {},
+    ))
+    .unwrap();
+    assert_eq!((verified.sha1, verified.sha512), hashes(body));
+    assert_eq!(
+        server.paths(),
+        ["/files/1/456/fixture.jar", "/files/1/456/final.jar"]
+    );
+    assert!(server.requests.lock().unwrap().iter().all(|request| request
+        .to_ascii_lowercase()
+        .contains("x-api-key: synthetic-test-key\r\n")));
 }
 
 #[test]
@@ -1048,10 +1075,55 @@ fn local_manifest_forge_mirrors_keep_double_hashes_and_reject_external_redirects
             "/files/1/2/redirect.jar"
         ]
     );
-    assert!(server
-        .requests
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|request| !request.to_ascii_lowercase().contains("x-api-key")));
+    assert!(server.requests.lock().unwrap().iter().all(|request| request
+        .to_ascii_lowercase()
+        .contains("x-api-key: synthetic-test-key\r\n")));
+}
+
+#[test]
+fn local_forge_redirect_drops_authentication_on_non_cf_host() {
+    let fixture = Fixture::new();
+    let body = b"synthetic mixed mirror payload";
+    let server = Server::new([
+        (
+            "/files/1/2/start.jar".into(),
+            Response::redirect("https://cdn.modrinth.com/finish.jar"),
+        ),
+        ("/finish.jar".into(), Response::body(body)),
+    ]);
+    let client = client(&server, scheduler(1, 0)).with_local_mirrors(true);
+    let urls = ["https://edge.forgecdn.net/files/1/2/start.jar".into()];
+    let expected = hashes(body);
+    run(client.download(
+        remote(&urls, body, &expected),
+        fixture.file(),
+        &AtomicBool::new(false),
+        |_| {},
+    ))
+    .unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("synthetic-test-key"));
+    assert!(!requests[1].to_ascii_lowercase().contains("x-api-key"));
+    assert!(!requests[1].contains("synthetic-test-key"));
+}
+
+#[test]
+fn missing_cf_credential_stops_before_network_and_closes_staging() {
+    let fixture = Fixture::new();
+    let body = b"synthetic";
+    let server = Server::new([]);
+    let mut client = client(&server, scheduler(1, 0));
+    client.curseforge_key = Err("CurseForge 服务尚未配置，暂不可用".into());
+    let file = fixture.file();
+    let identity = AnonymousIdentity::of(&file);
+    assert!(failure(run(client.download_curseforge(
+        &curseforge_remote(body),
+        file,
+        &AtomicBool::new(false),
+        |_| {}
+    )))
+    .contains("尚未配置"));
+    identity.assert_closed();
+    assert!(server.paths().is_empty());
 }
