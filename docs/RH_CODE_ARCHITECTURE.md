@@ -29,8 +29,13 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 | `experimental/runtime/src/harness-tools.mjs` | 通用工具声明、参数边界和紧凑读取回执 |
 | `experimental/runtime/src/visual-tools.mjs` | 可选视觉工具的结构化参数与图像回传 |
 | `code/source-ownership.mjs` | 旧 Maker 工作流的源码所有权协调 |
-| `apps/desktop/src-tauri/src/rh_code.rs` | 项目存储、修订检查、插件依赖、对话归属和原生源码快照 |
-| `rh_code/files.rs` | 有界读取、内容指纹、原子保存和空目录产物发布 |
+| `apps/desktop/src/productPluginRuntime.ts` | 轻量原生插件端口、Code 范围租约与精确释放 |
+| `apps/desktop/src-tauri/src/product_plugins/` | 共用启停配置、服务契约、原生插件生命周期与范围拥有者 |
+| `apps/desktop/src-tauri/src/plugin_host/` | 类型化服务注册、依赖准入、调用与资源退役 |
+| `apps/desktop/src-tauri/src/plugins/` | 随应用编译的实际服务实现 |
+| `apps/desktop/src-tauri/src/rh_code.rs` | 项目存储、修订检查、对话归属和原生源码快照 |
+| `document_io.rs` | 有界文件读取、原子保存和共用写入锁 |
+| `rh_code/files.rs` | 项目文件清单、内容指纹和空目录产物发布 |
 | `rh_code/harness.rs` | 原生快照绑定、受审阅建议应用、备份与中断恢复 |
 | `rh_code/assets.rs`、`harness/manual_assets.rs` | 手动资产校验、PNG/Java 导出与共用原生发布事务 |
 | `rh_code/context.rs` | 上下文字段边界、连续历史片段及原生传输预算 |
@@ -44,13 +49,17 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 
 ## 状态与写入顺序
 
-`RHCodeHost.tsx` 位于启动器的页面切换节点之外，持有稳定的插件内核与工作区生命周期。初始启动只读取插件清单；所有当前模块都声明为 RH Code 范围，所以首次进入前无需导入工作区或启动其数据服务。内核按作用范围导入入口，工作区休眠时仅释放 RH Code 实例，启动器和通用实例继续存活。
+`RHCodeHost.tsx` 位于启动器的页面切换节点之外，持有稳定的插件内核与工作区生命周期。初始启动读取共用启停配置并激活启动器范围的插件；工作区及其控制器仍在首次进入 RH Code 时导入。内核按作用范围导入入口，工作区休眠时仅释放 RH Code 实例，启动器和通用实例继续存活。
 
 可见性变更与休眠通过同一串行队列协调。离开 10 分钟且活动结束 5 分钟后，宿主先检查后台引擎，再由控制器保存草稿、布局及所有项目的源码缓冲。`prepareSuspend` 在每次异步保存后复核编辑代次和可见性；只有最后同步检查仍成立才封闭旧控制器并释放缓存。活动任务不受静默时长影响。
 
 组件的临时表单可使用 `ViewHost.keepAwake()`，完成或保存后释放；视图卸载会回收其剩余租约。插件自身的异步工作使用 `PluginRuntime.keepAwake`，并将释放函数注册到 Cordis effect。前端实例释放不等于清除浏览器模块缓存。后台 `experimental_suspend` 通过原有会话锁检查准入请求和 Node 工作拥有者，空闲时回收子进程，后续调用重新启动。
 
-项目元数据保存在启动器状态目录的 `rh-code/workspace.json`，使用版本化 schema。Rust 在读取和写入期间持有进程锁与文件锁，写入比较调用方的内容修订号，再进行原子替换。损坏或更新版本的文件会保留，不能以空项目列表覆盖它。
+项目元数据与历史启停配置仍保存在启动器状态目录的 `rh-code/workspace.json`，使用原有 schema。共用产品运行时拥有控制锁，Code 存储按需创建并使用同一把锁；两类写入都取得同一个文件锁、核对整份文档的修订号，再原子替换，避免互相覆盖。
+
+启动器服务只读取共用配置切片，不创建 Code 存储或验证项目内容。`plugin_control` 只修改启停字段并保留其余 JSON；旧 `plugin_set` 仍通过 Code 的完整类型校验并返回带历史缺省值的快照。控制文件损坏或版本不受支持时保留原件、撤回旧服务的新调用；已接纳调用仍可完成。
+
+原生 Code 范围使用独立拥有者租约。前端进入时获取，成功保存并休眠后释放，组件整体卸载也释放；普通切换页面不会重复开租约。启动器的公告或诊断读取不会重置另一个拥有者的 Code 范围。界面内核与原生服务分别持有资源，通过这些范围边界同步；租约不代表项目写入或 AI 执行权限。
 
 WebUI 控制器串行提交元数据，始终使用最近成功的原生修订。待保存布局按项目保留，快速切换项目不会恢复旧的几何状态。异步区域回调绑定其原项目；同一文件的较晚读取不能覆盖已有编辑缓冲区。
 
@@ -117,6 +126,7 @@ node apps/desktop/scripts/check-rh-code.mjs
 node apps/desktop/scripts/check-rh-code-presets.mjs
 node apps/desktop/scripts/check-rh-code-controller.mjs
 node apps/desktop/scripts/check-rh-code-host.mjs
+node --test apps/desktop/scripts/product-runtime.test.mjs apps/desktop/scripts/plugin-consumers.test.mjs
 node apps/desktop/scripts/check-rh-code-surfaces.mjs
 node apps/desktop/scripts/check-rh-code-dynamic-views.mjs
 node apps/desktop/scripts/check-rh-code-scopes.mjs
@@ -126,6 +136,8 @@ node apps/desktop/scripts/check-rh-code-harness-ui.mjs
 node apps/desktop/scripts/check-rh-code-visual-ui.mjs
 node --test experimental/runtime/tests/visual-provider.test.mjs
 node --test experimental/runtime/tests/harness-provider.test.mjs experimental/runtime/tests/harness-host.test.mjs
+cargo test --locked -p pcl-desktop --features custom-protocol product_plugins
+cargo test --locked -p pcl-desktop --features custom-protocol plugin_host
 cargo test --locked -p pcl-desktop --features custom-protocol rh_code
 cargo test --locked -p pcl-desktop --features custom-protocol experimental::tests
 cargo test --locked -p pcl-desktop --features custom-protocol code_runner

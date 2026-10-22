@@ -2,18 +2,13 @@
 //! bounded log tail. A signature is evidence of an error family, not proof of a
 //! particular mod, driver or fix. No file IO, account access or automatic repair
 //! belongs here. Unknown failures remain unknown, including signal-only exits.
-use serde::Serialize;
 
 const MAX_INPUT_BYTES: usize = 272 * 1024;
 const MAX_LINES: usize = 1024;
 const MAX_EVIDENCE_CHARS: usize = 320;
 const MAX_EVIDENCE: usize = 2;
 
-#[derive(Debug, Serialize)]
-pub(crate) struct FailureFinding {
-    pub code: String,
-    pub evidence: Vec<String>,
-}
+pub use crate::product_plugins::contracts::FailureFinding;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Family {

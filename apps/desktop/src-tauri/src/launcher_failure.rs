@@ -245,10 +245,9 @@ fn prepare_read_with(
     read: impl FnOnce(&mut FailureLogCapture, Option<u64>) -> Result<FailureLogTail, String>,
     redact: impl Fn(&str) -> String,
 ) -> Result<PreparedDiagnostic, String> {
-    let analyzer = shared.product_plugins.native_service(
-        crate::plugins::diagnostics::ID,
-        crate::plugins::diagnostics::ANALYSIS,
-    )?;
+    let analyzer = shared
+        .product_plugins
+        .optional_service(crate::product_plugins::contracts::FAILURE_ANALYSIS)?;
     let mut captured = capture(shared, root_id, expected)?;
     let (log_tail, log_error, log_truncated) =
         match read(&mut captured.log, captured.failure.log_start) {
@@ -263,12 +262,19 @@ fn prepare_read_with(
     let message = redact(&captured.failure.run.message);
     // A legacy file can contain earlier attempts. Keep it available for the
     // user to inspect, but never elevate its old errors into current findings.
-    let findings = analyzer.0.analyze(
-        &message,
-        (log_scope == FailureLogScope::Attempt)
-            .then_some(log_tail.as_deref())
-            .flatten(),
-    );
+    // The report and its log/export receipt remain usable without the optional
+    // analysis provider. A failed provider still propagates an explicit error.
+    let findings = analyzer
+        .as_ref()
+        .map(|analyzer| {
+            analyzer.0.analyze(
+                &message,
+                (log_scope == FailureLogScope::Attempt)
+                    .then_some(log_tail.as_deref())
+                    .flatten(),
+            )
+        })
+        .unwrap_or_default();
     let log_name = captured.log.name.as_deref().and_then(|name| {
         let safe = redact(name);
         (safe == name).then_some(safe)

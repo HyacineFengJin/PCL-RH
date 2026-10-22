@@ -470,7 +470,6 @@ pub async fn experimental_call(
     window: tauri::WebviewWindow,
     host: State<'_, Arc<Host>>,
     shared: State<'_, Arc<Shared>>,
-    code: State<'_, Arc<crate::rh_code::Store>>,
     operation: Operation,
     mut args: Value,
 ) -> Result<Value, String> {
@@ -493,7 +492,6 @@ pub async fn experimental_call(
         .to_owned();
     let host = host.inner().clone();
     let shared = shared.inner().clone();
-    let code = code.inner().clone();
     let admission = host.admit_native()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _admission = admission;
@@ -504,10 +502,10 @@ pub async fn experimental_call(
         }
         let mut capture = None;
         if operation == "rh_code_start" {
-            args = code.call("agent_bound", args)?;
+            args = shared.code_store().call("agent_bound", args)?;
         }
         if operation == "rh_code_run" {
-            args = code.call("agent_context", args)?;
+            args = shared.code_store().call("agent_context", args)?;
             capture = Some(args.clone());
         }
         let result = host.call(&operation, args)?;
@@ -515,7 +513,7 @@ pub async fn experimental_call(
             let job = result["jobId"]
                 .as_str()
                 .ok_or("Harness returned no task identity")?;
-            if let Err(error) = code.bind_harness(captured, job) {
+            if let Err(error) = shared.code_store().bind_harness(captured, job) {
                 let _ = host.call("job_cancel", json!({"jobId":job}));
                 return Err(error);
             }
@@ -595,7 +593,6 @@ pub async fn experimental_open(
 #[tauri::command]
 pub async fn rh_code_adopt(
     host: State<'_, Arc<Host>>,
-    code: State<'_, Arc<crate::rh_code::Store>>,
     shared: State<'_, Arc<Shared>>,
     args: Value,
 ) -> Result<Value, String> {
@@ -603,7 +600,7 @@ pub async fn rh_code_adopt(
         return Err("Launcher is closing".into());
     }
     let host = host.inner().clone();
-    let code = code.inner().clone();
+    let code = shared.code_store().clone();
     tauri::async_runtime::spawn_blocking(move || {
         code.call("artifact_owner", args.clone())?;
         let source = host.call("rh_code_artifact", args.clone())?;
@@ -618,7 +615,6 @@ pub async fn rh_code_adopt(
 #[tauri::command]
 pub async fn rh_code_harness_reviews(
     host: State<'_, Arc<Host>>,
-    code: State<'_, Arc<crate::rh_code::Store>>,
     shared: State<'_, Arc<Shared>>,
     args: Value,
 ) -> Result<Value, String> {
@@ -626,7 +622,7 @@ pub async fn rh_code_harness_reviews(
         return Err("Launcher is closing".into());
     }
     let host = host.inner().clone();
-    let code = code.inner().clone();
+    let code = shared.code_store().clone();
     let admission = host.admit_native()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _admission = admission;
@@ -639,7 +635,6 @@ pub async fn rh_code_harness_reviews(
 #[tauri::command]
 pub async fn rh_code_harness_apply(
     host: State<'_, Arc<Host>>,
-    code: State<'_, Arc<crate::rh_code::Store>>,
     shared: State<'_, Arc<Shared>>,
     args: Value,
 ) -> Result<Value, String> {
@@ -647,7 +642,7 @@ pub async fn rh_code_harness_apply(
         return Err("Launcher is closing".into());
     }
     let host = host.inner().clone();
-    let code = code.inner().clone();
+    let code = shared.code_store().clone();
     let admission = host.admit_native()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _admission = admission;
@@ -668,7 +663,6 @@ pub async fn rh_code_harness_apply(
 #[tauri::command]
 pub async fn rh_code_build_open(
     host: State<'_, Arc<Host>>,
-    code: State<'_, Arc<crate::rh_code::Store>>,
     shared: State<'_, Arc<Shared>>,
     args: Value,
 ) -> Result<(), String> {
@@ -676,7 +670,7 @@ pub async fn rh_code_build_open(
         return Err("Launcher is closing".into());
     }
     let host = host.inner().clone();
-    let code = code.inner().clone();
+    let code = shared.code_store().clone();
     let admission = host.admit_native()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _admission = admission;

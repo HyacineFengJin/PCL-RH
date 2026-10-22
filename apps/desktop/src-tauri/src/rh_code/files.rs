@@ -1,72 +1,8 @@
 //! Bounded project reads and atomic replacements. No Agent receives a path
 //! through this module; native snapshot bytes are the execution boundary.
 use super::{id, Project};
+pub(super) use crate::document_io::{atomic, atomic_with_permissions, read};
 use std::{fs, path::Path};
-pub(super) fn safe_file(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Ok(m) if m.is_file() && !m.file_type().is_symlink() => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        _ => Err("Expected a regular file; retained existing path".into()),
-    }
-}
-pub(super) fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    atomic_with_permissions(path, bytes, None)
-}
-pub(super) fn atomic_with_permissions(
-    path: &Path,
-    bytes: &[u8],
-    permissions: Option<fs::Permissions>,
-) -> Result<(), String> {
-    use std::io::Write;
-    safe_file(path)?;
-    let tmp = path.with_file_name(format!(".rh-{}.new", id()));
-    let result = (|| {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let mut file = options.open(&tmp).map_err(|e| e.to_string())?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)
-                .map_err(|e| e.to_string())?;
-        }
-        file.write_all(bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        safe_file(path)?;
-        fs::rename(&tmp, path).map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(tmp);
-    }
-    result
-}
-pub(super) fn read(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    safe_file(path)?;
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut bytes = vec![];
-    options
-        .open(path)
-        .map_err(|e| e.to_string())?
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > limit {
-        Err("File exceeds the supported size".into())
-    } else {
-        Ok(bytes)
-    }
-}
 pub(super) fn inventory(p: &Project) -> Result<Vec<String>, String> {
     let root = fs::canonicalize(&p.folder).map_err(|e| e.to_string())?;
     let mut paths = vec![];

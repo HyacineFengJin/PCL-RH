@@ -860,6 +860,9 @@ function Cube({ forge = false }: { forge?: boolean }) {
 }
 
 function App() {
+  const [disabledProductPlugins, setDisabledProductPlugins] = useState<
+    string[]
+  >([]);
   const [porterIntake, setPorterIntake] = useState<PorterIntake | null>(null);
   const [data, setData] = useState<State | null>(null),
     [error, setError] = useState(""),
@@ -1468,6 +1471,9 @@ function App() {
     onNotify: notify,
   });
   const launcherDiscovery = useLauncherDiscovery({
+    pluginEnabled: !disabledProductPlugins.includes(
+      "launcher.home.announcements",
+    ),
     api,
     native,
     enabled: native,
@@ -2841,6 +2847,7 @@ function App() {
                   />
                 </div>
                 <RHCodeHost
+                  onPluginConfiguration={setDisabledProductPlugins}
                   visible={screen === "home" && tab === "tools"}
                   api={api}
                   native={native && !tasks.closing}
@@ -3296,7 +3303,7 @@ function App() {
             failureTarget.epoch === navigationEpoch && (
               <LaunchFailure
                 expected={failureRun}
-                scopeKey={`${rootKey}:${failureTarget.epoch}`}
+                scopeKey={`${rootKey}:${failureTarget.epoch}:${disabledProductPlugins.includes("launcher.diagnostics.analysis")}`}
                 api={rootApi}
                 native={native}
                 disabled={rootWorking || !rootAvailable || tasks.closing}

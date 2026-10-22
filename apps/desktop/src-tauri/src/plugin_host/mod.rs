@@ -490,6 +490,70 @@ impl Host {
             value: Arc::downgrade(&value),
         })
     }
+
+    /// Resolve a protocol without coupling its consumer to a bundled plugin ID.
+    /// Ambiguous providers require an explicit routing policy, never load order.
+    /// A missing/failed declaration is an error; an intentionally dormant or
+    /// disabled optional provider is represented by None.
+    pub fn resolve<T: Send + Sync + 'static>(
+        &self,
+        contract: Contract<T>,
+    ) -> Result<Option<ServiceHandle<T>>, String> {
+        let declarations: Vec<_> = self
+            .definitions
+            .iter()
+            .filter(|definition| {
+                definition.services.iter().any(|service| {
+                    service.key == (contract.id, contract.version)
+                        && service.implementation == TypeId::of::<T>()
+                })
+            })
+            .collect();
+        if declarations.is_empty() {
+            return Err(format!(
+                "Plugin service protocol unavailable: {}@{}",
+                contract.id, contract.version
+            ));
+        }
+        let registry = self
+            .registry
+            .lock()
+            .map_err(|_| "Plugin registry unavailable")?;
+        let active: Vec<_> = declarations
+            .iter()
+            .filter_map(|definition| registry.active.get(definition.id))
+            .collect();
+        if active.len() > 1 {
+            return Err(format!(
+                "Ambiguous plugin service providers: {}@{}",
+                contract.id, contract.version
+            ));
+        }
+        if let Some(activation) = active.first() {
+            let value = activation
+                .services
+                .get(&(contract.id, contract.version))
+                .ok_or("Plugin service protocol unavailable")?
+                .clone()
+                .downcast::<T>()
+                .map_err(|_| "Plugin service type mismatch")?;
+            return Ok(Some(ServiceHandle {
+                activation: Arc::downgrade(activation),
+                value: Arc::downgrade(&value),
+            }));
+        }
+        for definition in declarations {
+            if let Some(status) = registry.statuses.get(definition.id) {
+                if matches!(status.state, State::Failed | State::Blocked) {
+                    return Err(status
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| format!("Plugin unavailable: {}", definition.id)));
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 impl Drop for Host {

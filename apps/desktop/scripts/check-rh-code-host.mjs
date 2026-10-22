@@ -141,6 +141,10 @@ function hostDriver(options = {}) {
         disabledPlugins: [],
         projects: [{ id: "saved-project" }],
       };
+    if (command === "rh_code_call" && args.operation === "plugin_runtime")
+      return args.args.action === "open"
+        ? { lease: `scope-${calls.length}` }
+        : { released: true };
     if (command === "experimental_suspend") {
       const response = nativeResponses.shift();
       return response ? await response : { released: true, busy: false };

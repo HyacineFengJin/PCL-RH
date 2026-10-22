@@ -2,63 +2,16 @@
 //! cache is tied to networking-policy identity and uses monotonic expiry; mode
 //! None returns before touching the factory, cache, lock or network provider.
 use super::provider::{Failure, GitHub, Provider, Response, MAX_BYTES, MAX_RELEASES};
-use serde::{Deserialize, Serialize};
+pub use crate::product_plugins::contracts::{
+    Announcement, AnnouncementScope, AnnouncementState, AnnouncementView,
+};
+use serde::Deserialize;
 use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AnnouncementScope {
-    All,
-    Important,
-    None,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AnnouncementState {
-    Disabled,
-    Ready,
-    Empty,
-    RateLimited,
-    Unavailable,
-}
 use AnnouncementState as State;
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Announcement {
-    pub id: String,
-    pub title: String,
-    pub text: String,
-    pub url: String,
-    pub published_at: Option<String>,
-    pub prerelease: bool,
-}
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AnnouncementView {
-    pub state: AnnouncementState,
-    pub scope: AnnouncementScope,
-    pub items: Vec<Announcement>,
-    pub fetched_at: Option<u64>,
-    pub retry_at: Option<u64>,
-    pub cached: bool,
-    pub truncated: bool,
-    pub message: Option<String>,
-}
 impl AnnouncementView {
-    pub(crate) fn disabled() -> Self {
-        Self {
-            state: State::Disabled,
-            scope: AnnouncementScope::None,
-            items: vec![],
-            fetched_at: None,
-            retry_at: None,
-            cached: false,
-            truncated: false,
-            message: None,
-        }
-    }
     fn unavailable(message: &str) -> Self {
         Self {
             state: State::Unavailable,

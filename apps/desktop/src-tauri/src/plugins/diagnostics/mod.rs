@@ -1,14 +1,11 @@
 pub(crate) mod analysis;
-use crate::plugin_host::{Contract, Registration};
+use crate::plugin_host::Registration;
+pub use crate::product_plugins::contracts::{
+    AnalysisService, FailureAnalyzer, FAILURE_ANALYSIS as ANALYSIS,
+};
 use analysis::FailureFinding;
 use std::sync::Arc;
-
 pub const ID: &str = "launcher.diagnostics.analysis";
-pub const ANALYSIS: Contract<AnalysisService> = Contract::new("launcher.failure-analysis", 1);
-pub trait FailureAnalyzer: Send + Sync {
-    fn analyze(&self, message: &str, log_tail: Option<&str>) -> Vec<FailureFinding>;
-}
-pub struct AnalysisService(pub Arc<dyn FailureAnalyzer>);
 struct SignatureAnalyzer;
 impl FailureAnalyzer for SignatureAnalyzer {
     fn analyze(&self, message: &str, log_tail: Option<&str>) -> Vec<FailureFinding> {

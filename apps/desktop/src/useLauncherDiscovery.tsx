@@ -22,6 +22,7 @@ export function useLauncherDiscovery({
   api,
   native,
   enabled,
+  pluginEnabled = true,
   launcher,
   onNotify,
   contextKey,
@@ -31,6 +32,7 @@ export function useLauncherDiscovery({
   api: Api;
   native: boolean;
   enabled: boolean;
+  pluginEnabled?: boolean;
   launcher: ReturnType<typeof useLauncherPreferences>;
   onNotify: (message: string) => void;
   contextKey: string;
@@ -40,13 +42,24 @@ export function useLauncherDiscovery({
   const prefs = launcher.prefs;
   const tr = createTranslator(prefs.localization);
   const available = native && enabled && !!launcher.view.revision;
-  const policy = `${prefs.announcement_mode}:${JSON.stringify(prefs.network)}:${launcher.importEpoch}`;
+  const policy = `${pluginEnabled}:${prefs.announcement_mode}:${JSON.stringify(prefs.network)}:${launcher.importEpoch}`;
   const clipboardEnabled =
     available && prefs.management.clipboard_resource_detection;
+  // A disable/reenable cycle can return to the same policy string. Give each
+  // activation a distinct owner so saved buttons cannot become live again.
+  const announcementOwner = useRef({ api, available, policy });
+  if (
+    announcementOwner.current.api !== api ||
+    announcementOwner.current.available !== available ||
+    announcementOwner.current.policy !== policy
+  )
+    announcementOwner.current = { api, available, policy };
+  const owner = announcementOwner.current;
   const latest = useRef({
     api,
     available,
     policy,
+    owner,
     clipboardEnabled,
     contextKey,
     canNavigate,
@@ -58,6 +71,7 @@ export function useLauncherDiscovery({
     api,
     available,
     policy,
+    owner,
     clipboardEnabled,
     contextKey,
     canNavigate,
@@ -82,13 +96,13 @@ export function useLauncherDiscovery({
   async function readAnnouncements(refresh = false) {
     if (
       !latest.current.available ||
-      api !== latest.current.api ||
-      policy !== latest.current.policy ||
+      !pluginEnabled ||
+      owner !== latest.current.owner ||
       prefs.announcement_mode === "none" ||
       announcementPending.current
     )
       return;
-    const captured = policy,
+    const captured = owner,
       epoch = ++announcementEpoch.current;
     announcementPending.current = true;
     setLoading(true);
@@ -101,14 +115,14 @@ export function useLauncherDiscovery({
       if (
         live.current &&
         epoch === announcementEpoch.current &&
-        captured === latest.current.policy
+        captured === latest.current.owner
       )
         setAnnouncements(result);
     } catch (error) {
       if (
         live.current &&
         epoch === announcementEpoch.current &&
-        captured === latest.current.policy
+        captured === latest.current.owner
       )
         setError(String(error));
     } finally {
@@ -124,7 +138,7 @@ export function useLauncherDiscovery({
     setAnnouncements(null);
     setError("");
     setLoading(false);
-    if (available && prefs.announcement_mode !== "none")
+    if (available && pluginEnabled && prefs.announcement_mode !== "none")
       void readAnnouncements();
     return () => {
       announcementEpoch.current++;
@@ -189,7 +203,7 @@ export function useLauncherDiscovery({
     };
   }, [api, clipboardEnabled]);
   const announcementUi =
-    available && prefs.announcement_mode !== "none" ? (
+    available && pluginEnabled && prefs.announcement_mode !== "none" ? (
       <section className="ce-card">
         <h2 className="ce-card-title">{tr.t("discovery.announcements")}</h2>
         <p className="extra-paragraph extra-muted">
@@ -246,13 +260,17 @@ export function useLauncherDiscovery({
                 </p>
                 <button
                   className="ce-button"
-                  onClick={() =>
-                    void api("ui_open_link", { url: item.url }).catch((error) =>
-                      latest.current.onNotify(
-                        latest.current.tr.serviceError(error),
-                      ),
-                    )
-                  }
+                  onClick={() => {
+                    if (!live.current || owner !== latest.current.owner) return;
+                    void api("ui_open_link", { url: item.url }).catch(
+                      (error) => {
+                        if (live.current && owner === latest.current.owner)
+                          latest.current.onNotify(
+                            latest.current.tr.serviceError(error),
+                          );
+                      },
+                    );
+                  }}
                 >
                   {tr.t("discovery.openRelease")}
                 </button>

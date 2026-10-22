@@ -306,3 +306,65 @@ fn last_admitted_call_drops_the_service_before_its_resource_owners() {
     drop(call);
     assert_eq!(*ORDER.lock().unwrap(), ["service", "resource"]);
 }
+
+#[test]
+fn contracts_resolve_a_provider_without_its_id_and_reject_ambiguity() {
+    const PROTOCOL: super::Contract<u32> = super::Contract::new("fixture.number", 1);
+    fn start(r: &mut super::Registration<'_>) -> Result<(), String> {
+        r.provide(PROTOCOL, 42)
+    }
+    let definition = |id| super::Definition {
+        id,
+        scope: super::Scope::Launcher,
+        dependencies: vec![],
+        services: vec![PROTOCOL.declaration()],
+        start,
+    };
+    let host = super::Host::new(vec![
+        definition("replacement.a"),
+        definition("replacement.b"),
+    ])
+    .unwrap();
+    host.configure(&[], true, false).unwrap();
+    assert!(host.resolve(PROTOCOL).is_err());
+    host.configure(&["replacement.b".into()], true, false)
+        .unwrap();
+    assert_eq!(
+        *host.resolve(PROTOCOL).unwrap().unwrap().begin().unwrap(),
+        42
+    );
+    host.configure(
+        &["replacement.a".into(), "replacement.b".into()],
+        true,
+        false,
+    )
+    .unwrap();
+    assert!(host.resolve(PROTOCOL).unwrap().is_none());
+    assert!(host
+        .resolve(super::Contract::<u64>::new("fixture.number", 1))
+        .is_err());
+    assert!(host
+        .resolve(super::Contract::<u32>::new("fixture.number", 2))
+        .is_err());
+}
+#[test]
+fn failed_contract_provider_is_an_error_not_an_optional_disable() {
+    const PROTOCOL: super::Contract<u32> = super::Contract::new("fixture.failed", 1);
+    fn failed(_: &mut super::Registration<'_>) -> Result<(), String> {
+        Err("fixture initialization failed".into())
+    }
+    let host = super::Host::new(vec![super::Definition {
+        id: "fixture.failed",
+        scope: super::Scope::Launcher,
+        dependencies: vec![],
+        services: vec![PROTOCOL.declaration()],
+        start: failed,
+    }])
+    .unwrap();
+    host.configure(&[], true, false).unwrap();
+    assert!(host
+        .resolve(PROTOCOL)
+        .err()
+        .unwrap()
+        .contains("initialization failed"));
+}

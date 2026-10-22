@@ -6,8 +6,14 @@ mod context;
 mod files;
 mod harness;
 mod layout;
-use crate::Shared;
-use files::{atomic, atomic_with_permissions, inventory, read, safe_file};
+use crate::{
+    product_plugins::{
+        catalog::{manifests, validate_disabled as validate_disabled_plugins},
+        Runtime,
+    },
+    Shared,
+};
+use files::{atomic, atomic_with_permissions, inventory, read};
 use layout::{checked_layout, portable_layout};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -16,13 +22,12 @@ use std::{
     collections::HashSet,
     fs,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::State;
 
 const LIMIT: usize = 8 * 1024 * 1024;
-const MANIFESTS: &str = include_str!("../../../../code/plugins.json");
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Message {
@@ -102,16 +107,7 @@ impl Default for Document {
 }
 pub struct Store {
     root: PathBuf,
-    gate: Mutex<()>,
-    native_plugins: crate::plugin_host::Host,
-}
-// Read the shared control plane without loading or validating Code projects.
-// Keep the schema mandatory: a future document must not silently enable plugins.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PluginConfiguration {
-    schema_version: u32,
-    disabled_plugins: Vec<String>,
+    runtime: Arc<Runtime>,
 }
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -147,35 +143,6 @@ fn text(a: &Value, key: &str, max: usize) -> Result<String, String> {
     }
     Ok(s.to_owned())
 }
-fn manifests() -> Value {
-    serde_json::from_str(MANIFESTS).expect("bundled plugin manifests")
-}
-fn validate_disabled_plugins(disabled_plugins: &[String]) -> Result<(), String> {
-    let list = manifests();
-    let list = list.as_array().unwrap();
-    let mut disabled = HashSet::new();
-    for id in disabled_plugins {
-        let plugin = list
-            .iter()
-            .find(|p| p["id"] == *id)
-            .ok_or("Unknown stored product plugin")?;
-        if plugin["required"] == true || !disabled.insert(id) {
-            return Err("Invalid stored plugin state".into());
-        }
-    }
-    for p in list {
-        if !disabled_plugins.contains(&p["id"].as_str().unwrap().to_owned())
-            && p["dependencies"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|id| disabled_plugins.contains(&id.as_str().unwrap().to_owned()))
-        {
-            return Err("Stored plugin dependency is disabled; retained for recovery".into());
-        }
-    }
-    Ok(())
-}
 fn ensure_plugin(d: &Document, plugin: &str) -> Result<(), String> {
     if d.disabled_plugins.iter().any(|v| v == plugin) {
         Err(format!("Plugin disabled: {plugin}"))
@@ -201,72 +168,16 @@ fn preset_name(value: &Value) -> Result<String, String> {
     Ok(name.to_owned())
 }
 impl Store {
+    #[cfg(test)]
     pub fn new(project: &Path) -> Self {
+        Self::with_runtime(Arc::new(Runtime::new(project)))
+    }
+    pub(crate) fn with_runtime(runtime: Arc<Runtime>) -> Self {
         Self {
-            root: project.join(".pcl-rust/rh-code"),
-            gate: Mutex::new(()),
-            native_plugins: crate::plugins::host(),
+            root: runtime.root().to_owned(),
+            runtime,
         }
     }
-    /// Launcher services read only shared plugin configuration. They do not
-    /// bootstrap project controllers or validate/read individual Code projects.
-    /// The historical document location and format are unchanged.
-    pub(crate) fn native_service<T: Send + Sync + 'static>(
-        &self,
-        provider: &str,
-        contract: crate::plugin_host::Contract<T>,
-    ) -> Result<crate::plugin_host::ServiceCall<T>, String> {
-        self.optional_native_service(provider, contract)?
-            .ok_or_else(|| format!("Plugin disabled: {provider}"))
-    }
-
-    /// Optional surfaces can disappear cleanly on an explicit disable. Factory
-    /// failures still propagate instead of being mistaken for that preference.
-    pub(crate) fn optional_native_service<T: Send + Sync + 'static>(
-        &self,
-        provider: &str,
-        contract: crate::plugin_host::Contract<T>,
-    ) -> Result<Option<crate::plugin_host::ServiceCall<T>>, String> {
-        let _gate = self
-            .gate
-            .lock()
-            .map_err(|_| "Product plugin configuration unavailable")?;
-        let (disabled, _) = self.plugin_configuration()?;
-        self.native_plugins.configure(&disabled, true, false)?;
-        if disabled.iter().any(|id| id == provider) {
-            return Ok(None);
-        }
-        self.native_plugins
-            .service(provider, contract)?
-            .begin()
-            .map(Some)
-    }
-
-    /// Caller holds the store gate. Atomic document publication permits a
-    /// read-only snapshot without creating the Code directory or a file lease.
-    fn plugin_configuration(&self) -> Result<(Vec<String>, String), String> {
-        let path = self.root.join("workspace.json");
-        let (disabled, revision) = match read(&path, LIMIT) {
-            Ok(bytes) => {
-                let config: PluginConfiguration = serde_json::from_slice(&bytes)
-                    .map_err(|_| "Plugin configuration unreadable; retained for recovery")?;
-                if config.schema_version != 1 {
-                    return Err("Unsupported plugin configuration; retained for recovery".into());
-                }
-                (config.disabled_plugins, hash(&bytes))
-            }
-            Err(_)
-                if fs::symlink_metadata(&path)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                (vec![], "new".into())
-            }
-            Err(error) => return Err(error),
-        };
-        validate_disabled_plugins(&disabled)?;
-        Ok((disabled, revision))
-    }
-
     fn load(&self) -> Result<(Document, String), String> {
         let path = self.root.join("workspace.json");
         let bytes = match read(&path, LIMIT) {
@@ -415,53 +326,13 @@ impl Store {
         a: Value,
         source: Option<Value>,
     ) -> Result<Value, String> {
-        let _gate = self.gate.lock().map_err(|_| "RH Code store unavailable")?;
-        if operation == "plugin_configuration" || operation == "native_plugin" {
-            let (disabled, revision) = self.plugin_configuration()?;
-            self.native_plugins.configure(&disabled, true, false)?;
-            if operation == "plugin_configuration" {
-                return Ok(
-                    json!({"disabledPlugins":disabled,"revision":revision,"plugins":manifests()}),
-                );
-            }
-            let key = text(&a, "id", 120)?;
-            let status = self
-                .native_plugins
-                .statuses()?
-                .into_iter()
-                .find(|status| status.id == key)
-                .ok_or("Unknown native plugin")?;
-            if status.state != crate::plugin_host::State::Active {
-                return Err(status
-                    .error
-                    .unwrap_or_else(|| format!("Plugin unavailable: {key}")));
-            }
-            return Ok(json!({"id":status.id,"state":status.state.as_str()}));
+        if Runtime::handles(operation) {
+            return self.runtime.call(operation, a);
         }
-        fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
-        // Share one native store lease across launcher processes. Taking the
-        // lease before reading makes disk CAS meaningful across those processes.
-        safe_file(&self.root.join("store.lock"))?;
-        let mut options = fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-        }
-        let lease = options
-            .open(self.root.join("store.lock"))
-            .map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                return Err("Another launcher is updating RH Code".into());
-            }
-        }
+        let _gate = self.runtime.lock()?;
+        let _lease = crate::document_io::workspace_lease(&self.root)?;
         let (mut d, revision) = self.load()?;
-        self.native_plugins
-            .configure(&d.disabled_plugins, true, false)?;
+        self.runtime.reconcile(&d.disabled_plugins)?;
         if operation == "bootstrap" {
             return Ok(snapshot(&d, &revision));
         }
@@ -661,6 +532,16 @@ impl Store {
             return Ok(snapshot(&d, &hash(&bytes)));
         }
         match operation {
+            "plugin_set" => {
+                // Keep the legacy full-snapshot adapter typed: older documents
+                // need Code defaults before the existing controller adopts them.
+                // Product-only clients use plugin_control without loading Code.
+                let active = d
+                    .projects
+                    .iter()
+                    .any(|p| p.conversations.iter().any(|c| c.active_job.is_some()));
+                crate::product_plugins::catalog::change(&mut d.disabled_plugins, &a, active)?;
+            }
             "project_create" => {
                 if d.projects.len() >= 128 {
                     return Err("Project limit reached".into());
@@ -705,52 +586,6 @@ impl Store {
                     return Err("Build network access requires enabled builds".into());
                 }
                 Self::project_mut(&mut d, &a)?.build_policy = BuildPolicy { enabled, network };
-            }
-            "plugin_set" => {
-                let key = text(&a, "id", 120)?;
-                let enable = a["enabled"].as_bool().ok_or("Choose a plugin state")?;
-                let list = manifests();
-                let list = list.as_array().ok_or("Invalid bundled plugins")?;
-                let plugin = list
-                    .iter()
-                    .find(|p| p["id"] == key)
-                    .ok_or("Unknown bundled plugin")?;
-                if !enable && plugin["required"] == true {
-                    return Err("This plugin is required by RH Code".into());
-                }
-                if !enable
-                    && key == "rh.agent"
-                    && d.projects
-                        .iter()
-                        .any(|p| p.conversations.iter().any(|c| c.active_job.is_some()))
-                {
-                    return Err("Stop active Agent tasks before disabling this plugin".into());
-                }
-                if !enable
-                    && list.iter().any(|p| {
-                        !d.disabled_plugins
-                            .contains(&p["id"].as_str().unwrap_or_default().to_owned())
-                            && p["dependencies"]
-                                .as_array()
-                                .is_some_and(|deps| deps.iter().any(|v| v == &key))
-                    })
-                {
-                    return Err("Disable dependent plugins first".into());
-                }
-                if enable
-                    && plugin["dependencies"].as_array().is_some_and(|deps| {
-                        deps.iter().any(|v| {
-                            d.disabled_plugins
-                                .contains(&v.as_str().unwrap_or_default().to_owned())
-                        })
-                    })
-                {
-                    return Err("Enable this plugin's dependencies first".into());
-                }
-                d.disabled_plugins.retain(|v| v != &key);
-                if !enable {
-                    d.disabled_plugins.push(key);
-                }
             }
             "layout_save" => {
                 let layout = a.get("layout").ok_or("Choose a workspace layout")?;
@@ -942,15 +777,13 @@ impl Store {
         let bytes = document_bytes(&d)?;
         atomic(&self.root.join("workspace.json"), &bytes)?;
         if operation == "plugin_set" {
-            self.native_plugins
-                .configure(&d.disabled_plugins, true, false)?;
+            self.runtime.reconcile(&d.disabled_plugins)?;
         }
         Ok(snapshot(&d, &hash(&bytes)))
     }
 }
 #[tauri::command]
 pub async fn rh_code_call(
-    store: State<'_, Arc<Store>>,
     shared: State<'_, Arc<Shared>>,
     operation: String,
     args: Value,
@@ -958,10 +791,16 @@ pub async fn rh_code_call(
     if shared.closing.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("Launcher is closing".into());
     }
-    let owner = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || owner.call(&operation, args))
-        .await
-        .map_err(|e| e.to_string())?
+    let shared = shared.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if Runtime::handles(&operation) {
+            shared.product_plugins.call(&operation, args)
+        } else {
+            shared.code_store().call(&operation, args)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn rh_code_choose(

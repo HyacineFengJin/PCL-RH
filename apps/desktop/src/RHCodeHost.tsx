@@ -5,16 +5,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import manifests from "../../../code/plugins.json";
 import { WorkRetention } from "./rh-code/retention";
 import { createWorkLeases, maySuspendCode } from "./rhCodeLifecycle";
+import { createProductPluginRuntime } from "./productPluginRuntime";
 import { label } from "./rh-code/locale";
 import { createCommunityCatalogPort } from "./rh-code/communityCatalog";
 import type { Kernel } from "./rh-code/kernel";
 import type { Controller } from "./rh-code/controller";
-import type { Snapshot, Manifest } from "./rh-code/types";
+import type { Manifest, ActivePluginScope } from "./rh-code/types";
 import type { RHCode } from "./rh-code/RHCode";
 
 type CodeProps = Parameters<typeof RHCode>[0];
 type Props = Omit<CodeProps, "kernel" | "onController" | "onConfiguration"> & {
   visible: boolean;
+  onPluginConfiguration?: (disabled: string[]) => void;
 };
 type Loaded = { View: typeof RHCode; kernel: Kernel };
 export function RHCodeHost(props: Props) {
@@ -33,6 +35,9 @@ export function RHCodeHost(props: Props) {
     visibilityEpoch = useRef(0),
     leases = useRef(createWorkLeases()).current,
     root = useRef<HTMLDivElement>(null);
+  const nativeRuntime = useRef(
+    createProductPluginRuntime(() => current.current),
+  ).current;
   const community = useRef(createCommunityCatalogPort(props)).current;
   if (current.current.visible !== props.visible) {
     visibilityEpoch.current++;
@@ -75,35 +80,25 @@ export function RHCodeHost(props: Props) {
         },
         community.runtime,
         current.current.native
-          ? {
-              activate: async (id) => {
-                const status = await current.current.api<{
-                  id: string;
-                  state: string;
-                }>("rh_code_call", {
-                  operation: "native_plugin",
-                  args: { id },
-                });
-                if (status.id !== id || status.state !== "active")
-                  throw new Error(`Native plugin unavailable: ${id}`);
-              },
-            }
+          ? { activate: nativeRuntime.activate }
           : undefined,
       ),
     );
     kernel.current = owner;
     return owner;
   };
+  const configureKernel = async (
+    owner: Kernel,
+    scopes: ActivePluginScope[],
+  ) => {
+    await nativeRuntime.configure(scopes);
+    await owner.configure(disabled.current, scopes);
+  };
   const readConfiguration = async () => {
     if (configurationRead.current) return;
-    const data = await current.current.api<Pick<Snapshot, "disabledPlugins">>(
-      "rh_code_call",
-      {
-        operation: "plugin_configuration",
-        args: {},
-      },
-    );
+    const data = await nativeRuntime.readConfiguration();
     disabled.current = data.disabledPlugins;
+    current.current.onPluginConfiguration?.(data.disabledPlugins);
     configurationRead.current = true;
   };
   const bind = useCallback((next: Controller | null) => {
@@ -112,11 +107,12 @@ export function RHCodeHost(props: Props) {
   const configure = useCallback(
     (ids: string[]) => {
       disabled.current = ids;
+      current.current.onPluginConfiguration?.(ids);
       configurationRead.current = true;
       enqueue(async () => {
         if (alive.current && kernel.current)
-          await kernel.current.configure(
-            disabled.current,
+          await configureKernel(
+            kernel.current,
             mounted.current ? ["launcher", "rh-code"] : ["launcher"],
           );
       });
@@ -131,7 +127,13 @@ export function RHCodeHost(props: Props) {
       community.retire();
       // Queue ownership also covers an entry import still in flight.
       enqueue(async () => {
-        if (!alive.current) await kernel.current?.dispose();
+        if (!alive.current) {
+          try {
+            await kernel.current?.dispose();
+          } finally {
+            await nativeRuntime.dispose();
+          }
+        }
       });
     };
   }, [enqueue, community]);
@@ -146,10 +148,10 @@ export function RHCodeHost(props: Props) {
         const owner = await ensureKernel();
         const { RHCode: View } = await import("./rh-code/RHCode");
         if (!alive.current || !current.current.visible) {
-          await owner.configure(disabled.current, ["launcher"]);
+          await configureKernel(owner, ["launcher"]);
           return;
         }
-        await owner.configure(disabled.current, ["launcher", "rh-code"]);
+        await configureKernel(owner, ["launcher", "rh-code"]);
         if (!alive.current) return;
         mounted.current = true;
         // Keep this exact component instance on ordinary tab changes.
@@ -163,7 +165,7 @@ export function RHCodeHost(props: Props) {
       ) {
         await readConfiguration();
         const owner = await ensureKernel();
-        await owner.configure(disabled.current, ["launcher"]);
+        await configureKernel(owner, ["launcher"]);
       }
     });
   }, [props.visible, retry, enqueue]);
@@ -224,7 +226,8 @@ export function RHCodeHost(props: Props) {
           mounted.current = false;
           controller.current = null;
           setLoaded(null);
-          await kernel.current?.configure(disabled.current, ["launcher"]);
+          if (kernel.current)
+            await configureKernel(kernel.current, ["launcher"]);
         }),
       15_000,
     );

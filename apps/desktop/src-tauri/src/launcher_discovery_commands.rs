@@ -1,7 +1,12 @@
 //! Read-only discovery commands. Clipboard permission and keyboard focus are
 //! checked again on GTK's thread when the asynchronous selection arrives.
 //! Only approved resource links cross IPC; source clipboard text is discarded.
-use crate::{launcher_discovery::*, launcher_prefs::AnnouncementMode, Shared};
+use crate::{
+    launcher_discovery::{request_clipboard_link, ModrinthLink},
+    launcher_prefs::AnnouncementMode,
+    product_plugins::contracts::{AnnouncementScope, AnnouncementView, ANNOUNCEMENTS},
+    Shared,
+};
 use std::sync::{atomic::Ordering, Arc};
 use tauri::State;
 
@@ -26,11 +31,7 @@ pub async fn launcher_announcements(
     if scope == AnnouncementScope::None {
         return Ok(AnnouncementView::disabled());
     }
-    let Some(service) = state.product_plugins.optional_native_service(
-        crate::plugins::home::ID,
-        crate::plugins::home::ANNOUNCEMENTS,
-    )?
-    else {
+    let Some(service) = state.product_plugins.optional_service(ANNOUNCEMENTS)? else {
         return Ok(AnnouncementView::disabled());
     };
     Ok(service.0.read(scope, refresh.unwrap_or(false)).await)
