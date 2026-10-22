@@ -5,6 +5,12 @@
  * Reconciliation is serialized, and request versions cancel late imports/apply
  * results when a newer surface configuration or host disposal supersedes them. */
 import { Context, type Fiber } from "@deepseek-ai/cordis";
+import { launcherSlots } from "../productPlugins/surfaceTypes";
+import type {
+  LauncherSlot,
+  LauncherSurfaceContribution,
+  RegisteredLauncherSurface,
+} from "../productPlugins/surfaceTypes";
 import type {
   ExperimentalNavigate,
   ExtensionCatalog,
@@ -23,6 +29,7 @@ export type ProductPluginServices = {
 };
 export type ProductPlugin = {
   manifest: Manifest;
+  launcherSurfaces?: LauncherSurfaceContribution[];
   views?: ViewContribution[];
   commands?: CommandContribution[];
   layouts?: LayoutContribution[];
@@ -170,6 +177,48 @@ function validate(plugin: ProductPlugin) {
     m.capabilities.some((v) => typeof v !== "string")
   )
     throw new Error("Invalid manifest capabilities");
+  if (m.launcherSurfaces !== undefined) {
+    if (
+      !Array.isArray(m.launcherSurfaces) ||
+      m.launcherSurfaces.length > 32 ||
+      pluginScope(m) === "rh-code"
+    )
+      throw new Error("Invalid launcher surface declarations");
+    ids(
+      m.launcherSurfaces.map((surface) => surface?.id),
+      "launcher surface IDs",
+    );
+    if (
+      m.launcherSurfaces.some(
+        (surface) =>
+          !surface ||
+          typeof surface !== "object" ||
+          Object.keys(surface).length !== 2 ||
+          !launcherSlots.includes(surface.slot),
+      ) ||
+      (m.launcherSurfaces.some(
+        (surface) => surface.slot === "home.announcements",
+      ) &&
+        !m.capabilities.includes("launcher.announcements.read"))
+    )
+      throw new Error("Invalid launcher surface slot or capability");
+  }
+  const surfaces = plugin.launcherSurfaces ?? [];
+  const seenSurfaces = new Set<string>();
+  for (const surface of surfaces) {
+    if (
+      surface.owner !== m.id ||
+      !validId(surface.id) ||
+      !m.launcherSurfaces?.some(
+        (declaration) =>
+          declaration.id === surface.id && declaration.slot === surface.slot,
+      ) ||
+      !validComponent(surface.render) ||
+      seenSurfaces.has(surface.id)
+    )
+      throw new Error(`Undeclared or invalid launcher surface: ${surface.id}`);
+    seenSurfaces.add(surface.id);
+  }
   if (m.tools !== undefined) {
     if (!Array.isArray(m.tools)) throw new Error("Invalid tool declarations");
     ids(
@@ -224,6 +273,12 @@ type ViewPublisher = {
   ready: boolean;
   views: Map<string, ViewContribution>;
 };
+type SurfaceOwner = {
+  live: boolean;
+  ready: boolean;
+  records: RegisteredLauncherSurface[];
+};
+let nextSurfaceGeneration = 0;
 export class Kernel {
   readonly context = new Context();
   readonly views = new Map<string, ViewContribution>();
@@ -239,6 +294,8 @@ export class Kernel {
   private commandOwners = new Map<string, string>();
   private knownViews = new Map<string, ViewListing>();
   private viewPublishers = new Map<string, ViewPublisher>();
+  private launcherSurfaces = new Map<string, RegisteredLauncherSurface>();
+  private surfaceOwners = new Map<string, SurfaceOwner>();
   private listeners = new Set<() => void>();
   private sequence: Promise<void> = Promise.resolve();
   private stopped = false;
@@ -282,6 +339,88 @@ export class Kernel {
       this.listeners.delete(listener);
     };
   };
+  listLauncherSurfaces(slot: LauncherSlot): RegisteredLauncherSurface[] {
+    const rank = (surface: RegisteredLauncherSurface) => {
+      const owner = this.definitions.findIndex(
+        (p) => p.manifest.id === surface.owner,
+      );
+      const item = this.definitions[owner].manifest.launcherSurfaces!.findIndex(
+        (declaration) => declaration.id === surface.id,
+      );
+      return owner * 32 + item;
+    };
+    return [...this.launcherSurfaces.values()]
+      .filter((surface) => surface.slot === slot && surface.lifetime.isActive())
+      .sort((a, b) => rank(a) - rank(b));
+  }
+  private allowsOwner(
+    id: string,
+    disabled = this.disabled,
+    scopes = this.scopes,
+  ) {
+    return (
+      !this.stopped &&
+      !this.definitions.some(({ manifest }) => {
+        const scope = pluginScope(manifest);
+        const excluded =
+          (!manifest.required && disabled.includes(manifest.id)) ||
+          (scope === "both" ? !scopes.length : !scopes.includes(scope));
+        return excluded && this.dependents(manifest.id).has(id);
+      })
+    );
+  }
+  /** Withdraw UI before the host awaits native scope reconciliation. This
+   * grants no new activation; configure remains the serialized state boundary. */
+  revokeLauncherSurfaces(disabled: readonly string[], scopes = this.scopes) {
+    for (const id of this.surfaceOwners.keys())
+      if (!this.allowsOwner(id, disabled, scopes)) this.retireSurfaces(id);
+    this.changed();
+  }
+  private retireSurfaces(id: string) {
+    const owner = this.surfaceOwners.get(id);
+    if (!owner) return;
+    owner.live = false;
+    this.surfaceOwners.delete(id);
+    for (const surface of owner.records)
+      if (this.launcherSurfaces.get(surface.id) === surface)
+        this.launcherSurfaces.delete(surface.id);
+  }
+  private registerSurfaces(ctx: Context, plugin: ProductPlugin) {
+    if (!plugin.launcherSurfaces?.length) return undefined;
+    const id = plugin.manifest.id;
+    const owner: SurfaceOwner = { live: false, ready: false, records: [] };
+    const generation = ++nextSurfaceGeneration;
+    const lifetime = Object.freeze({
+      isActive: () =>
+        owner.live &&
+        owner.ready &&
+        ctx.fiber.uid !== null &&
+        this.owners.get(ctx) === plugin &&
+        this.surfaceOwners.get(id) === owner &&
+        this.allowsOwner(id),
+    });
+    owner.records = plugin.launcherSurfaces.map((surface) =>
+      Object.freeze({ ...surface, generation, lifetime }),
+    );
+    ctx.effect(() => {
+      if (
+        owner.records.some((surface) => this.launcherSurfaces.has(surface.id))
+      )
+        throw new Error("Duplicate launcher surface");
+      owner.live = true;
+      this.surfaceOwners.set(id, owner);
+      for (const surface of owner.records)
+        this.launcherSurfaces.set(surface.id, surface);
+      return () => {
+        owner.live = false;
+        if (this.surfaceOwners.get(id) === owner) {
+          this.retireSurfaces(id);
+          this.changed();
+        }
+      };
+    });
+    return owner;
+  }
   /** Legacy first-party apply hooks register only commands declared by their own
    * manifest. Direct registration on the root or another context is rejected. */
   registerCommand(
@@ -462,6 +601,7 @@ export class Kernel {
       this.fibers.delete(id);
       const publisher = this.viewPublishers.get(id);
       if (publisher) this.retireViews(id, publisher);
+      this.retireSurfaces(id);
       // Remove published contributions before async disposal can yield to UI.
       for (const [key, view] of this.views)
         if (view.owner === id) this.views.delete(key);
@@ -489,6 +629,8 @@ export class Kernel {
    * retirement, allowing settings to retry the owner without rebuilding areas. */
   reportFailure(id: string, error: unknown) {
     if (!this.statuses.has(id) || this.stopped) return Promise.resolve();
+    for (const owner of this.dependents(id)) this.retireSurfaces(owner);
+    this.changed();
     return this.enqueue(async () => {
       const affected = this.dependents(id);
       await this.unload(affected);
@@ -519,6 +661,10 @@ export class Kernel {
     const version = ++this.version;
     this.disabled = requested;
     this.scopes = scopes;
+    // Revoke component actions immediately. If a disable is superseded before
+    // queued disposal runs, reconciliation still recreates this activation;
+    // old buttons must never revive with the same enabled configuration.
+    this.revokeLauncherSurfaces(this.disabled, this.scopes);
     const current = () => !this.stopped && version === this.version;
     const eligible = (p: { manifest: Manifest }) => {
       const scope = pluginScope(p.manifest);
@@ -535,7 +681,13 @@ export class Kernel {
       );
       const retire = new Set<string>();
       for (const p of this.definitions)
-        if (off.has(p.manifest.id) || !eligible(p))
+        if (
+          off.has(p.manifest.id) ||
+          !eligible(p) ||
+          (this.fibers.has(p.manifest.id) &&
+            p.manifest.launcherSurfaces?.length &&
+            !this.surfaceOwners.has(p.manifest.id))
+        )
           for (const child of this.dependents(p.manifest.id)) retire.add(child);
       await this.unload(retire);
       if (!current()) return;
@@ -609,10 +761,12 @@ export class Kernel {
             );
             this.plugins[index] = plugin;
             let publisher: ViewPublisher | undefined;
+            let surfaceOwner: SurfaceOwner | undefined;
             fiber = this.context.plugin({
               name: id,
               apply: async (ctx: Context) => {
                 this.owners.set(ctx, plugin);
+                surfaceOwner = this.registerSurfaces(ctx, plugin);
                 for (const view of plugin.views ?? [])
                   ctx.effect(() => {
                     if (this.views.has(view.id))
@@ -647,6 +801,11 @@ export class Kernel {
               return;
             }
             if (publisher) publisher.ready = true;
+            for (const surface of plugin.manifest.launcherSurfaces ?? [])
+              if (this.launcherSurfaces.get(surface.id)?.owner !== id)
+                throw new Error(
+                  `Declared launcher surface missing: ${surface.id}`,
+                );
             for (const viewId of plugin.manifest.views)
               if (this.views.get(viewId)?.owner !== id)
                 throw new Error(`Declared view missing: ${viewId}`);
@@ -660,6 +819,7 @@ export class Kernel {
               )
                 throw new Error(`Declared command missing: ${commandId}`);
             this.status(id, "active");
+            if (surfaceOwner) surfaceOwner.ready = true;
             for (const view of plugin.views ?? [])
               this.knownViews.set(view.id, {
                 id: view.id,
@@ -688,6 +848,8 @@ export class Kernel {
   async dispose() {
     this.stopped = true;
     ++this.version;
+    for (const id of this.surfaceOwners.keys()) this.retireSurfaces(id);
+    this.changed();
     await this.sequence.catch(() => {});
     await this.unload(new Set(this.fibers.keys()));
     for (const p of this.plugins) this.status(p.manifest.id, "stopped");

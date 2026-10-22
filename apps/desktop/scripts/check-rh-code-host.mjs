@@ -107,7 +107,11 @@ function hostDriver(options = {}) {
   };
   const jsx = (type, props) => ({ type, props });
   class Kernel {
+    revokeLauncherSurfaces(disabled) {
+      this.revocations.push([...disabled]);
+    }
     constructor(definitions) {
+      this.revocations = [];
       this.plugins = definitions;
       this.statuses = new Map(
         definitions.map((p) => [p.manifest.id, { state: "dormant" }]),
@@ -341,6 +345,9 @@ function hostDriver(options = {}) {
     updateProps(next) {
       props = { ...props, ...next };
       render();
+    },
+    configurePlugins(ids) {
+      childProps.onConfiguration(ids);
     },
     async flush() {
       for (let index = 0; index < 30; index++) {
@@ -672,6 +679,40 @@ test("native-only launcher plugins read shared configuration without bootstrappi
   for (const manifest of shipped.filter((plugin) => plugin.nativeServices)) {
     assert.equal(driver.kernels[0].statuses.get(manifest.id).state, "active");
   }
+});
+
+test("launcher contributions bind one product kernel across Code suspension and retire on host replacement", async (t) => {
+  const driver = await fixture(t, { manifests: shipped });
+  const attachments = [],
+    releases = [];
+  const port = (name) => ({
+    attach(kernel) {
+      attachments.push({ name, kernel });
+      return () => releases.push(name);
+    },
+  });
+  driver.updateProps({ launcherSurfaces: port("first") });
+  await driver.flush();
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0].kernel, driver.kernels[0]);
+  assert.equal(driver.imports.includes("RHCode"), false);
+  await enter(driver);
+  driver.configurePlugins(["launcher.home.announcements"]);
+  assert.deepEqual(driver.kernels[0].revocations.at(-1), [
+    "launcher.home.announcements",
+  ]);
+  await driver.flush();
+  await eligible(driver);
+  assert.equal(driver.child, null);
+  assert.equal(attachments.length, 1);
+  assert.deepEqual(releases, []);
+  driver.updateProps({ launcherSurfaces: port("replacement") });
+  await driver.flush();
+  assert.equal(driver.kernels.length, 1);
+  assert.equal(attachments.length, 2);
+  assert.deepEqual(releases, ["first"]);
+  driver.close();
+  assert.deepEqual(releases, ["first", "replacement"]);
 });
 
 test("meaningful activity during a delayed native suspend restarts the controller idle cooldown", async (t) => {

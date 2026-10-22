@@ -44,6 +44,12 @@ export function assemblePlugins(
     }
     if (source.dynamicViews !== undefined)
       manifest.dynamicViews = Object.freeze({ ...source.dynamicViews });
+    if (Array.isArray(source.launcherSurfaces)) {
+      manifest.launcherSurfaces = source.launcherSurfaces.map((surface) =>
+        Object.freeze({ ...surface }),
+      );
+      Object.freeze(manifest.launcherSurfaces);
+    }
     if (Array.isArray(source.nativeServices)) {
       manifest.nativeServices = source.nativeServices.map((service) =>
         Object.freeze({ ...service }),

@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { LauncherSurfaceDeclaration } from "../productPlugins/surfaceTypes";
 /** View IDs are declared statically or within their bundled owner's namespace. */
 export type ViewId = string;
 export type JsonValue =
@@ -58,6 +59,8 @@ export type PluginScope = "launcher" | "rh-code" | "both";
 /** Host surfaces that are currently alive; `both` is a manifest lifetime. */
 export type ActivePluginScope = Exclude<PluginScope, "both">;
 export type Manifest = {
+  /** Launcher placement authority; independent of Code area's view IDs. */
+  launcherSurfaces?: LauncherSurfaceDeclaration[];
   /** Native interfaces implemented by the same product plugin, not UI cards. */
   nativeServices?: { id: string; version: number }[];
   /** Omitted legacy entries conservatively retain the Node runtime. */

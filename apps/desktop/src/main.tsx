@@ -1,4 +1,10 @@
 import { RHCodeHost } from "./RHCodeHost";
+import { createLauncherSurfacePort } from "./productPlugins/surfacePort";
+import { useLauncherSurfaceHost } from "./productPlugins/launcherHost";
+import {
+  LauncherSurfaceSlot,
+  useLauncherSurfaceEffects,
+} from "./productPlugins/LauncherSurfaceSlot";
 import "./style.css";
 import "./rh-code/navigation.css";
 import rhMark from "../../../assets/branding/rh-mark.svg";
@@ -860,6 +866,8 @@ function Cube({ forge = false }: { forge?: boolean }) {
 }
 
 function App() {
+  const [launcherSurfaces] = useState(createLauncherSurfacePort);
+  const launcherSurfaceEffects = useLauncherSurfaceEffects(launcherSurfaces);
   const [disabledProductPlugins, setDisabledProductPlugins] = useState<
     string[]
   >([]);
@@ -1459,6 +1467,12 @@ function App() {
     else if (done[0]?.message) notify(done[0].message);
   }, [taskView, dismissedTasks, screen, taskOrigin]);
   const launcher = useLauncherPreferences(api, native, notify);
+  const launcherSurfaceHost = useLauncherSurfaceHost(
+    api,
+    native && !tasks.closing,
+    launcher,
+    notify,
+  );
   configureLocale(launcher.prefs.localization);
   const launcherMedia = useLauncherAssets(api, native, launcher, notify);
   const launcherLocal = useLauncherLocal(api, native, launcher, notify);
@@ -1471,9 +1485,6 @@ function App() {
     onNotify: notify,
   });
   const launcherDiscovery = useLauncherDiscovery({
-    pluginEnabled: !disabledProductPlugins.includes(
-      "launcher.home.announcements",
-    ),
     api,
     native,
     enabled: native,
@@ -2847,6 +2858,7 @@ function App() {
                   />
                 </div>
                 <RHCodeHost
+                  launcherSurfaces={launcherSurfaces}
                   onPluginConfiguration={setDisabledProductPlugins}
                   visible={screen === "home" && tab === "tools"}
                   api={api}
@@ -3146,7 +3158,13 @@ function App() {
                         />
                       )}
                       {tab === "launch" && launcherMedia.homeUi}
-                      {tab === "launch" && launcherDiscovery.announcementUi}
+                      {tab === "launch" && (
+                        <LauncherSurfaceSlot
+                          port={launcherSurfaces}
+                          slot="home.announcements"
+                          host={launcherSurfaceHost}
+                        />
+                      )}
                       {tab === "settings" &&
                         settingsPage !== "toolbox" &&
                         (["launch", "java"].includes(settingsPage) ? (
@@ -3230,6 +3248,7 @@ function App() {
                               ...launcherUpdates.effects,
                               ...minecraftNotices.effects,
                               ...launcherDiscovery.effects,
+                              ...launcherSurfaceEffects,
                             ]}
                             onLauncherAction={(action) =>
                               launcherMedia.handles(action)

@@ -18,6 +18,7 @@ export function harness(name, props = {}, options = {}) {
     tree,
     closed = false;
   const react = {
+    Component: require("react").Component,
     // The harness leaves child providers unmounted. Parent modules may still
     // create contexts at import time; reads use their declared default value.
     createContext(value) {
@@ -68,6 +69,16 @@ export function harness(name, props = {}, options = {}) {
     },
     useLayoutEffect(effect, deps) {
       react.useEffect(effect, deps);
+    },
+    useSyncExternalStore(subscribe, getSnapshot) {
+      const [, update] = react.useState(getSnapshot);
+      react.useEffect(() => {
+        const check = () => update(() => getSnapshot());
+        const release = subscribe(check);
+        check();
+        return release;
+      }, [subscribe, getSnapshot]);
+      return getSnapshot();
     },
   };
   const browser = {

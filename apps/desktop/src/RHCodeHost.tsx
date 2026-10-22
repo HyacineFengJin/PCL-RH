@@ -6,6 +6,7 @@ import manifests from "../../../code/plugins.json";
 import { WorkRetention } from "./rh-code/retention";
 import { createWorkLeases, maySuspendCode } from "./rhCodeLifecycle";
 import { createProductPluginRuntime } from "./productPluginRuntime";
+import type { LauncherSurfacePort } from "./productPlugins/surfacePort";
 import { label } from "./rh-code/locale";
 import { createCommunityCatalogPort } from "./rh-code/communityCatalog";
 import type { Kernel } from "./rh-code/kernel";
@@ -17,6 +18,7 @@ type CodeProps = Parameters<typeof RHCode>[0];
 type Props = Omit<CodeProps, "kernel" | "onController" | "onConfiguration"> & {
   visible: boolean;
   onPluginConfiguration?: (disabled: string[]) => void;
+  launcherSurfaces?: LauncherSurfacePort;
 };
 type Loaded = { View: typeof RHCode; kernel: Kernel };
 export function RHCodeHost(props: Props) {
@@ -26,6 +28,10 @@ export function RHCodeHost(props: Props) {
   const current = useRef(props),
     controller = useRef<Controller | null>(null),
     kernel = useRef<Kernel | null>(null),
+    surfaceBinding = useRef<{
+      port: LauncherSurfacePort;
+      release(): void;
+    } | null>(null),
     disabled = useRef<string[]>([]),
     configurationRead = useRef(false),
     alive = useRef(true),
@@ -50,6 +56,14 @@ export function RHCodeHost(props: Props) {
       if (alive.current) setError(String(e));
     });
   }, []);
+  const publishKernel = (owner: Kernel) => {
+    const port = current.current.launcherSurfaces;
+    if (surfaceBinding.current?.port === port) return;
+    surfaceBinding.current?.release();
+    surfaceBinding.current = port
+      ? { port, release: port.attach(owner) }
+      : null;
+  };
   const ensureKernel = async () => {
     if (kernel.current) return kernel.current;
     const [{ Kernel }, { productPlugins }] = await Promise.all([
@@ -85,6 +99,7 @@ export function RHCodeHost(props: Props) {
       ),
     );
     kernel.current = owner;
+    if (alive.current) publishKernel(owner);
     return owner;
   };
   const configureKernel = async (
@@ -107,6 +122,7 @@ export function RHCodeHost(props: Props) {
   const configure = useCallback(
     (ids: string[]) => {
       disabled.current = ids;
+      if (alive.current) kernel.current?.revokeLauncherSurfaces(ids);
       current.current.onPluginConfiguration?.(ids);
       configurationRead.current = true;
       enqueue(async () => {
@@ -124,6 +140,8 @@ export function RHCodeHost(props: Props) {
     community.setSurface(current.current);
     return () => {
       alive.current = false;
+      surfaceBinding.current?.release();
+      surfaceBinding.current = null;
       community.retire();
       // Queue ownership also covers an entry import still in flight.
       enqueue(async () => {
@@ -137,6 +155,9 @@ export function RHCodeHost(props: Props) {
       });
     };
   }, [enqueue, community]);
+  useEffect(() => {
+    if (alive.current && kernel.current) publishKernel(kernel.current);
+  }, [props.launcherSurfaces]);
   useEffect(() => {
     community.publishSurface();
   }, [props.api, props.native, props.visible, community]);

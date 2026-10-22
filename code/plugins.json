@@ -445,7 +445,7 @@
   {
     "id": "launcher.home.announcements",
     "name": "Launcher announcements",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "required": false,
     "scope": "launcher",
     "dependencies": [],
@@ -461,6 +461,12 @@
     ],
     "runtimeNeeds": [
       "native"
+    ],
+    "launcherSurfaces": [
+      {
+        "id": "launcher.home.announcements.feed",
+        "slot": "home.announcements"
+      }
     ]
   },
   {

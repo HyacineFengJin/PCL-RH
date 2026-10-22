@@ -8,7 +8,7 @@
 
 | 插件 ID | 实际实现 | 原生接口 |
 | --- | --- | --- |
-| `launcher.home.announcements` | 首页公告读取、缓存与请求同步 | `launcher.announcements@1` |
+| `launcher.home.announcements` | 首页公告组件、请求状态，以及原生读取、缓存与同步 | `launcher.announcements@1` |
 | `launcher.diagnostics.analysis` | 启动失败的规则匹配与线索生成 | `launcher.failure-analysis@1` |
 
 在同一个 Plugin 管理页可停用、重新启用它们。停用公告插件后撤回公告及旧操作回调；停用分析插件后不接受新的预分析，原有日志报告、导出与 AI 分析入口仍可使用。游戏进程与已有日志不会被删除或停止。已接纳的调用可完成，服务资源在最后一个调用结束后释放。
@@ -20,6 +20,18 @@
 `nativeServices` 声明原生接口及版本；`runtimeNeeds` 声明 `native` 或 `node` 运行时依赖。纯原生启动器插件不会阻止闲置的 RH Code 及 AI Node 宿主休眠。旧清单省略 `runtimeNeeds` 时保留原先的保守行为。
 
 ## 添加一个组件
+
+### 启动器组件
+
+启动器组件通过 `launcherSurfaces` 贡献到明确的显示位置，与 RH Code 的 `views` 分开。当前提供 `home.announcements`：清单需为 `launcher` 或 `both` 范围，声明 `launcher.announcements.read` 能力及 `{ "id": "插件组件ID", "slot": "home.announcements" }`。每个清单最多声明 32 个启动器组件，ID 必须唯一。
+
+入口返回的 `ProductPlugin.launcherSurfaces` 使用 `{ id, owner: manifest.id, slot, render }`，必须与清单一致。参考 `launcher.home.announcements.plugin.tsx` 及 `src/plugins/home/AnnouncementSurface.tsx`。首页只指定位置；组件与请求状态由插件持有，只有激活成功的贡献才会显示。
+
+`render` 接收 `LauncherSurfaceProps`。`host.announcements` 只提供公告读取、打开发布页、显示策略、语言与通知；组件不接收通用原生命令或项目控制器。`lifetime.isActive()` 标识当前挂载，提交操作前和接纳异步结果时都应检查。停用、依赖退役、宿主替换或关闭后，旧生命周期不会因重新启用而恢复。组件渲染异常会隔离该插件的界面贡献，可在原有 Plugin 管理入口重试。
+
+这些是随包发布的可信代码贡献，不是 JavaScript 沙箱，也不赋予社区 JSON 插件加载脚本的能力。启动器组件不创建第二个 Kernel；RH Code 休眠不会卸下仍然启用的启动器贡献。
+
+### RH Code 区域组件
 
 1. 在 `code/plugins.json` 添加清单，声明唯一 ID、运行范围、依赖和贡献 ID。
 2. 在 `apps/desktop/src/rh-code/plugins/` 添加 `*.plugin.tsx`，默认导出 `BundledPluginEntry`。`rh.example` 使用 `example.plugin.tsx`；其他命名空间使用完整 ID，例如 `launcher.example.plugin.tsx`。
@@ -74,6 +86,7 @@ export default entry;
 
 | 贡献 | 清单字段 | 实现 |
 | --- | --- | --- |
+| 启动器组件 | `launcherSurfaces` | `{ id, owner, slot, render }` |
 | 区域组件 | `views` | `{ id, owner, label, icon, tone?, render, settings? }` |
 | 命令 | `commands` | `{ id, owner, handler }` |
 | 布局 | `layouts` | `{ id, owner, label, create(project) }` |
