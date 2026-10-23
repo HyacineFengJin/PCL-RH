@@ -5,6 +5,7 @@ pub mod game_title;
 pub mod inspection;
 pub mod java;
 pub mod launch_options;
+mod loader_runtime;
 pub mod memory;
 pub mod platform;
 pub mod repair;

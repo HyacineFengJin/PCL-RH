@@ -176,6 +176,43 @@ fn verified_missing_files_are_added_and_mismatched_existing_files_are_never_repl
 }
 
 #[test]
+fn missing_forge_runtime_uses_retained_installer_evidence_and_generated_outputs_are_explicit() {
+    let root = fixture();
+    let server = server(vec![("/fmlcore", b"verified fmlcore".to_vec())]);
+    let mut value = json!({"id":"fixture","mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher",
+        "libraries":[],"arguments":{"game":["--launchTarget","forgeclient",
+        "--fml.forgeGroup","net.minecraftforge","--fml.mcVersion","1.20.1",
+        "--fml.forgeVersion","47.4.0","--fml.mcpVersion","20230612.114412"]},
+        "downloads":{"client":desc(&server,"/client",b"client")}});
+    let paths = pcl_core::repair::implicit_runtime_paths(&value).unwrap();
+    let mut record = desc(&server, "/fmlcore", b"verified fmlcore");
+    record["path"] = json!(paths[0]);
+    value["pclRuntimeFiles"] = json!([record]);
+    metadata(root.path(), "fixture", value);
+    fs::write(root.path().join("versions/fixture/fixture.jar"), b"client").unwrap();
+    for path in paths.iter().skip(1) {
+        let file = root.path().join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, b"existing loader output").unwrap();
+    }
+    let request = capture(root.path(), "fixture");
+    assert_eq!(request.missing_count().unwrap(), 1);
+    let report = repair(&installer(&server), &request);
+    assert_eq!((report.files_downloaded, report.unsupported_total), (1, 0));
+    assert_eq!(
+        fs::read(root.path().join(&paths[0])).unwrap(),
+        b"verified fmlcore"
+    );
+    assert_eq!(server.requests.load(Ordering::Relaxed), 1);
+    fs::remove_file(root.path().join(paths.last().unwrap())).unwrap();
+    let request = capture(root.path(), "fixture");
+    assert_eq!(request.missing_count().unwrap(), 1);
+    let report = repair(&installer(&server), &request);
+    assert_eq!((report.files_downloaded, report.unsupported_total), (0, 1));
+    assert_eq!(server.requests.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn inherited_core_uses_parent_download_and_does_not_create_child_jar() {
     let root = fixture();
     let server = server(vec![

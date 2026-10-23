@@ -9,6 +9,25 @@ use std::{
 };
 pub(super) const MAX_COMPONENT: u64 = 512 * 1024 * 1024;
 
+/// Keep official installer evidence for files Forge opens outside the JVM
+/// classpath. Adding them to `libraries` would change classpath/module behavior;
+/// this separate list is read only by inspection/integrity/missing-file repair.
+pub(super) fn record_runtime_downloads(
+    metadata: &mut Value,
+    descriptors: &std::collections::BTreeMap<String, Download>,
+) -> Result<()> {
+    let paths = pcl_core::repair::implicit_runtime_paths(metadata)?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let receipts: Vec<_> = paths.iter().filter_map(|path| {
+        let download = descriptors.get(path)?;
+        (!download.url.is_empty()).then(|| json!({"path":path,"url":download.url,"sha1":download.hash,"size":download.size}))
+    }).collect();
+    metadata["pclRuntimeFiles"] = receipts.into();
+    Ok(())
+}
+
 pub(crate) fn initial_steps(request: &InstallRequest) -> Vec<InstallStep> {
     let mut steps = vec![
         step("metadata", "下载原版 Json 文件"),
@@ -709,7 +728,7 @@ impl Installer {
         }
         cb(stats.event("component_install", "组件安装完成", 1.0));
         cb(stats.event("game_install", "正在组装游戏启动信息", 0.0));
-        let result = merge_profile(vanilla, profile.clone(), minecraft)?;
+        let mut result = merge_profile(vanilla, profile.clone(), minecraft)?;
         // The loader's launch JSON omits some runtime jars (patched Minecraft,
         // split extras, universal). Preserve the complete successful library
         // workspace after verifying declared and generated runtime artifacts.
@@ -723,6 +742,7 @@ impl Installer {
                 }
             }
         }
+        record_runtime_downloads(&mut result, &descriptors)?;
         Ok(result)
     }
     pub(crate) fn publish_component_libraries(
@@ -1263,6 +1283,64 @@ mod java_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    #[test]
+    fn installer_runtime_evidence_is_consumed_without_changing_launch_libraries() {
+        let mut metadata = json!({"id":"fixture",
+            "mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher","libraries":[],
+            "arguments":{"game":["--launchTarget","forgeclient","--fml.forgeGroup",
+                "net.minecraftforge","--fml.mcVersion","1.20.1","--fml.forgeVersion",
+                "47.4.0","--fml.mcpVersion","20230612.114412"]}});
+        let original = metadata.clone();
+        let paths = pcl_core::repair::implicit_runtime_paths(&metadata).unwrap();
+        let descriptor = |relative: &str, url: &str| Download {
+            relative: relative.into(),
+            url: url.into(),
+            hash: "1".repeat(40),
+            size: 123,
+        };
+        let descriptors = BTreeMap::from([
+            (
+                paths[0].clone(),
+                descriptor(&paths[0], "https://maven.minecraftforge.net/fmlcore.jar"),
+            ),
+            (paths[7].clone(), descriptor(&paths[7], "")),
+            (
+                "libraries/unrelated.jar".into(),
+                descriptor(
+                    "libraries/unrelated.jar",
+                    "https://maven.minecraftforge.net/unrelated.jar",
+                ),
+            ),
+        ]);
+        record_runtime_downloads(&mut metadata, &descriptors).unwrap();
+        assert_eq!(metadata["libraries"], original["libraries"]);
+        assert_eq!(metadata["arguments"], original["arguments"]);
+        assert_eq!(metadata["pclRuntimeFiles"].as_array().unwrap().len(), 1);
+        let captured =
+            pcl_core::repair::resolve_metadata("fixture", |_| Ok(metadata.clone()), |_| Ok(true))
+                .unwrap();
+        let required = pcl_core::repair::required_files(&captured).unwrap();
+        let runtime = required
+            .files
+            .iter()
+            .find(|file| file.label == paths[0])
+            .unwrap();
+        assert_eq!(runtime.download.as_ref().unwrap().sha1, "1".repeat(40));
+        assert!(runtime.unsupported.is_none());
+        assert!(required
+            .files
+            .iter()
+            .all(|file| file.label != "libraries/unrelated.jar"));
+        assert!(required
+            .files
+            .iter()
+            .find(|file| file.label == paths[7])
+            .unwrap()
+            .unsupported
+            .is_some());
+    }
+
     #[test]
     fn cancellation_kills_and_reaps_running_processor_before_return() {
         let cancelled = AtomicBool::new(false);

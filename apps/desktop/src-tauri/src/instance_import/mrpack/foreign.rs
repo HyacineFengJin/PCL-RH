@@ -9,7 +9,14 @@ pub(super) const MAX_BYTES: u64 = 64 * 1024;
 
 pub(super) fn candidate(path: &str, directory: bool) -> bool {
     (directory && path == "PCL")
-        || (!directory && matches!(path, "PCL/config.json" | "PCL/Setup.ini"))
+        || (!directory
+            && matches!(
+                path,
+                "PCL/config.json"
+                    | "PCL/Setup.ini"
+                    | "mods/PCL.ini"
+                    | "mods/launcher_profiles.json"
+            ))
 }
 
 pub(super) fn archive_candidate(path: &str) -> bool {
@@ -19,6 +26,8 @@ pub(super) fn archive_candidate(path: &str) -> bool {
             let suffixes = [
                 format!("{layer}PCL/config.json"),
                 format!("{layer}PCL/Setup.ini"),
+                format!("{layer}mods/PCL.ini"),
+                format!("{layer}mods/launcher_profiles.json"),
             ];
             suffixes
                 .iter()
@@ -48,6 +57,24 @@ pub(super) fn validate(path: &str, bytes: &[u8]) -> Result<()> {
             serde_json::from_str::<Migration>(text)
                 .map_err(|_| "整合包 PCL config.json 包含未知设置或无效迁移元数据")?;
         }
+        "mods/launcher_profiles.json" => {
+            // This is foreign account/launcher state, never game content. Only
+            // check its bounded JSON shape; no values escape into plans/logs or
+            // the local account store, and the file is always omitted.
+            let value: serde_json::Value =
+                serde_json::from_str(text).map_err(|_| "整合包启动器档案 JSON 无效")?;
+            if !value.is_object() {
+                return Err("整合包启动器档案必须是 JSON 对象".into());
+            }
+        }
+        "mods/PCL.ini" => {
+            if text
+                .chars()
+                .any(|ch| ch.is_control() && !matches!(ch, '\r' | '\n' | '\t'))
+            {
+                return Err("整合包启动器列表元数据含无效控制字符".into());
+            }
+        }
         "PCL/Setup.ini" => {
             let mut keys = BTreeSet::new();
             for line in text.lines().filter(|line| !line.is_empty()) {
@@ -63,10 +90,15 @@ pub(super) fn validate(path: &str, bytes: &[u8]) -> Result<()> {
                 }
                 let valid = match key {
                     "State" => value.parse::<u8>().is_ok_and(|value| value <= 9),
+                    "VersionOriginalMain"
+                    | "VersionOriginalSub"
+                    | "VersionApiCode"
+                    | "VersionArgumentIndie" => value.parse::<u32>().is_ok(),
                     "IsStar" | "VersionLiteLoader" | "VersionArgumentIndieV2" => {
                         matches!(value, "True" | "False")
                     }
-                    "VersionVanillaName" | "VersionVanilla" | "VersionForge" => {
+                    "VersionVanillaName" | "VersionVanilla" | "VersionForge"
+                    | "VersionOriginal" => {
                         !value.is_empty()
                             && value.len() <= 160
                             && value

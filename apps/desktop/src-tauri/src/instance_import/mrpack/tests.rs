@@ -549,6 +549,43 @@ fn exact_foreign_pcl_display_and_migration_documents_are_ignored_with_a_warning(
 }
 
 #[test]
+fn exported_launcher_cache_and_accounts_are_omitted_without_changing_game_files() {
+    let fixture = Fixture::new();
+    fixture.manifest(vec![], &[
+        ("overrides/mods/PCL.ini", b"VersionCache:123\r\nVersion:sample\r\n"),
+        ("overrides/mods/launcher_profiles.json", br#"{"profiles":{},"clientToken":"private-fixture-value","authenticationDatabase":{}}"#),
+        ("overrides/PCL/Setup.ini", b"State:6\nVersionOriginalMain:20\nVersionOriginalSub:1\nVersionApiCode:47040000\nVersionArgumentIndie:1\nVersionOriginal:1.20.1\n"),
+        ("overrides/mods/example.jar", b"mod bytes"),
+        ("overrides/config/example.cfg", b"pack configuration"),
+    ]);
+    let plan = fixture.inspect(None).unwrap();
+    assert_eq!(plan.file_count, 2);
+    assert!(!serde_json::to_string(&plan)
+        .unwrap()
+        .contains("private-fixture-value"));
+    let checked = prepare_checked(&fixture.root, &fixture.source, "Preview", None).unwrap();
+    assert_eq!(
+        checked
+            .outputs
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["config/example.cfg", "mods/example.jar"]
+    );
+    for (path, bytes) in [
+        (
+            "overrides/mods/launcher_profiles.json",
+            b"not JSON".as_slice(),
+        ),
+        ("overrides/mods/PCL.ini", b"invalid\0metadata".as_slice()),
+        ("overrides/mods/launcher_accounts.json", b"{}".as_slice()),
+    ] {
+        fixture.manifest(vec![], &[(path, bytes)]);
+        assert!(fixture.inspect(None).is_err(), "{path}");
+    }
+}
+
+#[test]
 fn foreign_pcl_exceptions_do_not_authorize_unknown_settings_paths_or_remote_files() {
     let fixture = Fixture::new();
     for (path, bytes) in [

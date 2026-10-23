@@ -128,6 +128,109 @@ fn commit(operation: BuildOperation, outputs: VerifiedOutputs) -> Result<Value> 
     )
 }
 
+fn indexed_core(f: &Fixture, index: &[u8]) -> BuildOperation {
+    use sha1::{Digest, Sha1};
+    let operation = f.core();
+    let metadata = json!({"id":"Named","jar":"Named","clientVersion":"1.20.1",
+        "mainClass":"net.minecraft.client.main.Main","libraries":[],"assets":"5",
+        "assetIndex":{"id":"5","sha1":format!("{:x}",Sha1::digest(index)),"size":index.len()}});
+    f.write(
+        &operation.root_path().join("versions/Named/Named.json"),
+        metadata.to_string(),
+    );
+    f.write(&operation.root_path().join("assets/indexes/5.json"), index);
+    operation
+}
+
+#[test]
+fn different_index_revisions_install_without_replacing_existing_games_index() {
+    use sha1::{Digest, Sha1};
+    let f = Fixture::new();
+    let original = f.root.join("assets/indexes/5.json");
+    f.write(&original, b"existing index revision");
+    let inode = fs::metadata(&original).unwrap().ino();
+    let index = br#"{"objects":{}}"#;
+    let alias = format!("pcl-{:x}", Sha1::digest(index));
+    let mut operation = indexed_core(&f, index);
+    let outputs = operation.seal(&AtomicBool::new(false)).unwrap();
+    assert!(!operation.root_path().join("assets/indexes/5.json").exists());
+    commit(operation, outputs).unwrap();
+    assert_eq!(fs::read(&original).unwrap(), b"existing index revision");
+    assert_eq!(fs::metadata(&original).unwrap().ino(), inode);
+    let metadata: Value =
+        serde_json::from_slice(&fs::read(f.root.join("versions/Named/Named.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["assetIndex"]["id"], alias);
+    assert_eq!(metadata["assets"], alias);
+    assert_eq!(
+        fs::read(f.root.join(format!("assets/indexes/{alias}.json"))).unwrap(),
+        index
+    );
+    let readiness = pcl_core::inspection::inspect_files_with_isolation(
+        &f.root,
+        "Named",
+        pcl_core::content_scope::IsolationPolicy::Automatic,
+    )
+    .unwrap();
+    assert_eq!(readiness.missing_total, 0);
+}
+
+#[test]
+fn index_alias_conflicts_tampering_and_cancellation_preserve_the_target() {
+    use sha1::{Digest, Sha1};
+    let index = br#"{"objects":{}}"#;
+    let alias = format!("pcl-{:x}.json", Sha1::digest(index));
+    for mode in [
+        "target-conflict",
+        "private-conflict",
+        "hash",
+        "cancel",
+        "sealed-change",
+    ] {
+        let f = Fixture::new();
+        f.write(&f.root.join("keep.txt"), b"keep");
+        let mut operation = indexed_core(&f, index);
+        if mode == "target-conflict" {
+            f.write(
+                &f.root.join("assets/indexes").join(&alias),
+                b"foreign alias",
+            );
+        } else if mode == "private-conflict" {
+            f.write(
+                &operation.root_path().join("assets/indexes").join(&alias),
+                b"foreign alias",
+            );
+        } else if mode == "hash" {
+            f.write(
+                &operation.root_path().join("assets/indexes/5.json"),
+                b"changed bytes",
+            );
+        }
+        let sealed = operation.seal(&AtomicBool::new(mode == "cancel"));
+        if matches!(mode, "private-conflict" | "hash" | "cancel") {
+            assert!(sealed.is_err(), "{mode}");
+            operation.abort().unwrap();
+        } else {
+            let outputs = sealed.unwrap();
+            if mode == "sealed-change" {
+                f.write(
+                    &operation.root_path().join("assets/indexes").join(&alias),
+                    b"changed bytes",
+                );
+            }
+            assert!(commit(operation, outputs).is_err(), "{mode}");
+        }
+        assert!(!f.root.join("versions/Named").exists());
+        assert_eq!(fs::read(f.root.join("keep.txt")).unwrap(), b"keep");
+        if mode == "target-conflict" {
+            assert_eq!(
+                fs::read(f.root.join("assets/indexes").join(&alias)).unwrap(),
+                b"foreign alias"
+            );
+        }
+    }
+}
+
 #[test]
 fn building_is_durable_before_installer_bytes_and_restart_cleans_only_private_tree() {
     let f = Fixture::new();

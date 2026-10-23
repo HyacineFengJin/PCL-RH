@@ -79,6 +79,11 @@ pub(crate) fn resolve(
             }
         }
     }
+    // These jars are opened by Forge's locators, not by the Java classpath.
+    // Checking their presence must not add them to classpath/native extraction.
+    for relative in crate::loader_runtime::required_paths(data)? {
+        missing.present(&safe_join(root, &relative)?);
+    }
     let jar_id = data["jar"].as_str().unwrap_or(id);
     identifier(jar_id)?;
     let jar = safe_join(root, format!("versions/{jar_id}/{jar_id}.jar"))?;

@@ -42,6 +42,36 @@ pub struct RequiredFiles {
     pub asset_index: Option<RequiredFile>,
 }
 
+/// Non-classpath files selected by a supported loader's client protocol. The
+/// installer uses the same paths to retain its verified download descriptors.
+pub fn implicit_runtime_paths(metadata: &Value) -> Result<Vec<String>> {
+    crate::loader_runtime::required_paths(metadata)
+}
+
+fn runtime_receipts<'a>(data: &'a Value, paths: &[String]) -> Result<BTreeMap<String, &'a Value>> {
+    let mut result = BTreeMap::new();
+    let Some(value) = data.get("pclRuntimeFiles") else {
+        return Ok(result);
+    };
+    let rows = value
+        .as_array()
+        .filter(|rows| rows.len() <= 16)
+        .ok_or("额外运行库下载记录无效或超过限制")?;
+    for row in rows {
+        let fields = row.as_object().ok_or("额外运行库下载记录必须是对象")?;
+        let path = row["path"].as_str().ok_or("额外运行库下载记录缺少路径")?;
+        if !paths.iter().any(|expected| expected == path)
+            || fields
+                .keys()
+                .any(|key| !matches!(key.as_str(), "path" | "url" | "size" | "sha1"))
+            || result.insert(path.to_owned(), row).is_some()
+        {
+            return Err("额外运行库下载记录与加载器不匹配或重复".into());
+        }
+    }
+    Ok(result)
+}
+
 /// Resolve exactly the jar launch would select, then use that jar owner's
 /// download declaration. An inherited child's descriptor cannot authorize
 /// writing different bytes into its parent's jar.
@@ -225,6 +255,25 @@ fn required_for(metadata: &RepairMetadata, context: &RuleContext) -> Result<Requ
         }
         if files.len() > MAX_REQUIRED_FILES {
             return Err("所需文件数量超过缺失补全上限".into());
+        }
+    }
+    let implicit = implicit_runtime_paths(data)?;
+    let receipts = runtime_receipts(data, &implicit)?;
+    for path in implicit {
+        if !files
+            .iter()
+            .any(|file| file.relative.as_deref() == Some(path.as_str()))
+        {
+            // Installer-generated outputs have no trustworthy download URL in
+            // version.json. Report them as missing/unsupported rather than
+            // inventing a URL or quietly declaring the installation complete.
+            let evidence = receipts.get(&path).copied().unwrap_or(&Value::Null);
+            let mut file = required(path, evidence, MAX_REPAIR_FILE_BYTES);
+            if file.download.is_none() {
+                file.unsupported =
+                    Some("Forge 隐式运行库缺少可验证的下载记录，需要通过加载器安装器补齐".into());
+            }
+            files.push(file);
         }
     }
     files.push(required(

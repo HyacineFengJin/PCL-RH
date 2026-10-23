@@ -112,6 +112,7 @@ impl ResolvedInstallRequest {
                 }
             }
             metadata = components::merge_profile(metadata, profile, &self.request.minecraft)?;
+            components::record_runtime_downloads(&mut metadata, &component.libraries)?;
         }
         metadata["id"] = Value::String(self.request.name.clone());
         metadata["jar"] = Value::String(self.request.name.clone());

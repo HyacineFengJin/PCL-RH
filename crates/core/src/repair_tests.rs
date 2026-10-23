@@ -20,6 +20,67 @@ fn linux() -> RuleContext {
 }
 
 #[test]
+fn implicit_forge_files_are_reported_without_inventing_download_authority() {
+    let mut value = json!({"id":"fixture","mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher",
+        "libraries":[],"arguments":{"game":["--launchTarget","forgeclient",
+        "--fml.forgeGroup","net.minecraftforge","--fml.mcVersion","1.20.1",
+        "--fml.forgeVersion","47.4.0","--fml.mcpVersion","20230612.114412"]}});
+    let paths = crate::loader_runtime::required_paths(&value).unwrap();
+    let files = required_for(&metadata(value.clone()), &linux())
+        .unwrap()
+        .files;
+    assert!(paths.iter().all(
+        |path| files.iter().any(|file| file.relative.as_ref() == Some(path)
+            && file.download.is_none()
+            && file.unsupported.is_some())
+    ));
+    let path = paths[0].strip_prefix("libraries/").unwrap();
+    value["libraries"] = json!([{"name":"net.minecraftforge:fmlcore:1.20.1-47.4.0","downloads":{"artifact":descriptor(path)}}]);
+    let files = required_for(&metadata(value), &linux()).unwrap().files;
+    let matching: Vec<_> = files
+        .iter()
+        .filter(|file| file.relative.as_ref() == Some(&paths[0]))
+        .collect();
+    assert_eq!(matching.len(), 1);
+    assert!(matching[0].download.is_some());
+}
+
+#[test]
+fn runtime_download_records_cannot_add_unrelated_paths_or_ambiguous_authority() {
+    let mut value = json!({"id":"fixture","mainClass":"cpw.mods.bootstraplauncher.BootstrapLauncher",
+        "libraries":[],"arguments":{"game":["--launchTarget","forgeclient",
+        "--fml.forgeGroup","net.minecraftforge","--fml.mcVersion","1.20.1",
+        "--fml.forgeVersion","47.4.0","--fml.mcpVersion","20230612.114412"]}});
+    let path = implicit_runtime_paths(&value).unwrap().remove(0);
+    let mut record = descriptor(&path);
+    record["path"] = json!(path);
+    value["pclRuntimeFiles"] = json!([record.clone()]);
+    let files = required_for(&metadata(value.clone()), &linux())
+        .unwrap()
+        .files;
+    assert!(files
+        .iter()
+        .any(|file| file.relative.as_ref() == Some(&path) && file.download.is_some()));
+    for rows in [
+        json!([record.clone(), record.clone()]),
+        json!([{"path":"mods/unrelated.jar","url":"https://libraries.minecraft.net/a","sha1":"a".repeat(40),"size":1}]),
+        json!([{"path":path,"shell":"forbidden"}]),
+        json!("invalid record"),
+    ] {
+        value["pclRuntimeFiles"] = rows;
+        assert!(required_for(&metadata(value.clone()), &linux()).is_err());
+    }
+    record["sha1"] = json!("unverified");
+    value["pclRuntimeFiles"] = json!([record]);
+    let files = required_for(&metadata(value), &linux()).unwrap().files;
+    assert!(files
+        .iter()
+        .any(|file| file.relative.as_ref() == Some(&path)
+            && file.download.is_none()
+            && file.unsupported.is_some()));
+}
+
+#[test]
 fn inherited_jar_uses_owner_descriptor_and_launch_library_overrides() {
     let base = json!({"id":"base","downloads":{"client":descriptor("parent-client")},"libraries":[{"name":"org.example:shared:1","downloads":{"artifact":descriptor("old.jar")}}]});
     let child = json!({"id":"child","inheritsFrom":"base","downloads":{"client":descriptor("child-client")},"libraries":[{"name":"org.example:shared:2","downloads":{"artifact":descriptor("new.jar")}}]});

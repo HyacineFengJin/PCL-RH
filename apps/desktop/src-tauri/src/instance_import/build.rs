@@ -9,6 +9,8 @@ use super::filesystem::Stamp;
 use super::publication::{VerifiedFile, VerifiedOutputs};
 use super::*;
 use std::sync::Arc;
+#[path = "build_assets.rs"]
+mod assets;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum BuildNode {
@@ -188,6 +190,7 @@ impl BuildOperation {
         }
         check(cancel)?;
         let build = self.build_dir()?;
+        assets::namespace_index(self, &build, cancel)?;
         let (tree, outputs) = scan_build(&build, &self.journal.name, cancel)?;
         self.verify_binding()?;
         self.sealed = Some(tree);
