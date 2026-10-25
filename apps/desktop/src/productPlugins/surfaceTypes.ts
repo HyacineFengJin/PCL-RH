@@ -3,8 +3,12 @@
 import type { ComponentType } from "react";
 import type { LauncherAnnouncementView } from "../launcherDiscoveryTypes";
 import type { LauncherPreferences } from "../launcherTypes";
+import type { InstanceSnapshotConnection } from "./instanceSnapshots";
 
-export const launcherSlots = ["home.announcements"] as const;
+export const launcherSlots = [
+  "home.announcements",
+  "instance.overview.tools",
+] as const;
 export type LauncherSlot = (typeof launcherSlots)[number];
 export type LauncherSurfaceDeclaration = { id: string; slot: LauncherSlot };
 export type AnnouncementConnection = {
@@ -12,6 +16,11 @@ export type AnnouncementConnection = {
   openRelease(url: string): Promise<unknown>;
 };
 export type LauncherSurfaceHost = {
+  instanceSnapshots?: {
+    connection: InstanceSnapshotConnection;
+    available: boolean;
+    localization: LauncherPreferences["localization"];
+  };
   announcements: {
     connection: AnnouncementConnection;
     available: boolean;

@@ -2,6 +2,18 @@
 import type pagesZh from "./pagesZh";
 import { integrityEn } from "./integrityMessages";
 const messages = {
+  "snapshot.title": "Instance backups and sharing",
+  "snapshot.preset": "Export contents",
+  "snapshot.backup": "Instance backup",
+  "snapshot.share": "Share a modpack",
+  "snapshot.backupHint":
+    "Includes mods, configuration, resource packs, shaders, worlds and the server list.",
+  "snapshot.shareHint":
+    "Keeps mods and modpack configuration; excludes worlds, the server list and personal game settings.",
+  "snapshot.preview": "{count} files · {size} MiB",
+  "snapshot.inspect": "Inspect backup contents",
+  "snapshot.working": "Working…",
+  "snapshot.save": "Save ZIP as…",
   ...integrityEn,
   "context.menu": "Text actions",
   "context.copy": "Copy",

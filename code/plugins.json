@@ -470,6 +470,27 @@
     ]
   },
   {
+    "id": "launcher.instances.snapshots",
+    "name": "Instance backups and sharing",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "launcher",
+    "dependencies": [],
+    "capabilities": [
+      "launcher.instances.export"
+    ],
+    "views": [],
+    "runtimeNeeds": [
+      "native"
+    ],
+    "launcherSurfaces": [
+      {
+        "id": "launcher.instances.snapshots.actions",
+        "slot": "instance.overview.tools"
+      }
+    ]
+  },
+  {
     "id": "launcher.diagnostics.analysis",
     "name": "Launch failure analysis",
     "version": "1.0.0",

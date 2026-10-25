@@ -6,7 +6,7 @@ import {
 } from "./GameArgumentFields";
 import { CeSelect } from "./CeSelect";
 import { t, formatNumber, type MessageKey } from "./i18n";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Box,
   ChevronDown,
@@ -341,6 +341,7 @@ export function InstancePanel({
   onTaskStart,
   occupiedNames = [],
   resourceRefreshKey = "",
+  overviewContributions,
 }: {
   instance: Instance;
   section: string;
@@ -361,6 +362,7 @@ export function InstancePanel({
   onTaskStart: (id: string, reveal?: boolean) => void;
   occupiedNames?: string[];
   resourceRefreshKey?: string;
+  overviewContributions?: ReactNode;
 }) {
   const rootScope = settings.root_id || settings.root;
   const metadataScope = useRef<MetadataScope>({
@@ -972,6 +974,7 @@ export function InstancePanel({
             </button>
           </div>
         </section>
+        {overviewContributions}
         {descriptionOpen && descriptionDialog && (
           <div
             className="modal-shade rd-name-shade"

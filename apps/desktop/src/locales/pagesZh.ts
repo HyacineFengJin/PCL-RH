@@ -1,6 +1,17 @@
 /** Fixed game/download/resource UI text; protocol IDs and user content stay in callers. */
 import { integrityZh } from "./integrityMessages";
 const messages = {
+  "snapshot.title": "实例备份与分享",
+  "snapshot.preset": "导出内容",
+  "snapshot.backup": "实例备份",
+  "snapshot.share": "精简联机包",
+  "snapshot.backupHint": "包含模组、配置、资源包、光影、存档与服务器列表。",
+  "snapshot.shareHint":
+    "保留模组与整合包配置，不含存档、服务器列表和个人游戏设置。",
+  "snapshot.preview": "{count} 个文件 · {size} MiB",
+  "snapshot.inspect": "检查备份内容",
+  "snapshot.working": "正在处理…",
+  "snapshot.save": "另存为 ZIP",
   ...integrityZh,
   "context.menu": "文本操作",
   "context.copy": "复制",

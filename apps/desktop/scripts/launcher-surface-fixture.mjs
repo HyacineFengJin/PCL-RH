@@ -19,6 +19,8 @@ await esbuild.build({
       `export { assemblePlugins } from ${JSON.stringify(path.join(source, "rh-code/plugins/catalog.ts"))};`,
       `export { createLauncherSurfacePort } from ${JSON.stringify(path.join(source, "productPlugins/surfacePort.ts"))};`,
       `export { LauncherSurfaceBoundary } from ${JSON.stringify(path.join(source, "productPlugins/LauncherSurfaceSlot.tsx"))};`,
+      `export { createInstanceSnapshotConnection, snapshotRequest } from ${JSON.stringify(path.join(source, "productPlugins/instanceSnapshots.ts"))};`,
+      `export { default as snapshotEntry } from ${JSON.stringify(path.join(source, "rh-code/plugins/launcher.instances.snapshots.plugin.tsx"))};`,
     ].join("\n"),
     resolveDir: source,
     loader: "ts",
@@ -34,6 +36,9 @@ export const {
   assemblePlugins,
   createLauncherSurfacePort,
   LauncherSurfaceBoundary,
+  createInstanceSnapshotConnection,
+  snapshotRequest,
+  snapshotEntry,
 } = actual;
 export const manifest = (id = "feed", extra = {}) => ({
   id,

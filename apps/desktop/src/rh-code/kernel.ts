@@ -199,7 +199,11 @@ function validate(plugin: ProductPlugin) {
       (m.launcherSurfaces.some(
         (surface) => surface.slot === "home.announcements",
       ) &&
-        !m.capabilities.includes("launcher.announcements.read"))
+        !m.capabilities.includes("launcher.announcements.read")) ||
+      (m.launcherSurfaces.some(
+        (surface) => surface.slot === "instance.overview.tools",
+      ) &&
+        !m.capabilities.includes("launcher.instances.export"))
     )
       throw new Error("Invalid launcher surface slot or capability");
   }

@@ -31,6 +31,10 @@
 
 这些是随包发布的可信代码贡献，不是 JavaScript 沙箱，也不赋予社区 JSON 插件加载脚本的能力。启动器组件不创建第二个 Kernel；RH Code 休眠不会卸下仍然启用的启动器贡献。
 
+`instance.overview.tools` 位于实例概览中，要求声明 `launcher.instances.export`。内置 `launcher.instances.snapshots` 提供备份与分享组件，独立持有预设、预览和操作状态；`host.instanceSnapshots` 只接受固定预设并返回文件数量、大小及提示。组件看不到原生导出提交或任意文件路径。检查结果只可由产生它的连接使用一次，切换目标或设置后需重查。
+
+当前这个插件复用既有 Rust 导出事务，而不是另建一个文件写入器。原生服务仍负责重新检查方案、系统保存对话框、目录绑定、任务准入、取消和发布。它的 WebUI 入口与流程已独立，底层导出服务尚未拆成新的原生提供者。参考 `plugins/instances/SnapshotSurface.tsx`、`productPlugins/instanceSnapshots.ts` 和 `launcher.instances.snapshots.plugin.tsx`。
+
 ### RH Code 区域组件
 
 1. 在 `code/plugins.json` 添加清单，声明唯一 ID、运行范围、依赖和贡献 ID。

@@ -1,6 +1,7 @@
 import { RHCodeHost } from "./RHCodeHost";
 import { createLauncherSurfacePort } from "./productPlugins/surfacePort";
 import { useLauncherSurfaceHost } from "./productPlugins/launcherHost";
+import { useInstanceSnapshotHost } from "./productPlugins/useInstanceSnapshotHost";
 import {
   LauncherSurfaceSlot,
   useLauncherSurfaceEffects,
@@ -1857,6 +1858,23 @@ function App() {
         )),
     rootAvailable: rootAvailable && !instanceRecoveryBlocked,
   };
+  const instanceSurfaceHost = useInstanceSnapshotHost(
+    launcherSurfaceHost,
+    rootApi,
+    selected?.id,
+    `${rootKey}:${data?.settings.revision || ""}:${navigationEpoch}:${instancePage}`,
+    native &&
+      screen === "instance" &&
+      instancePage === "overview" &&
+      !busy &&
+      !downloadBusy &&
+      !resourceBusy &&
+      !rootWorking &&
+      rootAvailable &&
+      !instanceRecoveryBlocked &&
+      !tasks.closing,
+    showInstanceTask,
+  );
   async function save(cfg: Settings) {
     const settings = { ...cfg, root_id: cfg.root_id || rootId };
     const targetKey = `${settings.root_id || ""}:${settings.root}`;
@@ -3025,6 +3043,13 @@ function App() {
                   ) : screen === "instance" && selected ? (
                     <InstancePanel
                       key={`${rootKey}:${selected.id}`}
+                      overviewContributions={
+                        <LauncherSurfaceSlot
+                          port={launcherSurfaces}
+                          slot="instance.overview.tools"
+                          host={instanceSurfaceHost}
+                        />
+                      }
                       resourceRefreshKey={`${rootKey}:${resourceScanGeneration}`}
                       instance={selected}
                       section={instancePage}

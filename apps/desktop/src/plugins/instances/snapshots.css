@@ -1,0 +1,14 @@
+.ce-instance-snapshots .ce-actions {
+  margin-inline: 0;
+}
+.ce-instance-snapshots .ce-actions .ce-button {
+  width: auto;
+  min-width: 140px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding-block: 7px;
+}
+.ce-instance-snapshots p {
+  overflow-wrap: anywhere;
+}
