@@ -19,8 +19,9 @@ await esbuild.build({
       `export { assemblePlugins } from ${JSON.stringify(path.join(source, "rh-code/plugins/catalog.ts"))};`,
       `export { createLauncherSurfacePort } from ${JSON.stringify(path.join(source, "productPlugins/surfacePort.ts"))};`,
       `export { LauncherSurfaceBoundary } from ${JSON.stringify(path.join(source, "productPlugins/LauncherSurfaceSlot.tsx"))};`,
-      `export { createInstanceSnapshotConnection, snapshotRequest } from ${JSON.stringify(path.join(source, "productPlugins/instanceSnapshots.ts"))};`,
+      `export { createInstanceSnapshotConnection, snapshotVersion } from ${JSON.stringify(path.join(source, "productPlugins/instanceSnapshots.ts"))};`,
       `export { default as snapshotEntry } from ${JSON.stringify(path.join(source, "rh-code/plugins/launcher.instances.snapshots.plugin.tsx"))};`,
+      `export { createBackupRestoreConnection } from ${JSON.stringify(path.join(source, "productPlugins/backupRestore.ts"))};`,
       `export { createInstanceCopyConnection } from ${JSON.stringify(path.join(source, "productPlugins/instanceCopy.ts"))};`,
       `export { default as copyEntry } from ${JSON.stringify(path.join(source, "rh-code/plugins/launcher.instances.copy.plugin.tsx"))};`,
     ].join("\n"),
@@ -39,9 +40,10 @@ export const {
   createLauncherSurfacePort,
   LauncherSurfaceBoundary,
   createInstanceSnapshotConnection,
-  snapshotRequest,
+  snapshotVersion,
   snapshotEntry,
   createInstanceCopyConnection,
+  createBackupRestoreConnection,
   copyEntry,
 } = actual;
 export const manifest = (id = "feed", extra = {}) => ({

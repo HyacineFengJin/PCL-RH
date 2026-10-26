@@ -197,6 +197,23 @@ impl Desktop {
         window: tauri::WebviewWindow,
         initial: PathBuf,
     ) -> Result<ResourceChoice, String> {
+        self.pick_game_archive(window, initial, false).await
+    }
+
+    pub async fn pick_backup_zip(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+    ) -> Result<ResourceChoice, String> {
+        self.pick_game_archive(window, initial, true).await
+    }
+
+    async fn pick_game_archive(
+        self: &Arc<Self>,
+        window: tauri::WebviewWindow,
+        initial: PathBuf,
+        backup: bool,
+    ) -> Result<ResourceChoice, String> {
         if self.choosing.swap(true, Ordering::SeqCst) {
             return Err("已有文件选择窗口，请先完成或取消选择".into());
         }
@@ -211,8 +228,23 @@ impl Desktop {
             .dialog()
             .file()
             .set_parent(&window)
-            .set_title("导入本地整合包")
-            .add_filter("本地整合包 ZIP / Modrinth", &["zip", "mrpack"]);
+            .set_title(if backup {
+                "选择实例备份"
+            } else {
+                "导入本地整合包"
+            })
+            .add_filter(
+                if backup {
+                    "PCL RH 备份 ZIP"
+                } else {
+                    "本地整合包 ZIP / Modrinth"
+                },
+                if backup {
+                    &["zip"][..]
+                } else {
+                    &["zip", "mrpack"][..]
+                },
+            );
         let picker = if initial.is_dir() {
             picker.set_directory(initial)
         } else {

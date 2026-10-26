@@ -3,10 +3,18 @@
 pub(crate) mod diagnostics;
 pub(crate) mod home;
 pub(crate) mod instances;
+pub(crate) mod snapshots;
 use crate::plugin_host::{Definition, Host, Scope};
 
 pub fn host() -> Host {
     let host = Host::new(vec![
+        Definition {
+            id: snapshots::ID,
+            scope: Scope::Launcher,
+            dependencies: vec![],
+            services: vec![crate::product_plugins::contracts::snapshots::SNAPSHOTS.declaration()],
+            start: snapshots::start,
+        },
         Definition {
             id: instances::ID,
             scope: Scope::Launcher,

@@ -3,6 +3,7 @@ import type { Api } from "../types";
 import type { LauncherSurfaceHost } from "./surfaceTypes";
 import { createInstanceSnapshotConnection } from "./instanceSnapshots";
 import { createInstanceCopyConnection } from "./instanceCopy";
+import { createBackupRestoreConnection } from "./backupRestore";
 
 /** Shared selection/admission binding for official instance tools. The shell
  * owns no copy/backup form, preview or workflow; those belong to the plugins. */
@@ -49,6 +50,18 @@ export function useInstanceSnapshotHost(
       }),
     [api, id, owner],
   );
+  const restore = useMemo(
+    () =>
+      createBackupRestoreConnection({
+        api,
+        isCurrent: () =>
+          current.current.live &&
+          current.current.owner === owner &&
+          current.current.available,
+        onTask: (task, reveal) => current.current.onTask(task, reveal),
+      }),
+    [api, owner],
+  );
   return {
     ...host,
     instanceCopy: {
@@ -59,6 +72,7 @@ export function useInstanceSnapshotHost(
     },
     instanceSnapshots: {
       connection,
+      restore,
       available: available && !!id,
       localization: host.announcements.localization,
     },

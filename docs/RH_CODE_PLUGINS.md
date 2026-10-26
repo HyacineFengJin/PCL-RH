@@ -33,7 +33,9 @@
 
 `instance.overview.tools` 位于实例概览中，要求声明 `launcher.instances.export`。内置 `launcher.instances.snapshots` 提供备份与分享组件，独立持有预设、预览和操作状态；`host.instanceSnapshots` 只接受固定预设并返回文件数量、大小及提示。组件看不到原生导出提交或任意文件路径。检查结果只可由产生它的连接使用一次，切换目标或设置后需重查。
 
-当前这个插件复用既有 Rust 导出事务，而不是另建一个文件写入器。原生服务仍负责重新检查方案、系统保存对话框、目录绑定、任务准入、取消和发布。它的 WebUI 入口与流程已独立，底层导出服务尚未拆成新的原生提供者。参考 `plugins/instances/SnapshotSurface.tsx`、`productPlugins/instanceSnapshots.ts` 和 `launcher.instances.snapshots.plugin.tsx`。
+备份插件提供 `launcher.instance-snapshots@1` 原生服务，Rust 提供者位于 `src-tauri/src/plugins/snapshots/`，负责备份／分享预设和恢复格式策略。WebUI 只传预设、版本标签或备份选择，不再构造任意导出选项。`host.instanceSnapshots.restore` 提供文件选择、预览与单次提交，组件看不到原始路径或原生修订号。`BackupRestoreSurface.tsx` 与备份组件同属一个启停生命周期。
+
+共同的导出任务、系统保存对话框和发布边界位于 `instance_export_commands.rs`，官方备份调用会持有服务租约直到已接纳任务结束。恢复复用实例导入的校验、无覆盖发布与恢复记录，并绑定根、目标名和设置修订号。手动完整导出和通用整合包导入保持原有命令，不因关闭快捷备份插件而消失。
 
 `instance.overview.copy` 是实例复制的专用槽位，要求 `launcher.instances.copy`。内置 `launcher.instances.copy` 同时提供组件和 `launcher.instance-copy@1` 原生服务，复用当前产品宿主的启停与调用租约。组件只取得绑定当前实例的 `host.instanceCopy` 端口，提交新名称及存档／截图选项；预览中的原生提交仍私存在连接中且仅可使用一次。Rust 提供者负责选择策略，命令层负责根绑定及任务准入，共用实例发布器负责独立文件、校验、取消和恢复。示例入口是 `launcher.instances.copy.plugin.tsx`，原生实现在 `src-tauri/src/plugins/instances/`。
 

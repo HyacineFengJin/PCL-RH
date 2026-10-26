@@ -4,6 +4,7 @@ import type { ComponentType } from "react";
 import type { LauncherAnnouncementView } from "../launcherDiscoveryTypes";
 import type { LauncherPreferences } from "../launcherTypes";
 import type { InstanceSnapshotConnection } from "./instanceSnapshots";
+import type { BackupRestoreConnection } from "./backupRestore";
 import type { InstanceCopyConnection } from "./instanceCopy";
 
 export const launcherSlots = [
@@ -26,6 +27,7 @@ export type LauncherSurfaceHost = {
   };
   instanceSnapshots?: {
     connection: InstanceSnapshotConnection;
+    restore?: BackupRestoreConnection;
     available: boolean;
     localization: LauncherPreferences["localization"];
   };

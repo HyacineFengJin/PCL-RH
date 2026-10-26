@@ -499,14 +499,21 @@
   {
     "id": "launcher.instances.snapshots",
     "name": "Instance backups and sharing",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "required": false,
     "scope": "launcher",
     "dependencies": [],
     "capabilities": [
-      "launcher.instances.export"
+      "launcher.instances.export",
+      "launcher.instances.restore"
     ],
     "views": [],
+    "nativeServices": [
+      {
+        "id": "launcher.instance-snapshots",
+        "version": 1
+      }
+    ],
     "runtimeNeeds": [
       "native"
     ],

@@ -19,39 +19,10 @@ export type InstanceSnapshotConnection = {
   ): Promise<string | null>;
 };
 
-export function snapshotRequest(
-  id: string,
-  mode: SnapshotMode,
-  time = new Date(),
-) {
+export function snapshotVersion(mode: SnapshotMode, time = new Date()) {
   if (mode !== "backup" && mode !== "share")
     throw Error("Invalid snapshot preset");
-  const backup = mode === "backup";
-  return {
-    name: id,
-    version: `${mode}-${time.toISOString().replace(/[-:.]/g, "")}`,
-    checks: {
-      game: true,
-      gameSettings: backup,
-      gamePersonal: backup,
-      mods: true,
-      packData: true,
-      modSettings: true,
-      maps: backup,
-      jeiPersonal: backup,
-      guidePersonal: backup,
-      resourcepacks: true,
-      shaderpacks: true,
-      screenshots: false,
-      saves: backup,
-      server: backup,
-      other: false,
-      launcher: false,
-      bundleAssets: false,
-      modrinth: false,
-    },
-    excluded: {},
-  };
+  return `${mode}-${time.toISOString().replace(/[-:.]/g, "")}`;
 }
 
 type NativePlan = {
@@ -59,7 +30,6 @@ type NativePlan = {
   bytes: number;
   file_count: number;
   instance_id: string;
-  request: ReturnType<typeof snapshotRequest>;
   warnings: string[];
 };
 export function createInstanceSnapshotConnection({
@@ -73,23 +43,28 @@ export function createInstanceSnapshotConnection({
   isCurrent(): boolean;
   onTask(id: string, reveal: boolean): void;
 }): InstanceSnapshotConnection {
-  const submissions = new WeakMap<SnapshotPreview, NativePlan>();
+  const submissions = new WeakMap<
+    SnapshotPreview,
+    { id: string; mode: SnapshotMode; version: string; revision: string }
+  >();
   const requireCurrent = () => {
     if (!isCurrent()) throw Error("Instance export context retired");
   };
   return {
     async prepare(mode) {
       requireCurrent();
-      const plan = await api<NativePlan>("instance_export_plan", {
+      const version = snapshotVersion(mode);
+      const plan = await api<NativePlan>("instance_snapshot_prepare", {
         id,
-        request: snapshotRequest(id, mode),
+        mode,
+        version,
       });
       requireCurrent();
       if (plan.instance_id !== id)
         throw Error("Instance export target changed");
       // The component sees only counts and warnings. Retaining our own copy
       // prevents a displayed preview from being edited into a new submission.
-      const submission = structuredClone(plan);
+      const submission = { id, mode, version, revision: plan.revision };
       const preview = Object.freeze({
         bytes: plan.bytes,
         fileCount: plan.file_count,
@@ -104,7 +79,7 @@ export function createInstanceSnapshotConnection({
       const plan = submissions.get(preview);
       if (!plan) throw Error("Inspect the export again before saving");
       submissions.delete(preview);
-      const task = await api<string | null>("instance_export_start", { plan });
+      const task = await api<string | null>("instance_snapshot_start", plan);
       // A system save dialog can outlive navigation or plugin retirement. Track
       // accepted work, but never pull a different page into the task manager.
       if (task) onTask(task, isCurrent() && isActive());

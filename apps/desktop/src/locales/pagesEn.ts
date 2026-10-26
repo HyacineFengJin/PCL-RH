@@ -14,6 +14,13 @@ const messages = {
     "Copies mods, configuration and resources into an isolated instance. Runtime libraries are shared.",
   "copy.inspect": "Inspect copy contents",
   "copy.start": "Create copy",
+  "backupRestore.title": "Restore backup as a new instance",
+  "backupRestore.hint":
+    "Select a PCL RH backup and restore it under a new name. Existing instances are retained.",
+  "backupRestore.pick": "Select backup ZIP",
+  "backupRestore.inspect": "Inspect backup contents",
+  "backupRestore.start": "Restore as new instance",
+  "backupRestore.cancelled": "Backup selection cancelled",
   "snapshot.title": "Instance backups and sharing",
   "snapshot.preset": "Export contents",
   "snapshot.backup": "Instance backup",

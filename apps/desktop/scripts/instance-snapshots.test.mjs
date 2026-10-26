@@ -10,7 +10,7 @@ import {
   createLauncherSurfacePort,
   snapshotEntry,
   createInstanceSnapshotConnection,
-  snapshotRequest,
+  snapshotVersion,
 } from "./launcher-surface-fixture.mjs";
 import { harness, elements, content, deferred } from "./maker-test-harness.mjs";
 
@@ -25,10 +25,9 @@ const button = (ui, text) => {
   assert.ok(found, `Missing button ${text}`);
   return found;
 };
-const plan = (request) => ({
+const plan = () => ({
   revision: "checked",
   instance_id: "Example",
-  request,
   file_count: 12,
   bytes: 4096,
   warnings: ["Only declared content is included"],
@@ -39,9 +38,7 @@ function connectionFixture() {
     tasks = [];
   const api = async (command, args) => {
     calls.push({ command, args });
-    return command === "instance_export_plan"
-      ? plan(args.request)
-      : "task-example";
+    return command === "instance_snapshot_prepare" ? plan() : "task-example";
   };
   const connection = createInstanceSnapshotConnection({
     api,
@@ -99,47 +96,11 @@ test("real snapshot entry is lazy, optional, scope independent and revocable", a
   assert.equal(invalid.statuses.get(manifest.id).state, "failed");
 });
 
-test("backup preserves worlds and personal settings; sharing excludes those exact groups", () => {
+test("snapshot labels are bounded presets; file-selection policy stays native", () => {
   const now = new Date("2026-10-25T04:00:00Z");
-  const backup = snapshotRequest("Example", "backup", now);
-  const share = snapshotRequest("Example", "share", now);
-  for (const key of [
-    "game",
-    "mods",
-    "packData",
-    "modSettings",
-    "resourcepacks",
-    "shaderpacks",
-  ])
-    assert.equal(backup.checks[key] && share.checks[key], true, key);
-  for (const key of [
-    "saves",
-    "server",
-    "gameSettings",
-    "gamePersonal",
-    "maps",
-    "jeiPersonal",
-    "guidePersonal",
-  ])
-    assert.deepEqual(
-      [backup.checks[key], share.checks[key]],
-      [true, false],
-      key,
-    );
-  for (const key of [
-    "screenshots",
-    "other",
-    "launcher",
-    "bundleAssets",
-    "modrinth",
-  ])
-    assert.deepEqual(
-      [backup.checks[key], share.checks[key]],
-      [false, false],
-      key,
-    );
-  assert.match(backup.version, /^backup-20261025T040000000Z$/);
-  assert.throws(() => snapshotRequest("Example", "shell"), /Invalid snapshot/);
+  assert.equal(snapshotVersion("backup", now), "backup-20261025T040000000Z");
+  assert.equal(snapshotVersion("share", now), "share-20261025T040000000Z");
+  assert.throws(() => snapshotVersion("shell"), /Invalid snapshot/);
 });
 
 test("preview carries no writable submission and is single use", async () => {
@@ -151,14 +112,16 @@ test("preview carries no writable submission and is single use", async () => {
     "warnings",
   ]);
   assert.ok(Object.isFrozen(preview.warnings));
-  f.calls[0].args.request.checks.saves = false;
+  f.calls[0].args.mode = "share";
   await assert.rejects(
     f.connection.start({ ...preview }, () => true),
     /Inspect.*again/,
   );
   await f.connection.start(preview, () => true);
-  assert.equal(f.calls[1].args.plan.instance_id, "Example");
-  assert.equal(f.calls[1].args.plan.request.checks.saves, true);
+  assert.equal(f.calls[1].args.id, "Example");
+  assert.equal(f.calls[1].args.mode, "backup");
+  assert.equal(f.calls[1].command, "instance_snapshot_start");
+  assert.equal(f.calls[1].args.plan, undefined);
   assert.deepEqual(f.tasks, [["task-example", true]]);
   await assert.rejects(
     f.connection.start(preview, () => true),
@@ -191,7 +154,7 @@ test("an admitted save remains tracked after plugin retirement without navigatin
     isCurrent: () => true,
     onTask: (...args) => tasks.push(args),
     api: async (command, args) =>
-      command === "instance_export_plan" ? plan(args.request) : pending.promise,
+      command === "instance_snapshot_prepare" ? plan() : pending.promise,
   });
   const preview = await connection.prepare("backup");
   const saving = connection.start(preview, () => active);
@@ -252,7 +215,7 @@ test("form invalidates a reviewed backup and saved handlers when the preset chan
   assert.equal(f.calls.length, 1);
   button(f.ui, "Inspect backup").props.onClick();
   await f.ui.flush();
-  assert.equal(f.calls[1].args.request.checks.saves, false);
+  assert.equal(f.calls[1].args.mode, "share");
 });
 
 test("form rejects double submissions, hides late old-instance results and can prepare the next instance", async (t) => {
@@ -303,7 +266,7 @@ test("the actual host port retires API, revision, availability and unmount owner
   const api = async (command, args) => {
     calls.push(args.id);
     if (calls.length === 1) return first.promise;
-    return { ...plan(args.request), instance_id: args.id };
+    return { ...plan(), instance_id: args.id };
   };
   const ui = harness(
     "useInstanceSnapshotHost",
@@ -334,7 +297,7 @@ test("the actual host port retires API, revision, availability and unmount owner
   const old = ui.tree.instanceSnapshots.connection;
   const late = old.prepare("backup");
   ui.replace({ id: "Other", context: "root-b:revision-1" });
-  first.resolve(plan(snapshotRequest("Example", "backup")));
+  first.resolve(plan());
   await assert.rejects(late, /context retired/);
   const current = ui.tree.instanceSnapshots.connection;
   await current.prepare("share");

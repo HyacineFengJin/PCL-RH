@@ -15,7 +15,7 @@ use std::{
 };
 use tauri::State;
 
-fn ready(shared: &Shared, root: &GameRoot) -> Result<(), String> {
+pub(super) fn ready(shared: &Shared, root: &GameRoot) -> Result<(), String> {
     crate::instance_rename_refs::ensure_project_ready(&shared.project)?;
     let path = Path::new(&root.path);
     crate::resource_ops::ensure_ready(path)?;
@@ -28,7 +28,7 @@ fn ready(shared: &Shared, root: &GameRoot) -> Result<(), String> {
 
 /// The caller holds operations. Read-only hashing runs without that mutex;
 /// repeat admission and root binding when the plan comes back.
-fn recheck_target(shared: &Shared, root: &GameRoot) -> Result<(), String> {
+pub(super) fn recheck_target(shared: &Shared, root: &GameRoot) -> Result<(), String> {
     crate::require_instance_job(shared)?;
     if shared.config.resolve(Some(&root.id))?.path != root.path {
         return Err("游戏目录位置已改变，请重新检查实例操作".into());
@@ -55,7 +55,7 @@ pub(super) fn new_name(shared: &Shared, root: &GameRoot, id: &str) -> Result<(),
 
 /// Called with operations held. Spawn failures release the admitted handle;
 /// panics remain errors and leave transaction recovery records visible.
-fn spawn(
+pub(super) fn spawn(
     shared: Arc<Shared>,
     root: GameRoot,
     id: String,
