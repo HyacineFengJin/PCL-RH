@@ -350,7 +350,10 @@ fn bootstrap_view(s: &Shared) -> Bootstrap {
             .and_then(|path| pcl_install::DamageRepair::ensure_ready(path).err())
     };
     let import_recovery_error = if running.iter().any(|task| {
-        task.kind == tasks::TaskKind::InstanceImport && task.root_id == settings.root_id
+        matches!(
+            task.kind,
+            tasks::TaskKind::InstanceImport | tasks::TaskKind::InstanceCopy
+        ) && task.root_id == settings.root_id
     }) {
         None
     } else {
@@ -3639,6 +3642,7 @@ mod integration_tests {
             TaskKind::InstanceExport,
             TaskKind::InstanceRename,
             TaskKind::InstanceImport,
+            TaskKind::InstanceCopy,
             TaskKind::InstanceDelete,
             TaskKind::InstanceRestore,
             TaskKind::ResourceDownload,

@@ -4,6 +4,63 @@
 use super::*;
 use pcl_core::content_scope::IsolationPolicy;
 
+#[test]
+fn active_copy_is_not_reported_as_an_interrupted_import() {
+    let fixture = Fixture::new();
+    let shared = fixture.shared();
+    let root = shared.config.resolve(None).unwrap();
+    let source = Path::new(&root.path).join("versions/Source");
+    fs::create_dir_all(source.join("config")).unwrap();
+    fs::write(source.join("Source.json"), serde_json::json!({"id":"Source","clientVersion":"1.20.1","mainClass":"net.minecraft.client.main.Main","libraries":[]}).to_string()).unwrap();
+    fs::write(source.join("Source.jar"), b"sample core").unwrap();
+    let service = shared
+        .product_plugins
+        .optional_service(crate::product_plugins::contracts::copy::INSTANCE_COPY)
+        .unwrap()
+        .unwrap();
+    let plan = service
+        .0
+        .prepare(
+            Path::new(&root.path),
+            "Source",
+            crate::product_plugins::contracts::copy::CopyRequest {
+                name: "Copy".into(),
+                saves: false,
+                screenshots: false,
+            },
+            IsolationPolicy::Automatic,
+            "fixture",
+        )
+        .unwrap();
+    let task = shared
+        .tasks
+        .admit(
+            TaskTarget {
+                root_id: root.id,
+                root_path: root.path,
+                instance_id: Some("Copy".into()),
+            },
+            TaskKind::InstanceCopy,
+        )
+        .unwrap();
+    let checked = AtomicBool::new(false);
+    plan.execute(
+        &AtomicBool::new(false),
+        &|progress| {
+            if progress.stage == "import-extract" {
+                assert!(bootstrap_view(&shared).import_recovery_error.is_none());
+                assert!(require_instance_job(&shared).is_err());
+                checked.store(true, Ordering::SeqCst);
+            }
+        },
+        &|| Ok(()),
+    )
+    .unwrap();
+    assert!(checked.load(Ordering::SeqCst));
+    task.finish(TaskOutcome::Failed("fixture complete".into()));
+    assert!(bootstrap_view(&shared).import_recovery_error.is_none());
+}
+
 fn save(shared: &Shared, settings: Settings) -> Result<Settings, String> {
     let _operation = shared.operations.lock().unwrap();
     require_reference_write(shared)?;
@@ -67,6 +124,7 @@ fn isolation_changes_reject_each_existing_file_task_and_succeed_after_release() 
         TaskKind::InstanceExport,
         TaskKind::InstanceRename,
         TaskKind::InstanceImport,
+        TaskKind::InstanceCopy,
         TaskKind::InstanceDelete,
         TaskKind::InstanceRestore,
         TaskKind::ResourceDownload,
