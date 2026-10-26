@@ -4,10 +4,12 @@ import type { ComponentType } from "react";
 import type { LauncherAnnouncementView } from "../launcherDiscoveryTypes";
 import type { LauncherPreferences } from "../launcherTypes";
 import type { InstanceSnapshotConnection } from "./instanceSnapshots";
+import type { InstanceCopyConnection } from "./instanceCopy";
 
 export const launcherSlots = [
   "home.announcements",
   "instance.overview.tools",
+  "instance.overview.copy",
 ] as const;
 export type LauncherSlot = (typeof launcherSlots)[number];
 export type LauncherSurfaceDeclaration = { id: string; slot: LauncherSlot };
@@ -16,6 +18,12 @@ export type AnnouncementConnection = {
   openRelease(url: string): Promise<unknown>;
 };
 export type LauncherSurfaceHost = {
+  instanceCopy?: {
+    connection: InstanceCopyConnection;
+    suggestedName: string;
+    available: boolean;
+    localization: LauncherPreferences["localization"];
+  };
   instanceSnapshots?: {
     connection: InstanceSnapshotConnection;
     available: boolean;

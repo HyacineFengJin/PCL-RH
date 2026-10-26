@@ -148,7 +148,7 @@ export function harness(name, props = {}, options = {}) {
       browser,
       browser.setTimeout,
       browser.clearTimeout,
-      { activeElement: null },
+      { activeElement: null, documentElement: { lang: "zh-CN" } },
     );
     return module.exports;
   }

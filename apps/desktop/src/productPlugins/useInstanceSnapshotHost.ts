@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef } from "react";
 import type { Api } from "../types";
 import type { LauncherSurfaceHost } from "./surfaceTypes";
 import { createInstanceSnapshotConnection } from "./instanceSnapshots";
+import { createInstanceCopyConnection } from "./instanceCopy";
 
-/** The shell supplies its current selection and admission state. It owns no
- * backup form, preview, preset or task workflow; those belong to the plugin. */
+/** Shared selection/admission binding for official instance tools. The shell
+ * owns no copy/backup form, preview or workflow; those belong to the plugins. */
 export function useInstanceSnapshotHost(
   host: LauncherSurfaceHost,
   api: Api,
@@ -35,8 +36,27 @@ export function useInstanceSnapshotHost(
       }),
     [api, id, owner],
   );
+  const copyConnection = useMemo(
+    () =>
+      createInstanceCopyConnection({
+        api,
+        id: id ?? "",
+        isCurrent: () =>
+          current.current.live &&
+          current.current.owner === owner &&
+          current.current.available,
+        onTask: (task, reveal) => current.current.onTask(task, reveal),
+      }),
+    [api, id, owner],
+  );
   return {
     ...host,
+    instanceCopy: {
+      connection: copyConnection,
+      suggestedName: `${id ?? ""} - Copy`,
+      available: available && !!id,
+      localization: host.announcements.localization,
+    },
     instanceSnapshots: {
       connection,
       available: available && !!id,

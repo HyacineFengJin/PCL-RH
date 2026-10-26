@@ -165,6 +165,53 @@ pub struct ExportPlan {
     manifest: Vec<u8>,
 }
 
+/// Native consumers reuse the same bounded selection without writing a ZIP.
+/// These records stay in Rust; a serialized preview cannot authorize reads.
+pub(crate) struct SelectedFile {
+    pub path: String,
+    pub directory: bool,
+    pub bytes: u64,
+    pub hash: String,
+}
+impl ExportPlan {
+    pub(crate) fn selected_files(&self) -> Vec<SelectedFile> {
+        self.entries
+            .iter()
+            .map(|(path, entry)| SelectedFile {
+                path: path.clone(),
+                directory: matches!(entry, Entry::Directory),
+                bytes: self.nodes.get(path).map_or(0, |n| n.stamp.bytes),
+                hash: self
+                    .nodes
+                    .get(path)
+                    .and_then(|n| n.digest.clone())
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+    pub(crate) fn manifest_bytes(&self) -> &[u8] {
+        &self.manifest
+    }
+    pub(crate) fn validate_copy_source(
+        &self,
+        cancel: &AtomicBool,
+        hashes: bool,
+    ) -> Result<(), String> {
+        // The import journal may create .pcl-linux in this same root. Only its
+        // top directory timestamps may change; identity and every source node
+        // remain bound. The copy adapter also checks the top-level name set.
+        let actual = Dir::open_absolute(&self.root)?.stamp()?;
+        if actual.identity() != self.nodes[""].stamp.identity()
+            || actual.mode != self.nodes[""].stamp.mode
+        {
+            return Err(changed());
+        }
+        let mut checked = self.clone();
+        checked.nodes.get_mut("").ok_or_else(changed)?.stamp = actual;
+        validate_snapshot(&checked, cancel, hashes, None::<&fn(Progress)>)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Stamp {
     device: u64,

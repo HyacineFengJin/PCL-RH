@@ -52,6 +52,7 @@ export type DownloadStatus = {
     | "instance_export"
     | "instance_rename"
     | "instance_import"
+    | "instance_copy"
     | "instance_delete"
     | "instance_restore"
     | "resource_operation"

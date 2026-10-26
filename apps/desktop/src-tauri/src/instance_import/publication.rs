@@ -88,6 +88,18 @@ enum InputSource {
     },
 }
 impl VerifiedFile {
+    pub(super) fn mapped_snapshot(
+        target: String,
+        path: String,
+        root: Arc<Dir>,
+        expected: Snapshot,
+    ) -> Self {
+        Self {
+            target,
+            source: InputSource::Build { root, path },
+            expected,
+        }
+    }
     #[allow(dead_code)] // Keep this native capability entry point available to streaming callers.
     pub(crate) fn from_fd(
         target: String,

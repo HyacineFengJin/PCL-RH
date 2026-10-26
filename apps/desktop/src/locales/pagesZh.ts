@@ -1,6 +1,17 @@
 /** Fixed game/download/resource UI text; protocol IDs and user content stay in callers. */
 import { integrityZh } from "./integrityMessages";
 const messages = {
+  "copy.check": "检查实例来源与目标目录",
+  "copy.files": "复制并校验文件",
+  "copy.publish": "发布实例副本",
+  "copy.cleanup": "清理暂存文件",
+  "copy.title": "实例复制",
+  "copy.name": "新实例名称",
+  "copy.saves": "复制存档",
+  "copy.screenshots": "复制截图",
+  "copy.hint": "模组、配置和资源将复制到新实例的隔离目录；运行库共用。",
+  "copy.inspect": "检查复制内容",
+  "copy.start": "创建副本",
   "snapshot.title": "实例备份与分享",
   "snapshot.preset": "导出内容",
   "snapshot.backup": "实例备份",

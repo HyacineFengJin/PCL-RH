@@ -2491,6 +2491,8 @@ fn main() {
             instance_commands::instance_import_prepare,
             instance_commands::instance_import_discard,
             instance_commands::instance_import_start,
+            instance_commands::instance_copy_prepare,
+            instance_commands::instance_copy_start,
             instance_commands::instance_import_recover,
             instance_commands::instance_delete_prepare,
             instance_commands::instance_delete_start,

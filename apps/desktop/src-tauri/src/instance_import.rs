@@ -31,6 +31,7 @@ mod archive;
 pub(crate) mod build;
 mod filesystem;
 mod journal;
+pub(crate) mod local_snapshot;
 pub(crate) mod mrpack;
 pub(crate) mod publication;
 use archive::{checked_zip, legacy_resources, resolve_version, scan_archive, ArchiveEntry};

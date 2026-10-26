@@ -2,10 +2,18 @@
 //! IDs/catalog used by the existing orange Plugin manager and WebUI executor.
 pub(crate) mod diagnostics;
 pub(crate) mod home;
+pub(crate) mod instances;
 use crate::plugin_host::{Definition, Host, Scope};
 
 pub fn host() -> Host {
     let host = Host::new(vec![
+        Definition {
+            id: instances::ID,
+            scope: Scope::Launcher,
+            dependencies: vec![],
+            services: vec![crate::product_plugins::contracts::copy::INSTANCE_COPY.declaration()],
+            start: instances::start,
+        },
         Definition {
             id: home::ID,
             scope: Scope::Launcher,

@@ -211,6 +211,7 @@ const resourceWrites = new Set([
   "instance_export_start",
   "instance_export_config_save",
   "instance_import_start",
+  "instance_copy_start",
   "instance_pack_start",
   "instance_import_recover",
   "instance_delete_start",
@@ -275,10 +276,12 @@ const rootCommands = new Set([
   "instance_export_config_save",
   "instance_import_pick",
   "instance_import_prepare",
+  "instance_copy_prepare",
   "instance_pack_download",
   "instance_pack_prepare",
   "instance_pack_start",
   "instance_import_start",
+  "instance_copy_start",
   "instance_import_recover",
   "instance_delete_prepare",
   "instance_delete_start",
@@ -3044,11 +3047,18 @@ function App() {
                     <InstancePanel
                       key={`${rootKey}:${selected.id}`}
                       overviewContributions={
-                        <LauncherSurfaceSlot
-                          port={launcherSurfaces}
-                          slot="instance.overview.tools"
-                          host={instanceSurfaceHost}
-                        />
+                        <>
+                          <LauncherSurfaceSlot
+                            port={launcherSurfaces}
+                            slot="instance.overview.tools"
+                            host={instanceSurfaceHost}
+                          />
+                          <LauncherSurfaceSlot
+                            port={launcherSurfaces}
+                            slot="instance.overview.copy"
+                            host={instanceSurfaceHost}
+                          />
+                        </>
                       }
                       resourceRefreshKey={`${rootKey}:${resourceScanGeneration}`}
                       instance={selected}

@@ -240,17 +240,46 @@ impl BuildOperation {
     /// `enter_commit` closes cancellation admission and rechecks references in
     /// the caller's short operations section. Hash/copy I/O runs outside it.
     pub(crate) fn publish_checked(
-        mut self,
+        self,
         outputs: VerifiedOutputs,
         cancel: &AtomicBool,
         callback: impl Fn(Progress),
         bind_source: impl Fn() -> Result<()>,
         enter_commit: impl FnOnce() -> Result<()>,
     ) -> Result<Value> {
+        self.publish_inputs(outputs, cancel, callback, bind_source, enter_commit, true)
+    }
+
+    /// An empty registered build may publish native, FD-bound inputs. It uses
+    /// the same staging, cancellation gate, durable journal and recovery rules.
+    pub(super) fn publish_external_checked(
+        self,
+        outputs: VerifiedOutputs,
+        cancel: &AtomicBool,
+        callback: impl Fn(Progress),
+        bind_source: impl Fn() -> Result<()>,
+        enter_commit: impl FnOnce() -> Result<()>,
+    ) -> Result<Value> {
+        self.publish_inputs(outputs, cancel, callback, bind_source, enter_commit, false)
+    }
+
+    fn publish_inputs(
+        mut self,
+        outputs: VerifiedOutputs,
+        cancel: &AtomicBool,
+        callback: impl Fn(Progress),
+        bind_source: impl Fn() -> Result<()>,
+        enter_commit: impl FnOnce() -> Result<()>,
+        sealed: bool,
+    ) -> Result<Value> {
         let result = (|| {
             check(cancel)?;
-            self.verify_sealed(cancel)?;
-            self.verify_complete_outputs(&outputs)?;
+            if sealed {
+                self.verify_sealed(cancel)?;
+                self.verify_complete_outputs(&outputs)?;
+            } else if self.sealed.is_some() || !self.build_dir()?.names()?.is_empty() {
+                return Err("外部输入发布要求空的私有构建目录".into());
+            }
             publication::plan_native(&self.root, &mut self.journal, &outputs)?;
             write_journal(&self.operation, &self.journal)?;
             self.journal.files_key = Some(self.operation.mkdir("files")?.key()?);
@@ -276,7 +305,9 @@ impl BuildOperation {
                 },
             )?;
             assemble_instance(&self.operation, &mut self.journal, cancel)?;
-            self.verify_sealed(cancel)?;
+            if sealed {
+                self.verify_sealed(cancel)?;
+            }
             publication::verify_inputs(&outputs, Some(cancel))?;
             bind_source()?;
             validate_targets(&self.root, &self.journal.targets)?;
@@ -298,7 +329,9 @@ impl BuildOperation {
             let mut journal = self.journal.clone();
             let commit =
                 publication::publish_prepared(&self.root, &self.operation, &mut journal, || {
-                    self.verify_sealed(&AtomicBool::new(false))?;
+                    if sealed {
+                        self.verify_sealed(&AtomicBool::new(false))?;
+                    }
                     publication::verify_inputs(&outputs, None)?;
                     bind_source()
                 });

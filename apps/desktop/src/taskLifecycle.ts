@@ -78,6 +78,7 @@ export function taskNeedsBootstrap(
     "java_install",
     "instance_rename",
     "instance_import",
+    "instance_copy",
     "modpack_install",
     "instance_delete",
     "instance_restore",

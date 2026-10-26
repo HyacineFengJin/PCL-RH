@@ -470,6 +470,33 @@
     ]
   },
   {
+    "id": "launcher.instances.copy",
+    "name": "Instance copying",
+    "version": "1.0.0",
+    "required": false,
+    "scope": "launcher",
+    "dependencies": [],
+    "capabilities": [
+      "launcher.instances.copy"
+    ],
+    "views": [],
+    "nativeServices": [
+      {
+        "id": "launcher.instance-copy",
+        "version": 1
+      }
+    ],
+    "runtimeNeeds": [
+      "native"
+    ],
+    "launcherSurfaces": [
+      {
+        "id": "launcher.instances.copy.actions",
+        "slot": "instance.overview.copy"
+      }
+    ]
+  },
+  {
     "id": "launcher.instances.snapshots",
     "name": "Instance backups and sharing",
     "version": "1.0.0",

@@ -20,6 +20,17 @@ import "./task-manager.css";
 import { IntegrityResult } from "./IntegrityResult";
 import { DamageRepairResult } from "./DamageRepairResult";
 function taskStepLabel(kind: DownloadStatus["kind"], step: DownloadStep) {
+  if (kind === "instance_copy") {
+    return t(
+      step.id === "import-extract"
+        ? "copy.files"
+        : step.id === "import-commit"
+          ? "copy.publish"
+          : step.id === "import-cleanup"
+            ? "copy.cleanup"
+            : "copy.check",
+    );
+  }
   if (kind === "instance_verify") return t("integrity.step");
   if (kind === "instance_damage_repair") {
     return t(
@@ -105,6 +116,7 @@ const taskActionMessages: Partial<
   instance_export: "nav.export",
   instance_rename: "ui.rename",
   instance_import: "ui.import",
+  instance_copy: "copy.title",
   instance_delete: "ui.delete",
   instance_restore: "ui.restore",
   resource_update_restore: "task.modRestore",
@@ -195,6 +207,7 @@ export function TaskStatistics({
           status.kind === "instance_damage_recover" ||
           status.kind === "instance_rename" ||
           status.kind === "instance_import" ||
+          status.kind === "instance_copy" ||
           status.kind === "instance_delete" ||
           status.kind === "instance_restore" ||
           status.kind === "resource_update_restore" ||
@@ -344,7 +357,7 @@ function TaskCard({
       ? phase === "resource-update-restore-apply"
         ? 1
         : 0
-      : status.kind === "instance_import"
+      : status.kind === "instance_import" || status.kind === "instance_copy"
         ? Math.max(
             0,
             [
@@ -391,39 +404,46 @@ function TaskCard({
           ]
         : status.kind === "launcher_logs" || status.kind === "toolbox_download"
           ? []
-          : status.kind === "instance_import"
+          : status.kind === "instance_copy"
             ? [
-                t("task.importCheck"),
-                t("task.importExtract"),
-                t("task.importPublish"),
-                t("task.importCleanup"),
+                t("copy.check"),
+                t("copy.files"),
+                t("copy.publish"),
+                t("copy.cleanup"),
               ]
-            : status.kind === "instance_delete" ||
-                status.kind === "instance_restore"
+            : status.kind === "instance_import"
               ? [
-                  t("task.instanceCheck"),
-                  t("task.instanceMove"),
-                  t("task.instanceRecord"),
+                  t("task.importCheck"),
+                  t("task.importExtract"),
+                  t("task.importPublish"),
+                  t("task.importCleanup"),
                 ]
-              : status.kind === "resource_update_restore"
-                ? [t("task.updateUndoCheck"), t("task.updateUndoApply")]
-                : status.kind === "resource_update"
-                  ? [
-                      t("task.updateCheck"),
-                      t("task.downloadVerify"),
-                      t("task.updateApply"),
-                    ]
-                  : status.kind === "resource_download"
+              : status.kind === "instance_delete" ||
+                  status.kind === "instance_restore"
+                ? [
+                    t("task.instanceCheck"),
+                    t("task.instanceMove"),
+                    t("task.instanceRecord"),
+                  ]
+                : status.kind === "resource_update_restore"
+                  ? [t("task.updateUndoCheck"), t("task.updateUndoApply")]
+                  : status.kind === "resource_update"
                     ? [
-                        t("task.resourceMetadata"),
+                        t("task.updateCheck"),
                         t("task.downloadVerify"),
-                        t("task.resourceApply"),
+                        t("task.updateApply"),
                       ]
-                    : [
-                        t("task.minecraftMetadata"),
-                        t("task.minecraftDownload"),
-                        t("task.minecraftInstall"),
-                      ];
+                    : status.kind === "resource_download"
+                      ? [
+                          t("task.resourceMetadata"),
+                          t("task.downloadVerify"),
+                          t("task.resourceApply"),
+                        ]
+                      : [
+                          t("task.minecraftMetadata"),
+                          t("task.minecraftDownload"),
+                          t("task.minecraftInstall"),
+                        ];
   const steps: DownloadStep[] = status.steps?.length
     ? status.steps
     : status.kind === "instance_damage_repair"
@@ -710,6 +730,7 @@ export function useAggregateDownloadSpeed(tasks: readonly DownloadStatus[]) {
           "instance_damage_recover",
           "instance_rename",
           "instance_import",
+          "instance_copy",
           "instance_delete",
           "instance_restore",
           "resource_update_restore",

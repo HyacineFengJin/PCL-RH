@@ -35,6 +35,9 @@
 
 当前这个插件复用既有 Rust 导出事务，而不是另建一个文件写入器。原生服务仍负责重新检查方案、系统保存对话框、目录绑定、任务准入、取消和发布。它的 WebUI 入口与流程已独立，底层导出服务尚未拆成新的原生提供者。参考 `plugins/instances/SnapshotSurface.tsx`、`productPlugins/instanceSnapshots.ts` 和 `launcher.instances.snapshots.plugin.tsx`。
 
+`instance.overview.copy` 是实例复制的专用槽位，要求 `launcher.instances.copy`。内置 `launcher.instances.copy` 同时提供组件和 `launcher.instance-copy@1` 原生服务，复用当前产品宿主的启停与调用租约。组件只取得绑定当前实例的 `host.instanceCopy` 端口，提交新名称及存档／截图选项；预览中的原生提交仍私存在连接中且仅可使用一次。Rust 提供者负责选择策略，命令层负责根绑定及任务准入，共用实例发布器负责独立文件、校验、取消和恢复。示例入口是 `launcher.instances.copy.plugin.tsx`，原生实现在 `src-tauri/src/plugins/instances/`。
+
+
 ### RH Code 区域组件
 
 1. 在 `code/plugins.json` 添加清单，声明唯一 ID、运行范围、依赖和贡献 ID。

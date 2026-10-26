@@ -87,7 +87,12 @@ fn spawn(
                 Err(error)
                     if matches!(
                         error.as_str(),
-                        "实例导入已取消" | "导入已取消" | "实例删除已取消" | "实例恢复已取消"
+                        "实例导入已取消"
+                            | "导入已取消"
+                            | "实例删除已取消"
+                            | "实例恢复已取消"
+                            | "导出已取消"
+                            | "实例复制已取消"
                     ) =>
                 {
                     task.finish(tasks::TaskOutcome::Failed(error));
@@ -107,6 +112,150 @@ pub struct ImportChoice {
     source: Option<String>,
     suggested_name: Option<String>,
     message: Option<String>,
+}
+
+fn require_copy_isolation(
+    captured: &crate::config::IsolationSettings,
+    name: &str,
+) -> Result<(), String> {
+    if captured.policy(name) == pcl_core::content_scope::IsolationPolicy::Shared {
+        return Err("副本必须使用独立游戏目录；请先将全局实例隔离设为自动或独立后再复制".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn instance_copy_prepare(
+    root_id: Option<String>,
+    id: String,
+    request: crate::product_plugins::contracts::copy::CopyRequest,
+    state: State<'_, Arc<Shared>>,
+) -> Result<crate::product_plugins::contracts::copy::CopyPreview, String> {
+    let shared = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = shared
+            .product_plugins
+            .optional_service(crate::product_plugins::contracts::copy::INSTANCE_COPY)?
+            .ok_or("实例复制插件已停用")?;
+        let captured = {
+            let _operation = shared.operations.lock().unwrap();
+            crate::require_instance_job(&shared)?;
+            let captured = shared.config.isolation_settings(root_id.as_deref())?;
+            ready(&shared, &captured.root)?;
+            new_name(&shared, &captured.root, &request.name)?;
+            require_copy_isolation(&captured, &request.name)?;
+            captured
+        };
+        let plan = service.0.prepare(
+            Path::new(&captured.root.path),
+            &id,
+            request,
+            captured.policy(&id),
+            &captured.revision,
+        )?;
+        let _operation = shared.operations.lock().unwrap();
+        recheck_target(&shared, &captured.root)?;
+        let current = shared.config.isolation_settings(Some(&captured.root.id))?;
+        if current.revision != captured.revision {
+            return Err("实例设置已改变，请重新检查复制方案".into());
+        }
+        new_name(&shared, &captured.root, &plan.preview().name)?;
+        Ok(plan.preview().clone())
+    })
+    .await
+    .map_err(|_| "检查实例复制的任务意外退出".to_string())?
+}
+
+#[tauri::command]
+pub async fn instance_copy_start(
+    root_id: Option<String>,
+    id: String,
+    request: crate::product_plugins::contracts::copy::CopyRequest,
+    revision: String,
+    state: State<'_, Arc<Shared>>,
+) -> Result<Value, String> {
+    let shared = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // A retired provider cannot admit a new call. This lease survives until
+        // the accepted worker finishes, including cancellation and rollback.
+        let service = shared
+            .product_plugins
+            .optional_service(crate::product_plugins::contracts::copy::INSTANCE_COPY)?
+            .ok_or("实例复制插件已停用")?;
+        let captured = {
+            let _operation = shared.operations.lock().unwrap();
+            crate::require_instance_job(&shared)?;
+            let captured = shared.config.isolation_settings(root_id.as_deref())?;
+            ready(&shared, &captured.root)?;
+            new_name(&shared, &captured.root, &request.name)?;
+            require_copy_isolation(&captured, &request.name)?;
+            captured
+        };
+        let plan = service.0.prepare(
+            Path::new(&captured.root.path),
+            &id,
+            request,
+            captured.policy(&id),
+            &captured.revision,
+        )?;
+        let _operation = shared.operations.lock().unwrap();
+        recheck_target(&shared, &captured.root)?;
+        if plan.preview().revision != revision
+            || shared
+                .config
+                .isolation_settings(Some(&captured.root.id))?
+                .revision
+                != captured.revision
+        {
+            return Err("源文件、复制选项或实例设置已改变，请重新检查".into());
+        }
+        let name = plan.preview().name.clone();
+        new_name(&shared, &captured.root, &name)?;
+        let auto_select = shared
+            .launcher_preferences
+            .snapshot()
+            .preferences
+            .auto_select_installed;
+        spawn(
+            shared.clone(),
+            captured.root.clone(),
+            name.clone(),
+            tasks::TaskKind::InstanceCopy,
+            "实例复制完成",
+            move |shared, root, task| {
+                let _lease = service;
+                let cancel = task.cancellation_token();
+                let mut result = plan.execute(
+                    &cancel,
+                    &|p| {
+                        if p.stage == "import-commit" {
+                            task.begin_finishing();
+                        }
+                        shared.downloads.progress(task, p);
+                    },
+                    &|| {
+                        let _operation = shared.operations.lock().unwrap();
+                        let current = shared.config.isolation_settings(Some(&root.id))?;
+                        if current.revision != captured.revision || current.root.path != root.path {
+                            return Err("实例设置已改变，请重新复制".into());
+                        }
+                        require_copy_isolation(&current, &name)?;
+                        new_name(shared, root, &name)
+                    },
+                )?;
+                result["message"] = "实例复制完成".into();
+                if auto_select {
+                    let _operation = shared.operations.lock().unwrap();
+                    if let Err(error) = shared.config.select_installed(&root.id, &name) {
+                        result["warning"] = format!("实例已复制，但选择状态未保存：{error}").into();
+                    }
+                }
+                Ok(result)
+            },
+        )
+    })
+    .await
+    .map_err(|_| "启动实例复制任务失败".to_string())?
 }
 
 /// Preserve the existing local ZIP DTO. Network packs use native one-use

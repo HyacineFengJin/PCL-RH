@@ -2,6 +2,18 @@
 import type pagesZh from "./pagesZh";
 import { integrityEn } from "./integrityMessages";
 const messages = {
+  "copy.check": "Check source and destination",
+  "copy.files": "Copy and verify files",
+  "copy.publish": "Publish instance copy",
+  "copy.cleanup": "Clean up staging files",
+  "copy.title": "Copy instance",
+  "copy.name": "New instance name",
+  "copy.saves": "Include worlds",
+  "copy.screenshots": "Include screenshots",
+  "copy.hint":
+    "Copies mods, configuration and resources into an isolated instance. Runtime libraries are shared.",
+  "copy.inspect": "Inspect copy contents",
+  "copy.start": "Create copy",
   "snapshot.title": "Instance backups and sharing",
   "snapshot.preset": "Export contents",
   "snapshot.backup": "Instance backup",
