@@ -1,50 +1,27 @@
+<p align="center">
+  <img src="assets/pcl-rh.png" alt="PCL RH 图标" width="112" />
+</p>
+
 # PCL RH
 
-<img src="assets/pcl-rh.png" alt="PCL RH" width="128" />
+**启动 Minecraft，管理你的游戏，创作自己的模组。**
 
-基于 Rust 的 Minecraft: Java Edition 启动器与 RH Code 模组项目工作区，当前提供 Linux 原生实现，采用 **Rust + Tauri 2 + React / TypeScript**，界面理念源自 PCL 家族。无需 .NET。启动器与项目服务使用 Rust，Agent 适配器使用本地 Node.js / Python 引擎。本项目独立开发，非 PCL CE 官方发行。
+PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启动器，延续 PCL 家族的使用习惯，并通过 RH Code 与插件体系扩展创作能力。
 
-RH 中的 R 代表 Rust，H 来自维护者的 GitHub 名称；RH 也呼应黎曼猜想（Riemann Hypothesis）。
+[English](README.en.md) · [使用指南](docs/USAGE.md) · [文档](docs/README.md)
 
-## 功能
+## 主要功能
 
-- Minecraft 原版版本目录、搜索、自定义实例名称，以及 Fabric、Forge、NeoForge 自动安装。
-- 最多 4 项并行下载、同目录任务队列、逐项取消与未完成文件清理，完整文件缓存复用及 SHA-1 校验。
-- 模组加载器目录与 Modrinth 资源搜索；新增 CurseForge 官方目录接入、MC 百科模组／整合包资料搜索，按明确来源链接归并同一项目。官方构建已配置 CurseForge 服务。
-- Modrinth 模组、资源包和光影安装，必要依赖规划、SHA-512 校验和相同内容复用。
-- 本地 Modrinth 模组正式版更新、前置替换确认、禁用状态保留与更新撤销。
-- Modrinth 版本文件独立另存、命名格式和本次会话的保存目录复用；CurseForge 可保存作者允许分发的文件，使用官方 SHA-1 校验。
-- 社区资源收藏夹与文件夹管理，已识别本地 Mod 的批量收藏，以及资源信息 JSON 导出。
-- 游戏版本扫描、搜索、选择与实例设置。
-- 实例描述、内置图标、列表分类与收藏管理，以及可恢复的物理实例重命名。
-- 已有实例的组件重置、核心备份与中断恢复；按内容选择导出和导入本地 ZIP，并保存导出配置。
-- Modrinth 社区整合包直接安装：官方 `.mrpack` 下载与校验，实例名、组件和可选内容确认，同名实例保护。
-- 本地 ZIP / mrpack 整合包识别与安装：PCL 导出、Modrinth、HMCL、MCBBS、MultiMC / Prism、完整游戏目录和单层带启动器归档；自定义实例名称、可选文件与中断恢复。
-- 实例删除移入可恢复区域，保留实例资料，并支持恢复原目录。
-- 本地模组单个／批量启禁，模组、资源包与光影包导入，以及可撤销的删除。
-- 多游戏目录登记、切换、排序与显示名称管理，使用系统文件夹选择器。
-- Mojang 官方 Java 运行时下载、校验与任务取消，启动缺少适用 Java 时自动下载、Java 自动匹配、手动添加与全局／单实例选择，以及全局和单实例的自动／手动内存分配。
-- 版本继承、依赖库解析；启动核心支持 Windows／Linux／macOS 平台规则和原生库分类。
-- 启动环境检查与缺失依赖补全，校验新下载文件并保留已有内容；无法自动补全的项目提供清单。
-- 启动前自动补全缺失依赖、已有依赖完整性检查与带原件备份的损坏修复、游戏进程与退出状态管理、崩溃预分析、报告导出及 AI 诊断。
-- PCL CE 风格导航、账号侧栏、实例修改／导出、资源详情及任务管理界面。
-- Microsoft 正版登录、系统密钥环保存登录、自动获取头像和当前披风。[账号说明](docs/AUTHENTICATION.md)。
-- 启动器外观、媒体、功能隐藏、简体中文／English、设置备份与本地诊断。
-- **RH Code**：可调整的项目工作区、多 AI 对话、源码编辑，以及通用项目 Harness 的文件检索、计划、实时输出、改动审阅与可选的副本构建。确认后的建议可应用到原项目，带指纹检查、备份与中断恢复。内置模块采用 Cordis 插件生命周期。[使用与范围](docs/RH_CODE.md)。
-- 插件管理：内置模块按需加载，社区插件导入、授权、启停与卸载，提供首页与设置子页组件、独立工作区面板、可搜索操作、可保存控件、下载预设、外观切换与笔记复制。[插件指南](docs/PLUGINS.md) · [开发规范](docs/PLUGIN_SPEC.md)。
-- 内置「实例复制」官方插件：检查后创建独立副本，存档和截图可选，保留源实例；无需中转 ZIP，复用运行库。另有「实例备份与分享」插件，可导出备份或精简联机包，并从备份恢复为新实例。
-- 共享下载并发与速度限制、代理与 DoH、日志导出清理及应用入口恢复。
-- 项目发行检查、校验下载、便携更新与回退，以及独立游戏监控。
-- 可分别开启 Minecraft 正式版与快照更新提醒，按官方发布时间判断新版本并保存已读记录。
-- 工具箱自定义 URL 下载、成就图片预览与保存、本地皮肤头像 PNG 生成。
+- **游戏启动与管理**：安装 Minecraft 和模组加载器，导入整合包，管理多个隔离实例、模组与资源。
+- **下载与维护**：并行下载、Java 自动匹配、依赖补全、备份恢复，以及游戏日志和崩溃预分析。
+- **RH Code**：面向模组项目的 AI 工作区，支持多个对话、源码编辑、改动审阅、项目构建和像素资产工具。
+- **插件体系**：启动器与 RH Code 共用插件管理，支持可选官方功能和经授权的社区组件扩展。
 
-项目仍在开发中，目前支持游戏与上述加载器安装、已有游戏启动、本地资源管理、Modrinth 资源安装与模组更新。本地整合包格式及限制见[使用指南](docs/USAGE.md#导入本地整合包)。CurseForge 清单包可通过官方文件服务补齐，作者禁止分发或缺少官方下载信息时会停止；OptiFine、LabyMod 自动安装尚未提供；部分早期版本暂不支持自动安装。
+目前完整桌面应用支持 **Linux**；Windows / macOS 正在适配。项目持续开发中，具体支持范围见[平台说明](docs/PLATFORMS.md)。
 
-完整桌面应用当前支持 Linux；Windows 和 macOS 正在适配，尚无可用发行包。核心模块的支持范围与独立检查入口见[平台支持](docs/PLATFORMS.md)。
+## 开始使用
 
-## 构建与运行
-
-需要 Rust/Cargo、Node.js 22.19+ / npm、Python 3.11+、GTK 3、WebKitGTK 4.1 及相关开发依赖。
+目前以源码构建为主，先准备[构建依赖](docs/BUILDING.md)，然后运行：
 
 ```sh
 git clone https://github.com/HyacineFengJin/PCL-RH.git
@@ -53,68 +30,10 @@ cd PCL-RH
 ./start-native.sh
 ```
 
-首次使用时，在「启动 → 实例选择」中添加已有的游戏文件夹，然后从「下载」安装原版，或选择目录中已有的版本。支持管理多个目录，各目录分别记住所选实例、内存和 Java 覆盖设置。Java 默认按版本要求自动选择，也可在「设置 → Java」指定。详细步骤见[使用指南](docs/USAGE.md)。安装桌面应用入口需提供 `desktop-file-validate` 命令：
+[游戏与整合包](docs/USAGE.md) · [RH Code](docs/RH_CODE.md) · [插件](docs/PLUGINS.md) · [参与开发](CONTRIBUTING.md)
 
-```sh
-./install-desktop.sh
-```
+## 许可与致谢
 
-## 开发
+原创代码与文档采用 **[MIT License](LICENSE)**。第三方内容保留各自许可，见[版权与来源](COPYRIGHT.md)。
 
-阅读和维护代码可从[代码结构与排查入口](docs/DEVELOPMENT.md)开始。
-
-- `apps/desktop/`：React 界面和 Tauri 桌面宿主。
-- `crates/core/`：版本、依赖和启动核心。
-- `crates/install/`：官方版本目录、文件下载、校验和安装。
-- `crates/auth/`：Microsoft 认证和系统密钥环。
-- `crates/network/`：代理、DoH 与共享下载策略。
-- `crates/cli/`：命令行入口。
-- `code/`：RH Code 内置插件清单、Agent 上下文与执行适配器。
-
-```sh
-cargo test --workspace --locked --features pcl-desktop/custom-protocol
-npm run preview:data --prefix apps/desktop
-npm run dev --prefix apps/desktop
-```
-
-浏览器预览展示界面；启动游戏等桌面功能通过 Tauri 调用 Rust。Tauri 开发模式可在 `apps/desktop` 中运行 `npm run tauri -- dev`。
-
-## 文档
-
-- [使用指南](docs/USAGE.md)
-- [账号与登录](docs/AUTHENTICATION.md)
-- [CLI 使用](crates/cli/README.md)
-
-## English
-
-PCL RH is a Rust-based launcher for Minecraft: Java Edition, currently available for Linux and built with Rust, Tauri 2, React, and TypeScript. It installs vanilla, Fabric, and modern Forge/NeoForge versions with custom instance names, launches existing game installations, and displays game logs. Mojang Java runtimes can be downloaded and verified from Settings, or acquired automatically when an automatic launch selection has no compatible Java. Damaged dependencies can be explicitly repaired with original-file backups. Java can be selected automatically or registered manually, with global and per-instance choices. Tasks support cancellation and incomplete-file cleanup.
-
-Windows and macOS adaptation has started in the portable core. Complete desktop builds for those platforms are not yet available; see [platform support](docs/PLATFORMS.md) for the implemented scope and independent core checks.
-
-Local management includes multiple game directories, instance display preferences, physical renaming with reference migration and recovery, mod toggling, resource imports, and recoverable removal. Supported existing instances can reset their loader components with core backups and interruption recovery, or export selected content to a local ZIP. The launcher can import its own local ZIP exports under a custom name and restore recoverably deleted instances.
-
-Local ZIP/mrpack import detects PCL exports, Modrinth, HMCL, MCBBS, MultiMC/Prism and complete game directories. Single-layer launcher archives are also recognized, including the exact HMCL bundled-package layout. Supported packs install under a custom instance name with optional-file choices, checked downloads and recoverable publication. CurseForge manifests resolve exact project/file IDs through the official service, checking distribution permission and file integrity; custom launch commands and unsupported loader layouts are reported before installation.
-
-Community search supports Modrinth and MC百科 project information, with CurseForge service credentials included in official builds. Explicit project links group verified cross-site matches; names alone never merge forks. CurseForge supports standalone checked downloads and local manifest ZIP imports; direct installation from resource details remains unavailable.
-
-Modrinth mods, resource packs and shaders can be installed with required dependencies, SHA-512 verification and exact-content reuse. Local Modrinth mods support compatible release updates, required-dependency planning, disabled-state preservation and recoverable replacement with persistent undo. Modrinth modpacks can also be downloaded directly from version details, reviewed with a custom instance name and optional-file choices, and installed as new instances. Some legacy layouts and OptiFine/LabyMod installation are not yet available.
-
-Microsoft sign-in supports remembered accounts through the system credential service, with automatic avatar and current cape retrieval. See [account setup](docs/AUTHENTICATION.md).
-
-RH Code provides configurable workspace areas, multiple AI conversations per project, source editing, and a generic project Harness. Its tools inspect frozen text files, search, record plans and propose changes for review. Explicitly approved changes can be applied to the original project with hash checks, backups and interruption recovery. Trusted built-in modules use Cordis; community extensions remain declarative and permission-controlled. An optional build plugin runs fixed javac/Gradle tasks on private project copies with compiler logs and collected artifacts. The current runner requires Linux, bubblewrap and a compatible system JDK. Arbitrary shell execution and game tests are not connected yet. See [RH Code](docs/RH_CODE.md).
-
-## 许可证与版权
-
-PCL RH 的原创代码和文档采用 **[MIT License](LICENSE)**，允许商业使用、修改和闭源复用，分发时保留版权及许可声明。第三方代码、图像和字体保留各自许可，不一并改成 MIT。
-
-[版权与来源](COPYRIGHT.md)区分自写实现、直接纳入、设计参考和素材；[第三方说明](THIRD_PARTY_NOTICES.md)、[精确依赖清单](THIRDPARTY.generated.json)及[许可全文](LICENSES/DEPENDENCIES.txt)记录依赖条款和采集缺口。游戏和加载器标识保留各自来源及许可，外部致谢头像使用文字占位；当前字体仍为 OFL-1.1。
-
-Original PCL RH code and documentation are MIT licensed. Third-party components retain their own licenses; see the copyright scope, dependency inventory and collected license texts above. This does not relicense game content, external plugins, system libraries or third-party trademarks.
-
-## 致谢
-
-项目图标及主要美术由 GPT 制作。Project icons and primary artwork are created with GPT.
-
-界面理念参考 [PCL CE](https://github.com/PCL-Community/PCL-CE)，认证流程参考 [HMCL](https://github.com/HMCL-dev/HMCL)。Linux 平台与服务分层参考 [PCL N Edition](https://github.com/PCL-N-Edition/PCL-N)。界面和 Rust 认证代码独立编写。
-
-RH Code 使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 所采用的 Cordis，并参考其插件生命周期与 Agent 上下文组织。相关许可见 [Cordis MIT License](LICENSES/CORDIS.txt)。
+项目图标及主要美术由 **GPT** 制作。感谢 PCL 家族、HMCL 等项目的启发与参考。PCL RH 独立开发，非 PCL CE 或 Minecraft 官方发行。

@@ -1,7 +1,6 @@
+# Local game installations, runtimes and archived Python prototype
 Minecraft/
-PCL-Linux/runtime/
-PCL-Linux/runtime-21/
-PCL-Linux/runtime-25/
+/PCL-Linux/
 __pycache__/
 *.pyc
 *.log
@@ -12,8 +11,16 @@ node_modules/
 apps/desktop/dist/
 apps/desktop/src-tauri/gen/
 .pcl-rust/
+.pcl-linux/
 work/
 apps/desktop/public/preview.json
+
+# Local credentials and ad-hoc desktop captures
+/.env
+/.env.*
+!/.env.example
+/codex-clipboard-*
+/target-credential-tests
 
 # Local development notes and troubleshooting tools
 /AGENTS.md

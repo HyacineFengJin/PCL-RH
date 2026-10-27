@@ -1,0 +1,50 @@
+name: 问题反馈 / Bug report
+description: 报告可复现的启动器、RH Code 或插件问题。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请提供足以复现问题的信息。附日志前移除令牌、API Key 和私人信息，不要上传账号配置或完整游戏目录。
+  - type: input
+    id: version
+    attributes:
+      label: PCL RH 版本 / Version
+      placeholder: 应用版本或源码提交号
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 系统与环境 / Environment
+      placeholder: 发行版、桌面环境；游戏问题可补充 Java 和加载器版本
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关部分 / Area
+      options:
+        - 启动与游戏管理 / Launcher
+        - 下载与整合包 / Downloads and modpacks
+        - RH Code
+        - 插件 / Plugins
+        - 其他 / Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期与实际结果 / Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志或截图 / Relevant logs or screenshots
+      description: 只附与本次问题有关且已脱敏的内容。

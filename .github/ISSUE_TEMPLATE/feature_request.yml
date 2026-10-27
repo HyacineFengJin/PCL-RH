@@ -1,0 +1,17 @@
+name: 功能建议 / Feature request
+description: 讨论启动器、工作区或插件能力。
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 希望解决什么问题？ / What problem would this solve?
+      description: 描述实际使用场景。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议如何工作？ / How should it work?
+      description: 可以补充交互、插件扩展方式或参考链接。
+    validations:
+      required: true
