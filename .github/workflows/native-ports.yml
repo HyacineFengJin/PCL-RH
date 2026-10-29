@@ -1,0 +1,53 @@
+name: Native UI ports
+
+on:
+  push:
+    branches: [master]
+    paths: ['crates/desktop-platform/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/native-ports.yml']
+  pull_request:
+    paths: ['crates/desktop-platform/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/native-ports.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ui-ports-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ports:
+    name: Native UI ports / ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: Linux x64
+          - os: windows-2025
+            label: Windows x64
+          - os: macos-15
+            label: macOS arm64
+          - os: macos-15-intel
+            label: macOS x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libdbus-1-dev librsvg2-dev
+      - name: Prepare stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Test isolated native UI interfaces
+        run: cargo +stable test --locked -p pcl-desktop-platform -j 2
+      - name: Report native toolchain
+        run: rustc +stable -vV
+      # This builds actual native UI bindings and tests only local fixtures. It
+      # never reads the real clipboard, opens applications or builds installers.
+      # Complete desktop compilation/linking remains a separate strict workflow.

@@ -27,8 +27,16 @@ pub async fn edit(window: WebviewWindow, action: EditAction) -> Result<(), Strin
         return Err(FAILED.into());
     }
     let (sender, receiver) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let edit_window = window.clone();
     window
         .with_webview(move |view| {
+            // The UI queue may run after focus changed or the window closed.
+            // In particular, AppKit's responder chain must still belong to this
+            // focused window rather than a later application/window selection.
+            if !edit_window.is_focused().unwrap_or(false) {
+                let _ = sender.send(Err(FAILED.into()));
+                return;
+            }
             #[cfg(target_os = "linux")]
             {
                 use webkit2gtk::WebViewExt;
