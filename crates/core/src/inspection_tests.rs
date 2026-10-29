@@ -58,7 +58,7 @@ fn file_readiness_reports_missing_index_without_guessing_objects() {
     )
     .unwrap();
     assert_eq!(report.missing_total, 1);
-    assert!(report.missing_files[0].ends_with("assets/indexes/fixture.json"));
+    assert!(Path::new(&report.missing_files[0]).ends_with("assets/indexes/fixture.json"));
     assert!(!fixture.root().join("assets").exists());
 }
 
@@ -309,7 +309,7 @@ fn platform_rules_and_modern_and_legacy_natives_use_launch_dependency_resolver()
         let before = snapshot(f.root());
         let missing = dependencies::resolve(f.root(), "Example", &data, &context).unwrap();
         assert_eq!(missing.missing.total, 1);
-        assert!(missing.missing.paths[0].ends_with("libraries/legacy.jar"));
+        assert!(Path::new(&missing.missing.paths[0]).ends_with("libraries/legacy.jar"));
         f.write("libraries/legacy.jar", b"also not a zip");
         let resolved = dependencies::resolve(f.root(), "Example", &data, &context).unwrap();
         assert_eq!(resolved.missing.total, 0);
@@ -341,7 +341,7 @@ fn inspection_checks_native_archives_without_opening_or_extracting_them() {
     let missing = f.inspect("Example", &[21]);
     assert!(!missing.ready);
     assert_eq!(missing.missing_total, 1);
-    assert!(missing.missing_files[0].ends_with("libraries/native.jar"));
+    assert!(Path::new(&missing.missing_files[0]).ends_with("libraries/native.jar"));
     f.write(
         "libraries/native.jar",
         b"a regular file; intentionally not an extractable zip",
@@ -371,7 +371,7 @@ fn repeated_missing_asset_objects_count_once_without_creating_asset_folders() {
     assert!(!report.ready);
     assert_eq!(report.missing_total, 1);
     assert_eq!(report.missing_files.len(), 1);
-    assert!(report.missing_files[0].ends_with(&format!("assets/objects/aa/{hash}")));
+    assert!(Path::new(&report.missing_files[0]).ends_with(&format!("assets/objects/aa/{hash}")));
     assert_eq!(before, snapshot(f.root()));
     assert!(!f.root().join("assets/objects").exists());
 }

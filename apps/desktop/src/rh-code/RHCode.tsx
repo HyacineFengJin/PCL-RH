@@ -12,7 +12,7 @@ import type { Kernel } from "./kernel";
 import { LegacyArchive } from "./LegacyArchive";
 import { Projects } from "./Projects";
 import { Dialog } from "./Dialog";
-import { Plugins } from "./Plugins";
+import { Plugins } from "./PluginManager";
 import { Workspace } from "./Workspace";
 import { Layouts } from "./Layouts";
 import { label } from "./locale";

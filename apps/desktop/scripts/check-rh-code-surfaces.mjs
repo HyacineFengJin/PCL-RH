@@ -121,7 +121,7 @@ function fixture(t, initial = {}) {
     { ExperimentalCards, ExperimentalExtensions } = load(
       path.join(source, "ExperimentalExtensions.tsx"),
     ),
-    { Plugins } = load(path.join(source, "rh-code/Plugins.tsx"));
+    { Plugins } = load(path.join(source, "rh-code/PluginManager.tsx"));
   const mount = (Component, props) => {
     const harness = hooks.mount(Component, props);
     mounted.add(harness);

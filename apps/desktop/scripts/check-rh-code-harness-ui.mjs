@@ -28,6 +28,7 @@ function driver(file, exported, initial, controller, language = "en") {
     closed = false;
   const react = {
     Fragment: require("react").Fragment,
+    createContext: require("react").createContext,
     useState(initial) {
       const index = cursor++;
       if (!(index in hooks))
@@ -91,12 +92,13 @@ function driver(file, exported, initial, controller, language = "en") {
           "./LegacyArchive",
           "./Projects",
           "./Dialog",
-          "./Plugins",
+          "./PluginManager",
           "./Workspace",
           "./Layouts",
         ].includes(name)
       ) {
-        const component = name.split("/").at(-1);
+        const component =
+          name === "./PluginManager" ? "Plugins" : name.split("/").at(-1);
         return { [component]: function Component() {} };
       }
       if (name.endsWith("/locale") || name === "./locale")
