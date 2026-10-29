@@ -33,6 +33,7 @@ RH Code 将项目数据、可替换视图和 Agent 执行分开。阅读代码�
 | `apps/desktop/src-tauri/src/product_plugins/` | 共用启停配置、服务契约、原生插件生命周期与范围拥有者 |
 | `apps/desktop/src-tauri/src/plugin_host/` | 类型化服务注册、依赖准入、调用与资源退役 |
 | `apps/desktop/src-tauri/src/plugins/` | 随应用编译的实际服务实现 |
+| `crates/desktop-platform/` | 官方插件与命令共用的系统剪贴板、原生编辑命令和默认程序端口 |
 | `apps/desktop/src-tauri/src/rh_code.rs` | 项目存储、修订检查、对话归属和原生源码快照 |
 | `document_io.rs` | 有界文件读取、原子保存和共用写入锁 |
 | `rh_code/files.rs` | 项目文件清单、内容指纹和空目录产物发布 |
