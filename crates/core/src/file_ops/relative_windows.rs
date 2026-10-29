@@ -20,10 +20,9 @@ use windows_sys::{
     },
     Win32::{
         Foundation::{RtlNtStatusToDosError, OBJ_CASE_INSENSITIVE, UNICODE_STRING},
-        Globalization::{CompareStringOrdinal, CSTR_EQUAL},
         Storage::FileSystem::{
-            FileIdInfo, GetFileInformationByHandleEx, DELETE, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+            DELETE, FILE_ACCESS_RIGHTS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, SYNCHRONIZE,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -62,68 +61,16 @@ fn native_error(status: i32) -> io::Error {
     io::Error::from_raw_os_error(unsafe { RtlNtStatusToDosError(status) } as i32)
 }
 
-fn identity(file: &File) -> io::Result<FILE_ID_INFO> {
-    let mut info = FILE_ID_INFO::default();
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut info as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(info)
-    }
-}
-
-pub(in crate::file_ops) fn rename(
-    source_parent: &File,
-    source: &OsStr,
-    target_parent: &File,
-    target: &OsStr,
-) -> io::Result<()> {
-    let mut source = leaf(source)?;
-    let target = leaf(target)?;
-    directory(source_parent)?;
-    directory(target_parent)?;
-    let left = identity(source_parent)?;
-    let right = identity(target_parent)?;
-    if left.VolumeSerialNumber == right.VolumeSerialNumber
-        && left.FileId.Identifier == right.FileId.Identifier
-    {
-        let comparison = unsafe {
-            CompareStringOrdinal(
-                source.as_ptr(),
-                source.len() as i32,
-                target.as_ptr(),
-                target.len() as i32,
-                1,
-            )
-        };
-        if comparison == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if comparison == CSTR_EQUAL {
-            // NT rename can accept a no-op/case-only rename. Our contract
-            // requires an absent destination, even through aliased handles.
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Destination already names the source entry",
-            ));
-        }
-    }
-
+fn entry(parent: &File, units: &[u16], access: FILE_ACCESS_RIGHTS) -> io::Result<File> {
     let name = UNICODE_STRING {
-        Length: (source.len() * 2) as u16,
-        MaximumLength: (source.len() * 2) as u16,
-        Buffer: source.as_mut_ptr(),
+        Length: (units.len() * 2) as u16,
+        MaximumLength: (units.len() * 2) as u16,
+        // NtCreateFile treats the counted ObjectName buffer as input only.
+        Buffer: units.as_ptr().cast_mut(),
     };
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: source_parent.as_raw_handle(),
+        RootDirectory: parent.as_raw_handle(),
         ObjectName: &name,
         Attributes: OBJ_CASE_INSENSITIVE,
         ..Default::default()
@@ -133,7 +80,7 @@ pub(in crate::file_ops) fn rename(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            access | SYNCHRONIZE,
             &attributes,
             &mut status_block,
             ptr::null(),
@@ -151,7 +98,38 @@ pub(in crate::file_ops) fn rename(
     // Only one validated component is opened with OPEN_REPARSE_POINT: a final
     // link/junction is the entry to rename, never a path to its referent. No
     // intermediate components or OBJ_DONT_REPARSE assumptions are needed.
-    let source_file = unsafe { File::from_raw_handle(handle) };
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+fn exists(parent: &File, units: &[u16]) -> io::Result<bool> {
+    // Ask only for metadata access, not permission to read file contents.
+    match entry(parent, units, FILE_READ_ATTRIBUTES) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub(in crate::file_ops) fn rename(
+    source_parent: &File,
+    source: &OsStr,
+    target_parent: &File,
+    target: &OsStr,
+) -> io::Result<()> {
+    let source = leaf(source)?;
+    let target = leaf(target)?;
+    directory(source_parent)?;
+    directory(target_parent)?;
+    if exists(target_parent, &target)? {
+        // NT can accept a rename onto another link to the same file even
+        // with ReplaceIfExists=false. Let the filesystem resolve aliases;
+        // ordinal string casing need not match a volume's name semantics.
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Rename destination already exists",
+        ));
+    }
+    let source_file = entry(source_parent, &source, DELETE | FILE_READ_ATTRIBUTES)?;
     let offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
     let byte_len = (offset + target.len() * 2).max(size_of::<FILE_RENAME_INFORMATION>());
     // usize allocation provides native alignment for the flexible NT struct.
@@ -169,6 +147,7 @@ pub(in crate::file_ops) fn rename(
     }
     // All replacement/POSIX/copy flags remain zero. The target is relative to
     // the held directory object, including if its former pathname was moved.
+    let mut status_block = IO_STATUS_BLOCK::default();
     let status = unsafe {
         NtSetInformationFile(
             source_file.as_raw_handle(),
@@ -179,7 +158,16 @@ pub(in crate::file_ops) fn rename(
         )
     };
     if status == 0 {
-        Ok(())
+        // Detect native no-ops from late aliases. A concurrently recreated
+        // source is also an explicit conflict after a possible publication,
+        // requiring the caller to reconcile its durable transaction state.
+        if exists(source_parent, &source)? {
+            Err(io::Error::other(
+                "Rename needs reconciliation: source entry remains",
+            ))
+        } else {
+            Ok(())
+        }
     } else {
         Err(native_error(status))
     }

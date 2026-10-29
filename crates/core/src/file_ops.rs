@@ -17,11 +17,10 @@ mod relative;
 /// transaction recovery. This operation neither checks an expected inode nor
 /// flushes directory metadata. In particular, a retained directory may have
 /// been moved outside the caller's intended tree; revalidate its graph before
-/// publication. Windows also rejects ambiguous DOS leaf syntax and case-only
-/// renames within one directory.
-/// macOS additionally checks for its native same-file no-op exception. If a
-/// source is concurrently recreated, it reports a conflict after publication;
-/// an error must therefore be reconciled using the caller's transaction state.
+/// publication. Windows also rejects ambiguous DOS leaf syntax. Windows and
+/// macOS guard against native same-file alias/no-op exceptions. A concurrently
+/// recreated source reports a conflict after possible publication; an error
+/// must therefore be reconciled using the caller's transaction state.
 pub fn rename_noreplace_at(
     source_parent: &File,
     source: &OsStr,

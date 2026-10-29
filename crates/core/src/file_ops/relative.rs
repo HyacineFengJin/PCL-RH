@@ -1,6 +1,8 @@
 //! Retained-parent namespace primitive. No canonicalization, proc path, mutable
 //! parent pathname, process-wide cwd, replacement flag or copy fallback.
-use std::{ffi::OsStr, fs::File, io};
+#[cfg(not(target_os = "windows"))]
+use std::ffi::OsStr;
+use std::{fs::File, io};
 
 fn invalid_name() -> io::Error {
     io::Error::new(
