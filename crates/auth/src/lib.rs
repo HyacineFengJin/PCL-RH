@@ -1,12 +1,14 @@
 //! Microsoft consumer device authorization. Secrets never implement Debug or Serialize.
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+mod response;
 mod textures;
+use response::{auth_error, decode, read_json, receive, AuthStage};
 pub use textures::{official_texture_url, ProfileTextures, TextureReference};
 const SCOPE: &str = "XboxLive.signin offline_access";
 fn now() -> u64 {
@@ -101,35 +103,6 @@ fn numeric_xuid(claims: &Value) -> Option<String> {
         .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
         .map(str::to_owned)
 }
-fn auth_error(v: &Value) -> String {
-    match v["XErr"].as_u64() {
-        Some(2148916233) => return "请先在 Xbox 官网创建 Xbox 账户".into(),
-        Some(2148916235) => return "此地区无法使用 Xbox Live".into(),
-        Some(2148916236 | 2148916237) => return "Xbox 账户需要完成年龄验证".into(),
-        Some(2148916238) => return "儿童账户需要加入由成人管理的 Microsoft 家庭".into(),
-        _ => {}
-    }
-    match v["error"].as_str().unwrap_or("") {
-        "invalid_client" | "unauthorized_client" => {
-            "Microsoft Client ID 无效或未启用公共客户端设备登录"
-        }
-        "authorization_declined" | "access_denied" => "已拒绝微软登录授权",
-        "expired_token" => "设备登录码已过期，请重新登录",
-        "invalid_grant" => "微软登录凭据已失效，请重新登录",
-        _ => "认证服务拒绝请求，请检查网络或稍后重试",
-    }
-    .into()
-}
-fn decode(r: Result<Response, reqwest::Error>) -> Result<Value, String> {
-    let r = r.map_err(|_| "无法连接认证服务，请检查网络及代理".to_string())?;
-    let status = r.status();
-    let v: Value = r.json().map_err(|_| "认证服务响应格式错误".to_string())?;
-    if !status.is_success() {
-        Err(auth_error(&v))
-    } else {
-        Ok(v)
-    }
-}
 fn cancelled(c: &AtomicBool) -> Result<(), String> {
     if c.load(Ordering::Relaxed) {
         Err("已取消微软登录".into())
@@ -154,7 +127,7 @@ impl MicrosoftClient {
     pub fn new(client_id: &str) -> Result<Self, String> {
         let id = client_id.trim();
         if id.is_empty() {
-            return Err("尚未配置本项目的 Microsoft Client ID，请注册支持个人账户的公共客户端并启用设备登录".into());
+            return Err("启动器尚未配置 Microsoft 登录，请联系项目维护者".into());
         }
         if id.len() != 36
             || !id.chars().enumerate().all(|(i, c)| {
@@ -187,6 +160,7 @@ impl MicrosoftClient {
         on_stage("正在获取微软设备登录码");
         let started = Instant::now();
         let v = decode(
+            AuthStage::DeviceCode,
             self.http
                 .post(&self.endpoints.device)
                 .form(&[("client_id", self.client_id.as_str()), ("scope", SCOPE)])
@@ -217,18 +191,20 @@ impl MicrosoftClient {
         on_stage("等待微软账户授权");
         let token = loop {
             wait(c, Instant::now() + Duration::from_secs(interval), deadline)?;
-            let r = self
-                .http
-                .post(&self.endpoints.token)
-                .form(&[
-                    ("client_id", self.client_id.as_str()),
-                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                    ("device_code", code.as_str()),
-                ])
-                .send()
-                .map_err(|_| "无法连接微软认证服务")?;
-            let ok = r.status().is_success();
-            let v: Value = r.json().map_err(|_| "微软认证响应格式错误")?;
+            let r = receive(
+                AuthStage::MicrosoftToken,
+                self.http
+                    .post(&self.endpoints.token)
+                    .form(&[
+                        ("client_id", self.client_id.as_str()),
+                        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                        ("device_code", code.as_str()),
+                    ])
+                    .send(),
+            )?;
+            let status = r.status();
+            let ok = status.is_success();
+            let v = read_json(AuthStage::MicrosoftToken, r)?;
             cancelled(c)?;
             if ok {
                 break v;
@@ -236,7 +212,7 @@ impl MicrosoftClient {
             match v["error"].as_str() {
                 Some("authorization_pending") => {}
                 Some("slow_down") => interval = interval.saturating_add(5).min(expiry),
-                _ => return Err(auth_error(&v)),
+                _ => return Err(auth_error(AuthStage::MicrosoftToken, status, &v)),
             }
         };
         self.exchange(token, None, c, &on_stage)
@@ -246,6 +222,7 @@ impl MicrosoftClient {
             return Err("账户使用的 Client ID 已更改，请重新登录".into());
         }
         let v = decode(
+            AuthStage::MicrosoftToken,
             self.http
                 .post(&self.endpoints.token)
                 .form(&[
@@ -279,14 +256,14 @@ impl MicrosoftClient {
             .to_owned();
         cancelled(c)?;
         stage("正在验证 Xbox Live 账户");
-        let x=decode(self.http.post(&self.endpoints.xbox).json(&json!({"Properties":{"AuthMethod":"RPS","SiteName":"user.auth.xboxlive.com","RpsTicket":format!("d={ms}")},"RelyingParty":"http://auth.xboxlive.com","TokenType":"JWT"})).send())?;
+        let x=decode(AuthStage::XboxLive, self.http.post(&self.endpoints.xbox).json(&json!({"Properties":{"AuthMethod":"RPS","SiteName":"user.auth.xboxlive.com","RpsTicket":format!("d={ms}")},"RelyingParty":"http://auth.xboxlive.com","TokenType":"JWT"})).send())?;
         let xbox = field(&x, "Token")?;
         let xbox_claims = &x["DisplayClaims"]["xui"][0];
         let xbox_uhs = field(xbox_claims, "uhs")?;
         let xbox_xuid = numeric_xuid(xbox_claims);
         cancelled(c)?;
         stage("正在获取 Xbox 安全令牌");
-        let x=decode(self.http.post(&self.endpoints.xsts).json(&json!({"Properties":{"SandboxId":"RETAIL","UserTokens":[xbox]},"RelyingParty":"rp://api.minecraftservices.com/","TokenType":"JWT"})).send())?;
+        let x=decode(AuthStage::Xsts, self.http.post(&self.endpoints.xsts).json(&json!({"Properties":{"SandboxId":"RETAIL","UserTokens":[xbox]},"RelyingParty":"rp://api.minecraftservices.com/","TokenType":"JWT"})).send())?;
         let token = field(&x, "Token")?;
         let claims = &x["DisplayClaims"]["xui"][0];
         let uhs = field(claims, "uhs")?;
@@ -296,16 +273,17 @@ impl MicrosoftClient {
         let xuid = numeric_xuid(claims).or(xbox_xuid).unwrap_or_default();
         cancelled(c)?;
         stage("正在登录 Minecraft 服务");
-        let response = self
-            .http
-            .post(&self.endpoints.minecraft)
-            .json(&json!({"identityToken":format!("XBL3.0 x={uhs};{token}")}))
-            .send()
-            .map_err(|_| "无法连接 Minecraft 登录服务，请检查网络及代理".to_string())?;
+        let response = receive(
+            AuthStage::MinecraftLogin,
+            self.http
+                .post(&self.endpoints.minecraft)
+                .json(&json!({"identityToken":format!("XBL3.0 x={uhs};{token}")}))
+                .send(),
+        )?;
         if response.status() == reqwest::StatusCode::FORBIDDEN {
-            return Err("Minecraft 登录服务拒绝访问：本项目应用可能尚未获得 Minecraft 登录服务许可，请联系项目维护者检查 Client ID".into());
+            return Err(AuthStage::MinecraftLogin.http(reqwest::StatusCode::FORBIDDEN));
         }
-        let mc = decode(Ok(response))?;
+        let mc = decode(AuthStage::MinecraftLogin, Ok(response))?;
         let access = field(&mc, "access_token")?;
         let expiry = mc["expires_in"]
             .as_u64()
@@ -314,6 +292,7 @@ impl MicrosoftClient {
         cancelled(c)?;
         stage("正在检查 Minecraft Java 资格");
         let entitlement = decode(
+            AuthStage::Entitlements,
             self.http
                 .get(&self.endpoints.entitlements)
                 .bearer_auth(&access)
@@ -324,16 +303,17 @@ impl MicrosoftClient {
         }
         cancelled(c)?;
         stage("正在获取 Minecraft 玩家档案");
-        let r = self
-            .http
-            .get(&self.endpoints.profile)
-            .bearer_auth(&access)
-            .send()
-            .map_err(|_| "无法连接 Minecraft 档案服务")?;
+        let r = receive(
+            AuthStage::Profile,
+            self.http
+                .get(&self.endpoints.profile)
+                .bearer_auth(&access)
+                .send(),
+        )?;
         if r.status() == reqwest::StatusCode::NOT_FOUND {
             return Err("该微软账户没有可用的 Minecraft Java 玩家档案，请确认已购买 Java 版或启用 Game Pass 并创建档案".into());
         }
-        let p = decode(Ok(r))?;
+        let p = decode(AuthStage::Profile, Ok(r))?;
         let uuid = field(&p, "id")?;
         if uuid.len() != 32 || !uuid.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err("Minecraft 玩家 UUID 格式错误".into());
@@ -607,11 +587,18 @@ mod tests {
     fn cancellation_and_errors_are_safe() {
         assert!(MicrosoftClient::new("").is_err());
         assert!(cancelled(&AtomicBool::new(true)).is_err());
-        assert!(auth_error(&json!({"XErr":2148916238u64,"Message":"secret"})).contains("家庭"));
-        assert!(
-            !auth_error(&json!({"error":"invalid_client","error_description":"secret"}))
-                .contains("secret")
-        );
+        assert!(auth_error(
+            AuthStage::Xsts,
+            reqwest::StatusCode::BAD_REQUEST,
+            &json!({"XErr":2148916238u64,"Message":"secret"})
+        )
+        .contains("家庭"));
+        assert!(!auth_error(
+            AuthStage::Xsts,
+            reqwest::StatusCode::BAD_REQUEST,
+            &json!({"error":"invalid_client","error_description":"secret"})
+        )
+        .contains("secret"));
     }
     #[test]
     fn slow_down_obeys_device_deadline() {
@@ -683,7 +670,7 @@ mod tests {
         thread.join().unwrap();
     }
     #[test]
-    fn minecraft_forbidden_explains_application_permission_without_body() {
+    fn minecraft_forbidden_reports_status_without_guessing_permission_or_body() {
         let mut replies = chain();
         replies.truncate(3);
         replies[2] = ("/mc", 403, json!("secret invalid server body"));
@@ -697,7 +684,8 @@ mod tests {
             )
             .err()
             .unwrap();
-        assert!(error.contains("许可"));
+        assert!(error.contains("HTTP 403"));
+        assert!(!error.contains("尚未获得"));
         assert!(!error.contains("secret"));
         thread.join().unwrap();
     }

@@ -77,6 +77,50 @@ fn ordinary_environment_logs_and_signal_codes_do_not_diagnose_a_cause() {
 }
 
 #[test]
+fn secure_jar_missing_inputs_are_dependency_evidence_without_mod_blame() {
+    for paths in [
+        "libraries/net/minecraftforge/fmlcore/example/fmlcore.jar",
+        "C:\\Games\\Example\\libraries\\net\\minecraftforge\\forge\\example.jar",
+        "[已隐藏路径]",
+    ] {
+        let line = format!("Caused by: java.io.IOException: Invalid paths argument, contained no existing paths: [{paths}]");
+        let report = analyze("exited 1", Some(&line));
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].code, "missing_dependency");
+        assert_eq!(report[0].evidence, [line]);
+    }
+    assert_eq!(codes("exited 1", "Exception in thread \"main\" java.io.UncheckedIOException: java.io.IOException: Invalid paths argument, contained no existing paths: []"), ["missing_dependency"]);
+}
+
+#[test]
+fn secure_jar_stack_frames_and_path_mentions_are_not_missing_file_proof() {
+    for line in [
+        "at cpw.mods.jarhandling.impl.Jar.<init>(Jar.java:82)",
+        "at cpw.mods.jarhandling.SecureJar.from(SecureJar.java:70)",
+        "[INFO] loaded securejarhandler successfully",
+        "[INFO] checking invalid paths argument, contained no existing paths: [example.jar]",
+        "java.io.IOException: Access is denied: example.jar",
+        "java.io.IOException: Invalid paths argument, contained existing paths: [example.jar]",
+    ] {
+        assert_eq!(codes("exited 1", line), ["unknown"], "{line}");
+    }
+}
+
+#[test]
+fn secure_jar_evidence_precedes_generic_loader_failure_and_remains_bounded() {
+    let line = format!(
+        "java.io.IOException: Invalid paths argument, contained no existing paths: [{}]",
+        "x".repeat(1024)
+    );
+    let log = format!("net.minecraftforge.fml.ModLoadingException: wrapper\n{line}\n{line}");
+    let report = analyze("exited 1", Some(&log));
+    assert_eq!(report[0].code, "missing_dependency");
+    assert_eq!(report[1].code, "mod_loading");
+    assert_eq!(report[0].evidence.len(), 1);
+    assert_eq!(report[0].evidence[0].chars().count(), MAX_EVIDENCE_CHARS);
+}
+
+#[test]
 fn generic_vm_wrapper_does_not_distract_from_explicit_memory_error() {
     assert_eq!(
         codes(

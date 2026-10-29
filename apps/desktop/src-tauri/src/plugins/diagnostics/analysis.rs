@@ -164,6 +164,11 @@ fn signature(line: &str) -> Option<Family> {
     {
         Some(Family::ModDuplicate)
     } else if (lower.starts_with("missing ") && lower.contains(" installed dependencies"))
+        // SecureJarHandler throws this when every supplied input path is
+        // absent. Match its IOException, not an ordinary path/stack-frame
+        // mention; the paths may belong to loader libraries or other JARs.
+        // Upstream: McModLauncher/securejarhandler, JarContentsImpl constructor.
+        || lower.contains("java.io.ioexception: invalid paths argument, contained no existing paths: [")
         || lower.contains("java.lang.classnotfoundexception:")
         || (lower.contains("java.lang.noclassdeffounderror:")
             && !lower.contains("could not initialize class"))
