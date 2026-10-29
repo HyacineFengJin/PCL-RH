@@ -16,6 +16,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(any(unix, windows))]
 const OUTPUT_LIMIT: usize = 64 * 1024;
+const PROBE_ARGUMENTS: [&str; 2] = ["-XshowSettings:properties", "-version"];
 const MAX_CANDIDATES: usize = 64;
 const MAX_DISCOVERY_PATHS: usize = 256;
 
@@ -472,16 +473,20 @@ fn probe(path: &Path, deadline: Instant) -> Result<String> {
     if Instant::now() >= deadline {
         return Err("Java 检测超时".into());
     }
+    let image = unix_image::Image::new(path)?;
     let mut command = Command::new(path);
     command
-        .args(["-XshowSettings:properties", "-version"])
+        .args(PROBE_ARGUMENTS)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env_remove("JAVA_TOOL_OPTIONS")
-        .env_remove("_JAVA_OPTIONS")
-        .env_remove("JDK_JAVA_OPTIONS")
         .process_group(0);
+    // Darwin's spawn/exec search path can fall back to a shell for plain text.
+    // The direct execve hook runs after std sets up pipes and the private group,
+    // and bypasses that fallback. All buffers are prepared before the fork.
+    unsafe {
+        command.pre_exec(move || image.execute());
+    }
     let retry_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
     let mut child = ChildGuard(loop {
         match command.spawn() {
@@ -541,6 +546,9 @@ fn probe(path: &Path, deadline: Instant) -> Result<String> {
     }
 }
 
+#[cfg(unix)]
+#[path = "java/unix_image.rs"]
+mod unix_image;
 #[cfg(windows)]
 #[path = "java/windows.rs"]
 mod windows;

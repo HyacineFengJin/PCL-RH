@@ -6,6 +6,7 @@ use super::*;
 use std::{io, mem::size_of, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::Win32::{
     Foundation::*,
+    Globalization::{CompareStringOrdinal, CSTR_EQUAL},
     Security::SECURITY_ATTRIBUTES,
     Storage::FileSystem::*,
     System::{Environment::*, JobObjects::*, Pipes::*, Threading::*},
@@ -117,20 +118,35 @@ impl Drop for Attributes {
     }
 }
 
-fn jvm_option(entry: &[u16]) -> bool {
+fn jvm_option(entry: &[u16]) -> Result<bool> {
     let end = entry
         .iter()
         .position(|unit| *unit == b'=' as u16)
         .unwrap_or(entry.len());
-    ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"]
-        .iter()
-        .any(|name| {
-            end == name.len()
-                && entry[..end]
-                    .iter()
-                    .zip(name.bytes())
-                    .all(|(unit, byte)| *unit <= 127 && (*unit as u8).eq_ignore_ascii_case(&byte))
-        })
+    for name in ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"] {
+        if end != name.len() {
+            continue;
+        }
+        let key: Vec<_> = name.encode_utf16().collect();
+        // Match Windows' ordinal case rules, including Unicode aliases. ASCII
+        // case folding alone differs from native environment name lookup.
+        let comparison = unsafe {
+            CompareStringOrdinal(
+                entry.as_ptr(),
+                end as i32,
+                key.as_ptr(),
+                key.len() as i32,
+                1,
+            )
+        };
+        if comparison == 0 {
+            return Err(win_error("无法检查 Java 检测环境变量"));
+        }
+        if comparison == CSTR_EQUAL {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 fn environment() -> Result<Vec<u16>> {
     struct Environment(*mut u16);
@@ -165,7 +181,7 @@ fn environment() -> Result<Vec<u16>> {
             return Ok(output);
         }
         let entry = unsafe { std::slice::from_raw_parts(source.0.add(start), offset - start) };
-        if !jvm_option(entry) {
+        if !jvm_option(entry)? {
             output.extend_from_slice(entry);
             output.push(0);
         }
@@ -259,7 +275,12 @@ fn spawn(path: &Path, deadline: Instant) -> Result<(ChildOwner, Handle, Handle)>
     }
     let mut command = vec![b'"' as u16];
     command.extend_from_slice(&image);
-    command.extend("\" -XshowSettings:properties -version\0".encode_utf16());
+    command.push(b'"' as u16);
+    for argument in PROBE_ARGUMENTS {
+        command.push(b' ' as u16);
+        command.extend(argument.encode_utf16());
+    }
+    command.push(0);
     image.push(0);
     let environment = environment()?;
     let job = Handle::take(
@@ -477,7 +498,7 @@ mod tests {
             "_Java_Options=secret",
             "Jdk_Java_Options=secret",
         ] {
-            assert!(jvm_option(&entry.encode_utf16().collect::<Vec<_>>()));
+            assert!(jvm_option(&entry.encode_utf16().collect::<Vec<_>>()).unwrap());
         }
         for entry in [
             "JAVA_HOME=retained",
@@ -485,7 +506,7 @@ mod tests {
             "JAVA_TOOL_OPTIONS_EXTRA=retained",
             "OTHER=JAVA_TOOL_OPTIONS",
         ] {
-            assert!(!jvm_option(&entry.encode_utf16().collect::<Vec<_>>()));
+            assert!(!jvm_option(&entry.encode_utf16().collect::<Vec<_>>()).unwrap());
         }
     }
 }
