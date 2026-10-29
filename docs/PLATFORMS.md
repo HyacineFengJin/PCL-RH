@@ -6,9 +6,9 @@ PCL RH 的完整桌面应用目前只提供 Linux 实现。Windows、macOS 的�
 | --- | --- | --- | --- |
 | Minecraft 平台、架构规则与原生库分类 | 已实现 | 已实现 | 已实现，区分 Intel / Apple Silicon |
 | Java 路径与官方运行时目录名 | 已实现 | 已实现 `.exe` 路径 | 已实现 JDK / `.bundle` 路径 |
-| 有限时 Java 探测 | 已实现 | 尚未实现，返回明确错误 | 已实现 Unix 探测 |
+| 有限时 Java 探测 | 已实现，私有进程组 | 已实现，私有 Job Object | 已实现，私有进程组 |
 | 账号密钥存储后端 | Secret Service | Windows Credential Store | macOS Keychain |
-| 核心、网络与认证模块的原生 CI 测试 | 通过，x64 | 通过，x64 | 通过，Apple Silicon |
+| 核心、网络与认证模块的原生 CI 测试 | 通过，x64 | 通过，x64 | 通过，Intel / Apple Silicon |
 | 声明型插件的清单、授权与持久状态（独立 Node 模块） | 原生 runner 测试通过 | 原生 runner 测试通过 | 原生 runner 测试通过 |
 | 原生剪贴板、编辑与默认程序端口 | 已实现，接口 CI 通过 | 已实现，接口 CI 通过 | 已实现，Intel / Apple Silicon 接口 CI 通过 |
 | WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
@@ -19,6 +19,10 @@ PCL RH 的完整桌面应用目前只提供 Linux 实现。Windows、macOS 的�
 
 账号存储使用 [keyring 的平台后端](https://docs.rs/keyring/3.6.3/keyring/#credential-store-features)，账号标识保持兼容。Microsoft 正版服务接入状态仍见[账号说明](AUTHENTICATION.md)。
 
+Java 信息检测只执行选定文件和固定的版本查询参数，按两秒截止时间与每个输出流 64 KiB 上限处理。Windows 在挂起状态建立进程与 Job 的归属后才运行，结束时停止该检测拥有的进程树，另外等待最多 500 毫秒确认清理；无法确认时不会返回可用 Java。Unix 使用私有进程组和直接 `execve`；不会给普通文本隐式补一个 shell，显式声明 `#!` 的包装脚本仍可使用。Windows 批处理不作为 Java 执行。
+
+检测会过滤 `JAVA_TOOL_OPTIONS`、`_JAVA_OPTIONS` 和 `JDK_JAVA_OPTIONS` 的注入，不修改系统环境或已保存的游戏启动参数。
+
 ## 核心开发与检查
 
 以下命令只构建和检查独立的核心、网络与认证模块，不构建桌面宿主：
@@ -27,7 +31,13 @@ PCL RH 的完整桌面应用目前只提供 Linux 实现。Windows、macOS 的�
 cargo test --locked -p pcl-core -p pcl-network -p pcl-auth
 ```
 
-`.github/workflows/portable-core.yml` 在 Linux、Windows、macOS 的原生 runner 上执行该命令。显式平台测试在每个系统检查不同架构的规则与分类；Unix 的进程、权限和符号链接测试仅在 Unix 执行，Windows 另有路径组件检查。测试采用本地夹具与回环服务，不读取真实账号、密钥环或游戏目录。
+`.github/workflows/portable-core.yml` 在 Linux x64、Windows x64、macOS Intel 与 Apple Silicon 四个原生 runner 上执行该命令。显式平台测试在每个系统检查不同架构的规则与分类；Unix 的进程、权限和符号链接测试仅在 Unix 执行，Windows 另有路径组件检查。测试采用本地夹具与回环服务，不读取真实账号、密钥环或游戏目录。
+
+Java 生命周期检查使用专门的原生可执行夹具，覆盖卡死、输出刷屏、异常退出、保留管道的子进程与其他进程的隔离；Windows 还检查检测方异常退出后的 Job 清理。不需要发现或运行系统 Java，可独立运行：
+
+```sh
+cargo test --locked -p pcl-core --test java_probe_lifecycle
+```
 
 完整桌面构建的安装、修复和恢复事务仍使用 Linux 文件接口。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。其他平台尚无可供日常使用的安装包；当前 `build-native.sh`、`start-native.sh` 与 `install-desktop.sh` 是 Linux 脚本。
 
@@ -55,13 +65,13 @@ GitHub 的 **Native UI ports** 工作流在四个原生 runner 上独立执行�
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872012024)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40884909298)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 
 The complete PCL RH desktop application currently targets Linux. Cross-platform work has started in the portable core: Minecraft OS/architecture rules, native library classifiers and formats, Java layouts, runtime index keys, and platform-specific credential backends cover Windows and macOS as well.
 
-The portable-core workflow tests the core, network and authentication crates on native Linux, Windows and macOS runners. These checks do **not** build the desktop application. Bounded Java probing is still unavailable on Windows; desktop integration, file transactions, process monitoring and distribution packages are not yet adapted for Windows or macOS. Architecture-specific Minecraft natives must also exist for the selected game version. The current build and desktop installation scripts remain Linux-specific.
+The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing now uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. File transactions, process monitoring and distribution packages are not yet adapted for Windows or macOS. Architecture-specific Minecraft natives must also exist for the selected game version. The current build and desktop installation scripts remain Linux-specific.
 
 The manual **Desktop platform builds** workflow separately builds the WebUI and compiles/links the complete desktop application on Linux x64, Windows x64, macOS arm64 and macOS x64. Unsupported native ports fail visibly. Toolchain details and compiler logs are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
 
