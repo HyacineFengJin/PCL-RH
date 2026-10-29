@@ -387,23 +387,8 @@ impl InstallTemporary {
     pub fn publish(&mut self, name: &str) -> Result<()> {
         if let Some(fd) = self.parent.fd() {
             same_directory(self.parent.path.join(&self.name), self.dir.fd().unwrap())?;
-            let source = CString::new(self.name.as_bytes()).map_err(error)?;
-            let target = CString::new(name).map_err(error)?;
-            if unsafe {
-                libc::renameat2(
-                    fd.as_raw_fd(),
-                    source.as_ptr(),
-                    fd.as_raw_fd(),
-                    target.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
-            } != 0
-            {
-                return Err(format!(
-                    "无法完成版本安装（目标可能已存在）：{}",
-                    std::io::Error::last_os_error()
-                ));
-            }
+            pcl_core::file_ops::rename_noreplace_at(fd, &self.name, fd, std::ffi::OsStr::new(name))
+                .map_err(|e| format!("无法完成版本安装（目标可能已存在）：{e}"))?;
         } else {
             publish_directory(self.dir.path(), &self.parent.path.join(name))?;
         }

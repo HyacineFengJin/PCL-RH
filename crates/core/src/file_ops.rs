@@ -1,7 +1,31 @@
 //! Atomic namespace operations, not a directory-authority or transaction layer.
 //! Callers still own/bind both parents and verify source identities. These path
 //! adapters cannot replace retained handles, journals or conflict receipts.
-use std::{io, path::Path};
+use std::{ffi::OsStr, fs::File, io, path::Path};
+
+#[path = "file_ops/relative.rs"]
+mod relative;
+
+/// Rename one entry between retained parent directories without replacement.
+/// Both names must be single leaf names, never paths. Neither parent's current
+/// pathname is resolved, and an existing destination (including a link) fails.
+/// Cross-volume moves and unsupported filesystem semantics fail without a
+/// copy/delete or replacing fallback. A source link is moved, never followed.
+///
+/// The caller still owns source identity checks, parent admission and durable
+/// transaction recovery. This operation neither checks an expected inode nor
+/// flushes directory metadata. In particular, a retained directory may have
+/// been moved outside the caller's intended tree; revalidate its graph before
+/// publication. Windows also rejects ambiguous DOS leaf syntax and case-only
+/// renames within one directory.
+pub fn rename_noreplace_at(
+    source_parent: &File,
+    source: &OsStr,
+    target_parent: &File,
+    target: &OsStr,
+) -> io::Result<()> {
+    relative::rename(source_parent, source, target_parent, target)
+}
 
 /// Atomically rename a file or directory only when the destination entry is
 /// absent. Never emulate this with exists()+rename(), copy/delete, or a fallback

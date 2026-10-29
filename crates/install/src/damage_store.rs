@@ -652,21 +652,13 @@ fn rename_new(
     target: &fs::File,
     target_name: &str,
 ) -> Result<()> {
-    if unsafe {
-        libc::renameat2(
-            source.as_raw_fd(),
-            cstring(source_name)?.as_ptr(),
-            target.as_raw_fd(),
-            cstring(target_name)?.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(format!(
-            "无法无覆盖移动损坏修复文件：{}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    pcl_core::file_ops::rename_noreplace_at(
+        source,
+        std::ffi::OsStr::new(source_name),
+        target,
+        std::ffi::OsStr::new(target_name),
+    )
+    .map_err(|e| format!("无法无覆盖移动损坏修复文件：{e}"))?;
     source.sync_all().map_err(error)?;
     target.sync_all().map_err(error)
 }

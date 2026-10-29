@@ -1,0 +1,40 @@
+name: Installer transactions (Linux)
+
+on:
+  push:
+    branches: [master]
+    paths: ['crates/install/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
+  pull_request:
+    paths: ['crates/install/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-transactions-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  transactions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Test installer publication and recovery
+        shell: bash
+        # The image's JDK only compiles/runs synthetic processor fixtures.
+        # No real game, account, service credentials or user directory is used.
+        run: |
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          javac -version
+          cargo +stable test --locked -p pcl-install --lib -- --test-threads=2
+      # The other native hosts exercise the shared primitive in Portable core.
+      # Full installer transactions still require Linux openat2 and Landlock.

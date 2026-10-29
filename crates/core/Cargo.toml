@@ -16,7 +16,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tempfile = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_Environment", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_Environment", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [[test]]
 name = "java_probe_lifecycle"
