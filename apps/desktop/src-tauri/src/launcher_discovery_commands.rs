@@ -1,5 +1,5 @@
 //! Read-only discovery commands. Clipboard permission and keyboard focus are
-//! checked again on GTK's thread when the asynchronous selection arrives.
+//! checked again on the desktop thread when the asynchronous selection arrives.
 //! Only approved resource links cross IPC; source clipboard text is discarded.
 use crate::{
     launcher_prefs::AnnouncementMode,
@@ -8,7 +8,6 @@ use crate::{
     product_plugins::contracts::{AnnouncementScope, AnnouncementView, ANNOUNCEMENTS},
     Shared,
 };
-use gtk::prelude::Cast;
 use std::sync::{atomic::Ordering, Arc};
 use tauri::State;
 
@@ -54,12 +53,9 @@ pub async fn launcher_clipboard_link(
     window
         .run_on_main_thread(move || {
             let result = (|| {
-                let native = clipboard_window
-                    .gtk_window()
-                    .map_err(|_| "无法访问系统剪贴板窗口".to_string())?;
                 let reader = request.clone();
                 reader.service.0.request(
-                    native.upcast_ref(),
+                    &clipboard_window,
                     Box::new(move || clipboard_enabled(&shared, &request)),
                     Box::new(move |outcome| {
                         let _ = sender.send(outcome.link);

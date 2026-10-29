@@ -94,7 +94,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -1694,11 +1693,7 @@ async fn auth_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<(), St
     .map_err(|_| "账号操作任务失败")?
 }
 fn open_official(url: &str) -> Result<(), String> {
-    Command::new("xdg-open")
-        .arg(url)
-        .spawn()
-        .map_err(|_| "无法打开默认浏览器")?;
-    Ok(())
+    pcl_desktop_platform::opener::open_url(url)
 }
 #[tauri::command]
 fn auth_open_browser(state: State<'_, Arc<Shared>>) -> Result<(), String> {
@@ -2091,11 +2086,7 @@ fn open_folder(
     {
         return Err("实例设置已变化，请重新打开目录".into());
     }
-    Command::new("xdg-open")
-        .arg(path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    pcl_desktop_platform::opener::open_path(&path)
 }
 fn main() {
     if let Some(code) = code_runner::main_if_requested() {

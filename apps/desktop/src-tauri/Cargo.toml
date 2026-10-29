@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 pcl-network = { path = "../../../crates/network" }
+pcl-desktop-platform = { path = "../../../crates/desktop-platform" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
@@ -26,9 +27,6 @@ libc = "0.2"
 sha2 = "0.10"
 sha1 = "0.10"
 semver = "1"
-gtk = "0.18"
-gdk = "0.18"
-webkit2gtk = "2"
 pcl-core = { path = "../../../crates/core" }
 pcl-auth = { path = "../../../crates/auth" }
 pcl-install = { path = "../../../crates/install" }

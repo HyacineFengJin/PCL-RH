@@ -221,7 +221,7 @@ pub(super) fn execute(
                     if extension_id != expected_id || !clipboard_text(&text) {
                         return Err(INVALID.into());
                     }
-                    // GTK/CloseRequested must stay free to take operations.
+                    // The desktop/CloseRequested callback must stay free to take operations.
                     // Session ownership still prevents permission changes,
                     // settings edits and suspend until the clipboard completes.
                     drop(operation);
@@ -233,7 +233,7 @@ pub(super) fn execute(
     )
 }
 
-/// Run only from a blocking worker. GTK's callback takes no application/session
+/// Run only from a blocking worker. The desktop callback takes no application/session
 /// locks; close uses the atomic fence, while native admission keeps the window
 /// lifecycle alive until this callback has completed or failed.
 pub(super) fn copy_on_main_thread(
@@ -242,16 +242,14 @@ pub(super) fn copy_on_main_thread(
     text: String,
 ) -> Result<(), String> {
     let (sender, receiver) = mpsc::sync_channel(1);
+    let copy_window = window.clone();
     window
         .run_on_main_thread(move || {
             let result = (|| {
                 if shared.closing.load(Ordering::SeqCst) {
                     return Err("启动器正在关闭".into());
                 }
-                let display = gdk::Display::default().ok_or("系统剪贴板不可用")?;
-                let clipboard = gtk::Clipboard::default(&display).ok_or("系统剪贴板不可用")?;
-                clipboard.set_text(&text);
-                Ok(())
+                pcl_desktop_platform::clipboard::write_text(&copy_window, &text)
             })();
             let _ = sender.send(result);
         })

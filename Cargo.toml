@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/auth", "crates/core", "crates/install", "crates/cli", "crates/network", "apps/desktop/src-tauri"]
+members = ["crates/auth", "crates/core", "crates/install", "crates/cli", "crates/network", "crates/desktop-platform", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.package]

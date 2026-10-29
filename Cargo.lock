@@ -2920,11 +2920,10 @@ dependencies = [
  "dom_query",
  "fastnbt",
  "flate2",
- "gdk",
- "gtk",
  "libc",
  "pcl-auth",
  "pcl-core",
+ "pcl-desktop-platform",
  "pcl-install",
  "pcl-network",
  "png 0.17.16",
@@ -2939,8 +2938,26 @@ dependencies = [
  "tauri-plugin-dialog",
  "tokio",
  "toml 0.8.2",
- "webkit2gtk",
  "zip",
+]
+
+[[package]]
+name = "pcl-desktop-platform"
+version = "0.1.0"
+dependencies = [
+ "gdk",
+ "gtk",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tokio",
+ "webkit2gtk",
+ "webview2-com",
+ "windows",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 //! Optional native discovery plugin. The launcher command owns admission and
-//! live user preferences; this provider owns GTK reading and link recognition.
+//! live user preferences; this provider owns resource link recognition.
 pub(crate) mod service;
 use crate::{plugin_host::Registration, product_plugins::contracts::clipboard::*};
 use std::sync::Arc;
@@ -8,7 +8,7 @@ struct Clipboard;
 impl ClipboardDiscovery for Clipboard {
     fn request(
         &self,
-        window: &gtk::Window,
+        window: &tauri::WebviewWindow,
         enabled: Box<dyn Fn() -> bool>,
         complete: Box<dyn FnOnce(ClipboardOutcome)>,
     ) -> Result<(), String> {

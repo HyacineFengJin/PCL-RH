@@ -1,5 +1,5 @@
 //! Native account actions. Device-code assistance is authorized by the current
-//! challenge on GTK's thread, including automatic effect replays/cancellation.
+//! challenge on the desktop thread, including automatic effect replays/cancellation.
 use crate::{account_appearance::AccountAppearance, Shared};
 use serde::Serialize;
 use std::sync::{atomic::Ordering, Arc};
@@ -23,12 +23,6 @@ pub struct DeviceAssist {
     pub copied: bool,
     pub opened: bool,
 }
-fn copy(code: &str) -> Result<(), String> {
-    let display = gdk::Display::default().ok_or("系统剪贴板不可用")?;
-    let clipboard = gtk::Clipboard::default(&display).ok_or("系统剪贴板不可用")?;
-    clipboard.set_text(code);
-    Ok(())
-}
 #[tauri::command]
 pub async fn auth_device_assist(
     code: String,
@@ -37,6 +31,7 @@ pub async fn auth_device_assist(
 ) -> Result<DeviceAssist, String> {
     let shared = state.inner().clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();
+    let copy_window = window.clone();
     window
         .run_on_main_thread(move || {
             let result = (|| {
@@ -47,7 +42,9 @@ pub async fn auth_device_assist(
                     return Ok(DeviceAssist::default());
                 };
                 // Copy first. Failure does not prevent opening the fixed login page.
-                let copied = copy(&challenge.user_code).is_ok();
+                let copied =
+                    pcl_desktop_platform::clipboard::write_text(&copy_window, &challenge.user_code)
+                        .is_ok();
                 let opened = crate::open_official("https://www.microsoft.com/link").is_ok();
                 Ok(DeviceAssist {
                     attempted: true,
@@ -70,6 +67,7 @@ pub async fn auth_copy_code(
 ) -> Result<(), String> {
     let shared = state.inner().clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();
+    let copy_window = window.clone();
     window
         .run_on_main_thread(move || {
             let result = (|| {
@@ -84,7 +82,7 @@ pub async fn auth_copy_code(
                 {
                     return Err("设备代码已更新或登录已结束".into());
                 }
-                copy(&code)
+                pcl_desktop_platform::clipboard::write_text(&copy_window, &code)
             })();
             let _ = sender.send(result);
         })

@@ -22,11 +22,11 @@
   "inputs": [
     {
       "path": "Cargo.lock",
-      "sha256": "09cd2012bf8d320334ad95819bc5e805e7c5f4d1ae2206ea34924f0a6c6f8dad"
+      "sha256": "4a319f20cb31ad55deba372d3c41a9900e337c8bb4e2f8de690f21413688984d"
     },
     {
       "path": "Cargo.toml",
-      "sha256": "d65f83ddf8b24b3641302972cb144124161d8b000d80852f4fe5b8ffb562e49e"
+      "sha256": "49a23942eef87b34544aa9c96210ad76338d5e02af4a73714f276ecf1699f5cc"
     },
     {
       "path": "apps/desktop/package-lock.json",
@@ -38,7 +38,7 @@
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.toml",
-      "sha256": "4dbf39a2b26a0cb815e1f5df7ea0a1aa7cac80e014c673563d0afe529914d14b"
+      "sha256": "01a4df264044569390e98d5e919c8b6296767e8b1471ad7acee92a1ae25f0c48"
     },
     {
       "path": "crates/auth/Cargo.toml",
@@ -51,6 +51,10 @@
     {
       "path": "crates/core/Cargo.toml",
       "sha256": "6901dd932b98f2455e7ce79724687c72dd6c258a364edc0d1908c98dede466cd"
+    },
+    {
+      "path": "crates/desktop-platform/Cargo.toml",
+      "sha256": "3391520d71316306fcd9b881c7c54c083396ba08beec2c25280bcc05a7945ef4"
     },
     {
       "path": "crates/install/Cargo.toml",
@@ -5527,6 +5531,7 @@
       "pcl-cli",
       "pcl-core",
       "pcl-desktop",
+      "pcl-desktop-platform",
       "pcl-install",
       "pcl-network"
     ],
@@ -8255,9 +8260,9 @@
         "scope": "normal",
         "workspace_dependency_edges": [
           {
-            "workspace": "pcl-desktop",
+            "workspace": "pcl-desktop-platform",
             "kind": "normal",
-            "target": null
+            "target": "cfg(target_os = \"linux\")"
           }
         ],
         "features": [],
@@ -8625,9 +8630,9 @@
         "scope": "normal",
         "workspace_dependency_edges": [
           {
-            "workspace": "pcl-desktop",
+            "workspace": "pcl-desktop-platform",
             "kind": "normal",
-            "target": null
+            "target": "cfg(target_os = \"linux\")"
           }
         ],
         "features": [
@@ -12067,6 +12072,11 @@
             "target": null
           },
           {
+            "workspace": "pcl-desktop-platform",
+            "kind": "normal",
+            "target": null
+          },
+          {
             "workspace": "pcl-install",
             "kind": "normal",
             "target": null
@@ -12226,6 +12236,11 @@
           },
           {
             "workspace": "pcl-desktop",
+            "kind": "normal",
+            "target": null
+          },
+          {
+            "workspace": "pcl-desktop-platform",
             "kind": "normal",
             "target": null
           },
@@ -12988,6 +13003,11 @@
             "workspace": "pcl-desktop",
             "kind": "normal",
             "target": null
+          },
+          {
+            "workspace": "pcl-desktop-platform",
+            "kind": "normal",
+            "target": null
           }
         ],
         "features": [
@@ -13688,6 +13708,11 @@
         "workspace_dependency_edges": [
           {
             "workspace": "pcl-desktop",
+            "kind": "normal",
+            "target": null
+          },
+          {
+            "workspace": "pcl-desktop-platform",
             "kind": "normal",
             "target": null
           },
@@ -14576,9 +14601,9 @@
         "scope": "normal",
         "workspace_dependency_edges": [
           {
-            "workspace": "pcl-desktop",
+            "workspace": "pcl-desktop-platform",
             "kind": "normal",
-            "target": null
+            "target": "cfg(target_os = \"linux\")"
           }
         ],
         "features": [
