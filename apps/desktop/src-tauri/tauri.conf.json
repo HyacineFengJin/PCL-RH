@@ -28,6 +28,6 @@
   },
   "bundle": {
     "active": false,
-    "icon": ["../../../assets/pcl-rh.png"]
+    "icon": ["../../../assets/pcl-rh.png", "../../../assets/pcl-rh.ico"]
   }
 }
