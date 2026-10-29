@@ -407,17 +407,17 @@ fn launch_plans_use_manual_java_and_keep_loader_major_and_token_contracts() {
     let newer = JavaSelection::Manual {
         path: java21.to_str().unwrap().into(),
     };
-    assert!(crate::build_launch_plan_with_java(
+    let mismatch = crate::build_launch_plan_with_java(
         &root,
         fixture.path(),
         "Fixture",
         "Player",
         4,
         &newer,
-        &[]
+        &[],
     )
-    .unwrap_err()
-    .contains("相同主版本"));
+    .unwrap_err();
+    assert!(mismatch.contains("相同主版本"), "{mismatch}");
     let identity = crate::OnlineIdentity {
         name: "Player".into(),
         uuid: "1234567890abcdef1234567890abcdef".into(),
