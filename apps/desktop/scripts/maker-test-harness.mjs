@@ -11,7 +11,8 @@ const source = fileURLToPath(new URL("../src/", import.meta.url));
 export function harness(name, props = {}, options = {}) {
   const modules = new Map(),
     hooks = [],
-    timers = new Map();
+    timers = new Map(),
+    listeners = new Map();
   let cursor = 0,
     dirty = false,
     pending = [],
@@ -83,6 +84,13 @@ export function harness(name, props = {}, options = {}) {
   };
   const browser = {
     innerWidth: 1440,
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
+    },
     setInterval(fn) {
       const id = {};
       timers.set(id, fn);
@@ -197,6 +205,12 @@ export function harness(name, props = {}, options = {}) {
       for (const fn of timers.values()) fn();
       await flush();
     },
+    async dispatch(type) {
+      for (const listener of [...(listeners.get(type) || [])]) listener();
+      await flush();
+    },
+    listenerCount: (type) => listeners.get(type)?.size || 0,
+    timerCount: () => timers.size,
     close() {
       closed = true;
       for (const hook of hooks) hook?.cleanup?.();

@@ -52,7 +52,7 @@ jobs:
           node apps/desktop/scripts/check-rh-code-dynamic-views.mjs
           node apps/desktop/scripts/check-product-plugins.mjs
           node apps/desktop/scripts/check-launcher-surfaces.mjs
-          node --test apps/desktop/scripts/plugin-consumers.test.mjs apps/desktop/scripts/product-runtime.test.mjs apps/desktop/scripts/instance-snapshots.test.mjs apps/desktop/scripts/instance-copy.test.mjs apps/desktop/scripts/backup-restore.test.mjs
+          node --test apps/desktop/scripts/plugin-consumers.test.mjs apps/desktop/scripts/product-runtime.test.mjs apps/desktop/scripts/instance-snapshots.test.mjs apps/desktop/scripts/instance-copy.test.mjs apps/desktop/scripts/backup-restore.test.mjs apps/desktop/scripts/clipboard-discovery.test.mjs
           node apps/desktop/scripts/check-rh-code-host.mjs
       - name: Type check and build the WebUI
         run: npm run build --prefix apps/desktop

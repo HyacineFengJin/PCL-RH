@@ -236,7 +236,8 @@ Rust 测试不能证明真实桌面选择器、网络授权页面或 Minecraft �
 | 媒体与主页 | `launcher_assets/`、`launcher_asset_commands.rs` | 只向渲染器开放已登记的媒体 ID；主页只读受限 JSON，远程地址检查与请求地址固定 |
 | 游戏日志 | `launcher_logs/`、`launcher_log_commands.rs` | 有界读取、脱敏导出、排除当前日志、清理和恢复记录所有权 |
 | 统计、诊断、应用入口 | `launcher_local/`、`launcher_runtime.rs` | 统计按实际事件递增；诊断使用固定事件类型；只移除拥有且未修改的入口 |
-| 公告与剪贴板 | `launcher_discovery/` | 固定项目发行来源；剪贴板读前和异步回调均检查开关、原生键盘焦点 |
+| 公告 | `plugins/home/` | 官方插件拥有固定项目发行来源、缓存和请求同步，`launcher_discovery/` 保留兼容检查入口 |
+| 剪贴板发现 | `plugins/clipboard/`、`launcher_discovery_commands.rs` | 提供者拥有 GTK 读取与链接识别；命令绑定开关修订及激活，读前和异步回调复核原生焦点；WebUI effect 位于 `src/plugins/discovery/` |
 | Minecraft 版本提醒 | `launcher_minecraft_updates/`、`launcher_minecraft_update_commands.rs`、`useLauncherMinecraftNotices.ts` | 官方版本身份与发布时间、独立已读记录、检查与确认的生命周期 |
 | 程序更新 | `launcher_updates/`、`launcher_update_commands.rs` | 官方发行资产验证、运行版本与磁盘版本分开、可恢复交换和回退 |
 

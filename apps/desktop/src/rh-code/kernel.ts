@@ -197,6 +197,10 @@ function validate(plugin: ProductPlugin) {
           !launcherSlots.includes(surface.slot),
       ) ||
       (m.launcherSurfaces.some(
+        (surface) => surface.slot === "launcher.discovery",
+      ) &&
+        !m.capabilities.includes("launcher.clipboard.discover")) ||
+      (m.launcherSurfaces.some(
         (surface) => surface.slot === "home.announcements",
       ) &&
         !m.capabilities.includes("launcher.announcements.read")) ||

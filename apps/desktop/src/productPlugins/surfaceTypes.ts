@@ -6,8 +6,10 @@ import type { LauncherPreferences } from "../launcherTypes";
 import type { InstanceSnapshotConnection } from "./instanceSnapshots";
 import type { BackupRestoreConnection } from "./backupRestore";
 import type { InstanceCopyConnection } from "./instanceCopy";
+import type { ClipboardDiscoveryConnection } from "./clipboardDiscovery";
 
 export const launcherSlots = [
+  "launcher.discovery",
   "home.announcements",
   "instance.overview.tools",
   "instance.overview.copy",
@@ -19,6 +21,14 @@ export type AnnouncementConnection = {
   openRelease(url: string): Promise<unknown>;
 };
 export type LauncherSurfaceHost = {
+  clipboard?: {
+    connection: ClipboardDiscoveryConnection;
+    available: boolean;
+    enabled: boolean;
+    context: string;
+    localization: LauncherPreferences["localization"];
+    notify(message: string): void;
+  };
   instanceCopy?: {
     connection: InstanceCopyConnection;
     suggestedName: string;

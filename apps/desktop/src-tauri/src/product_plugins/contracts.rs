@@ -3,6 +3,7 @@
 use crate::plugin_host::Contract;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin, sync::Arc};
+pub(crate) mod clipboard;
 pub(crate) mod copy;
 pub(crate) mod snapshots;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,5 +1,6 @@
 //! Bundled product plugins. This is the native entry table, matching the same
 //! IDs/catalog used by the existing orange Plugin manager and WebUI executor.
+pub(crate) mod clipboard;
 pub(crate) mod diagnostics;
 pub(crate) mod home;
 pub(crate) mod instances;
@@ -8,6 +9,15 @@ use crate::plugin_host::{Definition, Host, Scope};
 
 pub fn host() -> Host {
     let host = Host::new(vec![
+        Definition {
+            id: clipboard::ID,
+            scope: Scope::Launcher,
+            dependencies: vec![],
+            services: vec![
+                crate::product_plugins::contracts::clipboard::CLIPBOARD_DISCOVERY.declaration(),
+            ],
+            start: clipboard::start,
+        },
         Definition {
             id: snapshots::ID,
             scope: Scope::Launcher,

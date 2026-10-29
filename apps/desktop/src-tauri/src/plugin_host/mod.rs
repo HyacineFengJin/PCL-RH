@@ -183,6 +183,18 @@ pub struct ServiceCall<T: Send + Sync + 'static> {
     value: Arc<T>,
     _activation: Arc<Activation>,
 }
+impl<T: Send + Sync + 'static> ServiceCall<T> {
+    /// Privacy-sensitive reads can suppress a reply after this exact activation
+    /// retires. This does not revoke accepted filesystem work or transfer the
+    /// call to a replacement activation with the same plugin ID.
+    pub fn is_active(&self) -> bool {
+        self._activation
+            .accepting
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(false)
+    }
+}
 impl<T: Send + Sync + 'static> Deref for ServiceCall<T> {
     type Target = T;
     fn deref(&self) -> &T {

@@ -71,9 +71,12 @@ export function createLauncherSurfacePort() {
       });
     },
     effects(): LauncherEffect[] {
-      return current?.kernel.listLauncherSurfaces("home.announcements").length
-        ? ["announcements"]
-        : [];
+      const effects: LauncherEffect[] = [];
+      if (current?.kernel.listLauncherSurfaces("home.announcements").length)
+        effects.push("announcements");
+      if (current?.kernel.listLauncherSurfaces("launcher.discovery").length)
+        effects.push("clipboard_detection");
+      return effects;
     },
     reportFailure(record: RegisteredLauncherSurface, error: unknown) {
       const binding = current;

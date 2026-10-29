@@ -34,10 +34,19 @@ fn retirement_revokes_saved_handles_but_admitted_calls_complete() {
     host.configure(&[], true, false).unwrap();
     let old = host.service("one", NUMBER).unwrap();
     let admitted = old.begin().unwrap();
+    assert!(admitted.is_active());
     host.configure(&["one".into()], true, false).unwrap();
+    assert!(!admitted.is_active());
     assert!(old.begin().is_err());
     assert_eq!(*admitted, 42);
     host.configure(&[], true, false).unwrap();
+    assert!(!admitted.is_active());
+    assert!(host
+        .service("one", NUMBER)
+        .unwrap()
+        .begin()
+        .unwrap()
+        .is_active());
     assert!(old.begin().is_err());
     assert_eq!(*host.service("one", NUMBER).unwrap().begin().unwrap(), 42);
 }

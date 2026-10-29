@@ -24,6 +24,8 @@ await esbuild.build({
       `export { createBackupRestoreConnection } from ${JSON.stringify(path.join(source, "productPlugins/backupRestore.ts"))};`,
       `export { createInstanceCopyConnection } from ${JSON.stringify(path.join(source, "productPlugins/instanceCopy.ts"))};`,
       `export { default as copyEntry } from ${JSON.stringify(path.join(source, "rh-code/plugins/launcher.instances.copy.plugin.tsx"))};`,
+      `export { createClipboardDiscoveryConnection } from ${JSON.stringify(path.join(source, "productPlugins/clipboardDiscovery.ts"))};`,
+      `export { default as clipboardEntry } from ${JSON.stringify(path.join(source, "rh-code/plugins/launcher.discovery.clipboard.plugin.tsx"))};`,
     ].join("\n"),
     resolveDir: source,
     loader: "ts",
@@ -45,6 +47,8 @@ export const {
   createInstanceCopyConnection,
   createBackupRestoreConnection,
   copyEntry,
+  createClipboardDiscoveryConnection,
+  clipboardEntry,
 } = actual;
 export const manifest = (id = "feed", extra = {}) => ({
   id,

@@ -21,6 +21,10 @@ const statusNames: Record<PluginStatus["state"], [string, string]> = {
   stopped: ["已停止", "Stopped"],
 };
 const names: Record<string, [string, string]> = {
+  "launcher.discovery.clipboard": [
+    "剪贴板资源识别",
+    "Clipboard resource discovery",
+  ],
   "launcher.instances.copy": ["实例复制", "Instance copying"],
   "launcher.home.announcements": ["启动器公告", "Launcher announcements"],
   "launcher.diagnostics.analysis": ["启动失败分析", "Launch failure analysis"],

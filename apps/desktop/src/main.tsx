@@ -136,7 +136,7 @@ import type { ResourceBrowseRequest } from "./resourceBrowse";
 import { useLauncherLocal } from "./useLauncherLocal";
 import { useLauncherMinecraftNotices } from "./useLauncherMinecraftNotices";
 import { useLauncherUpdates } from "./useLauncherUpdates";
-import { useLauncherDiscovery } from "./useLauncherDiscovery";
+import { useClipboardDiscoveryHost } from "./productPlugins/clipboardDiscovery";
 import {
   useLauncherFavorites,
   LauncherFavoritesContext,
@@ -1495,12 +1495,10 @@ function App() {
     launcher,
     onNotify: notify,
   });
-  const launcherDiscovery = useLauncherDiscovery({
+  const clipboardSurfaceHost = useClipboardDiscoveryHost(launcherSurfaceHost, {
     api,
-    native,
-    enabled: native,
-    launcher,
-    onNotify: notify,
+    native: native && !tasks.closing && !!launcher.view.revision,
+    enabled: launcher.prefs.management.clipboard_resource_detection,
     contextKey: `${navigationKey}:${settingsPage}:${downloadPage}`,
     // Clipboard navigation must never replace an open confirmation or a newer
     // user navigation. Native GTK additionally verifies actual keyboard focus.
@@ -2885,6 +2883,11 @@ function App() {
                     onTaskStart={showInstanceTask}
                   />
                 </div>
+                <LauncherSurfaceSlot
+                  port={launcherSurfaces}
+                  slot="launcher.discovery"
+                  host={clipboardSurfaceHost}
+                />
                 <RHCodeHost
                   launcherSurfaces={launcherSurfaces}
                   onPluginConfiguration={setDisabledProductPlugins}
@@ -3289,7 +3292,6 @@ function App() {
                               ...launcherLocal.effects,
                               ...launcherUpdates.effects,
                               ...minecraftNotices.effects,
-                              ...launcherDiscovery.effects,
                               ...launcherSurfaceEffects,
                             ]}
                             onLauncherAction={(action) =>

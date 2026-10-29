@@ -1,6 +1,11 @@
 /** The shell supplies placement and a narrow service host. Components, request
  * state and failures belong to the registered activation, not to the shell. */
-import { Component, useSyncExternalStore, type ReactNode } from "react";
+import {
+  Component,
+  useMemo,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import type { LauncherEffect } from "../launcherTypes";
 import type { LauncherSurfacePort } from "./surfacePort";
 import type {
@@ -59,8 +64,6 @@ export function LauncherSurfaceSlot({
   );
 }
 
-const announcementEffects: readonly LauncherEffect[] = ["announcements"];
-const noEffects: readonly LauncherEffect[] = [];
 export function useLauncherSurfaceEffects(port: LauncherSurfacePort) {
   // A Code registry update does not need to rerender the entire launcher when
   // the set of supported launcher effects has not changed.
@@ -69,5 +72,8 @@ export function useLauncherSurfaceEffects(port: LauncherSurfacePort) {
     () => port.effects().join(","),
     () => "",
   );
-  return effects ? announcementEffects : noEffects;
+  return useMemo<readonly LauncherEffect[]>(
+    () => (effects ? (effects.split(",") as LauncherEffect[]) : []),
+    [effects],
+  );
 }

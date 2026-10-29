@@ -9,15 +9,26 @@
 | 插件 ID | 实际实现 | 原生接口 |
 | --- | --- | --- |
 | `launcher.home.announcements` | 首页公告组件、请求状态，以及原生读取、缓存与同步 | `launcher.announcements@1` |
+| `launcher.discovery.clipboard` | 焦点订阅、检测状态、GTK 读取与资源链接识别 | `launcher.clipboard-discovery@1` |
 | `launcher.diagnostics.analysis` | 启动失败的规则匹配与线索生成 | `launcher.failure-analysis@1` |
+| `launcher.instances.copy` | 实例复制组件与内容选择策略 | `launcher.instance-copy@1` |
+| `launcher.instances.snapshots` | 备份、分享与恢复组件及格式策略 | `launcher.instance-snapshots@1` |
 
 在同一个 Plugin 管理页可停用、重新启用它们。停用公告插件后撤回公告及旧操作回调；停用分析插件后不接受新的预分析，原有日志报告、导出与 AI 分析入口仍可使用。游戏进程与已有日志不会被删除或停止。已接纳的调用可完成，服务资源在最后一个调用结束后释放。
 
 共用产品运行时与服务契约位于 `apps/desktop/src-tauri/src/product_plugins/`，原生宿主位于 `plugin_host/`，实际实现位于相邻的 `plugins/`。服务按接口名称、版本与 Rust 类型登记；初始化失败不会发布部分服务。依赖先于消费者启动，停用时先撤销消费者的新调用。消费者按契约查找实现，不写死内置提供者 ID，同时保留原有页面与命令协议。当前要求同一契约只有一个活跃提供者；多个提供者同时活跃会明确报错，不按加载顺序选择。日志捕获、脱敏、导出与 AI 准入仍经过原有事务校验，不由诊断规则直接访问文件。
 
-这两个插件是随应用编译的可信 Rust 实现。社区 JSON 导入不能加载 Rust 动态库或任意脚本；当前也未提供第三方原生二进制插件安装接口。首页其他行为与其他启动器服务仍沿用现有实现。
+这些插件是随应用编译的可信实现。社区 JSON 导入不能加载 Rust 动态库或任意脚本；当前也未提供第三方原生二进制插件安装接口。尚未拆分的首页行为与启动器服务仍沿用现有实现。
 
 `nativeServices` 声明原生接口及版本；`runtimeNeeds` 声明 `native` 或 `node` 运行时依赖。纯原生启动器插件不会阻止闲置的 RH Code 及 AI Node 宿主休眠。旧清单省略 `runtimeNeeds` 时保留原先的保守行为。
+
+### 剪贴板发现贡献
+
+`launcher.discovery` 是一次挂载的非可视槽位。官方剪贴板插件以 `launcher.clipboard.discover` 声明能力，`render` 返回 `null`，由其 effect 持有焦点订阅、5 秒检测与 URL 去重；宿主不再自己运行检测 hook。
+
+组件只取得 `host.clipboard` 的读取、焦点检查与资源导航端口。端口绑定当前 API、导航上下文、偏好和可用状态；异步结果与旧回调不能跨绑定使用。插件停用或 Code 休眠时分别遵守自身 launcher 生命周期，后者不会停止本体插件。原生提供者位于 `plugins/clipboard/`，只返回规范化 Modrinth 身份；GTK 读前和回调仍检查原生焦点、用户开关与精确激活状态。
+
+`ServiceCall::is_active()` 供这类读取在回复前检查原激活是否已退役。退役后重新启用同一 ID 不会让旧调用变为活跃；已有文件任务仍可按原租约收尾。剪贴板请求另绑定偏好修订，关闭后再打开开关也不能恢复先前的读取结果。
 
 ## 添加一个组件
 
