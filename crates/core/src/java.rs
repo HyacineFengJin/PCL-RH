@@ -14,7 +14,7 @@ use std::{
 type Result<T> = std::result::Result<T, String>;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const MAX_CANDIDATES: usize = 64;
 const MAX_DISCOVERY_PATHS: usize = 256;
@@ -89,7 +89,8 @@ fn canonical_executable(path: &Path) -> Result<PathBuf> {
 }
 
 /// Probe one canonical executable, with a two-second deadline and 64 KiB per
-/// output stream. The child is always waited for, including every failure path.
+/// output stream. Children belong to a private process group/job. Failures
+/// terminate that owned tree; Windows also bounds its cleanup wait separately.
 pub fn inspect(path: &Path) -> Result<JavaRuntime> {
     inspect_until(path, Instant::now() + PROBE_TIMEOUT)
 }
@@ -540,7 +541,13 @@ fn probe(path: &Path, deadline: Instant) -> Result<String> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "java/windows.rs"]
+mod windows;
+#[cfg(windows)]
+use windows::probe;
+
+#[cfg(not(any(unix, windows)))]
 fn probe(_path: &Path, _deadline: Instant) -> Result<String> {
     Err("当前平台不支持有时间限制的 Java 检测".into())
 }
