@@ -194,7 +194,9 @@ fn failed_connection_does_not_reveal_the_request_url() {
     drop(listener);
     let request = Client::builder()
         .no_proxy()
-        .timeout(Duration::from_secs(1))
+        // Windows may report a refused local connection after its first TCP
+        // retry. A one-second fixture deadline tests a timeout instead.
+        .timeout(Duration::from_secs(5))
         .build()
         .unwrap()
         .get(url)
