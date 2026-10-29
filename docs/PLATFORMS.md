@@ -55,7 +55,11 @@ GitHub 的 **Native UI ports** 工作流在四个原生 runner 上独立执行�
 
 接口测试不访问真实剪贴板、打开浏览器或创建桌面窗口。它们检查文本边界、超时后的单次交付、权限与焦点退役以及迟到回调的归属；编译通过不表示原生交互已经过实机验证。
 
-`pcl-core::file_ops::rename_noreplace` 为安装发布提供三个系统对应的不覆盖重命名原语。它不替代父目录绑定、身份核验、事务日志或中断恢复，不能据此认为整个安装器已经跨平台。
+`pcl-core::file_ops` 提供路径型 `rename_noreplace` 和相对于已持有父目录句柄的 `rename_noreplace_at`。后者只接受单个文件名，不重新解析父目录的可变路径，已接入现有私有安装发布与损坏修复的文件移动。Linux 使用 `renameat2`，macOS 使用 `renameatx_np`，Windows 使用相对目录句柄的原生文件操作；均不通过覆盖、复制再删除或改变工作目录来降级实现。
+
+Windows/macOS 会额外拒绝同一文件的别名改名；如果发布后源名字被其他操作重新创建，也会报冲突，此时文件可能已经发布，调用方须核对事务状态。这个原语不替代父目录准入、源文件身份核验、持久化刷新、事务日志或中断恢复，不能据此认为整个安装器已经跨平台。
+
+**Installer transactions (Linux)** 工作流独立运行安装器测试，包含发布、取消、损坏修复和中断恢复，以及合成 Java 处理器；不访问真实游戏目录。目前[103 项事务测试通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40892590326)。Windows/macOS 的共享文件原语由 **Portable core** 检查，完整安装流程仍待移植。
 
 ## 桌面构建检查
 
@@ -65,7 +69,7 @@ GitHub 的 **Native UI ports** 工作流在四个原生 runner 上独立执行�
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40884909298)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40892590247)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 
@@ -75,7 +79,7 @@ The portable-core workflow tests the core, network and authentication crates on 
 
 The manual **Desktop platform builds** workflow separately builds the WebUI and compiles/links the complete desktop application on Linux x64, Windows x64, macOS arm64 and macOS x64. Unsupported native ports fail visibly. Toolchain details and compiler logs are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
 
-The desktop-platform crate isolates native clipboard, edit-command and default-app operations, with GTK dependencies restricted to Linux. Its isolated tests compile/pass on Linux x64, Windows x64 and both macOS architectures without accessing the real clipboard or opening applications. The core also supplies a native no-replace rename primitive; this is not a replacement for directory capabilities or transaction recovery. Full desktop compilation/linking passes on Linux x64; file transactions, installation and process integration still need native ports before Windows/macOS can be distributed.
+The desktop-platform crate isolates native clipboard, edit-command and default-app operations, with GTK dependencies restricted to Linux. Its isolated tests compile/pass on Linux x64, Windows x64 and both macOS architectures without accessing the real clipboard or opening applications. The core also supplies path-based and retained-parent no-replace rename primitives, with the latter used by private installation publication and damage repair. Windows and Darwin alias/no-op conflicts require transaction reconciliation, including possible post-publication conflicts. These primitives do not replace directory admission, source identity checks, durable journals or recovery. A separate Linux installer workflow exercises the current transactions with synthetic files and Java processors. Full desktop compilation/linking passes on Linux x64; file transactions, installation and process integration still need native ports before Windows/macOS can be distributed.
 
 ## 插件模块
 
