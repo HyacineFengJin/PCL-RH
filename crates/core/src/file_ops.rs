@@ -1,6 +1,7 @@
 //! Atomic namespace operations, not a directory-authority or transaction layer.
-//! Callers still own/bind both parents and verify source identities. These path
-//! adapters cannot replace retained handles, journals or conflict receipts.
+//! The retained-parent variant avoids resolving mutable parent paths. Callers
+//! still bind/authorize parents, verify source identities and own durability,
+//! journals and conflict receipts.
 use std::{ffi::OsStr, fs::File, io, path::Path};
 
 #[path = "file_ops/relative.rs"]
@@ -18,6 +19,9 @@ mod relative;
 /// been moved outside the caller's intended tree; revalidate its graph before
 /// publication. Windows also rejects ambiguous DOS leaf syntax and case-only
 /// renames within one directory.
+/// macOS additionally checks for its native same-file no-op exception. If a
+/// source is concurrently recreated, it reports a conflict after publication;
+/// an error must therefore be reconciled using the caller's transaction state.
 pub fn rename_noreplace_at(
     source_parent: &File,
     source: &OsStr,

@@ -292,7 +292,7 @@ fn existing_link_destinations_are_preserved_and_source_links_move_without_follow
     assert_eq!(fs::read(root.path().join("source")).unwrap(), b"original");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn unix_non_utf8_leaf_is_not_lossily_converted() {
     use std::os::unix::ffi::OsStrExt;
@@ -304,6 +304,122 @@ fn unix_non_utf8_leaf_is_not_lossily_converted() {
     rename_noreplace_at(&parent, from, &parent, to).unwrap();
     assert!(!root.path().join(from).exists());
     assert_eq!(fs::read(root.path().join(to)).unwrap(), b"owned bytes");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_invalid_utf8_is_rejected_without_publishing_or_converting_the_name() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = fixture();
+    let parent = directory(root.path());
+    fs::write(root.path().join("source"), b"owned bytes").unwrap();
+    let invalid = OsStr::from_bytes(b"invalid-\xff");
+    assert!(rename_noreplace_at(&parent, OsStr::new("source"), &parent, invalid).is_err());
+    assert!(rename_noreplace_at(&parent, invalid, &parent, OsStr::new("target")).is_err());
+    assert_eq!(
+        fs::read(root.path().join("source")).unwrap(),
+        b"owned bytes"
+    );
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn existing_hardlink_alias_is_never_a_successful_publication() {
+    let root = fixture();
+    let parent = directory(root.path());
+    fs::write(root.path().join("source"), b"owned bytes").unwrap();
+    fs::hard_link(root.path().join("source"), root.path().join("target")).unwrap();
+    assert!(move_entry(&parent, "source", &parent, "target").is_err());
+    assert_eq!(
+        fs::read(root.path().join("source")).unwrap(),
+        b"owned bytes"
+    );
+    assert_eq!(
+        fs::read(root.path().join("target")).unwrap(),
+        b"owned bytes"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_case_and_unicode_normalization_aliases_do_not_rename_the_source() {
+    let root = fixture();
+    let parent = directory(root.path());
+    for (from, to) in [("SOURCE", "source"), ("Café", "Cafe\u{301}")] {
+        fs::write(root.path().join(from), b"owned bytes").unwrap();
+        // The native fixture is on the runner's standard case-insensitive
+        // filesystem; both spellings must actually refer to the same entry.
+        assert!(root.path().join(to).exists());
+        let before: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(move_entry(&parent, from, &parent, to).is_err());
+        let after: Vec<_> = fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
+        assert_eq!(fs::read(root.path().join(from)).unwrap(), b"owned bytes");
+        fs::remove_file(root.path().join(from)).unwrap();
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_late_alias_or_recreated_source_requires_reconciliation() {
+    use std::{ffi::CString, os::fd::AsRawFd};
+    let root = fixture();
+    let parent = directory(root.path());
+    let from = CString::new("source").unwrap();
+    let to = CString::new("target").unwrap();
+    fs::write(root.path().join("source"), b"owned bytes").unwrap();
+    super::macos::absent(&parent, &to).unwrap();
+    fs::hard_link(root.path().join("source"), root.path().join("target")).unwrap();
+    let status = unsafe {
+        libc::renameatx_np(
+            parent.as_raw_fd(),
+            from.as_ptr(),
+            parent.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if status == 0 {
+        assert!(super::macos::published(&parent, &from).is_err());
+    }
+    assert_eq!(
+        fs::read(root.path().join("source")).unwrap(),
+        b"owned bytes"
+    );
+    assert_eq!(
+        fs::read(root.path().join("target")).unwrap(),
+        b"owned bytes"
+    );
+    fs::remove_file(root.path().join("target")).unwrap();
+    super::macos::absent(&parent, &to).unwrap();
+    assert_eq!(
+        unsafe {
+            libc::renameatx_np(
+                parent.as_raw_fd(),
+                from.as_ptr(),
+                parent.as_raw_fd(),
+                to.as_ptr(),
+                libc::RENAME_EXCL,
+            )
+        },
+        0
+    );
+    fs::write(root.path().join("source"), b"concurrent new file").unwrap();
+    assert!(super::macos::published(&parent, &from).is_err());
+    assert_eq!(
+        fs::read(root.path().join("target")).unwrap(),
+        b"owned bytes"
+    );
+    assert_eq!(
+        fs::read(root.path().join("source")).unwrap(),
+        b"concurrent new file"
+    );
 }
 
 #[cfg(windows)]

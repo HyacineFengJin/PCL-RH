@@ -44,6 +44,8 @@ pub(super) fn rename(
     let target = leaf(target)?;
     directory(source_parent)?;
     directory(target_parent)?;
+    #[cfg(target_os = "macos")]
+    macos::absent(target_parent, &target)?;
     #[cfg(target_os = "linux")]
     let status = unsafe {
         libc::renameat2(
@@ -65,9 +67,68 @@ pub(super) fn rename(
         )
     };
     if status == 0 {
+        #[cfg(target_os = "macos")]
+        macos::published(source_parent, &source)?;
         Ok(())
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use std::{ffi::CStr, fs::File, io, mem::MaybeUninit, os::fd::AsRawFd};
+
+    fn exists(parent: &File, name: &CStr) -> io::Result<bool> {
+        let mut metadata = MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                metadata.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } == 0
+        {
+            Ok(true)
+        } else {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::NotFound {
+                Ok(false)
+            } else {
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) fn absent(parent: &File, name: &CStr) -> io::Result<()> {
+        // Darwin explicitly permits same-vnode/case-only no-ops even with
+        // RENAME_EXCL on case-insensitive filesystems. Reject known aliases
+        // before the syscall. EXCL still protects against a racing publisher:
+        // this check is never a substitute for the kernel's no-replace flag.
+        if exists(parent, name)? {
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Rename destination already exists",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn published(parent: &File, name: &CStr) -> io::Result<()> {
+        // A target hard-link alias inserted after the precheck can make EXCL
+        // report success without moving the source. Do not bless that no-op.
+        // A concurrently recreated source also fails closed. The rename may
+        // already have committed in that case; the caller must reconcile its
+        // journal, just as after a failed post-publication directory sync.
+        if exists(parent, name)? {
+            Err(io::Error::other(
+                "Rename needs reconciliation: source entry remains",
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
