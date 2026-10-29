@@ -8,8 +8,11 @@ PCL RH 的完整桌面应用目前只提供 Linux 实现。Windows、macOS 的�
 | Java 路径与官方运行时目录名 | 已实现 | 已实现 `.exe` 路径 | 已实现 JDK / `.bundle` 路径 |
 | 有限时 Java 探测 | 已实现 | 尚未实现，返回明确错误 | 已实现 Unix 探测 |
 | 账号密钥存储后端 | Secret Service | Windows Credential Store | macOS Keychain |
-| 声明型插件的清单、授权与持久状态（独立 Node 模块） | 已实现 | 数据层可运行 | 使用相同 Node 接口，待验证 |
-| 桌面宿主、安装与恢复事务、进程监控、发行包 | Linux 实现 | 尚未适配完成 | 尚未适配完成 |
+| 核心、网络与认证模块的原生 CI 测试 | 通过，x64 | 通过，x64 | 通过，Apple Silicon |
+| 声明型插件的清单、授权与持久状态（独立 Node 模块） | 原生 runner 测试通过 | 原生 runner 测试通过 | 原生 runner 测试通过 |
+| WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
+| 完整桌面编译与链接 | 通过，x64 | 未通过，仍依赖 Linux GUI 库 | 未通过，仍依赖 Linux GUI 库 |
+| 安装与恢复事务、进程监控、发行包 | Linux 实现 | 尚未适配完成 | 尚未适配完成 |
 
 架构判断不会把 `x86` 当成 `x86_64`，也不会把 ARM 当成 x64。原生库提取使用平台对应的 `.so`、`.dll`、`.dylib` / `.jnilib`；旧元数据中的 `${arch}` 按目标位数展开。Mojang 没有提供的 Java 平台会报告不可用，不会自动下载其他架构的运行时。仅有分类支持不表示所有 Minecraft 版本都有对应架构的原生库。
 
@@ -35,6 +38,8 @@ cargo test --locked -p pcl-core -p pcl-network -p pcl-auth
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40852740256)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40852367690)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+
 ## English
 
 The complete PCL RH desktop application currently targets Linux. Cross-platform work has started in the portable core: Minecraft OS/architecture rules, native library classifiers and formats, Java layouts, runtime index keys, and platform-specific credential backends cover Windows and macOS as well.
@@ -42,6 +47,8 @@ The complete PCL RH desktop application currently targets Linux. Cross-platform 
 The portable-core workflow tests the core, network and authentication crates on native Linux, Windows and macOS runners. These checks do **not** build the desktop application. Bounded Java probing is still unavailable on Windows; desktop integration, file transactions, process monitoring and distribution packages are not yet adapted for Windows or macOS. Architecture-specific Minecraft natives must also exist for the selected game version. The current build and desktop installation scripts remain Linux-specific.
 
 The manual **Desktop platform builds** workflow separately builds the WebUI and compiles/links the complete desktop application on Linux x64, Windows x64, macOS arm64 and macOS x64. Unsupported native ports fail visibly. Toolchain details and compiler logs are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
+
+The linked baseline passes portable-core tests on Linux x64, Windows x64 and macOS arm64, and builds the WebUI on all four desktop runners. Full desktop compilation/linking passes on Linux x64; Windows and both macOS hosts still fail on unconditional Linux GUI dependencies. File transactions and process integration also need native ports before those platforms can be distributed.
 
 ## 插件模块
 
