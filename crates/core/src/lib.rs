@@ -1,6 +1,7 @@
 //! Native launch planning for installed Mojang-format instances.
 pub mod content_scope;
 mod dependencies;
+pub mod file_ops;
 pub mod game_title;
 pub mod inspection;
 pub mod java;

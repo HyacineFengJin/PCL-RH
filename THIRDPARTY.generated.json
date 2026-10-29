@@ -22,7 +22,7 @@
   "inputs": [
     {
       "path": "Cargo.lock",
-      "sha256": "4a319f20cb31ad55deba372d3c41a9900e337c8bb4e2f8de690f21413688984d"
+      "sha256": "4733cd8320fcec65da2a004fab2d43b624c7e860f4a18e5d47c7c91051d668b6"
     },
     {
       "path": "Cargo.toml",
@@ -50,7 +50,7 @@
     },
     {
       "path": "crates/core/Cargo.toml",
-      "sha256": "6901dd932b98f2455e7ce79724687c72dd6c258a364edc0d1908c98dede466cd"
+      "sha256": "9668b6b50df930782ac9c2635940ac9d0aee5219ad353adacd3bb2ffe1a968e1"
     },
     {
       "path": "crates/desktop-platform/Cargo.toml",

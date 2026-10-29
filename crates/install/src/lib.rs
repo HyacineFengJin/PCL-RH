@@ -912,31 +912,9 @@ fn persist_download(file: tempfile::NamedTempFile, path: &Path) -> Result<()> {
         }
     }
 }
-#[cfg(target_os = "linux")]
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let source = std::ffi::CString::new(source.as_os_str().as_bytes()).map_err(error)?;
-    let target = std::ffi::CString::new(target.as_os_str().as_bytes()).map_err(error)?;
-    let status = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            libc::AT_FDCWD,
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    };
-    if status != 0 {
-        return Err(format!(
-            "无法完成版本安装（目标可能已存在）：{}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-#[cfg(not(target_os = "linux"))]
-fn publish_directory(_source: &Path, _target: &Path) -> Result<()> {
-    Err("当前平台不支持不覆盖现有实例的原子安装".into())
+    pcl_core::file_ops::rename_noreplace(source, target)
+        .map_err(|e| format!("无法完成版本安装（目标可能已存在）：{e}"))
 }
 fn download_message(relative: &str) -> &'static str {
     if relative.starts_with("libraries/") {
