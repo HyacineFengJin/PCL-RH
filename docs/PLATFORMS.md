@@ -27,11 +27,21 @@ cargo test --locked -p pcl-core -p pcl-network -p pcl-auth
 
 完整桌面构建目前仍需要 Linux 的 GTK / WebKitGTK 和文件事务接口。其他平台尚无可供日常使用的安装包；当前 `build-native.sh`、`start-native.sh` 与 `install-desktop.sh` 是 Linux 脚本。
 
+## 桌面构建检查
+
+在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先构建 WebUI，再构建启用 `custom-protocol` 的桌面程序；不使用服务密钥、不发布 Release，也不生成供用户安装的发行包。
+
+各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。若依赖安装或 WebUI 阶段先失败，应先检查对应步骤日志。当前 Windows/macOS 的桌面依赖和文件事务尚未移植，预计会暴露这些阻塞；不要通过安装 GTK 或跳过桌面模块来把结果改成成功。
+
+三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
+
 ## English
 
 The complete PCL RH desktop application currently targets Linux. Cross-platform work has started in the portable core: Minecraft OS/architecture rules, native library classifiers and formats, Java layouts, runtime index keys, and platform-specific credential backends cover Windows and macOS as well.
 
 The portable-core workflow tests the core, network and authentication crates on native Linux, Windows and macOS runners. These checks do **not** build the desktop application. Bounded Java probing is still unavailable on Windows; desktop integration, file transactions, process monitoring and distribution packages are not yet adapted for Windows or macOS. Architecture-specific Minecraft natives must also exist for the selected game version. The current build and desktop installation scripts remain Linux-specific.
+
+The manual **Desktop platform builds** workflow separately builds the WebUI and compiles/links the complete desktop application on Linux x64, Windows x64, macOS arm64 and macOS x64. Unsupported native ports fail visibly. Toolchain details and compiler logs are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
 
 ## 插件模块
 
