@@ -11,7 +11,10 @@ use std::{
     path::Path,
     process::ExitStatus,
     ptr,
-    sync::mpsc::{self, SyncSender},
+    sync::{
+        mpsc::{self, SyncSender},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -125,7 +128,7 @@ fn pipe_named(name: &[u16], retire: Retire) -> Result<Pipe> {
     // Connection owns the same stable OVERLAPPED as later reads. A local writer
     // is connected and its PID checked before a child can inherit any handle.
     state.pending = true;
-    if unsafe { ConnectNamedPipe(state.handle.0, state.overlapped.get()) } != 0 {
+    if unsafe { ConnectNamedPipe(state.handle.0, state.overlapped()) } != 0 {
         state.pending = false;
         return Err("游戏输出管道在建立前已连接".into());
     }
@@ -350,38 +353,52 @@ pub(super) fn terminate(expected: &Identity) -> Result<()> {
     Ok(())
 }
 
-// The kernel can write these two allocations after ReadFile returns. UnsafeCell
-// explicitly permits that asynchronous mutation; buffer bytes are only borrowed
-// after GetOverlappedResult reports completion. A Box keeps both addresses fixed
-// when Output moves to a reader thread or to the cancellation retire worker.
+// Native I/O lives in an independent shared allocation. UnsafeCell permits
+// the kernel to mutate it after a call returns; Arc avoids unique-owner retags
+// of that allocation when the mutable IoState control object moves/is borrowed.
+// Pending operations use only raw field pointers, never &mut IoMemory/fields.
+struct IoMemory {
+    overlapped: OVERLAPPED,
+    buffer: [u8; OUTPUT_BLOCK],
+}
 struct IoState {
     handle: Handle,
     event: Handle,
-    overlapped: UnsafeCell<OVERLAPPED>,
-    buffer: UnsafeCell<[u8; OUTPUT_BLOCK]>,
+    native: Arc<UnsafeCell<IoMemory>>,
     pending: bool,
     start: usize,
     end: usize,
     eof: bool,
 }
-// The raw fields name private kernel handles and allocations owned by the Box.
-// Moving the Box between threads leaves every native I/O address unchanged.
+// One Rust owner controls the operation; the shared native allocation is never
+// cloned or mutated through Arc::get_mut/make_mut. Moving control between reader
+// and retirement threads preserves its native pointers. Kernel writes remain
+// within UnsafeCell, and buffer bytes are borrowed only after completion.
 unsafe impl Send for IoState {}
 impl IoState {
+    fn overlapped(&self) -> *mut OVERLAPPED {
+        unsafe { ptr::addr_of_mut!((*self.native.get()).overlapped) }
+    }
+    fn buffer(&self) -> *mut u8 {
+        unsafe { ptr::addr_of_mut!((*self.native.get()).buffer).cast() }
+    }
     fn reset(&mut self) -> io::Result<()> {
         debug_assert!(!self.pending);
         if unsafe { ResetEvent(self.event.0) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        *self.overlapped.get_mut() = OVERLAPPED::default();
-        self.overlapped.get_mut().hEvent = self.event.0;
+        // Only terminal operations can reset/reuse these bytes. Even here use
+        // raw writes, so no unique native reference can outlive submission.
+        unsafe {
+            self.overlapped().write(OVERLAPPED::default());
+            ptr::addr_of_mut!((*self.overlapped()).hEvent).write(self.event.0);
+        }
         Ok(())
     }
     fn complete(&mut self) -> io::Result<Option<usize>> {
         debug_assert!(self.pending);
         let mut count = 0;
-        if unsafe { GetOverlappedResult(self.handle.0, self.overlapped.get(), &mut count, 0) } != 0
-        {
+        if unsafe { GetOverlappedResult(self.handle.0, self.overlapped(), &mut count, 0) } != 0 {
             self.pending = false;
             return Ok(Some(count as usize));
         }
@@ -436,8 +453,10 @@ impl Output {
             state: Some(Box::new(IoState {
                 handle,
                 event,
-                overlapped: UnsafeCell::new(OVERLAPPED::default()),
-                buffer: UnsafeCell::new([0; OUTPUT_BLOCK]),
+                native: Arc::new(UnsafeCell::new(IoMemory {
+                    overlapped: OVERLAPPED::default(),
+                    buffer: [0; OUTPUT_BLOCK],
+                })),
                 pending: false,
                 start: 0,
                 end: 0,
@@ -455,8 +474,10 @@ impl Read for Output {
         let state = self.state.as_mut().unwrap();
         if state.start != state.end {
             let size = buffer.len().min(state.end - state.start);
-            buffer[..size]
-                .copy_from_slice(&unsafe { &*state.buffer.get() }[state.start..state.start + size]);
+            buffer[..size].copy_from_slice(
+                &unsafe { std::slice::from_raw_parts(state.buffer(), OUTPUT_BLOCK) }
+                    [state.start..state.start + size],
+            );
             state.start += size;
             return Ok(size);
         }
@@ -469,10 +490,10 @@ impl Read for Output {
             if unsafe {
                 ReadFile(
                     state.handle.0,
-                    state.buffer.get().cast(),
+                    state.buffer(),
                     OUTPUT_BLOCK as u32,
                     ptr::null_mut(),
-                    state.overlapped.get(),
+                    state.overlapped(),
                 )
             } == 0
             {
@@ -501,7 +522,9 @@ impl Read for Output {
                     return Ok(0);
                 }
                 let size = buffer.len().min(count);
-                buffer[..size].copy_from_slice(&unsafe { &*state.buffer.get() }[..size]);
+                buffer[..size].copy_from_slice(
+                    &unsafe { std::slice::from_raw_parts(state.buffer(), OUTPUT_BLOCK) }[..size],
+                );
                 state.start = size;
                 Ok(size)
             }
@@ -523,7 +546,7 @@ impl Drop for Output {
             return;
         }
         unsafe {
-            CancelIoEx(state.handle.0, state.overlapped.get());
+            CancelIoEx(state.handle.0, state.overlapped());
         }
         if !matches!(state.complete(), Ok(None)) {
             return;
@@ -536,10 +559,6 @@ impl Drop for Output {
             // must never panic, terminate the host, or print launch details.
             let (mpsc::TrySendError::Full(state) | mpsc::TrySendError::Disconnected(state)) = error;
             std::mem::forget(state);
-            let _ = io::Write::write_all(
-                &mut io::stderr(),
-                b"PCL RH: game output cancellation owner unavailable; pending I/O retained\n",
-            );
         }
     }
 }
