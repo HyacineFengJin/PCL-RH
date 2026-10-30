@@ -3,25 +3,30 @@
 //! non-inherited Job and cleans only this game tree.
 use super::Identity;
 use std::{
+    cell::UnsafeCell,
     ffi::OsString,
-    fs::File,
     io::{self, Read},
     mem::size_of,
-    os::windows::{
-        ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle},
-        process::ExitStatusExt,
-    },
+    os::windows::{ffi::OsStrExt, process::ExitStatusExt},
     path::Path,
     process::ExitStatus,
     ptr,
+    sync::mpsc::{self, SyncSender},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Security::SECURITY_ATTRIBUTES,
+    Security::{
+        Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG},
+        SECURITY_ATTRIBUTES,
+    },
     Storage::FileSystem::*,
-    System::{JobObjects::*, Pipes::*, Threading::*},
+    System::{
+        JobObjects::*,
+        Pipes::*,
+        Threading::*,
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
+    },
 };
 type Result<T> = std::result::Result<T, String>;
 struct Handle(HANDLE);
@@ -51,23 +56,128 @@ fn inheritable() -> SECURITY_ATTRIBUTES {
         bInheritHandle: 1,
     }
 }
+const OUTPUT_BLOCK: usize = 8192;
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+type Retire = SyncSender<Box<IoState>>;
+
 struct Pipe {
-    read: Handle,
+    read: Output,
     write: Handle,
 }
-fn pipe() -> Result<Pipe> {
-    let (mut read, mut write) = (ptr::null_mut(), ptr::null_mut());
-    if unsafe { CreatePipe(&mut read, &mut write, &inheritable(), 0) } == 0 {
-        return Err(win_error("无法建立游戏监控输出管道"));
+fn pipe_name() -> Result<Vec<u16>> {
+    let mut random = [0u8; 16];
+    if unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            random.as_mut_ptr(),
+            random.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    } < 0
+    {
+        return Err("无法创建游戏输出管道身份".into());
     }
-    let pipe = Pipe {
-        read: Handle(read),
-        write: Handle(write),
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(
+        format!(r"\\.\pipe\pcl-rh-game-{}-{suffix}", std::process::id())
+            .encode_utf16()
+            .chain(Some(0))
+            .collect(),
+    )
+}
+fn pipe(retire: Retire) -> Result<Pipe> {
+    let name = pipe_name()?;
+    pipe_named(&name, retire)
+}
+fn pipe_named(name: &[u16], retire: Retire) -> Result<Pipe> {
+    let descriptor = crate::retained_fs::windows_security::private_descriptor(false)
+        .map_err(|_| "无法设置私有游戏输出管道权限")?;
+    let security = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.as_ptr().cast_mut().cast(),
+        bInheritHandle: 0,
     };
-    if unsafe { SetHandleInformation(pipe.read.0, HANDLE_FLAG_INHERIT, 0) } == 0 {
-        return Err(win_error("无法限制游戏监控句柄继承"));
+    let handle = Handle::take(
+        unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                0,
+                OUTPUT_BLOCK as u32,
+                0,
+                &security,
+            )
+        },
+        "无法建立私有游戏输出管道",
+    )?;
+    let event = Handle::take(
+        unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) },
+        "无法建立游戏输出完成事件",
+    )?;
+    let mut read = Output::new(handle, event, retire);
+    let state = read.state.as_mut().unwrap();
+    state.reset().map_err(|_| "无法准备游戏输出连接")?;
+    // Connection owns the same stable OVERLAPPED as later reads. A local writer
+    // is connected and its PID checked before a child can inherit any handle.
+    state.pending = true;
+    if unsafe { ConnectNamedPipe(state.handle.0, state.overlapped.get()) } != 0 {
+        state.pending = false;
+        return Err("游戏输出管道在建立前已连接".into());
     }
-    Ok(pipe)
+    if io::Error::last_os_error().raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+        state.pending = false;
+        return Err("无法开始私有游戏输出连接".into());
+    }
+    let writer = Handle::take(
+        unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                &inheritable(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        },
+        "无法连接私有游戏输出写端",
+    )?;
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match state.complete() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err("游戏输出连接确认超时".into());
+                }
+                if unsafe {
+                    WaitForSingleObject(state.event.0, remaining.as_millis().clamp(1, 10) as u32)
+                } == WAIT_FAILED
+                {
+                    return Err("无法确认私有游戏输出连接".into());
+                }
+            }
+            Err(_) => return Err("无法完成私有游戏输出连接".into()),
+        }
+    }
+    let mut client = 0;
+    if unsafe { GetNamedPipeClientProcessId(state.handle.0, &mut client) } == 0
+        || client != std::process::id()
+    {
+        return Err("游戏输出写端身份不匹配".into());
+    }
+    // No DisconnectNamedPipe or second Connect is exposed. The sole connected
+    // client is this writer; max-instances=1 rejects every subsequent opener.
+    Ok(Pipe {
+        read,
+        write: writer,
+    })
 }
 
 #[repr(C, align(16))]
@@ -240,43 +350,198 @@ pub(super) fn terminate(expected: &Identity) -> Result<()> {
     Ok(())
 }
 
-pub(super) struct Output(File);
+// The kernel can write these two allocations after ReadFile returns. UnsafeCell
+// explicitly permits that asynchronous mutation; buffer bytes are only borrowed
+// after GetOverlappedResult reports completion. A Box keeps both addresses fixed
+// when Output moves to a reader thread or to the cancellation retire worker.
+struct IoState {
+    handle: Handle,
+    event: Handle,
+    overlapped: UnsafeCell<OVERLAPPED>,
+    buffer: UnsafeCell<[u8; OUTPUT_BLOCK]>,
+    pending: bool,
+    start: usize,
+    end: usize,
+    eof: bool,
+}
+// The raw fields name private kernel handles and allocations owned by the Box.
+// Moving the Box between threads leaves every native I/O address unchanged.
+unsafe impl Send for IoState {}
+impl IoState {
+    fn reset(&mut self) -> io::Result<()> {
+        debug_assert!(!self.pending);
+        if unsafe { ResetEvent(self.event.0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        *self.overlapped.get_mut() = OVERLAPPED::default();
+        self.overlapped.get_mut().hEvent = self.event.0;
+        Ok(())
+    }
+    fn complete(&mut self) -> io::Result<Option<usize>> {
+        debug_assert!(self.pending);
+        let mut count = 0;
+        if unsafe { GetOverlappedResult(self.handle.0, self.overlapped.get(), &mut count, 0) } != 0
+        {
+            self.pending = false;
+            return Ok(Some(count as usize));
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32) {
+            return Ok(None);
+        }
+        // Every other operation result is terminal, including cancellation and
+        // a writer closing. CancelIoEx alone is never treated as completion.
+        self.pending = false;
+        Err(error)
+    }
+}
+// Started before any pipe operation. There are at most two senders/retirements
+// per spawn, and the worker runs until every sender is gone and every native
+// operation is terminal. Slow kernel cancellation therefore retains at most two
+// owned buffers/OVERLAPPEDs/handles here, without blocking the monitor or reader.
+fn retirement() -> Result<Retire> {
+    let (sender, receiver) = mpsc::sync_channel::<Box<IoState>>(2);
+    let mut pending = Vec::<Box<IoState>>::with_capacity(2);
+    std::thread::Builder::new()
+        .name("pcl-game-io-retire".into())
+        .spawn(move || {
+            let mut connected = true;
+            loop {
+                if connected {
+                    match receiver.recv_timeout(Duration::from_millis(10)) {
+                        Ok(state) => pending.push(state),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => connected = false,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                } else if !pending.is_empty() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                pending.retain_mut(|state| matches!(state.complete(), Ok(None)));
+                if !connected && pending.is_empty() {
+                    break;
+                }
+            }
+        })
+        .map_err(|_| "无法建立游戏输出清理所有者")?;
+    Ok(sender)
+}
+
+pub(super) struct Output {
+    state: Option<Box<IoState>>,
+    retire: Retire,
+}
+impl Output {
+    fn new(handle: Handle, event: Handle, retire: Retire) -> Self {
+        Self {
+            state: Some(Box::new(IoState {
+                handle,
+                event,
+                overlapped: UnsafeCell::new(OVERLAPPED::default()),
+                buffer: UnsafeCell::new([0; OUTPUT_BLOCK]),
+                pending: false,
+                start: 0,
+                end: 0,
+                eof: false,
+            })),
+            retire,
+        }
+    }
+}
 impl Read for Output {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if buffer.is_empty() {
             return Ok(0);
         }
-        let mut available = 0;
-        if unsafe {
-            PeekNamedPipe(
-                self.0.as_raw_handle(),
-                ptr::null_mut(),
-                0,
-                ptr::null_mut(),
-                &mut available,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            let error = io::Error::last_os_error();
-            return if matches!(error.raw_os_error(), Some(code) if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_PIPE_NOT_CONNECTED as i32)
+        let state = self.state.as_mut().unwrap();
+        if state.start != state.end {
+            let size = buffer.len().min(state.end - state.start);
+            buffer[..size]
+                .copy_from_slice(&unsafe { &*state.buffer.get() }[state.start..state.start + size]);
+            state.start += size;
+            return Ok(size);
+        }
+        if state.eof {
+            return Ok(0);
+        }
+        if !state.pending {
+            state.reset()?;
+            state.pending = true;
+            if unsafe {
+                ReadFile(
+                    state.handle.0,
+                    state.buffer.get().cast(),
+                    OUTPUT_BLOCK as u32,
+                    ptr::null_mut(),
+                    state.overlapped.get(),
+                )
+            } == 0
             {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                    state.pending = false;
+                    if matches!(error.raw_os_error(), Some(code) if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_PIPE_NOT_CONNECTED as i32)
+                    {
+                        state.eof = true;
+                        return Ok(0);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        match state.complete() {
+            Ok(None) => Err(io::ErrorKind::WouldBlock.into()),
+            Ok(Some(count)) => {
+                if count > OUTPUT_BLOCK {
+                    return Err(io::Error::other("Invalid game pipe read length"));
+                }
+                state.start = 0;
+                state.end = count;
+                if count == 0 {
+                    state.eof = true;
+                    return Ok(0);
+                }
+                let size = buffer.len().min(count);
+                buffer[..size].copy_from_slice(&unsafe { &*state.buffer.get() }[..size]);
+                state.start = size;
+                Ok(size)
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_BROKEN_PIPE as i32 || code == ERROR_PIPE_NOT_CONNECTED as i32) =>
+            {
+                state.eof = true;
                 Ok(0)
-            } else {
-                Err(error)
-            };
+            }
+            Err(error) => Err(error),
         }
-        if available == 0 {
-            return Err(io::ErrorKind::WouldBlock.into());
-        }
-        let size = buffer.len().min(available as usize);
-        self.0.read(&mut buffer[..size])
     }
 }
-fn output(handle: Handle) -> Output {
-    let raw = handle.0;
-    std::mem::forget(handle);
-    Output(unsafe { File::from_raw_handle(raw) })
+impl Drop for Output {
+    fn drop(&mut self) {
+        let Some(mut state) = self.state.take() else {
+            return;
+        };
+        if !state.pending {
+            return;
+        }
+        unsafe {
+            CancelIoEx(state.handle.0, state.overlapped.get());
+        }
+        if !matches!(state.complete(), Ok(None)) {
+            return;
+        }
+        if let Err(error) = self.retire.try_send(state) {
+            // No sender can retire twice, and the worker cannot exit while a
+            // sender exists. If that invariant ever fails, retain these owned
+            // allocations rather than freeing memory the kernel may still use.
+            // Each spawn can reach this safety fallback at most twice. Drop
+            // must never panic, terminate the host, or print launch details.
+            let (mpsc::TrySendError::Full(state) | mpsc::TrySendError::Disconnected(state)) = error;
+            std::mem::forget(state);
+            let _ = io::Write::write_all(
+                &mut io::stderr(),
+                b"PCL RH: game output cancellation owner unavailable; pending I/O retained\n",
+            );
+        }
+    }
 }
 pub(super) struct Owner {
     job: Handle,
@@ -445,14 +710,15 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Own
     {
         return Err(win_error("无法设置独立监控清理"));
     }
+    let retire = retirement()?;
     let Pipe {
         read: stdout,
         write: out_writer,
-    } = pipe()?;
+    } = pipe(retire.clone())?;
     let Pipe {
         read: stderr,
         write: err_writer,
-    } = pipe()?;
+    } = pipe(retire)?;
     let nul = [b'N' as u16, b'U' as u16, b'L' as u16, 0];
     let input = Handle::take(
         unsafe {
@@ -499,8 +765,8 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Own
         process: Handle(information.hProcess),
         thread: Handle(information.hThread),
         pid: information.dwProcessId,
-        stdout: Some(output(stdout)),
-        stderr: Some(output(stderr)),
+        stdout: Some(stdout),
+        stderr: Some(stderr),
         assigned: false,
         result: None,
     };
@@ -516,4 +782,56 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Own
         return Err(win_error("无法运行游戏启动映像"));
     }
     Ok(child)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_output_has_one_client_and_no_inherited_reader() {
+        let name = pipe_name().unwrap();
+        let pipe = pipe_named(&name, retirement().unwrap()).unwrap();
+        let state = pipe.read.state.as_ref().unwrap();
+        for handle in [state.handle.0, state.event.0] {
+            let mut flags = 0;
+            assert_ne!(unsafe { GetHandleInformation(handle, &mut flags) }, 0);
+            assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+        }
+        let mut flags = 0;
+        assert_ne!(unsafe { GetHandleInformation(pipe.write.0, &mut flags) }, 0);
+        assert_ne!(flags & HANDLE_FLAG_INHERIT, 0);
+
+        let unexpected = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        };
+        if unexpected != INVALID_HANDLE_VALUE && !unexpected.is_null() {
+            drop(Handle(unexpected));
+            panic!("private game output accepted a second client");
+        }
+        let unexpected = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                0,
+                OUTPUT_BLOCK as u32,
+                0,
+                ptr::null(),
+            )
+        };
+        if unexpected != INVALID_HANDLE_VALUE && !unexpected.is_null() {
+            drop(Handle(unexpected));
+            panic!("private game output name accepted a second server");
+        }
+    }
 }

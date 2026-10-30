@@ -123,6 +123,27 @@ fn fixture(mode: &str, folder: &Path, tail: &[OsString]) -> ! {
             mark(folder, "descendant.pid");
             hang();
         }
+        #[cfg(windows)]
+        "io-probe" => {
+            windows_output_probe(folder);
+            std::process::exit(0);
+        }
+        #[cfg(windows)]
+        "flood-output" => {
+            use std::io::Write;
+            let stdout = std::thread::spawn(|| {
+                std::io::stdout()
+                    .write_all(&vec![b'x'; 256 * 1024])
+                    .unwrap();
+                std::io::stdout().flush().unwrap();
+            });
+            std::io::stderr()
+                .write_all(&vec![b'y'; 256 * 1024])
+                .unwrap();
+            std::io::stderr().flush().unwrap();
+            stdout.join().unwrap();
+            std::process::exit(0);
+        }
         "exit-with-child" | "hang-with-child" => {
             let _child = Command::new(env::current_exe().unwrap())
                 .args(args("descendant", folder))
@@ -289,6 +310,152 @@ fn failure_keeps_launch_details_private() {
     assert!(!error.contains(secret));
     assert!(fs::read_dir(folder.path()).unwrap().next().is_none());
 }
+#[cfg(windows)]
+fn windows_output_probe(folder: &Path) {
+    let idle = folder.join("idle");
+    fs::create_dir(&idle).unwrap();
+    let mut child = spawn("hang-with-child", &idle);
+    wait_file(&idle, "root.pid");
+    let descendant = game_process::identity(wait_file(&idle, "descendant.pid"))
+        .unwrap()
+        .unwrap();
+    let mut stdout = child.take_stdout().unwrap();
+    let mut stderr = child.take_stderr().unwrap();
+    let start = Instant::now();
+    for stream in [&mut stdout, &mut stderr] {
+        assert_eq!(stream.read(&mut []).unwrap(), 0);
+        for _ in 0..128 {
+            assert_eq!(
+                stream.read(&mut [0; 1]).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+    }
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "idle output poll blocked"
+    );
+    // Pending reads were initiated on this thread. Drop on different threads
+    // exercises CancelIoEx rather than thread-local CancelIo; live descendants
+    // keep both writers open during cancellation.
+    let stdout = std::thread::spawn(move || {
+        let start = Instant::now();
+        drop(stdout);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    });
+    let stderr = std::thread::spawn(move || {
+        let start = Instant::now();
+        drop(stderr);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    });
+    stdout.join().unwrap();
+    stderr.join().unwrap();
+    assert!(game_process::alive(&descendant).unwrap());
+    child.terminate().unwrap();
+    wait_gone(&descendant);
+
+    let retained = folder.join("retained");
+    fs::create_dir(&retained).unwrap();
+    let mut child = spawn("exit-with-child", &retained);
+    let root = game_process::identity(wait_file(&retained, "root.pid"))
+        .unwrap()
+        .unwrap();
+    let descendant = game_process::identity(wait_file(&retained, "descendant.pid"))
+        .unwrap()
+        .unwrap();
+    let mut stdout = child.take_stdout().unwrap();
+    let mut stderr = child.take_stderr().unwrap();
+    assert_eq!(
+        stdout.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        stderr.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    fs::write(retained.join("exit-root"), b"").unwrap();
+    wait_gone(&root);
+    assert!(game_process::alive(&descendant).unwrap());
+    assert_eq!(
+        stdout.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    assert!(child.wait().unwrap().success());
+    wait_gone(&descendant);
+    assert!(drain(stdout).is_empty());
+    assert!(drain(stderr).is_empty());
+
+    let flood = folder.join("flood");
+    fs::create_dir(&flood).unwrap();
+    let mut child = spawn("flood-output", &flood);
+    let stdout = child.take_stdout().unwrap();
+    let stderr = child.take_stderr().unwrap();
+    let collect = |mut stream: GameOutput, expected: u8| {
+        let deadline = Instant::now() + WAIT;
+        let mut block = [0u8; 137];
+        let mut total = 0;
+        loop {
+            match stream.read(&mut block) {
+                Ok(0) => break,
+                Ok(count) => {
+                    assert!(block[..count].iter().all(|byte| *byte == expected));
+                    total += count;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => pause(),
+                Err(error) => panic!("overlapped output read failed: {error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "overlapped output flood deadline"
+            );
+        }
+        assert_eq!(total, 256 * 1024);
+    };
+    let stdout = std::thread::spawn(move || collect(stdout, b'x'));
+    let stderr = std::thread::spawn(move || collect(stderr, b'y'));
+    assert!(child.wait().unwrap().success());
+    stdout.join().unwrap();
+    stderr.join().unwrap();
+}
+#[cfg(windows)]
+fn windows_overlapped_output() {
+    let folder = private_folder();
+    // An outer owned process enforces the probe deadline even if a regression
+    // reintroduces a synchronous Read/Drop. Killing it closes its private Jobs.
+    let mut probe = Owned(
+        Command::new(env::current_exe().unwrap())
+            .args(args("io-probe", folder.path()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(status) = probe.0.try_wait().unwrap() {
+            let mut diagnostic = String::new();
+            probe
+                .0
+                .stderr
+                .take()
+                .unwrap()
+                .take(16 * 1024)
+                .read_to_string(&mut diagnostic)
+                .unwrap();
+            assert!(
+                status.success(),
+                "overlapped fixture failed ({status}): {diagnostic}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "overlapped fixture outer deadline"
+        );
+        pause();
+    }
+}
 fn monitor_survives_gui_exit() {
     let folder = private_folder();
     // A failed assertion must still let the detached fixture clean its owned
@@ -403,5 +570,10 @@ fn main() {
     {
         pinned_directory_and_no_shell_fallback();
         println!("ok: pinned cwd and no implicit shell");
+    }
+    #[cfg(windows)]
+    {
+        windows_overlapped_output();
+        println!("ok: overlapped idle, pending cancellation, retained writers and dual flood");
     }
 }
