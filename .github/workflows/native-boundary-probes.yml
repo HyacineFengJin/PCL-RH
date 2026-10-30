@@ -1,0 +1,70 @@
+name: Native boundary diagnostics
+
+# Candidate mechanisms only. This does not enable a production backend or
+# publish a desktop package. Counterexamples and unsupported APIs stay red.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native host to investigate
+        type: choice
+        default: all
+        options: [all, windows, macos]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows inherited directory diagnostic
+    if: inputs.platform != 'macos'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+      PCL_RH_CWD_PROBE: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Prepare stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Measure native directory inheritance
+        run: cargo +stable test --locked -p pcl-core --test game_process_lifecycle -j 2
+      - name: Preserve actual observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-directory-observations
+          path: work/windows-inherited-cwd-2026-10-30/
+          if-no-files-found: warn
+          retention-days: 3
+
+  macos:
+    name: macOS sandbox diagnostic / ${{ matrix.os }}
+    if: inputs.platform != 'windows'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+      PCL_RH_SEATBELT_PROBE: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Prepare stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Measure candidate sandbox path rules
+        run: cargo +stable test --locked -p pcl-core --test game_process_lifecycle -j 2
+      - name: Preserve actual observations
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-sandbox-observations-${{ matrix.os }}
+          path: |
+            work/macos-seatbelt-diagnostic-2026-10-30/**/*.json
+            work/macos-seatbelt-diagnostic-2026-10-30/**/*.sb
+          if-no-files-found: warn
+          retention-days: 3

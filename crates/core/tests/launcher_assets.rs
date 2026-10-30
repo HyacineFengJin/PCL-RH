@@ -23,6 +23,172 @@ fn fixture() -> tempfile::TempDir {
 #[cfg(windows)]
 #[path = "../src/file_ops/junction_fixture.rs"]
 mod junction_fixture;
+/// Widen only this newly created synthetic directory's DACL. Its native
+/// TokenUser owner is retained, including under an elevated GHA token whose
+/// ordinary std::fs creations may instead default to BuiltinAdministrators.
+#[cfg(windows)]
+fn broad_fixture_dacl(path: &Path, directory: &pcl_core::retained_fs::Directory) {
+    use std::{
+        ffi::c_void,
+        fs::File,
+        os::windows::{
+            ffi::OsStrExt,
+            io::{AsRawHandle, FromRawHandle},
+        },
+        ptr,
+    };
+    use windows_sys::Win32::{
+        Foundation::{LocalFree, INVALID_HANDLE_VALUE},
+        Security::{
+            Authorization::{
+                ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                GetSecurityInfo, SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+            },
+            GetSecurityDescriptorDacl, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION,
+        },
+        Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+        },
+    };
+    struct Local(*mut c_void);
+    impl Drop for Local {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    LocalFree(self.0);
+                }
+            }
+        }
+    }
+    let admitted = directory.metadata().unwrap();
+    admitted.require_private().unwrap();
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    assert_ne!(
+        raw,
+        INVALID_HANDLE_VALUE,
+        "open synthetic WRITE_DAC handle: {}",
+        std::io::Error::last_os_error()
+    );
+    let file = unsafe { File::from_raw_handle(raw) };
+    let opened = pcl_core::retained_fs::metadata(&file).unwrap();
+    // Complete native volume/FileId128, never a truncated inode or pathname
+    // comparison, binds the privileged test mutation to this exact fixture.
+    assert_eq!(opened.identity, admitted.identity);
+    opened.require_owned().unwrap();
+    let mut owner = ptr::null_mut();
+    let mut original = Local(ptr::null_mut());
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut original.0,
+        )
+    };
+    assert_eq!(status, 0, "query synthetic directory owner");
+    assert!(!owner.is_null() && !original.0.is_null());
+    let mut sid_pointer = ptr::null_mut();
+    let converted = unsafe { ConvertSidToStringSidW(owner, &mut sid_pointer) };
+    let sid_allocation = Local(sid_pointer.cast());
+    assert_ne!(
+        converted,
+        0,
+        "convert actual fixture owner SID: {}",
+        std::io::Error::last_os_error()
+    );
+    assert!(!sid_allocation.0.is_null());
+    let mut sid_units = Vec::new();
+    // Native SIDs are bounded to 15 subauthorities; the converted, terminated
+    // S-R-I-S... string fits well within this explicit upper boundary.
+    for index in 0..256 {
+        let unit = unsafe { *sid_pointer.add(index) };
+        if unit == 0 {
+            break;
+        }
+        sid_units.push(unit);
+    }
+    assert!(sid_units.len() < 256);
+    let sid = String::from_utf16(&sid_units).unwrap();
+    let sddl: Vec<u16> = format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FR;;;WD)")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut descriptor = Local(ptr::null_mut());
+    let mut length = 0u32;
+    assert_ne!(
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor.0,
+                &mut length,
+            )
+        },
+        0,
+        "build actual broad fixture DACL: {}",
+        std::io::Error::last_os_error()
+    );
+    assert!(length > 0);
+    let mut present = 0;
+    let mut defaulted = 0;
+    let mut dacl = ptr::null_mut();
+    assert_ne!(
+        unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) },
+        0
+    );
+    assert_ne!(present, 0);
+    assert!(
+        !dacl.is_null(),
+        "never substitute an unrestricted NULL DACL"
+    );
+    // OWNER_SECURITY_INFORMATION is deliberately absent. This adjusts only the
+    // new empty fixture's DACL, not its owner or any production admission rule.
+    assert_eq!(
+        unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                dacl,
+                ptr::null(),
+            )
+        },
+        0
+    );
+    let changed = directory.metadata().unwrap();
+    assert_eq!(changed.identity, admitted.identity);
+    changed.require_owned().unwrap();
+    assert!(changed.require_private().is_err());
+    match (&admitted.security, &changed.security) {
+        (
+            pcl_core::retained_fs::Security::Windows { owner: before, .. },
+            pcl_core::retained_fs::Security::Windows { owner: after, .. },
+        ) => assert_eq!(before, after),
+        _ => panic!("Windows fixture must retain native security evidence"),
+    }
+    assert_ne!(changed.security, admitted.security);
+}
+
 fn directory_link(target: &Path, path: &Path) {
     #[cfg(unix)]
     std::os::unix::fs::symlink(target, path).unwrap();
@@ -120,7 +286,20 @@ fn collision_never_changes_original_bytes_or_open_original_identity() {
 fn legacy_owned_catalog_permissions_are_preserved_during_new_file_publication() {
     let fixture = fixture();
     let path = fixture.path().join("legacy-catalog");
+    #[cfg(unix)]
     fs::create_dir(&path).unwrap();
+    #[cfg(windows)]
+    {
+        use pcl_core::retained_fs::{Directory, Traversal};
+        let root = Directory::open_absolute(fixture.path()).unwrap();
+        let directory = root
+            .create_private(
+                &Leaf::new("legacy-catalog").unwrap(),
+                Traversal::SameFilesystem,
+            )
+            .unwrap();
+        broad_fixture_dacl(&path, &directory);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -134,7 +313,14 @@ fn legacy_owned_catalog_permissions_are_preserved_during_new_file_publication() 
     directory
         .write_new("asset", b"legacy catalog import")
         .unwrap();
-    assert_eq!(directory.0.metadata().unwrap().security, before.security);
+    let after = directory.0.metadata().unwrap();
+    assert_eq!(after.identity, before.identity);
+    assert_eq!(after.security, before.security);
+    #[cfg(windows)]
+    assert!(
+        before.require_private().is_err(),
+        "the actual broad DACL must remain broad"
+    );
     assert_eq!(directory.names().unwrap(), ["asset"]);
     assert_eq!(
         fs::read(path.join("asset")).unwrap(),
@@ -190,7 +376,7 @@ fn retained_parent_rename_ignores_recreated_paths_and_junctions() {
 fn snapshots_reject_changed_sources_hard_links_and_directory_links() {
     let fixture = fixture();
     let directory = Dir::absolute(fixture.path()).unwrap();
-    fs::write(fixture.path().join("source"), b"source bytes").unwrap();
+    directory.write_new("source", b"source bytes").unwrap();
     let snapshot = Snapshot::open(&directory, "source", 1024).unwrap();
     fs::write(fixture.path().join("source"), b"new source bytes").unwrap();
     assert!(snapshot.recheck(&directory, "source").is_err());

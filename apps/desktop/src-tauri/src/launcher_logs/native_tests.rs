@@ -37,6 +37,21 @@ impl Fixture {
         self.root.join(".pcl-linux/logs").join(name)
     }
     fn write(&self, name: &str, bytes: &[u8]) {
+        #[cfg(windows)]
+        if !self.log(name).exists() {
+            // The elevated hosted runner's default filesystem owner can be
+            // Administrators. Production log creation explicitly assigns the
+            // current TokenUser, so model that actual writer here as well.
+            let directory =
+                pcl_core::retained_fs::Directory::open_absolute(&self.root.join(".pcl-linux/logs"))
+                    .unwrap();
+            let mut file = directory
+                .create_file(&pcl_core::retained_fs::Leaf::new(name).unwrap())
+                .unwrap();
+            file.write_all(bytes).unwrap();
+            file.sync_all().unwrap();
+            return;
+        }
         fs::write(self.log(name), bytes).unwrap();
     }
 }

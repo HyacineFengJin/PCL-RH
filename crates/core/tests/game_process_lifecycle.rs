@@ -10,6 +10,12 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+#[cfg(target_os = "macos")]
+#[path = "game_process_lifecycle/macos_sandbox_probe.rs"]
+mod macos_sandbox_probe;
+#[cfg(windows)]
+#[path = "game_process_lifecycle/windows_cwd_probe.rs"]
+mod windows_cwd_probe;
 
 const WAIT: Duration = Duration::from_secs(10);
 fn pause() {
@@ -524,6 +530,14 @@ fn pinned_directory_and_no_shell_fallback() {
     assert!(!folder.path().join("implicit-shell-side-effect").exists());
 }
 fn main() {
+    #[cfg(target_os = "macos")]
+    if let Some(code) = macos_sandbox_probe::dispatch() {
+        std::process::exit(code);
+    }
+    #[cfg(windows)]
+    if let Some(code) = windows_cwd_probe::dispatch() {
+        std::process::exit(code);
+    }
     let arguments = env::args_os().collect::<Vec<_>>();
     if arguments.get(1).is_some_and(|value| value == "--fixture") {
         fixture(
@@ -575,5 +589,8 @@ fn main() {
     {
         windows_overlapped_output();
         println!("ok: overlapped idle, pending cancellation, retained writers and dual flood");
+        windows_cwd_probe::run_if_enabled().expect("Windows cwd diagnostic fixture failed");
     }
+    #[cfg(target_os = "macos")]
+    macos_sandbox_probe::run_if_enabled().expect("macOS sandbox diagnostic fixture failed");
 }
