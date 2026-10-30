@@ -130,7 +130,11 @@ fn open(
     let name = UNICODE_STRING {
         Length: (units.len() * 2) as u16,
         MaximumLength: (units.len() * 2) as u16,
-        Buffer: units.as_mut_ptr(),
+        Buffer: if units.is_empty() {
+            ptr::null_mut()
+        } else {
+            units.as_mut_ptr()
+        },
     };
     let descriptor = private
         .map(super::windows_security::private_descriptor)
@@ -196,12 +200,12 @@ pub(super) fn open_directory(parent: &File, name: &OsStr, policy: Traversal) -> 
     Ok(file)
 }
 pub(super) fn reopen_directory(parent: &File, _: Traversal) -> io::Result<File> {
-    // The internal dot component reopens the held directory itself. Public
-    // Leaf rejects it; no ancestor or mutable parent path is traversed. This
-    // also gives enumeration an independent native directory cursor.
+    // An internal empty NT name addresses the RootDirectory object itself;
+    // unlike Win32 paths, NT file names do not accept the DOS dot component.
+    // Public Leaf rejects empty names. No parent pathname is reconstructed.
     let file = open(
         parent,
-        OsStr::new("."),
+        OsStr::new(""),
         DIRECTORY_ACCESS,
         FILE_OPEN,
         FILE_DIRECTORY_FILE,
@@ -483,7 +487,7 @@ pub(super) fn sync_directory(file: &File) -> io::Result<()> {
     // pathname or hide a denied/unsupported durability operation.
     let writable = open(
         file,
-        OsStr::new("."),
+        OsStr::new(""),
         FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
         FILE_OPEN,
         FILE_DIRECTORY_FILE,

@@ -225,7 +225,15 @@ fn extended_acl(file: &File) -> io::Result<bool> {
     }
     let acl = unsafe { acl_get_fd_np(file.as_raw_fd(), 0x100) }; // ACL_TYPE_EXTENDED
     if acl.is_null() {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        // Darwin's filesec_get_property(FILESEC_ACL) reports ENOENT when
+        // fstatx succeeded but the held object has no extended ACL property.
+        // Other failures do not establish absence and stay explicit errors.
+        return if error.raw_os_error() == Some(libc::ENOENT) {
+            Ok(false)
+        } else {
+            Err(error)
+        };
     }
     struct Acl(*mut std::ffi::c_void);
     impl Drop for Acl {
