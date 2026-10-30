@@ -282,24 +282,47 @@ fn metadata_root_parent_and_leaf_replacement_invalidate_a_running_check() {
         put(&root, "libraries/fixture.jar", &bytes);
         let request = capture(&root);
         let changed = AtomicBool::new(false);
+        #[cfg(windows)]
+        let rename_blocked = AtomicBool::new(false);
         let result = request.verify(&AtomicBool::new(false), &|| Ok(()), &|| Ok(()), &|p| {
             if p.bytes_done > 0 && !changed.swap(true, Ordering::Relaxed) {
                 match change {
                     "metadata" => {
                         fs::write(root.join("versions/fixture/fixture.json"), b"{}").unwrap()
                     }
-                    "root" => {
-                        fs::rename(&root, container.path().join("saved")).unwrap();
-                        fs::create_dir(&root).unwrap();
-                    }
-                    "parent" => {
-                        fs::rename(root.join("libraries"), container.path().join("saved")).unwrap();
-                        fs::create_dir(root.join("libraries")).unwrap();
+                    "root" | "parent" => {
+                        let source = if change == "root" {
+                            root.clone()
+                        } else {
+                            root.join("libraries")
+                        };
+                        let renamed = fs::rename(&source, container.path().join("saved"));
+                        #[cfg(unix)]
+                        {
+                            renamed.unwrap();
+                            fs::create_dir(&source).unwrap();
+                        }
+                        #[cfg(windows)]
+                        {
+                            // Windows refuses a parent rename while its child
+                            // file is open. Prove that refusal preserves the
+                            // original scope rather than skipping the attack.
+                            assert_eq!(
+                                renamed.unwrap_err().kind(),
+                                std::io::ErrorKind::PermissionDenied
+                            );
+                            rename_blocked.store(true, Ordering::Relaxed);
+                        }
                     }
                     _ => {
-                        fs::rename(
-                            root.join("libraries/fixture.jar"),
-                            container.path().join("saved.jar"),
+                        // Native leaf rename is permitted with shared-delete
+                        // read handles on Windows. Exercise the real identity
+                        // change even though parent-directory moves are denied.
+                        pcl_core::file_ops::rename_noreplace_at(
+                            &crate::native_port_tests::directory_file(&root.join("libraries")),
+                            std::ffi::OsStr::new("fixture.jar"),
+                            &crate::native_port_tests::directory_file(container.path()),
+                            std::ffi::OsStr::new("saved.jar"),
                         )
                         .unwrap();
                         fs::write(root.join("libraries/fixture.jar"), &bytes).unwrap();
@@ -307,6 +330,31 @@ fn metadata_root_parent_and_leaf_replacement_invalidate_a_running_check() {
                 }
             }
         });
+        assert!(
+            changed.load(Ordering::Relaxed),
+            "fixture did not attempt {change}"
+        );
+        #[cfg(windows)]
+        if matches!(change, "root" | "parent") {
+            assert!(rename_blocked.load(Ordering::Relaxed));
+            let report = result.unwrap();
+            assert_eq!(report.files_verified, 1);
+            assert_eq!(fs::read(root.join("libraries/fixture.jar")).unwrap(), bytes);
+            assert_eq!(
+                fs::read(root.join("versions/fixture/fixture.jar")).unwrap(),
+                b"custom jar"
+            );
+            assert!(!container.path().join("saved").exists());
+            request
+                .captured
+                .state
+                .lock()
+                .unwrap()
+                .filesystem
+                .verify()
+                .unwrap();
+            continue;
+        }
         assert!(result.is_err(), "{change}");
     }
 }

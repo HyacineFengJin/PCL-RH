@@ -133,10 +133,6 @@ fn corrupt_staging_registry_cannot_block_verified_business_rollback() {
             read(&operation.directory, "rollback-0", 128).unwrap(),
             sha256(&intent_bytes).as_bytes()
         );
-        assert_eq!(
-            fs::read(root.join(".pcl-linux/dependency-staging/registry.log")).unwrap(),
-            corrupt
-        );
         let mut visible = names(&operation.directory, 16).unwrap();
         visible.sort();
         assert_eq!(
@@ -151,6 +147,14 @@ fn corrupt_staging_registry_cannot_block_verified_business_rollback() {
             ]
         );
         assert!(storage.operations().unwrap().is_empty());
+        drop(operation);
+        drop(storage);
+        // Windows' registry byte lock also excludes an unrelated read handle.
+        // Inspect the retained log after its owning lock has been released.
+        assert_eq!(
+            fs::read(root.join(".pcl-linux/dependency-staging/registry.log")).unwrap(),
+            corrupt
+        );
     }
 }
 
@@ -204,6 +208,8 @@ fn empty_pre_header_operation_recovers_without_writable_staging_registry() {
         ["done", "header.json"]
     );
     assert!(storage.operations().unwrap().is_empty());
+    drop(operation);
+    drop(storage);
     assert_eq!(
         fs::read(root.join(".pcl-linux/dependency-staging/registry.log")).unwrap(),
         corrupt

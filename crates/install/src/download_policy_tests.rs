@@ -260,7 +260,18 @@ fn bound_publication_conflict_preserves_target_and_is_never_a_transfer_retry() {
     let server = server(payload.to_vec());
     let installer = installer(&server, 1, 0, false);
     let target = fixture();
-    fs::create_dir_all(target.path().join("libraries")).unwrap();
+    let native_root = pcl_core::retained_fs::Directory::from_file(
+        crate::native_port_tests::directory_file(target.path()),
+    )
+    .unwrap();
+    // Stage requires an actually private parent. Build the fixture through the
+    // native creator instead of depending on ambient umask/inherited DACLs.
+    let _libraries = native_root
+        .create_private(
+            &pcl_core::retained_fs::Leaf::new("libraries").unwrap(),
+            pcl_core::retained_fs::Traversal::SameFilesystem,
+        )
+        .unwrap();
     let existing = target.path().join("libraries/existing.jar");
     fs::write(&existing, b"pre-existing data must remain").unwrap();
     let root = InstallDir::bound(crate::native_port_tests::directory_file(target.path())).unwrap();

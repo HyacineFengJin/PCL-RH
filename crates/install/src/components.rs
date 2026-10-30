@@ -1243,7 +1243,7 @@ fn probe_installer_java(
 }
 
 impl Installer {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn installer_java(
         &self,
         required: u32,

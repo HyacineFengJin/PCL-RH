@@ -282,7 +282,7 @@ fn entry_total_and_count_limits_fail_before_emit() {
     }
 }
 #[test]
-fn held_reader_survives_archive_parent_rename_and_path_replacement() {
+fn held_reader_retains_original_bytes_during_parent_retarget_attempt() {
     let fixture = fixture();
     let source = fixture.path().join("source");
     fs::create_dir(&source).unwrap();
@@ -292,13 +292,28 @@ fn held_reader_survives_archive_parent_rename_and_path_replacement() {
     )
     .unwrap();
     let file = fs::File::open(source.join("native.jar")).unwrap();
-    fs::rename(&source, fixture.path().join("moved")).unwrap();
-    fs::create_dir(&source).unwrap();
-    fs::write(
-        source.join("native.jar"),
-        archive(&[("lib.so", b"replacement")]),
-    )
-    .unwrap();
+    let renamed = fs::rename(&source, fixture.path().join("moved"));
+    #[cfg(unix)]
+    {
+        renamed.unwrap();
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("native.jar"),
+            archive(&[("lib.so", b"replacement")]),
+        )
+        .unwrap();
+    }
+    #[cfg(windows)]
+    {
+        // Windows forbids moving an ancestor while its descendant is open.
+        // Keep that actual protection; do not close the reader to fabricate a
+        // successful concurrent retarget of its parent.
+        assert_eq!(
+            renamed.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(!fixture.path().join("moved").exists());
+    }
     let mut bytes = Vec::new();
     extract_natives_with(
         file,
@@ -311,6 +326,12 @@ fn held_reader_survives_archive_parent_rename_and_path_replacement() {
     )
     .unwrap();
     assert_eq!(bytes, b"original");
+    #[cfg(windows)]
+    {
+        // Extraction consumed and closed the held reader. The same move must
+        // now succeed, demonstrating the earlier real sharing constraint.
+        fs::rename(&source, fixture.path().join("moved")).unwrap();
+    }
 }
 #[test]
 fn legacy_path_adapter_replaces_name_and_preserves_the_open_old_file() {
@@ -323,16 +344,35 @@ fn legacy_path_adapter_replaces_name_and_preserves_the_open_old_file() {
     fs::write(&path, b"old native").unwrap();
     let mut old = fs::File::open(&path).unwrap();
     let identity = crate::retained_fs::metadata(&old).unwrap().identity;
-    crate::extract_natives_for(
+    let replaced = crate::extract_natives_for(
         &archive_path,
         &target_path,
         &[],
         target(OperatingSystem::Linux),
-    )
-    .unwrap();
+    );
+    #[cfg(unix)]
+    replaced.unwrap();
+    #[cfg(windows)]
+    assert!(
+        replaced.is_err(),
+        "Windows must not mutate an in-use old native inode"
+    );
     let mut bytes = Vec::new();
     old.read_to_end(&mut bytes).unwrap();
     assert_eq!(bytes, b"old native");
+    #[cfg(windows)]
+    {
+        assert_eq!(fs::read(&path).unwrap(), b"old native");
+        assert_eq!(fs::read_dir(&target_path).unwrap().count(), 1);
+        drop(old);
+        crate::extract_natives_for(
+            &archive_path,
+            &target_path,
+            &[],
+            target(OperatingSystem::Linux),
+        )
+        .unwrap();
+    }
     assert_eq!(fs::read(&path).unwrap(), b"new native");
     assert_ne!(
         crate::retained_fs::metadata(&fs::File::open(&path).unwrap())

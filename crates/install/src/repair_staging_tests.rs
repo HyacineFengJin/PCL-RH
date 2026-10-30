@@ -41,6 +41,18 @@ fn append_raw(area: &Area, bytes: &[u8]) {
     state.file.write_all(bytes).unwrap();
     state.file.sync_all().unwrap();
 }
+fn read_locked_log(area: &Area) -> Vec<u8> {
+    // Windows' mandatory byte-range lock rejects a separately opened reader.
+    // Read through the owning file object and restore its shared stream cursor.
+    let mut state = area.state().unwrap();
+    let position = state.file.stream_position().unwrap();
+    state.file.seek(SeekFrom::Start(0)).unwrap();
+    let mut bytes = Vec::new();
+    let result = state.file.read_to_end(&mut bytes);
+    state.file.seek(SeekFrom::Start(position)).unwrap();
+    result.unwrap();
+    bytes
+}
 
 #[test]
 fn allocation_is_durable_before_payload_and_drop_does_not_pollute_business_namespace() {
@@ -346,7 +358,7 @@ fn publication_requires_room_for_its_encoded_result_before_touching_the_target()
         let frame_bound = FRAME_HEADER as u64
             + publication_payload_bound(&allocation, sealed.evidence()).unwrap() as u64;
         let before = active.area.report().unwrap();
-        let log_before = fs::read(area_path(&temporary).join(LOG_NAME)).unwrap();
+        let log_before = read_locked_log(&active.area);
         drop(area);
         // Configure the limit while this is the Area's sole owner. Existing
         // native bytes/stamps are untouched; use the actual sealed log length
@@ -377,10 +389,7 @@ fn publication_requires_room_for_its_encoded_result_before_touching_the_target()
                 "Staging registry cannot fit the publication result; source retained"
             );
             assert!(target.entry(&leaf("capacity-boundary")).unwrap().is_none());
-            assert_eq!(
-                fs::read(area_path(&temporary).join(LOG_NAME)).unwrap(),
-                log_before
-            );
+            assert_eq!(read_locked_log(&area), log_before);
             let report = area.report().unwrap();
             assert_eq!(report.frames, before.frames);
             assert_eq!(report.completed_tickets, 0);
