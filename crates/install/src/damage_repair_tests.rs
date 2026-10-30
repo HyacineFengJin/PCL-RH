@@ -215,8 +215,8 @@ fn staged(root: &Path) -> (Store, Operation, store::Intent) {
         ("backup-0", b"old damaged bytes".as_slice()),
         ("incoming-0", b"new verified bytes".as_slice()),
     ] {
-        let mut file = AnonymousFile::new(directory.clone(), name).unwrap();
-        file.file.write_all(bytes).unwrap();
+        let mut file = RepairStage::new(directory.clone(), name, bytes.len() as u64).unwrap();
+        file.file_mut().write_all(bytes).unwrap();
         assert!(file.publish().unwrap());
     }
     let backup = fingerprint(

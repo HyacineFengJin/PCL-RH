@@ -22,7 +22,7 @@
   "inputs": [
     {
       "path": "Cargo.lock",
-      "sha256": "28291cafc5bed29d6698a11795b560c12ebedc4eded52bc71bf8739e7a6b6ca6"
+      "sha256": "5823d3cfc0c9c9b0dae195d893a8a96a88a0d5eccb8af3e35b35a9b428b74e45"
     },
     {
       "path": "Cargo.toml",
@@ -50,7 +50,7 @@
     },
     {
       "path": "crates/core/Cargo.toml",
-      "sha256": "b3571bf7c0903358e7427a01dbce736527f83909f2a809fc0101de996af674c8"
+      "sha256": "df0682c3923a44b66366cc4bce4cf4a2dab4d853f064a39a5952722803643545"
     },
     {
       "path": "crates/desktop-platform/Cargo.toml",
@@ -12498,6 +12498,11 @@
         "declared_license": "MIT OR Apache-2.0",
         "scope": "normal",
         "workspace_dependency_edges": [
+          {
+            "workspace": "pcl-core",
+            "kind": "normal",
+            "target": null
+          },
           {
             "workspace": "pcl-desktop",
             "kind": "normal",

@@ -9,6 +9,7 @@
 //! Darwin checks the opened directory's dev/fsid before exposing it; Linux uses
 //! atomic openat2 NO_XDEV. Neither permits a pathname fallback on failure.
 use serde::{Deserialize, Serialize};
+pub mod stage;
 use std::{
     ffi::{OsStr, OsString},
     fs::File,

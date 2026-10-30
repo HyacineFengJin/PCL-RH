@@ -122,8 +122,8 @@ fn read(parent: &fs::File, name: &str, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 fn put(parent: Arc<fs::File>, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut temporary = AnonymousFile::new(parent.clone(), name)?;
-    temporary.file.write_all(bytes).map_err(error)?;
+    let mut temporary = RepairStage::new(parent.clone(), name, bytes.len() as u64)?;
+    temporary.file_mut().write_all(bytes).map_err(error)?;
     if !temporary.publish()? {
         return Err("损坏修复记录已存在，拒绝覆盖".into());
     }

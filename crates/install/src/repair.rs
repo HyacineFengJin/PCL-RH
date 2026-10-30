@@ -559,58 +559,55 @@ fn open_directory(parent: &fs::File, name: &str) -> std::io::Result<fs::File> {
     child.try_clone_file()
 }
 
-/// An unnamed inode has no mutable cleanup path and cannot be observed as a
-/// partial artifact. linkat is atomic and fails if any final leaf already exists.
-struct AnonymousFile {
-    file: fs::File,
-    parent: Arc<fs::File>,
-    leaf: String,
+/// New bytes use the native staging owner. Linux remains anonymous: no partial
+/// artifact or cleanup pathname is exposed. The journalled replacement flow
+/// still owns recovery, and an uncertain publication never becomes `false`.
+struct RepairStage {
+    stage: pcl_core::retained_fs::stage::Stage,
+    parent: pcl_core::retained_fs::Directory,
+    leaf: pcl_core::retained_fs::Leaf,
+    max_bytes: u64,
 }
-impl AnonymousFile {
-    fn new(parent: Arc<fs::File>, leaf: &str) -> Result<Self> {
-        let fd = unsafe {
-            libc::openat(
-                parent.as_raw_fd(),
-                cstring(".")?.as_ptr(),
-                libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(format!(
-                "缺失补全需要目标文件系统支持匿名临时文件：{}",
-                std::io::Error::last_os_error()
-            ));
-        }
+impl RepairStage {
+    fn new(parent: Arc<fs::File>, leaf: &str, max_bytes: u64) -> Result<Self> {
+        use pcl_core::retained_fs::{stage::Stage, Directory, Leaf};
+        let parent = Directory::from_file(parent.try_clone().map_err(error)?).map_err(error)?;
+        let leaf = Leaf::new(leaf).map_err(error)?;
+        let stage = Stage::new(&parent).map_err(|e| format!("无法安全暂存补全文件：{e}"))?;
         Ok(Self {
-            file: unsafe { fs::File::from_raw_fd(fd) },
+            stage,
             parent,
-            leaf: leaf.into(),
+            leaf,
+            max_bytes,
         })
     }
+    fn file_mut(&mut self) -> &mut fs::File {
+        self.stage.file_mut()
+    }
     fn publish(self) -> Result<bool> {
-        self.file.sync_all().map_err(error)?;
-        let source = cstring(&format!("/proc/self/fd/{}", self.file.as_raw_fd()))?;
-        let target = cstring(&self.leaf)?;
-        if unsafe {
-            libc::linkat(
-                libc::AT_FDCWD,
-                source.as_ptr(),
-                self.parent.as_raw_fd(),
-                target.as_ptr(),
-                libc::AT_SYMLINK_FOLLOW,
-            )
-        } == 0
+        use pcl_core::retained_fs::stage::PublishOutcome;
+        let sealed = self
+            .stage
+            .seal(self.max_bytes)
+            .map_err(|e| format!("补全文件封存失败：{e}"))?;
+        match sealed
+            .publish_new(&self.parent, &self.leaf)
+            .map_err(|e| format!("补全文件发布前检查失败：{e}"))?
         {
-            self.parent.sync_all().map_err(error)?;
-            return Ok(true);
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            leaf_state(&self.parent, &self.leaf)?;
-            Ok(false)
-        } else {
-            Err(format!("无法原子发布缺失文件：{e}"))
+            PublishOutcome::Published { .. } => Ok(true),
+            PublishOutcome::Exists { .. } => {
+                // Preserve the missing-only rule: an existing regular file is
+                // left alone; links and special entries are still refused.
+                let leaf = self.leaf.as_os_str().to_str().ok_or("补全文件名无效")?;
+                leaf_state(self.parent.file(), leaf)?;
+                Ok(false)
+            }
+            PublishOutcome::MayHavePublished { error, .. } => {
+                // Never roll back or retry an ambiguous namespace commit. The
+                // deterministic destination and any existing durable repair
+                // records remain for the next inspection/recovery attempt.
+                Err(format!("补全文件可能已经发布，但未能完成复核或持久化；文件与修复记录已保留，请重新检查：{error}"))
+            }
         }
     }
 }
@@ -840,12 +837,12 @@ impl Installer {
                 .filesystem
                 .parent(relative, true)?
                 .ok_or("补全父目录缺失")?;
-            let mut temporary = AnonymousFile::new(parent, split(relative).1)?;
+            let mut temporary = RepairStage::new(parent, split(relative).1, download.size)?;
             if let Some((_, bytes)) = downloaded_index
                 .as_ref()
                 .filter(|(path, _)| path == relative)
             {
-                temporary.file.write_all(bytes).map_err(error)?;
+                temporary.file_mut().write_all(bytes).map_err(error)?;
             } else {
                 self.repair_fetch(
                     download,
@@ -854,7 +851,7 @@ impl Installer {
                     fast_guard,
                     &mut progress,
                     on_progress,
-                    |chunk| temporary.file.write_all(chunk).map_err(error),
+                    |chunk| temporary.file_mut().write_all(chunk).map_err(error),
                 )?;
             }
             validate(&state, cancel, validate_binding, false)?;

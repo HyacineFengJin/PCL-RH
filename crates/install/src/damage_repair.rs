@@ -441,7 +441,11 @@ impl RepairRun<'_> {
         let ordinal = self.report.files_repaired as usize;
         let operation = self.operation.as_ref().ok_or("损坏修复记录未创建")?;
         let directory = operation.directory();
-        let mut backup = AnonymousFile::new(directory.clone(), &format!("backup-{ordinal}"))?;
+        let mut backup = RepairStage::new(
+            directory.clone(),
+            &format!("backup-{ordinal}"),
+            original.stamp.len,
+        )?;
         original_file.seek(SeekFrom::Start(0)).map_err(error)?;
         let mut received = 0u64;
         let mut buffer = [0u8; 64 * 1024];
@@ -452,10 +456,10 @@ impl RepairRun<'_> {
             if n == 0 {
                 return Err("原件备份读取期间变化".into());
             }
-            backup.file.write_all(&buffer[..n]).map_err(error)?;
+            backup.file_mut().write_all(&buffer[..n]).map_err(error)?;
             received += n as u64;
         }
-        let copied = fingerprint(&mut backup.file, &|| self.poll(state))?;
+        let copied = fingerprint(backup.file_mut(), &|| self.poll(state))?;
         if copied.sha256 != original.sha256
             || Stamp::of(&original_file.metadata().map_err(error)?) != original.stamp
             || state.filesystem.stamp(path)? != Some(original.stamp)
@@ -474,7 +478,11 @@ impl RepairRun<'_> {
         if backup.sha256 != original.sha256 || backup.stamp.len != original.stamp.len {
             return Err("原件备份发布后内容变化，拒绝替换源文件".into());
         }
-        let mut incoming = AnonymousFile::new(directory.clone(), &format!("incoming-{ordinal}"))?;
+        let mut incoming = RepairStage::new(
+            directory.clone(),
+            &format!("incoming-{ordinal}"),
+            download.size,
+        )?;
         self.emit("damage-download", "正在下载并校验损坏依赖的替换文件");
         self.progress.total_bytes = self
             .progress
@@ -495,10 +503,10 @@ impl RepairRun<'_> {
                 progress.message = "正在下载损坏依赖的替换文件".into();
                 (self.on_progress)(progress);
             },
-            |chunk| incoming.file.write_all(chunk).map_err(error),
+            |chunk| incoming.file_mut().write_all(chunk).map_err(error),
         )?;
         self.progress.bytes += download.size;
-        let replacement = fingerprint(&mut incoming.file, &|| self.poll(state))?;
+        let replacement = fingerprint(incoming.file_mut(), &|| self.poll(state))?;
         // A newly downloaded index must be structurally valid before it can
         // replace the old index or authorize any asset object destination.
         if self
@@ -509,9 +517,13 @@ impl RepairRun<'_> {
             .and_then(|index| index.relative.as_ref())
             == Some(path)
         {
-            incoming.file.seek(SeekFrom::Start(0)).map_err(error)?;
+            incoming
+                .file_mut()
+                .seek(SeekFrom::Start(0))
+                .map_err(error)?;
             let mut bytes = Vec::new();
-            (&mut incoming.file)
+            incoming
+                .file_mut()
                 .take(manifest::MAX_ASSET_INDEX_BYTES + 1)
                 .read_to_end(&mut bytes)
                 .map_err(error)?;
