@@ -144,6 +144,139 @@ fn links_are_metadata_only_and_cannot_become_directory_or_file_authority() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn held_directory_in_place_junction_conversion_cannot_redirect_children() {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+
+    // This guard restores the directory even if a security assertion fails.
+    // Otherwise successful operations against the literal directory behind a
+    // junction could leave hidden fixture children during TempDir cleanup.
+    struct RestoreJunction(Option<std::path::PathBuf>);
+    impl Drop for RestoreJunction {
+        fn drop(&mut self) {
+            if let Some(path) = &self.0 {
+                let _ = junction_fixture::clear_existing(path);
+            }
+        }
+    }
+
+    for private_creation in [false, true] {
+        let fixture = fixture();
+        let outside = fixture.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir(outside.join("outside-child")).unwrap();
+        fs::write(
+            outside.join("outside-marker"),
+            b"outside must stay unchanged",
+        )
+        .unwrap();
+        fs::write(
+            outside.join("outside-child/nested"),
+            b"nested outside bytes",
+        )
+        .unwrap();
+
+        // Prove that junction creation/removal works here without shell,
+        // administrator rights, Developer Mode or a symlink privilege. Only
+        // the second conversion is performed while Directory retains a handle.
+        let control = fixture.path().join("unheld-control");
+        junction_fixture::create(&outside, &control);
+        junction_fixture::clear_existing(&control).unwrap();
+        fs::remove_dir(&control).unwrap();
+
+        let root = dir(fixture.path());
+        let path = fixture.path().join("held");
+        let held = if private_creation {
+            root.create_private(&leaf("held"), Traversal::SameFilesystem)
+                .unwrap()
+        } else {
+            fs::create_dir(&path).unwrap();
+            root.child(&leaf("held"), Traversal::SameFilesystem)
+                .unwrap()
+        };
+        let identity = held.identity().unwrap();
+        let mut restore = RestoreJunction(None);
+        match junction_fixture::set_existing(&outside, &path) {
+            Ok(()) => {
+                restore.0 = Some(path.clone());
+                assert_eq!(
+                    root.entry(&leaf("held")).unwrap().unwrap().kind,
+                    Kind::Link,
+                    "fixture did not attach junction metadata to the original directory"
+                );
+                assert_eq!(held.identity().unwrap(), identity);
+            }
+            Err(error) if matches!(error.raw_os_error(), Some(code) if code == ERROR_ACCESS_DENIED as i32 || code == ERROR_SHARING_VIOLATION as i32) =>
+            {
+                eprintln!(
+                    "in-place junction conversion rejected by native handle policy (private={private_creation}): {error}"
+                );
+                assert_eq!(held.metadata().unwrap().kind, Kind::Directory);
+            }
+            Err(error) => panic!("unexpected in-place junction fixture error: {error}"),
+        }
+
+        // Opening a single final leaf with OPEN_REPARSE_POINT is insufficient
+        // evidence on its own: the held parent object was changed in place.
+        // Reads/enumeration must not expose the referent and writes must never
+        // create entries in it. A native refusal is an acceptable safe result.
+        let exposed_file = held
+            .open_regular(&leaf("outside-marker"), Links::Any)
+            .is_ok();
+        let exposed_entry = held
+            .entry(&leaf("outside-marker"))
+            .is_ok_and(|entry| entry.is_some());
+        let exposed_child = held
+            .child(&leaf("outside-child"), Traversal::SameFilesystem)
+            .is_ok();
+        let exposed_names = held.names(32).is_ok_and(|names| {
+            names.contains(&OsString::from("outside-marker"))
+                || names.contains(&OsString::from("outside-child"))
+        });
+        let created_file = held.create_file(&leaf("created-through-held"));
+        if let Ok(mut file) = created_file {
+            file.write_all(b"held object write").unwrap();
+        }
+        let _created_directory =
+            held.create_private(&leaf("directory-through-held"), Traversal::SameFilesystem);
+        let lock = held.lock(&leaf("lock-through-held"));
+        drop(lock);
+        if let Ok(reopened) = held.reopen(Traversal::SameFilesystem) {
+            assert_eq!(reopened.identity().unwrap(), identity);
+            if let Ok(mut file) = reopened.create_file(&leaf("created-through-reopen")) {
+                file.write_all(b"reopened object write").unwrap();
+            }
+        }
+
+        let outside_names = dir(&outside).names(32).unwrap();
+        assert_eq!(
+            fs::read(outside.join("outside-marker")).unwrap(),
+            b"outside must stay unchanged"
+        );
+        assert_eq!(
+            fs::read(outside.join("outside-child/nested")).unwrap(),
+            b"nested outside bytes"
+        );
+        assert_eq!(
+            outside_names,
+            vec![
+                OsString::from("outside-child"),
+                OsString::from("outside-marker")
+            ],
+            "held-parent operations wrote into the junction referent (private={private_creation})"
+        );
+        assert!(
+            !(exposed_file || exposed_entry || exposed_child || exposed_names),
+            "held-parent operations exposed the junction referent (private={private_creation}, file={exposed_file}, entry={exposed_entry}, child={exposed_child}, names={exposed_names})"
+        );
+        if restore.0.is_some() {
+            junction_fixture::clear_existing(&path).unwrap();
+            restore.0 = None;
+        }
+    }
+}
+
 #[test]
 fn single_link_admission_and_identity_rechecks_reject_replacements() {
     let fixture = fixture();

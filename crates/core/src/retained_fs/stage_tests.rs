@@ -296,11 +296,17 @@ fn retained_source_and_target_parents_do_not_follow_replacement_paths() {
     let target = root
         .create_private(&leaf("target"), Traversal::SameFilesystem)
         .unwrap();
+    #[cfg(not(windows))]
     let stage = sealed(&source, b"held directories");
     let base = fixture.path().join("private");
     fs::rename(base.join("source"), base.join("source-held")).unwrap();
-    fs::rename(base.join("target"), base.join("target-held")).unwrap();
     fs::create_dir(base.join("source")).unwrap();
+    // Windows correctly refuses to rename a directory containing a child that
+    // denies delete sharing. Capture/rename the source first, then create the
+    // stage through its held directory; never weaken its exclusive file lease.
+    #[cfg(windows)]
+    let stage = sealed(&source, b"held directories");
+    fs::rename(base.join("target"), base.join("target-held")).unwrap();
     fs::create_dir(base.join("target")).unwrap();
     published(stage.publish_new(&target, &leaf("published")));
     assert_eq!(
@@ -309,6 +315,35 @@ fn retained_source_and_target_parents_do_not_follow_replacement_paths() {
     );
     assert!(!base.join("target/published").exists());
     assert!(fs::read_dir(base.join("source")).unwrap().next().is_none());
+}
+
+#[cfg(windows)]
+#[test]
+fn exclusive_stage_retains_windows_source_parent_until_publication() {
+    let (fixture, parent) = fixture();
+    let source = parent
+        .create_private(&leaf("source"), Traversal::SameFilesystem)
+        .unwrap();
+    let target = parent
+        .create_private(&leaf("target"), Traversal::SameFilesystem)
+        .unwrap();
+    let stage = sealed(&source, b"held child denies delete sharing");
+    let error = fs::rename(
+        fixture.path().join("private/source"),
+        fixture.path().join("private/moved"),
+    )
+    .unwrap_err();
+    assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+    published(stage.publish_new(&target, &leaf("published")));
+    fs::rename(
+        fixture.path().join("private/source"),
+        fixture.path().join("private/moved"),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(fixture.path().join("private/target/published")).unwrap(),
+        b"held child denies delete sharing"
+    );
 }
 
 #[cfg(target_os = "macos")]

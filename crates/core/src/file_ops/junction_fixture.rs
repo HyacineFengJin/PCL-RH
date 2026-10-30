@@ -12,7 +12,14 @@ use windows_sys::Win32::{
 };
 
 pub(super) fn create(target: &Path, link: &Path) {
-    let target = fs::canonicalize(target).unwrap();
+    fs::create_dir(link).unwrap();
+    set_existing(target, link).unwrap_or_else(|error| panic!("junction fixture: {error}"));
+}
+
+/// Attach a junction to an existing, empty directory without replacing its
+/// namespace entry. Used to test mutation of an already-held directory object.
+pub(super) fn set_existing(target: &Path, directory: &Path) -> io::Result<()> {
+    let target = fs::canonicalize(target)?;
     let units: Vec<u16> = target.as_os_str().encode_wide().collect();
     assert!(units.starts_with(&[92, 92, 63, 92])); // canonical local Win32 extended path
     assert_eq!(units.get(5), Some(&58)); // drive letter, never a remote share
@@ -41,13 +48,11 @@ pub(super) fn create(target: &Path, link: &Path) {
     for (i, unit) in print.iter().enumerate() {
         bytes[print_offset + i * 2..print_offset + i * 2 + 2].copy_from_slice(&unit.to_le_bytes());
     }
-    fs::create_dir(link).unwrap();
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(link)
-        .unwrap();
+        .open(directory)?;
     let mut returned = 0;
     let ok = unsafe {
         DeviceIoControl(
@@ -61,5 +66,39 @@ pub(super) fn create(target: &Path, link: &Path) {
             ptr::null_mut(),
         )
     };
-    assert_ne!(ok, 0, "junction fixture: {}", io::Error::last_os_error());
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Restore the literal directory so fixture cleanup also removes any children
+/// that a handle-relative operation created behind its junction metadata.
+#[allow(dead_code)] // Shared fixture; only the retained-directory suite mutates held objects.
+pub(super) fn clear_existing(directory: &Path) -> io::Result<()> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(directory)?;
+    let header = [0xA0000003u32, 0]; // tag, zero data length and reserved field
+    let mut returned = 0;
+    if unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            0x000900ac, // FSCTL_DELETE_REPARSE_POINT
+            header.as_ptr().cast(),
+            std::mem::size_of_val(&header) as u32,
+            ptr::null_mut(),
+            0,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
