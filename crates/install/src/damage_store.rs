@@ -92,32 +92,11 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 pub(super) fn open_regular(parent: &fs::File, name: &str) -> Result<fs::File> {
-    let how = OpenHow {
-        flags: (libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK) as u64,
-        mode: 0,
-        resolve: 0x01 | 0x04 | 0x08,
+    use pcl_core::retained_fs::{Directory, Leaf, Links};
+    let read = || -> std::io::Result<fs::File> {
+        Directory::from_file(parent.try_clone()?)?.open_regular(&Leaf::new(name)?, Links::Single)
     };
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            parent.as_raw_fd(),
-            cstring(name)?.as_ptr(),
-            &how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if fd < 0 {
-        return Err(format!(
-            "无法安全读取损坏修复记录：{}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file = unsafe { fs::File::from_raw_fd(fd as i32) };
-    let m = file.metadata().map_err(error)?;
-    if !m.is_file() || m.nlink() != 1 {
-        return Err("损坏修复文件不是独占普通文件".into());
-    }
-    Ok(file)
+    read().map_err(|e| format!("无法安全读取损坏修复记录：{e}"))
 }
 fn regular(parent: &fs::File, name: &str) -> Result<fs::File> {
     open_regular(parent, name)

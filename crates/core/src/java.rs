@@ -217,6 +217,15 @@ fn discovery_paths(project: &Path, root: Option<&Path>) -> Vec<PathBuf> {
     paths
 }
 
+/// First existing conventional system runtime directory on this host. This is
+/// only a file chooser hint; every selected executable still needs probing.
+pub fn system_java_directory() -> Option<PathBuf> {
+    let platform = crate::platform::Platform::current().ok()?;
+    system_java_directories(platform.os)
+        .into_iter()
+        .find(|directory| directory.is_dir())
+}
+
 fn system_java_directories(os: crate::platform::OperatingSystem) -> Vec<PathBuf> {
     use crate::platform::OperatingSystem;
     match os {

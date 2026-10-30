@@ -549,27 +549,14 @@ struct OpenHow {
     resolve: u64,
 }
 fn open_directory(parent: &fs::File, name: &str) -> std::io::Result<fs::File> {
-    let name =
-        CString::new(name).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-    let how = OpenHow {
-        flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
-        mode: 0,
-        resolve: 0x01 | 0x04 | 0x08,
-    };
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            &how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if fd < 0 {
-        Err(std::io::Error::last_os_error())
+    use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+    let parent = Directory::from_file(parent.try_clone()?)?;
+    let child = if name == "." {
+        parent.reopen(Traversal::SameFilesystem)?
     } else {
-        Ok(unsafe { fs::File::from_raw_fd(fd as i32) })
-    }
+        parent.child(&Leaf::new(name)?, Traversal::SameFilesystem)?
+    };
+    child.try_clone_file()
 }
 
 /// An unnamed inode has no mutable cleanup path and cannot be observed as a

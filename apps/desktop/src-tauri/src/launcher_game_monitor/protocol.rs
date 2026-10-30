@@ -420,39 +420,23 @@ fn helper() -> Result<(), String> {
     session.record_log_start(log_start)?;
     let log = Arc::new(Mutex::new(log));
     let game_directory = crate::launcher_local::filesystem::Dir::absolute(&request.game_dir)?;
-    let game_directory_fd = game_directory.0.as_raw_fd();
-    let mut command = Command::new(&request.java);
-    command
-        .args(&request.args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+    let arguments = request
+        .args
+        .iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+    let mut game = pcl_core::game_process::GameChild::spawn_in_directory(
+        &request.java,
+        &arguments,
+        &game_directory.0,
+    )?;
+    drop(arguments);
     let supervisor = std::process::id();
-    unsafe {
-        command.pre_exec(move || {
-            // A validated directory FD is inherited through fork. Reopening the
-            // path with Command::current_dir would follow a late symlink swap.
-            if libc::fchdir(game_directory_fd) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::getppid() != supervisor as i32 {
-                return Err(io::Error::from_raw_os_error(libc::ECANCELED));
-            }
-            Ok(())
-        });
-    }
-    let mut game = OwnedGame::new(command.spawn().map_err(|_| FAILURE)?);
     drop(request.args);
-    session.spawned(game.0.id())?;
+    session.spawned(game.id())?;
     let stop = Arc::new(AtomicBool::new(false));
-    let stdout = game.0.stdout.take().ok_or(FAILURE)?;
-    let stderr = game.0.stderr.take().ok_or(FAILURE)?;
-    nonblocking(stdout.as_raw_fd())?;
-    nonblocking(stderr.as_raw_fd())?;
+    let stdout = game.take_stdout().ok_or(FAILURE)?;
+    let stderr = game.take_stderr().ok_or(FAILURE)?;
     let output_stop = stop.clone();
     let output_log = log.clone();
     let redactor = Redactor::new(request.redactions.clone())?;
@@ -473,7 +457,7 @@ fn helper() -> Result<(), String> {
         .map_err(|_| FAILURE)?;
     write_pipe(
         1,
-        format!("READY {} {} {}\n", game.0.id(), supervisor, log_start).as_bytes(),
+        format!("READY {} {} {}\n", game.id(), supervisor, log_start).as_bytes(),
         deadline,
     )?;
     if read_line(0, deadline)? != "COMMIT" {
@@ -481,8 +465,7 @@ fn helper() -> Result<(), String> {
     }
     write_pipe(1, b"ACK\n", deadline)?;
     // Parent pipes are no longer used. Java/log ownership stays entirely here.
-    let result = process::wait_owned(&mut game.0)?;
-    game.1 = true;
+    let result = game.wait()?;
     let drain = Instant::now() + Duration::from_secs(2);
     while !(stdout.is_finished() && stderr.is_finished()) && Instant::now() < drain {
         std::thread::sleep(Duration::from_millis(10));
@@ -492,17 +475,4 @@ fn helper() -> Result<(), String> {
     let _ = stderr.join();
     let _ = log.lock().map_err(|_| FAILURE)?.sync_all();
     session.finished(result.success(), result.code())
-}
-struct OwnedGame(Child, bool);
-impl OwnedGame {
-    fn new(child: Child) -> Self {
-        Self(child, false)
-    }
-}
-impl Drop for OwnedGame {
-    fn drop(&mut self) {
-        if !self.1 {
-            process::kill_owned(&mut self.0);
-        }
-    }
 }

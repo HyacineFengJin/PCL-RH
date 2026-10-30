@@ -85,7 +85,32 @@ pub(crate) fn read(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
 
 /// Every writer of the historical workspace uses this same nonblocking lease.
 /// The in-process gate is shared separately by the Code and product adapters.
-pub(crate) fn workspace_lease(root: &Path) -> Result<fs::File, String> {
+/// This is a cooperative writer lock, not a directory capability or a guarantee
+/// about the pathname-based document reader and replacement implementation.
+pub(crate) struct WorkspaceLease(fs::File);
+
+impl Drop for WorkspaceLease {
+    fn drop(&mut self) {
+        // Unlock explicitly: closing this handle alone need not release the
+        // lease while another handle to the same open file remains alive.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::{Storage::FileSystem::UnlockFileEx, System::IO::OVERLAPPED};
+            let mut overlapped = OVERLAPPED::default();
+            unsafe {
+                UnlockFileEx(self.0.as_raw_handle(), 0, 1, 0, &mut overlapped);
+            }
+        }
+    }
+}
+
+pub(crate) fn workspace_lease(root: &Path) -> Result<WorkspaceLease, String> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join("store.lock");
     safe_file(&path)?;
@@ -96,7 +121,16 @@ pub(crate) fn workspace_lease(root: &Path) -> Result<fs::File, String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let lease = options.open(path).map_err(|e| e.to_string())?;
+    if !lease.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err("Expected a regular workspace lock file".into());
+    }
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
@@ -104,5 +138,87 @@ pub(crate) fn workspace_lease(root: &Path) -> Result<fs::File, String> {
             return Err("Another launcher is updating RH Code".into());
         }
     }
-    Ok(lease)
+    #[cfg(windows)]
+    {
+        use std::os::windows::{fs::MetadataExt, io::AsRawHandle};
+        use windows_sys::Win32::{
+            Storage::FileSystem::{
+                LockFileEx, FILE_ATTRIBUTE_REPARSE_POINT, LOCKFILE_EXCLUSIVE_LOCK,
+                LOCKFILE_FAIL_IMMEDIATELY,
+            },
+            System::IO::OVERLAPPED,
+        };
+        if lease
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .file_attributes()
+            & FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err("Expected a regular workspace lock file".into());
+        }
+        // All historical-workspace writers contend on the same byte of this
+        // reserved lock file. The handle is synchronous and this never waits.
+        let mut overlapped = OVERLAPPED::default();
+        if unsafe {
+            LockFileEx(
+                lease.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut overlapped,
+            )
+        } == 0
+        {
+            return Err("Another launcher is updating RH Code".into());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    return Err("Workspace writer leases are unsupported on this platform".into());
+    Ok(WorkspaceLease(lease))
+}
+
+#[cfg(test)]
+mod workspace_lease_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .find(|root| {
+                    root.join("crates/core/src").is_dir() && root.join("Cargo.lock").is_file()
+                })
+                .expect("fixture must remain inside the PCL RH workspace");
+            Self(root.join("work/document-io-lock-tests").join(nonce()))
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn workspace_writer_lease_is_nonblocking_and_reusable() {
+        let fixture = Fixture::new();
+        let first = workspace_lease(&fixture.0).unwrap();
+        assert!(workspace_lease(&fixture.0).is_err());
+        drop(first);
+        let _next = workspace_lease(&fixture.0).unwrap();
+    }
+
+    #[test]
+    fn workspace_writer_lease_unlocks_with_duplicate_still_open() {
+        let fixture = Fixture::new();
+        let lease = workspace_lease(&fixture.0).unwrap();
+        let duplicate = lease.0.try_clone().unwrap();
+        assert!(workspace_lease(&fixture.0).is_err());
+        drop(lease);
+        let _next = workspace_lease(&fixture.0).unwrap();
+        drop(duplicate);
+    }
 }

@@ -67,7 +67,8 @@ path = "main.rs"
 "#).unwrap();
             fs::copy(repo.join("Cargo.lock"),workspace.join("Cargo.lock")).unwrap();
             fs::write(workspace.join("main.rs"),format!(
-                "#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_local;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_game_monitor;\nfn main() {{ if let Some(code) = launcher_game_monitor::dispatch_cli() {{ std::process::exit(code); }} std::process::exit(2); }}\n",
+                "extern crate self as pcl_core;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] pub mod game_process;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_local;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_game_monitor;\nfn main() {{ if let Some(code) = launcher_game_monitor::dispatch_cli() {{ std::process::exit(code); }} std::process::exit(2); }}\n",
+                repo.join("crates/core/src/game_process.rs"),
                 repo.join("apps/desktop/src-tauri/src/launcher_local.rs"),
                 repo.join("apps/desktop/src-tauri/src/launcher_game_monitor.rs"))).unwrap();
             use std::os::unix::process::CommandExt;

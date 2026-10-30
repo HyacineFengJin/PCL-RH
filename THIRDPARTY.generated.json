@@ -22,7 +22,7 @@
   "inputs": [
     {
       "path": "Cargo.lock",
-      "sha256": "4733cd8320fcec65da2a004fab2d43b624c7e860f4a18e5d47c7c91051d668b6"
+      "sha256": "28291cafc5bed29d6698a11795b560c12ebedc4eded52bc71bf8739e7a6b6ca6"
     },
     {
       "path": "Cargo.toml",
@@ -38,7 +38,7 @@
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.toml",
-      "sha256": "01a4df264044569390e98d5e919c8b6296767e8b1471ad7acee92a1ae25f0c48"
+      "sha256": "1f656922c5289996fffc222c5b405ad6b5bf8081506b644fd082e9256d994805"
     },
     {
       "path": "crates/auth/Cargo.toml",
@@ -50,7 +50,7 @@
     },
     {
       "path": "crates/core/Cargo.toml",
-      "sha256": "9e1a4e1c0c9cb9f653775c81e762aa7b530593d066bf02c5a906fabc53e470a7"
+      "sha256": "b3571bf7c0903358e7427a01dbce736527f83909f2a809fc0101de996af674c8"
     },
     {
       "path": "crates/desktop-platform/Cargo.toml",

@@ -2,6 +2,7 @@
 pub mod content_scope;
 mod dependencies;
 pub mod file_ops;
+pub mod game_process;
 pub mod game_title;
 pub mod inspection;
 pub mod java;
@@ -10,7 +11,9 @@ mod loader_runtime;
 pub mod memory;
 pub mod platform;
 pub mod repair;
+pub mod retained_fs;
 mod rules;
+pub mod system;
 use launch_options::{LaunchOptions, WindowSize};
 use regex::Regex;
 use rules::RuleContext;

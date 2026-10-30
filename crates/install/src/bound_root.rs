@@ -105,12 +105,6 @@ fn parts(relative: &Path) -> Result<Vec<&std::ffi::OsStr>> {
     }
     Ok(names)
 }
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
 fn open_dir(parent: &fs::File, name: &std::ffi::OsStr, create: bool) -> Result<fs::File> {
     let name = CString::new(name.as_bytes()).map_err(error)?;
     if create && unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
@@ -119,29 +113,22 @@ fn open_dir(parent: &fs::File, name: &std::ffi::OsStr, create: bool) -> Result<f
             return Err(error(e));
         }
     }
-    let how = OpenHow {
-        flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
-        mode: 0,
-        resolve: 0x01 | 0x04 | 0x08,
-    };
     // NO_XDEV | NO_SYMLINKS | BENEATH. Device numbers alone do not detect bind
     // mounts; openat2 is a required fail-closed private-install capability.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            &how,
-            std::mem::size_of::<OpenHow>(),
-        )
+    use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+    let open = || -> std::io::Result<fs::File> {
+        let parent = Directory::from_file(parent.try_clone()?)?;
+        let name = std::ffi::OsStr::from_bytes(name.as_bytes());
+        let child = if name == "." {
+            parent.reopen(Traversal::SameFilesystem)?
+        } else {
+            parent.child(&Leaf::new(name)?, Traversal::SameFilesystem)?
+        };
+        child.try_clone_file()
     };
-    if fd < 0 {
-        return Err(format!(
-            "无法绑定私有安装子目录（需要 Linux openat2，禁止链接或挂载替换）：{}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(unsafe { fs::File::from_raw_fd(fd as i32) })
+    open().map_err(|e| {
+        format!("无法绑定私有安装子目录（需要 Linux openat2，禁止链接或挂载替换）：{e}")
+    })
 }
 impl InstallDir {
     pub fn legacy(path: PathBuf) -> Self {

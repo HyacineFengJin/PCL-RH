@@ -16,31 +16,13 @@ pub struct SystemInfo {
     pub(crate) available_memory_bytes: u64,
 }
 
-fn parse_memory(text: &str) -> Result<SystemInfo, String> {
-    let value = |key: &str| {
-        text.lines().find_map(|line| {
-            let mut fields = line.split_whitespace();
-            if fields.next()? != key {
-                return None;
-            }
-            let count = fields.next()?.parse::<u64>().ok()?;
-            if fields.next()? != "kB" {
-                return None;
-            }
-            count.checked_mul(1024)
-        })
-    };
-    let total = value("MemTotal:").ok_or("无法读取系统总内存")?;
-    let available = value("MemAvailable:").ok_or("无法读取系统可用内存")?;
-    Ok(SystemInfo {
-        total_memory_bytes: total,
-        available_memory_bytes: available.min(total),
-    })
-}
-
 #[tauri::command]
 pub fn system_info() -> Result<SystemInfo, String> {
-    parse_memory(&fs::read_to_string("/proc/meminfo").map_err(|e| e.to_string())?)
+    let memory = pcl_core::system::memory()?;
+    Ok(SystemInfo {
+        total_memory_bytes: memory.total_bytes,
+        available_memory_bytes: memory.available_bytes,
+    })
 }
 
 #[derive(Serialize)]
@@ -460,15 +442,6 @@ mod tests {
             .version
             .is_none());
         assert_eq!(capped_text(&"界".repeat(4000)).len(), 8190);
-    }
-    #[test]
-    fn memory_uses_available_not_free_and_converts_kibibytes() {
-        let info =
-            parse_memory("MemTotal: 8192 kB\nMemFree: 10 kB\nMemAvailable: 4096 kB\n").unwrap();
-        assert_eq!(info.total_memory_bytes, 8192 * 1024);
-        assert_eq!(info.available_memory_bytes, 4096 * 1024);
-        assert!(parse_memory("MemTotal: 8192 kB").is_err());
-        assert!(parse_memory("MemTotal: 18446744073709551615 kB\nMemAvailable: 1 kB").is_err());
     }
 }
 

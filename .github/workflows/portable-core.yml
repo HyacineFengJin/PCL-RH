@@ -3,9 +3,9 @@ name: Portable core
 on:
   push:
     branches: [master]
-    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
+    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'apps/desktop/src-tauri/src/document_io.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
   pull_request:
-    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
+    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'apps/desktop/src-tauri/src/document_io.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
   workflow_dispatch:
 
 permissions:

@@ -61,14 +61,8 @@ pub(super) fn registration_context(
         JavaSelection::Auto => None,
     }
     .filter(|path| path.is_dir())
-    .unwrap_or_else(|| {
-        let system = PathBuf::from("/usr/lib/jvm");
-        if system.is_dir() {
-            system
-        } else {
-            shared.project.clone()
-        }
-    });
+    .or_else(pcl_core::java::system_java_directory)
+    .unwrap_or_else(|| shared.project.clone());
     Ok(RegistrationContext {
         root_id: settings.root_id,
         revision: settings.revision,
