@@ -22,7 +22,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 #[path = "launcher_logs/filesystem.rs"]
 mod filesystem;
-use filesystem::{component, snapshot, Dir, Stamp};
+use filesystem::{component, snapshot, Dir, DirectoryIdentity, Stamp};
 #[path = "launcher_logs/history.rs"]
 mod history;
 pub use history::{execute_clear, list_recovery, prepare_clear, restore};
@@ -132,8 +132,8 @@ struct Journal {
     schema: u32,
     operation_id: String,
     created_at: u64,
-    root: (u64, u64),
-    logs: (u64, u64),
+    root: DirectoryIdentity,
+    logs: DirectoryIdentity,
     entries: BTreeMap<String, Entry>,
 }
 
@@ -167,7 +167,7 @@ impl Scope {
             logs,
         })
     }
-    fn identities(&self) -> Result<((u64, u64), Option<(u64, u64)>), String> {
+    fn identities(&self) -> Result<(DirectoryIdentity, Option<DirectoryIdentity>), String> {
         Ok((
             self.root.stamp()?.identity(),
             self.logs
@@ -291,7 +291,7 @@ pub fn list(root: &Path, current: Option<&Path>) -> Result<Vec<LogRow>, String> 
     for name in logs.names()?.into_iter().filter(|n| n.ends_with(".log")) {
         valid_log(&name)?;
         let file = logs.file(&name)?.ok_or("日志已消失，请重试")?;
-        let stamp = Stamp::of(&file.metadata().map_err(|e| e.to_string())?);
+        let stamp = Stamp::from_file(&file)?;
         rows.push(LogRow {
             path: root
                 .join(".pcl-linux/logs")
@@ -335,7 +335,7 @@ pub fn read_tail(
     let scope = Scope::open(root)?;
     let logs = scope.logs.as_ref().ok_or("日志目录不存在")?;
     let mut file = logs.file(name)?.ok_or("日志不存在")?;
-    let before = Stamp::of(&file.metadata().map_err(|e| e.to_string())?);
+    let before = Stamp::from_file(&file)?;
     let start = before.bytes.saturating_sub(MAX_FILE_BYTES);
     file.seek(SeekFrom::Start(start))
         .map_err(|e| e.to_string())?;
@@ -344,7 +344,7 @@ pub fn read_tail(
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let current = logs.file(name)?.ok_or("日志已消失")?;
-    if Stamp::of(&current.metadata().map_err(|e| e.to_string())?).identity() != before.identity() {
+    if Stamp::from_file(&current)?.identity() != before.identity() {
         return Err("当前日志已被替换，请重新读取".into());
     }
     scope.recheck()?;
@@ -405,7 +405,7 @@ impl FailureDirectory {
     }
 
     fn verify(&self, parent: &Dir, name: &str) -> Result<(), String> {
-        let identity = |stamp: &Stamp| (stamp.identity(), stamp.mode & libc::S_IFMT);
+        let identity = |stamp: &Stamp| (stamp.identity(), stamp.type_key());
         let fresh = parent.entry_stamp(name)?;
         if fresh.as_ref().map(identity) != self.stamp.as_ref().map(identity)
             || self.directory.as_ref().is_some_and(|directory| {
@@ -433,7 +433,7 @@ impl FailureLogCapture {
                     entry
                         .stamp
                         .as_ref()
-                        .map(|stamp| (stamp.identity(), stamp.mode & libc::S_IFMT)),
+                        .map(|stamp| (stamp.identity(), stamp.type_key())),
                     entry.error.clone(),
                 )
             })
@@ -502,10 +502,7 @@ impl FailureLogCapture {
         captured.stamp = logs_directory.entry_stamp(name)?;
         match logs_directory.file(name) {
             Ok(Some(file)) => {
-                if Some(Stamp::of(
-                    &file.metadata().map_err(|error| error.to_string())?,
-                )) != captured.stamp
-                {
+                if Some(Stamp::from_file(&file)?) != captured.stamp {
                     return Err("本次启动日志已变化，请重新诊断".into());
                 }
                 captured.file = Some(file);
@@ -528,9 +525,10 @@ impl FailureLogCapture {
                 logs.verify(parent, "logs")?;
                 if let (Some(directory), Some(name)) = (&logs.directory, &self.name) {
                     if directory.entry_stamp(name)? != self.stamp
-                        || self.file.as_ref().is_some_and(|file| {
-                            file.metadata().ok().map(|metadata| Stamp::of(&metadata)) != self.stamp
-                        })
+                        || self
+                            .file
+                            .as_ref()
+                            .is_some_and(|file| Stamp::from_file(file).ok() != self.stamp)
                     {
                         return Err("本次启动日志已变化，请重新诊断".into());
                     }
@@ -568,9 +566,7 @@ impl FailureLogCapture {
             .take(stamp.bytes - start)
             .read_to_end(&mut bytes)
             .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 != stamp.bytes - start
-            || Stamp::of(&file.metadata().map_err(|error| error.to_string())?) != *stamp
-        {
+        if bytes.len() as u64 != stamp.bytes - start || Stamp::from_file(file)? != *stamp {
             return Err("本次启动日志读取期间发生变化，请重新诊断".into());
         }
         let suffix = if start > floor {
@@ -646,9 +642,10 @@ pub fn prepare_export(
     })
 }
 
-/// The destination must be a newly chosen file. An anonymous stage disappears
-/// on every pre-publication failure/cancellation; only fully redacted output is
-/// linked into the user's directory, and linkat refuses any existing pathname.
+/// The destination must be a newly chosen file. Fully redacted output is
+/// staged and published with native no-replace semantics. Linux's anonymous
+/// stage is reclaimed on failure; native named leases remain explicit recovery
+/// evidence on error/cancellation and are never blindly removed by name.
 pub fn execute_export(
     root: &Path,
     selection: &ExportSelection,
@@ -700,54 +697,61 @@ pub fn execute_export(
     {
         return Err("请选择日志目录和恢复目录以外的导出位置".into());
     }
-    let mut output = parent.anonymous()?;
-    let logs = scope.logs.as_ref().ok_or("日志目录不存在")?;
+    let mut output = parent.temporary()?;
     let mut written = 0u64;
-    if all {
-        let mut zip = ZipWriter::new(output);
-        for (name, expected) in &entries {
-            cancelled(cancel)?;
-            let safe = export_text(logs, name, expected, &redact)?;
-            written = written
-                .checked_add(safe.len() as u64)
-                .ok_or("脱敏后日志过大")?;
-            if written > MAX_TOTAL_BYTES {
-                return Err("脱敏后日志总大小超过安全上限".into());
+    let prepared = (|| -> Result<(), String> {
+        let logs = scope.logs.as_ref().ok_or("日志目录不存在")?;
+        if all {
+            let mut zip = ZipWriter::new(output.file_mut());
+            for (name, expected) in &entries {
+                cancelled(cancel)?;
+                let safe = export_text(logs, name, expected, &redact)?;
+                written = written
+                    .checked_add(safe.len() as u64)
+                    .ok_or("脱敏后日志过大")?;
+                if written > MAX_TOTAL_BYTES {
+                    return Err("脱敏后日志总大小超过安全上限".into());
+                }
+                zip.start_file(
+                    name,
+                    SimpleFileOptions::default()
+                        .compression_method(CompressionMethod::Deflated)
+                        .unix_permissions(0o600),
+                )
+                .map_err(|e| e.to_string())?;
+                zip.write_all(safe.as_bytes()).map_err(|e| e.to_string())?;
             }
-            zip.start_file(
-                name,
-                SimpleFileOptions::default()
-                    .compression_method(CompressionMethod::Deflated)
-                    .unix_permissions(0o600),
-            )
-            .map_err(|e| e.to_string())?;
-            zip.write_all(safe.as_bytes()).map_err(|e| e.to_string())?;
+            zip.finish().map_err(|e| e.to_string())?;
+        } else {
+            let (name, expected) = entries.iter().next().ok_or("没有所选日志")?;
+            let safe = export_text(logs, name, expected, &redact)?;
+            written = safe.len() as u64;
+            output
+                .file_mut()
+                .write_all(safe.as_bytes())
+                .map_err(|e| e.to_string())?;
         }
-        output = zip.finish().map_err(|e| e.to_string())?;
-    } else {
-        let (name, expected) = entries.iter().next().ok_or("没有所选日志")?;
-        let safe = export_text(logs, name, expected, &redact)?;
-        written = safe.len() as u64;
-        output
-            .write_all(safe.as_bytes())
-            .map_err(|e| e.to_string())?;
+        cancelled(cancel)?;
+        let fresh = scan(&scope, names.as_deref(), cancel)?;
+        if revision(
+            &scope,
+            scope.current_name(current).as_deref(),
+            &fresh,
+            if all { "export-all" } else { "export-one" },
+        )? != expected_revision
+        {
+            return Err("导出期间日志内容已变化，目标文件尚未保存，请重新导出".into());
+        }
+        if Dir::absolute(parent_path)?.stamp()?.identity() != parent_id {
+            return Err("导出目标目录已变化，目标文件尚未保存".into());
+        }
+        cancelled(cancel)?;
+        Ok(())
+    })();
+    if let Err(error) = prepared {
+        return Err(output.failure(error));
     }
-    cancelled(cancel)?;
-    let fresh = scan(&scope, names.as_deref(), cancel)?;
-    if revision(
-        &scope,
-        scope.current_name(current).as_deref(),
-        &fresh,
-        if all { "export-all" } else { "export-one" },
-    )? != expected_revision
-    {
-        return Err("导出期间日志内容已变化，目标文件尚未保存，请重新导出".into());
-    }
-    if Dir::absolute(parent_path)?.stamp()?.identity() != parent_id {
-        return Err("导出目标目录已变化，目标文件尚未保存".into());
-    }
-    cancelled(cancel)?;
-    parent.publish(&output, name)?;
+    parent.publish(output, name)?;
     Ok(ExportOutcome {
         path: destination.display().to_string(),
         file_count: entries.len(),
@@ -772,6 +776,10 @@ fn export_text(
     Ok(safe)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "launcher_logs/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "launcher_logs/native_tests.rs"]
+mod native_tests;

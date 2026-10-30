@@ -1,21 +1,46 @@
-//! Read-only fontconfig discovery, with independent output/deadline bounds.
-//! The command is a fixed trusted executable, never a user-entered shell line.
+//! Read-only native font-family discovery with bounded output and delivery.
+//! Linux retains its fixed fontconfig executable and owned process group.
+//! CoreText/GDI run in one admitted worker; a timeout cannot cancel native code
+//! and never releases that worker's lease before the native call returns.
+use std::{collections::BTreeSet, time::Duration};
+#[cfg(target_os = "macos")]
+#[path = "fonts_macos.rs"]
+mod native;
+#[cfg(windows)]
+#[path = "fonts_windows.rs"]
+mod native;
+#[cfg(target_os = "linux")]
 use std::{
-    collections::BTreeSet,
     io::Read,
     os::{fd::AsRawFd, unix::process::CommandExt},
     path::Path,
     process::{Child, Command, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_FAMILIES: usize = 4096;
 pub fn discover_font_families() -> Result<Vec<String>, String> {
-    discover(Path::new("/usr/bin/fc-list"), Duration::from_secs(3))
+    #[cfg(target_os = "linux")]
+    {
+        discover(Path::new("/usr/bin/fc-list"), Duration::from_secs(3))
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        static FLIGHT: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+            std::sync::OnceLock::new();
+        bounded_native(
+            FLIGHT
+                .get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+                .clone(),
+            Duration::from_secs(3),
+            native::enumerate,
+        )
+    }
 }
 
+#[cfg(target_os = "linux")]
 fn discover(executable: &Path, timeout: Duration) -> Result<Vec<String>, String> {
     let mut command = Command::new(executable);
     command
@@ -82,6 +107,7 @@ fn discover(executable: &Path, timeout: Duration) -> Result<Vec<String>, String>
     }
     families(&output)
 }
+#[cfg(target_os = "linux")]
 fn nonblocking(file: &impl AsRawFd) -> Result<(), String> {
     let fd = file.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -91,6 +117,7 @@ fn nonblocking(file: &impl AsRawFd) -> Result<(), String> {
         Ok(())
     }
 }
+#[cfg(target_os = "linux")]
 fn drain(
     reader: &mut impl Read,
     bytes: &mut Vec<u8>,
@@ -117,10 +144,12 @@ fn drain(
     }
 }
 
+#[cfg(target_os = "linux")]
 struct ProbeChild {
     group: i32,
     child: Option<Child>,
 }
+#[cfg(target_os = "linux")]
 impl ProbeChild {
     fn stop(&mut self) {
         unsafe {
@@ -146,6 +175,7 @@ impl ProbeChild {
         }
     }
 }
+#[cfg(target_os = "linux")]
 impl Drop for ProbeChild {
     fn drop(&mut self) {
         if self.child.is_some() {
@@ -154,29 +184,109 @@ impl Drop for ProbeChild {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn families(bytes: &[u8]) -> Result<Vec<String>, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "fontconfig 输出不是有效 UTF-8")?;
     let mut families = BTreeSet::new();
     for family in text.lines().flat_map(|line| line.split(',')) {
-        let family = family.trim();
-        if family.is_empty() {
-            continue;
-        }
-        if family.chars().count() > 128
-            || family.chars().any(char::is_control)
-            || family.contains([';', '{', '}', '<', '>', '\\'])
-        {
-            return Err("fontconfig 输出包含无效字体名称".into());
-        }
-        families.insert(family.to_owned());
-        if families.len() > MAX_FAMILIES {
-            return Err("字体数量超过 4096 个上限".into());
-        }
+        insert_family(&mut families, family)?;
     }
     Ok(families.into_iter().collect())
 }
 
-#[cfg(test)]
+fn insert_family(families: &mut BTreeSet<String>, family: &str) -> Result<(), String> {
+    let family = family.trim();
+    if family.is_empty() {
+        return Ok(());
+    }
+    if family.chars().count() > 128
+        || family.chars().any(char::is_control)
+        || family.contains([';', '{', '}', '<', '>', '\\'])
+    {
+        return Err("字体枚举包含无效字体名称".into());
+    }
+    families.insert(family.to_owned());
+    if families.len() > MAX_FAMILIES {
+        return Err("字体数量超过 4096 个上限".into());
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
+#[derive(Default)]
+struct NativeFamilies {
+    families: BTreeSet<String>,
+    bytes: usize,
+}
+#[cfg(any(target_os = "macos", windows, test))]
+impl NativeFamilies {
+    fn push(&mut self, family: &str) -> Result<(), String> {
+        // Account for both the native UTF-16 payload and its UTF-8 rendering,
+        // including duplicates and a separator. Empty/duplicate callbacks cannot
+        // evade the total budget; neither representation can exceed 1 MiB.
+        let native_bytes = family
+            .encode_utf16()
+            .count()
+            .checked_mul(2)
+            .ok_or("系统字体枚举字节计数溢出")?;
+        self.bytes = self
+            .bytes
+            .checked_add(family.len().max(native_bytes))
+            .and_then(|n| n.checked_add(1))
+            .ok_or("系统字体枚举字节计数溢出")?;
+        if self.bytes > MAX_OUTPUT {
+            return Err("系统字体枚举超过 1 MiB 上限".into());
+        }
+        insert_family(&mut self.families, family)
+    }
+    fn finish(self) -> Vec<String> {
+        self.families.into_iter().collect()
+    }
+}
+
+#[cfg(any(target_os = "macos", windows, test))]
+fn bounded_native(
+    flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    timeout: Duration,
+    enumerate: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
+) -> Result<Vec<String>, String> {
+    use std::sync::{atomic::Ordering, mpsc};
+    if flight
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("系统字体枚举仍在进行，请等待原任务返回".into());
+    }
+    struct Lease(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let lease = Lease(flight);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let _worker = std::thread::Builder::new()
+        .name("pcl-font-catalog".into())
+        .spawn(move || {
+            // This owner remains alive across an uninterruptible native call and
+            // across caller timeout/disconnect. No replacement worker is admitted.
+            let _lease = lease;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(enumerate))
+                .unwrap_or_else(|_| Err("系统字体枚举工作线程异常".into()));
+            let _ = sender.send(result);
+        })
+        .map_err(|_| "无法启动系统字体枚举工作线程")?;
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                "系统字体枚举超时；原生任务返回前不会启动新任务".to_string()
+            }
+            mpsc::RecvTimeoutError::Disconnected => "系统字体枚举工作线程未返回结果".to_string(),
+        })?
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::{
@@ -241,5 +351,101 @@ mod tests {
         let script = Script::new("head -c 1048577 /dev/zero");
         let error = discover(&script.0, Duration::from_secs(1)).unwrap_err();
         assert!(error.contains("超过安全上限"));
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc, Arc,
+    };
+    #[test]
+    fn native_names_keep_literal_commas_unicode_and_reject_unsafe_names() {
+        let mut catalog = NativeFamilies::default();
+        catalog.push("字族 A").unwrap();
+        catalog.push("Family, Literal").unwrap();
+        catalog.push("字族 A").unwrap();
+        assert_eq!(catalog.finish(), vec!["Family, Literal", "字族 A"]);
+        for invalid in [
+            "Bad;css",
+            "Bad\\path",
+            "Bad{css}",
+            "Bad<markup>",
+            "Bad\0name",
+            "Bad\nname",
+        ] {
+            assert!(NativeFamilies::default().push(invalid).is_err());
+        }
+        assert!(NativeFamilies::default().push(&"字".repeat(129)).is_err());
+        assert!(families(b"invalid\xff").is_err());
+    }
+    #[test]
+    fn native_delivery_counts_duplicates_and_bounds_unique_families() {
+        let mut catalog = NativeFamilies::default();
+        for index in 0..MAX_FAMILIES {
+            catalog.push(&format!("Family {index}")).unwrap();
+        }
+        assert!(catalog.push("One Too Many").is_err());
+        let mut catalog = NativeFamilies::default();
+        let name = "A".repeat(128);
+        for _ in 0..MAX_OUTPUT / 257 {
+            catalog.push(&name).unwrap();
+        }
+        assert!(catalog.push(&name).is_err());
+    }
+    #[test]
+    fn native_timeout_retains_single_worker_lease_until_actual_return() {
+        let flight = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (release, wait) = mpsc::channel();
+        let count = calls.clone();
+        let result = bounded_native(flight.clone(), Duration::from_millis(20), move || {
+            count.fetch_add(1, Ordering::SeqCst);
+            wait.recv().unwrap();
+            Ok(vec!["Old result".into()])
+        });
+        assert!(result.unwrap_err().contains("超时"));
+        assert!(flight.load(Ordering::Acquire));
+        let count = calls.clone();
+        assert!(
+            bounded_native(flight.clone(), Duration::from_millis(20), move || {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![])
+            })
+            .unwrap_err()
+            .contains("仍在进行")
+        );
+        release.send(()).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while flight.load(Ordering::Acquire) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!flight.load(Ordering::Acquire));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            bounded_native(flight, Duration::from_secs(1), || Ok(vec![
+                "New result".into()
+            ]))
+            .unwrap(),
+            vec!["New result"]
+        );
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn actual_native_catalog_is_bounded_sorted_and_valid_without_a_window() {
+        let families = discover_font_families().expect("actual native system font enumeration");
+        assert!(
+            !families.is_empty(),
+            "native runner has no system font families"
+        );
+        assert!(families.len() <= MAX_FAMILIES);
+        assert!(families.windows(2).all(|pair| pair[0] < pair[1]));
+        let mut verified = NativeFamilies::default();
+        for family in &families {
+            verified.push(family).unwrap();
+        }
+        assert_eq!(families, verified.finish());
     }
 }

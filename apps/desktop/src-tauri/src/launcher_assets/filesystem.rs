@@ -1,15 +1,19 @@
-//! Asset files are opened relative to pinned directory FDs. Source snapshots
-//! own their FD until the caller finishes reading; publication never overwrites.
+//! Asset files use retained native directories and real platform identities.
+//! Source snapshots own their handle until reading finishes. New media bytes
+//! are sealed and published without replacement; uncertain publication retains
+//! its native receipt and never triggers name-based rollback or retry.
+#[cfg(unix)]
+use pcl_core::retained_fs::Security;
+use pcl_core::retained_fs::{
+    self,
+    stage::{PublishOutcome, Stage},
+    Directory, Identity, Kind, Leaf, Links, Metadata, Traversal,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    ffi::{CStr, CString},
-    fs::{File, Metadata},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
     path::{Component, Path, PathBuf},
 };
 
@@ -26,226 +30,268 @@ pub(super) fn component(name: &str) -> Result<(), String> {
         Ok(())
     }
 }
-fn cstring(name: &str) -> Result<CString, String> {
+fn leaf(name: &str) -> Result<Leaf, String> {
     component(name)?;
-    CString::new(name).map_err(|_| "媒体文件名无效".into())
-}
-fn error(context: &str) -> String {
-    format!("{context}：{}", std::io::Error::last_os_error())
+    Leaf::new(name).map_err(|e| format!("媒体文件名无效：{e}"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(super) struct Stamp {
+    // Preserve the exact Unix stamp field names/order/values used by existing
+    // media IDs and picker revisions. Windows serializes its native metadata,
+    // including the complete 128-bit ID and security descriptor, separately.
+    #[cfg(unix)]
     pub device: u64,
+    #[cfg(unix)]
     pub inode: u64,
+    #[cfg(unix)]
     mode: u32,
+    #[cfg(unix)]
     owner: u32,
+    #[cfg(unix)]
     links: u64,
     pub bytes: u64,
+    #[cfg(unix)]
     modified: (i64, i64),
+    #[cfg(unix)]
     changed: (i64, i64),
+    #[cfg_attr(unix, serde(skip))]
+    #[cfg_attr(windows, serde(flatten))]
+    native: Metadata,
 }
 impl Stamp {
-    pub fn of(m: &Metadata) -> Self {
-        Self {
-            device: m.dev(),
-            inode: m.ino(),
-            mode: m.mode(),
-            owner: m.uid(),
-            links: m.nlink(),
-            bytes: m.len(),
-            modified: (m.mtime(), m.mtime_nsec()),
-            changed: (m.ctime(), m.ctime_nsec()),
+    pub fn of(file: &File) -> Result<Self, String> {
+        let m = retained_fs::metadata(file).map_err(|e| e.to_string())?;
+        if m.kind != Kind::Regular || m.links != 1 || m.reparse_tag.is_some() {
+            return Err("只允许当前用户独占的普通媒体文件".into());
         }
-    }
-    fn safe(&self) -> bool {
-        self.mode & libc::S_IFMT == libc::S_IFREG
-            && self.owner == unsafe { libc::geteuid() }
-            && self.links == 1
+        m.require_owned()
+            .map_err(|_| "只允许当前用户独占的普通媒体文件")?;
+        #[cfg(unix)]
+        let (device, inode, mode, owner) = match (&m.identity, &m.security) {
+            (Identity::Unix { device, inode }, Security::Unix { mode, owner, .. }) => {
+                (*device, *inode, *mode, *owner)
+            }
+            _ => return Err("媒体元数据平台不匹配".into()),
+        };
+        Ok(Self {
+            #[cfg(unix)]
+            device,
+            #[cfg(unix)]
+            inode,
+            #[cfg(unix)]
+            mode,
+            #[cfg(unix)]
+            owner,
+            #[cfg(unix)]
+            links: m.links,
+            bytes: m.len,
+            #[cfg(unix)]
+            modified: (m.modified.seconds, i64::from(m.modified.nanos)),
+            #[cfg(unix)]
+            changed: (m.changed.seconds, i64::from(m.changed.nanos)),
+            native: m,
+        })
     }
 }
 
-pub(super) struct Dir(pub File);
+pub(super) struct Dir(pub Directory);
 impl Dir {
     pub fn absolute(path: &Path) -> Result<Self, String> {
         if !path.is_absolute() {
             return Err("媒体路径必须是绝对路径".into());
         }
-        let fd = unsafe {
-            libc::open(
-                c"/".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法打开根目录"));
-        }
-        let mut dir = Self(unsafe { File::from_raw_fd(fd) });
         for part in path.components() {
             match part {
-                Component::RootDir => {}
-                Component::Normal(name) => {
-                    dir = dir.child(name.to_str().ok_or("媒体路径必须是 UTF-8")?)?
+                Component::Normal(name) => component(name.to_str().ok_or("媒体路径必须是 UTF-8")?)?,
+                Component::CurDir | Component::ParentDir => {
+                    return Err("媒体路径不能包含相对路径跳转".into())
                 }
-                _ => return Err("媒体路径不能包含相对路径跳转".into()),
+                _ => {}
             }
         }
-        Ok(dir)
+        Directory::open_absolute(path)
+            .map(Self)
+            .map_err(|e| format!("无法打开媒体目录（不允许符号链接或重解析点）：{e}"))
     }
     pub fn optional(&self, name: &str) -> Result<Option<Self>, String> {
-        let c = cstring(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
-        };
-        if fd >= 0 {
-            return Ok(Some(Self(unsafe { File::from_raw_fd(fd) })));
+        match self.0.child(&leaf(name)?, Traversal::AllowMounts) {
+            Ok(directory) => Ok(Some(Self(directory))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "无法打开媒体目录（不允许符号链接或重解析点）：{error}"
+            )),
         }
-        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(error("无法打开媒体目录（不允许符号链接）"))
-        }
-    }
-    pub fn child(&self, name: &str) -> Result<Self, String> {
-        self.optional(name)?
-            .ok_or_else(|| format!("媒体目录不存在：{name}"))
     }
     pub fn create(&self, name: &str) -> Result<Self, String> {
-        let c = cstring(name)?;
-        if unsafe { libc::mkdirat(self.0.as_raw_fd(), c.as_ptr(), 0o700) } != 0
-            && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
-        {
-            return Err(error("无法创建媒体目录"));
-        }
-        let dir = self.child(name)?;
-        if dir.0.metadata().map_err(|e| e.to_string())?.uid() != unsafe { libc::geteuid() } {
-            return Err("媒体目录不属于当前用户".into());
-        }
+        let name = leaf(name)?;
+        let dir = match self.0.create_private(&name, Traversal::AllowMounts) {
+            Ok(directory) => Self(directory),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Self(
+                self.0
+                    .child(&name, Traversal::AllowMounts)
+                    .map_err(|e| e.to_string())?,
+            ),
+            Err(error) => return Err(format!("无法创建媒体目录：{error}")),
+        };
+        dir.0
+            .metadata()
+            .and_then(|m| m.require_owned())
+            .map_err(|_| "媒体目录不属于当前用户")?;
+        self.0
+            .recheck(&name, &dir.identity()?)
+            .map_err(|e| e.to_string())?;
         self.sync()?;
         Ok(dir)
     }
-    pub fn identity(&self) -> Result<(u64, u64), String> {
-        self.0
-            .metadata()
-            .map(|m| (m.dev(), m.ino()))
-            .map_err(|e| e.to_string())
+    pub fn identity(&self) -> Result<Identity, String> {
+        self.0.identity().map_err(|e| e.to_string())
     }
     pub fn file(&self, name: &str) -> Result<Option<File>, String> {
-        let c = cstring(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
+        let name = leaf(name)?;
+        let file = match self.0.open_regular(&name, Links::Single) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("无法读取媒体（不允许链接或特殊文件）：{error}")),
         };
-        if fd < 0 {
-            return if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
-                Ok(None)
-            } else {
-                Err(error("无法读取媒体（不允许符号链接）"))
-            };
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        if !Stamp::of(&file.metadata().map_err(|e| e.to_string())?).safe() {
-            return Err("只允许当前用户独占的普通媒体文件".into());
-        }
+        let stamp = Stamp::of(&file)?;
+        self.0
+            .recheck(&name, &stamp.native.identity)
+            .map_err(|e| e.to_string())?;
         Ok(Some(file))
     }
     pub fn names(&self) -> Result<Vec<String>, String> {
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c".".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法扫描媒体目录"));
+        let native = self.0.names(MAX_ENTRIES + 1).map_err(|e| e.to_string())?;
+        if native.len() > MAX_ENTRIES {
+            return Err("媒体目录最多允许 256 个文件".into());
         }
-        let stream = unsafe { libc::fdopendir(fd) };
-        if stream.is_null() {
-            unsafe {
-                libc::close(fd);
-            }
-            return Err(error("无法扫描媒体目录"));
-        }
-        struct Stream(*mut libc::DIR);
-        impl Drop for Stream {
-            fn drop(&mut self) {
-                unsafe {
-                    libc::closedir(self.0);
-                }
-            }
-        }
-        let stream = Stream(stream);
-        let mut names = Vec::new();
-        loop {
-            unsafe {
-                *libc::__errno_location() = 0;
-            }
-            let item = unsafe { libc::readdir(stream.0) };
-            if item.is_null() {
-                if std::io::Error::last_os_error().raw_os_error() != Some(0) {
-                    return Err(error("媒体目录扫描失败"));
-                }
-                break;
-            }
-            let bytes = unsafe { CStr::from_ptr((*item).d_name.as_ptr()) }.to_bytes();
-            if matches!(bytes, b"." | b"..") {
-                continue;
-            }
-            names.push(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| "媒体文件名必须是 UTF-8")?
-                    .to_owned(),
-            );
-            if names.len() > MAX_ENTRIES {
-                return Err("媒体目录最多允许 256 个文件".into());
-            }
-        }
+        let mut names = native
+            .into_iter()
+            .map(|name| {
+                name.into_string()
+                    .map_err(|_| "媒体文件名必须是 UTF-8".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         names.sort();
         Ok(names)
     }
     pub fn sync(&self) -> Result<(), String> {
-        self.0
-            .sync_all()
-            .map_err(|e| format!("媒体目录保存失败：{e}"))
+        self.0.sync().map_err(|e| format!("媒体目录保存失败：{e}"))
     }
     pub fn write_new(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        let c = cstring(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c".".as_ptr(),
-                libc::O_RDWR | libc::O_TMPFILE | libc::O_CLOEXEC,
-                0o600,
-            )
+        let name = leaf(name)?;
+        #[cfg(target_os = "linux")]
+        let source = self.0.clone();
+        #[cfg(not(target_os = "linux"))]
+        let (source, workspace) = {
+            if self
+                .0
+                .metadata()
+                .map_err(|e| e.to_string())?
+                .require_private()
+                .is_ok()
+            {
+                (self.0.clone(), None)
+            } else {
+                // Existing owned catalogs may be 0755 or have inherited ACLs.
+                // Keep their permissions intact: named leases originate in a
+                // new private workspace, never in a broadened Stage parent.
+                let (name, directory) = self
+                    .0
+                    .create_private_workspace()
+                    .map_err(|e| format!("无法创建私有媒体暂存目录：{e}"))?;
+                let metadata = directory.metadata().map_err(|e| {
+                    format!(
+                        "媒体暂存目录已创建，保留 {}：{e}",
+                        name.as_os_str().to_string_lossy()
+                    )
+                })?;
+                self.0.sync().map_err(|e| {
+                    format!(
+                        "媒体暂存目录已创建但同步失败，保留 {}：{e}",
+                        name.as_os_str().to_string_lossy()
+                    )
+                })?;
+                (directory, Some((name, metadata)))
+            }
         };
-        if fd < 0 {
-            return Err(error("目标文件系统不支持匿名媒体暂存"));
-        }
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        if unsafe {
-            libc::linkat(
-                file.as_raw_fd(),
-                c"".as_ptr(),
-                self.0.as_raw_fd(),
-                c.as_ptr(),
-                libc::AT_EMPTY_PATH,
+        #[cfg(target_os = "linux")]
+        let workspace_location = "当前目录的匿名媒体暂存".to_owned();
+        #[cfg(not(target_os = "linux"))]
+        let workspace_location = workspace
+            .as_ref()
+            .map(|(name, _)| name.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_else(|| "当前私有媒体目录".into());
+        let mut stage = Stage::new(&source)
+            .map_err(|e| format!("无法创建媒体暂存，现存目录已保留 {workspace_location}：{e}"))?;
+        let location = stage
+            .source_name()
+            .map_or(workspace_location.clone(), |name| {
+                format!(
+                    "{workspace_location}/{}",
+                    name.as_os_str().to_string_lossy()
+                )
+            });
+        #[cfg(not(target_os = "linux"))]
+        source
+            .sync()
+            .map_err(|e| format!("命名媒体暂存已创建但同步失败，保留 {location}：{e}"))?;
+        stage
+            .file_mut()
+            .write_all(bytes)
+            .map_err(|e| format!("媒体暂存写入失败，现存条目已保留；暂存 {location}：{e}"))?;
+        let sealed = stage.seal(bytes.len() as u64).map_err(|failed| {
+            format!(
+                "媒体暂存封存失败，现存条目已保留；暂存 {location}：{}",
+                failed.error
             )
-        } != 0
-        {
-            return Err(error("无法发布媒体（目标文件必须不存在）"));
+        })?;
+        match sealed.publish_new(&self.0, &name) {
+            Ok(PublishOutcome::Published { receipt }) => {
+                #[cfg(target_os = "linux")]
+                let _ = receipt;
+                #[cfg(not(target_os = "linux"))]
+                if let Some((name, expected)) = workspace {
+                    let cleanup = (|| {
+                        if source.identity().map_err(|e| e.to_string())? != expected.identity
+                            || !source.names(1).map_err(|e| e.to_string())?.is_empty()
+                        {
+                            return Err("私有媒体暂存目录身份或内容已变化".to_owned());
+                        }
+                        self.0
+                            .recheck(&name, &expected.identity)
+                            .map_err(|e| e.to_string())?;
+                        match self
+                            .0
+                            .remove_workspace_entry(&name, &expected)
+                            .map_err(|e| e.to_string())?
+                        {
+                            retained_fs::WorkspaceRemoval::Removed => Ok(()),
+                            retained_fs::WorkspaceRemoval::MayHaveRemoved { error } => {
+                                Err(format!("媒体暂存目录清理或持久化结果不确定：{error}"))
+                            }
+                        }
+                    })();
+                    if let Err(error) = cleanup {
+                        let evidence =
+                            serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+                        return Err(format!("媒体已保存，暂存目录清理未确认，请保留现存条目 {location}：{error}；发布证据：{evidence}"));
+                    }
+                }
+                Ok(())
+            }
+            Ok(PublishOutcome::Exists { .. }) => Err(format!(
+                "无法发布媒体（目标文件必须不存在），现存文件已保留；暂存 {location}"
+            )),
+            Ok(PublishOutcome::MayHavePublished { receipt, error, .. }) => {
+                let evidence = serde_json::to_string(&receipt).map_err(|e| e.to_string())?;
+                Err(format!("媒体可能已保存，但发布复核或同步失败，请保留现存文件并刷新；暂存 {location}：{error}；发布证据：{evidence}"))
+            }
+            Err(failed) => Err(format!(
+                "媒体发布准入失败，现存条目已保留；暂存 {location}：{}",
+                failed.error
+            )),
         }
-        self.sync()
-            .map_err(|e| format!("媒体已保存，但目录同步失败，请保留该文件：{e}"))
     }
 }
 
@@ -258,7 +304,7 @@ pub(super) struct Snapshot {
 impl Snapshot {
     pub fn open(dir: &Dir, name: &str, max: u64) -> Result<Self, String> {
         let mut file = dir.file(name)?.ok_or("媒体文件不存在")?;
-        let stamp = Stamp::of(&file.metadata().map_err(|e| e.to_string())?);
+        let stamp = Stamp::of(&file)?;
         if stamp.bytes == 0 || stamp.bytes > max {
             return Err("媒体文件为空或超过大小上限".into());
         }
@@ -312,9 +358,7 @@ impl Snapshot {
 }
 pub(super) fn check_file(file: &File, stamp: &Stamp, dir: &Dir, name: &str) -> Result<(), String> {
     let current = dir.file(name)?.ok_or("媒体文件已消失")?;
-    if Stamp::of(&file.metadata().map_err(|e| e.to_string())?) != *stamp
-        || Stamp::of(&current.metadata().map_err(|e| e.to_string())?) != *stamp
-    {
+    if Stamp::of(file)? != *stamp || Stamp::of(&current)? != *stamp {
         Err("媒体文件已变化，请刷新媒体列表".into())
     } else {
         Ok(())

@@ -163,7 +163,7 @@ fn journal(scope: &Scope, operation: &Dir, id: &str) -> Result<(Journal, String)
         || journal.operation_id != id
         || journal.entries.len() > MAX_ENTRIES
         || journal.root != scope.root.stamp()?.identity()
-        || Some(journal.logs)
+        || Some(journal.logs.clone())
             != scope
                 .logs
                 .as_ref()

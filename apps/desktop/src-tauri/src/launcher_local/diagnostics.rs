@@ -314,7 +314,12 @@ mod tests {
         let scope = Scope::create(&f.0, "launcher-logs").unwrap();
         let (previous, next) = segment(1, 192 * 1024);
         let path = scope.path().join("launcher-0.log");
-        fs::write(&path, &previous).unwrap();
+        scope
+            .folder
+            .as_ref()
+            .unwrap()
+            .write_new("launcher-0.log", &previous)
+            .unwrap();
         let result = Diagnostics::new(f.0.clone()).record(
             DiagnosticPolicy {
                 enabled: true,
@@ -331,7 +336,8 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            assert!(result.unwrap_err().contains("尚未实现"));
+            let error = result.unwrap_err();
+            assert!(error.contains("尚未实现"), "{error}");
             assert_eq!(saved, previous);
             assert_eq!(last_sequence(&saved), Some(next - 1));
         }
@@ -346,7 +352,12 @@ mod tests {
         for index in 0..4 {
             let (bytes, after) = segment(next, LIMIT as usize);
             next = after;
-            fs::write(scope.path().join(format!("launcher-{index}.log")), &bytes).unwrap();
+            scope
+                .folder
+                .as_ref()
+                .unwrap()
+                .write_new(&format!("launcher-{index}.log"), &bytes)
+                .unwrap();
             previous.push(bytes);
         }
         let policy = DiagnosticPolicy {
@@ -355,10 +366,10 @@ mod tests {
         };
         #[cfg(windows)]
         {
-            assert!(Diagnostics::new(f.0.clone())
+            let error = Diagnostics::new(f.0.clone())
                 .record(policy, event())
-                .unwrap_err()
-                .contains("尚未实现"));
+                .unwrap_err();
+            assert!(error.contains("尚未实现"), "{error}");
             for index in 0..4 {
                 assert_eq!(
                     fs::read(scope.path().join(format!("launcher-{index}.log"))).unwrap(),

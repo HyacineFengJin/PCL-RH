@@ -221,9 +221,12 @@ fn stop_requires_fresh_revision_and_process_identity() {
     stop_monitor(&f.0.join("project"), &status.revision).unwrap();
     let ended = wait_idle(&f.0.join("project"));
     assert!(!ended.game_running);
-    let mut wrong = process::identity(std::process::id()).unwrap().unwrap();
-    wrong.start_time += 1;
-    assert!(process::signal(&wrong, libc::SIGKILL).is_err());
+    #[cfg(target_os = "linux")]
+    {
+        let mut wrong = process::identity(std::process::id()).unwrap().unwrap();
+        wrong.start_time += 1;
+        assert!(process::signal(&wrong, libc::SIGKILL).is_err());
+    }
 }
 #[test]
 fn duplicate_handoff_and_unknown_markers_are_retained() {

@@ -91,9 +91,9 @@ struct CachedAsset {
     row: AssetRow,
     stamp: Stamp,
     mime: String,
-    root: (u64, u64),
-    owner: (u64, u64),
-    folder: (u64, u64),
+    root: pcl_core::retained_fs::Identity,
+    owner: pcl_core::retained_fs::Identity,
+    folder: pcl_core::retained_fs::Identity,
 }
 
 /// Owns the authorization map. Refresh replaces one collection atomically only

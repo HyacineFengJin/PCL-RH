@@ -4,17 +4,18 @@
 //! complete monitor/game identities authorize one fixed request document. The
 //! owning monitor may then stop only its own retained child. Old requests are
 //! preserved under distinct session keys; no history or user original is deleted.
-use crate::launcher_local::filesystem::{optional_snapshot, Dir, Scope, Snapshot, MAX_ENTRIES};
-use pcl_core::{
-    game_process::Identity,
-    retained_fs::{
-        self,
-        stage::{PublishOutcome, Stage},
-        Directory, Leaf,
-    },
+#[cfg(any(test, not(target_os = "linux")))]
+use crate::launcher_local::filesystem::MAX_ENTRIES;
+use crate::launcher_local::filesystem::{optional_snapshot, Dir, Scope, Snapshot};
+#[cfg(any(test, not(target_os = "linux")))]
+use pcl_core::retained_fs::{
+    stage::{PublishOutcome, Stage},
+    Directory, Leaf,
 };
+use pcl_core::{game_process::Identity, retained_fs};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(any(test, not(target_os = "linux")))]
 use std::io::Write;
 
 const FOLDER: &str = "game-monitor";
@@ -68,6 +69,7 @@ fn folder(scope: &Scope) -> Result<&Dir, String> {
     folder.require_private()?;
     Ok(folder)
 }
+#[cfg(any(test, not(target_os = "linux")))]
 fn native(folder: &Dir) -> Result<Directory, String> {
     Directory::from_file(folder.0.try_clone().map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())
@@ -97,6 +99,7 @@ fn matching(scope: &Scope, expected: &StopRequest) -> Result<Option<Snapshot>, S
 /// An uncertain publication is an error; callers must not delete or retry it.
 /// Cooperative callers leave at least one slot below MAX_ENTRIES for native
 /// named staging. At the directory bound, history is retained and writes stop.
+#[cfg(any(test, not(target_os = "linux")))]
 pub(super) fn request(scope: &Scope, monitor: &Identity, game: &Identity) -> Result<(), String> {
     let expected = StopRequest::new(monitor, game)?;
     if matching(scope, &expected)?.is_some() {

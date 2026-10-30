@@ -9,17 +9,39 @@ use crate::{
     tasks::{TaskHandle, TaskKind, TaskProgress},
     Shared,
 };
-use pcl_core::java::{JavaCatalog, JavaSelection};
+use pcl_core::{
+    java::{JavaCatalog, JavaSelection},
+    retained_fs::{Directory, Identity},
+};
 use pcl_install::{Installer, ProcessorJavaRequirement, ResolvedInstallRequest};
 use std::{
-    fs::{self, File, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
     sync::{atomic::Ordering, Arc},
 };
 
+#[cfg(test)]
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
+
 type Result<T> = std::result::Result<T, String>;
 const CHANGED: &str = "安装期间游戏目录、设置或启动状态已变化，请重新提交";
+
+/// Linux retains its original final-component admission policy, including
+/// existing parent aliases and no openat2 premise. Other native hosts use the
+/// provider's literal-directory port; ConfigStore::resolve supplies canonical
+/// physical root paths before an installation captures this context.
+fn captured_directory(path: &Path) -> Result<Directory> {
+    #[cfg(target_os = "linux")]
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|error| format!("无法固定安装目录：{error}"))?;
+    #[cfg(not(target_os = "linux"))]
+    let file = crate::launcher_local::filesystem::Dir::absolute(path)?.0;
+    Directory::from_file(file).map_err(|error| format!("无法固定原生安装目录：{error}"))
+}
 
 pub(crate) struct Inputs {
     pub settings: Settings,
@@ -36,8 +58,8 @@ pub(crate) struct Context {
     java_policy: (String, JavaSelection, Vec<String>),
     close_generation: u64,
     idle: launcher_monitor_runtime::IdleSnapshot,
-    directory: File,
-    identity: (u64, u64),
+    directory: Directory,
+    identity: Identity,
     store_binding: Result<java_download::StoreBinding>,
     network_bytes: u64,
 }
@@ -72,12 +94,8 @@ impl Context {
         {
             return Err(CHANGED.into());
         }
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&root.path)
-            .map_err(|error| format!("无法固定安装目录：{error}"))?;
-        let metadata = directory.metadata().map_err(|error| error.to_string())?;
+        let directory = captured_directory(Path::new(&root.path))?;
+        let identity = directory.identity().map_err(|error| error.to_string())?;
         let captured = Self {
             root: root.clone(),
             id: id.into(),
@@ -87,7 +105,7 @@ impl Context {
             close_generation: shared.close_generation.load(Ordering::SeqCst),
             idle: launcher_monitor_runtime::capture_idle(shared)?,
             directory,
-            identity: (metadata.dev(), metadata.ino()),
+            identity,
             store_binding: java_download::StoreBinding::capture(&shared.project),
             network_bytes: 0,
         };
@@ -140,12 +158,12 @@ impl Context {
         {
             return Err(CHANGED.into());
         }
-        let actual = fs::symlink_metadata(&self.root.path).map_err(|_| CHANGED.to_owned())?;
-        let held = self.directory.metadata().map_err(|_| CHANGED.to_owned())?;
-        if !actual.is_dir()
-            || (actual.dev(), actual.ino()) != self.identity
-            || (held.dev(), held.ino()) != self.identity
-        {
+        let actual = captured_directory(Path::new(&self.root.path))
+            .map_err(|_| CHANGED.to_owned())?
+            .identity()
+            .map_err(|_| CHANGED.to_owned())?;
+        let held = self.directory.identity().map_err(|_| CHANGED.to_owned())?;
+        if actual != self.identity || held != self.identity {
             return Err(CHANGED.into());
         }
         launcher_monitor_runtime::require_idle(shared)?;
