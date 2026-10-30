@@ -196,14 +196,18 @@ pub(super) fn open_directory(parent: &File, name: &OsStr, policy: Traversal) -> 
     Ok(file)
 }
 pub(super) fn reopen_directory(parent: &File, _: Traversal) -> io::Result<File> {
-    let file = owned(unsafe {
-        ReOpenFile(
-            parent.as_raw_handle(),
-            DIRECTORY_ACCESS,
-            SHARING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        )
-    })?;
+    // The internal dot component reopens the held directory itself. Public
+    // Leaf rejects it; no ancestor or mutable parent path is traversed. This
+    // also gives enumeration an independent native directory cursor.
+    let file = open(
+        parent,
+        OsStr::new("."),
+        DIRECTORY_ACCESS,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+        SHARING,
+        None,
+    )?;
     if metadata(&file)?.identity != metadata(parent)?.identity {
         return Err(conflict("Reopened directory identity differs"));
     }
@@ -477,14 +481,15 @@ pub(super) fn sync_directory(file: &File) -> io::Result<()> {
     // A directory opened only for lookup lacks write access required by flush.
     // Reopen the same held object with write-data access; do not rebuild its
     // pathname or hide a denied/unsupported durability operation.
-    let writable = owned(unsafe {
-        ReOpenFile(
-            file.as_raw_handle(),
-            FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
-            SHARING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        )
-    })?;
+    let writable = open(
+        file,
+        OsStr::new("."),
+        FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+        FILE_OPEN,
+        FILE_DIRECTORY_FILE,
+        SHARING,
+        None,
+    )?;
     if metadata(&writable)?.identity != metadata(file)?.identity {
         return Err(conflict(
             "Directory flush capability refers to another object",

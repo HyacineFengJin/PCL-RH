@@ -118,7 +118,8 @@ fn open(parent: &File, name: &OsStr, flags: i32, mode: u32, policy: Traversal) -
             parent.as_raw_fd(),
             name.as_ptr(),
             flags,
-            mode as libc::mode_t,
+            // Darwin mode_t is u16, promoted to C int in this variadic API.
+            mode as libc::c_int,
         )
     })?;
     if before.is_some_and(|expected| filesystem(&file).ok() != Some(expected)) {

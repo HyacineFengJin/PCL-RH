@@ -89,6 +89,9 @@ fn native_memory() -> Result<MemorySnapshot, String> {
     // libc provides the Mach statistics layout but not these two stable Mach
     // functions. Keep the declarations in the native adapter, using libc types.
     unsafe extern "C" {
+        // Public Mach macro mach_task_self() reads this process-local port.
+        // Bind the SDK symbol directly alongside the other Mach functions.
+        static mach_task_self_: libc::mach_port_t;
         fn host_page_size(host: libc::host_t, size: *mut libc::vm_size_t) -> libc::kern_return_t;
         fn mach_port_deallocate(
             task: libc::mach_port_t,
@@ -98,7 +101,7 @@ fn native_memory() -> Result<MemorySnapshot, String> {
     struct Host(libc::host_t);
     impl Drop for Host {
         fn drop(&mut self) {
-            unsafe { mach_port_deallocate(libc::mach_task_self(), self.0) };
+            unsafe { mach_port_deallocate(mach_task_self_, self.0) };
         }
     }
 
