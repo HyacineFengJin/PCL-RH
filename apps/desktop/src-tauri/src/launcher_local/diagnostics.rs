@@ -217,6 +217,14 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+    fn logical(scope: &Scope, name: &str) -> Vec<u8> {
+        let folder = scope.folder.as_ref().unwrap();
+        optional_snapshot(folder, name, LIMIT)
+            .unwrap()
+            .unwrap()
+            .bytes(folder, name)
+            .unwrap()
+    }
     fn event() -> DiagnosticRecord {
         DiagnosticRecord {
             event: DiagnosticEvent::GameSpawned,
@@ -313,7 +321,6 @@ mod tests {
         let f = Fixture::new();
         let scope = Scope::create(&f.0, "launcher-logs").unwrap();
         let (previous, next) = segment(1, 192 * 1024);
-        let path = scope.path().join("launcher-0.log");
         scope
             .folder
             .as_ref()
@@ -327,20 +334,10 @@ mod tests {
             },
             event(),
         );
-        let saved = fs::read(path).unwrap();
-        #[cfg(unix)]
-        {
-            result.unwrap();
-            assert!(saved.starts_with(&previous));
-            assert_eq!(last_sequence(&saved), Some(next));
-        }
-        #[cfg(windows)]
-        {
-            let error = result.unwrap_err();
-            assert!(error.contains("尚未实现"), "{error}");
-            assert_eq!(saved, previous);
-            assert_eq!(last_sequence(&saved), Some(next - 1));
-        }
+        result.unwrap();
+        let saved = logical(&scope, "launcher-0.log");
+        assert!(saved.starts_with(&previous));
+        assert_eq!(last_sequence(&saved), Some(next));
         validate(&saved).unwrap();
     }
     #[test]
@@ -364,50 +361,34 @@ mod tests {
             enabled: true,
             debug: false,
         };
-        #[cfg(windows)]
-        {
-            let error = Diagnostics::new(f.0.clone())
-                .record(policy, event())
-                .unwrap_err();
-            assert!(error.contains("尚未实现"), "{error}");
-            for index in 0..4 {
-                assert_eq!(
-                    fs::read(scope.path().join(format!("launcher-{index}.log"))).unwrap(),
-                    previous[index]
-                );
-            }
-        }
-        #[cfg(unix)]
-        {
-            Diagnostics::new(f.0.clone())
-                .record(policy, event())
-                .unwrap();
-            // After wrapping to index zero, a new store must continue index zero.
-            Diagnostics::new(f.0.clone())
-                .record(policy, event())
-                .unwrap();
-            let wrapped = fs::read(scope.path().join("launcher-0.log")).unwrap();
-            assert_eq!(last_sequence(&wrapped), Some(next + 1));
+        Diagnostics::new(f.0.clone())
+            .record(policy, event())
+            .unwrap();
+        // After wrapping to index zero, a new store must continue index zero.
+        Diagnostics::new(f.0.clone())
+            .record(policy, event())
+            .unwrap();
+        let wrapped = logical(&scope, "launcher-0.log");
+        assert_eq!(last_sequence(&wrapped), Some(next + 1));
+        assert_eq!(
+            wrapped
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            2
+        );
+        for index in 1..4 {
             assert_eq!(
-                wrapped
-                    .split(|byte| *byte == b'\n')
-                    .filter(|line| !line.is_empty())
-                    .count(),
-                2
+                logical(&scope, &format!("launcher-{index}.log")),
+                previous[index]
             );
-            for index in 1..4 {
-                assert_eq!(
-                    fs::read(scope.path().join(format!("launcher-{index}.log"))).unwrap(),
-                    previous[index]
-                );
-            }
-            assert!(fs::read_dir(scope.path())
-                .unwrap()
-                .filter_map(Result::ok)
-                .all(|entry| !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".local-stage-")));
         }
+        assert!(fs::read_dir(scope.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".local-stage-")));
     }
 }

@@ -193,21 +193,10 @@ mod tests {
         assert!(!f.0.join(".pcl-rust").exists());
         store.increment(StatEvent::LauncherOpened).unwrap();
         let second = store.increment(StatEvent::GameSpawned);
-        #[cfg(unix)]
-        {
-            let view = second.unwrap();
-            assert_eq!(view.launcher_opens, 1);
-            assert_eq!(view.game_spawns, 1);
-            assert!(view.last_game_spawn.is_some());
-        }
-        #[cfg(windows)]
-        {
-            assert!(second.unwrap_err().contains("尚未实现"));
-            let view = store.load().unwrap();
-            assert_eq!(view.launcher_opens, 1);
-            assert_eq!(view.game_spawns, 0);
-            assert!(view.last_game_spawn.is_none());
-        }
+        let view = second.unwrap();
+        assert_eq!(view.launcher_opens, 1);
+        assert_eq!(view.game_spawns, 1);
+        assert!(view.last_game_spawn.is_some());
         assert!(f
             .0
             .join(".pcl-rust/launcher-local/statistics.json")
@@ -229,12 +218,7 @@ mod tests {
                         if result.is_ok() {
                             succeeded += 1;
                         }
-                        #[cfg(unix)]
                         result.unwrap();
-                        #[cfg(windows)]
-                        if let Err(error) = result {
-                            assert!(error.contains("尚未实现"));
-                        }
                     }
                     succeeded
                 })
@@ -244,10 +228,7 @@ mod tests {
             .into_iter()
             .map(|worker| worker.join().unwrap())
             .sum();
-        #[cfg(unix)]
         assert_eq!(succeeded, 32);
-        #[cfg(windows)]
-        assert_eq!(succeeded, 1);
         assert_eq!(store.load().unwrap().game_spawns, succeeded);
     }
     #[test]

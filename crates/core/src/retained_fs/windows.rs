@@ -305,6 +305,21 @@ pub(super) fn create_directory(parent: &File, name: &OsStr, policy: Traversal) -
     }
     Ok(file)
 }
+pub(super) fn open_read_lease(
+    parent: &File,
+    name: &OsStr,
+    generated_delete: bool,
+) -> io::Result<File> {
+    open(
+        parent,
+        name,
+        FILE_GENERIC_READ | if generated_delete { DELETE } else { 0 },
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE,
+        FILE_SHARE_READ,
+        None,
+    )
+}
 pub(super) fn open_regular(parent: &File, name: &OsStr) -> io::Result<File> {
     open(
         parent,

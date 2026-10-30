@@ -25,6 +25,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(windows)]
+#[path = "windows_versions.rs"]
+mod windows_versions;
+
 pub(crate) const MAX_ENTRIES: usize = 4096;
 pub(crate) fn component(name: &str) -> Result<(), String> {
     if name.is_empty()
@@ -511,6 +515,10 @@ impl Dir {
         if bytes.len() as u64 > limit {
             return Err("本地服务文件超过安全上限".into());
         }
+        #[cfg(windows)]
+        if windows_versions::managed(name) {
+            return windows_versions::replace(self, name, expected, bytes, limit);
+        }
         let token = |snapshot: &Snapshot| (snapshot.stamp.clone(), snapshot.digest.clone());
         let fresh = optional_snapshot(self, name, limit)?;
         if fresh.as_ref().map(token) != expected.map(token) {
@@ -673,6 +681,10 @@ pub(crate) fn optional_snapshot(
     name: &str,
     max: u64,
 ) -> Result<Option<Snapshot>, String> {
+    #[cfg(windows)]
+    if windows_versions::managed(name) {
+        return windows_versions::snapshot(dir, name, max);
+    }
     match dir.file(name)? {
         None => Ok(None),
         Some(file) => {
@@ -690,6 +702,14 @@ pub(crate) struct Snapshot {
 }
 impl Snapshot {
     pub fn open(dir: &Dir, name: &str, max: u64) -> Result<Self, String> {
+        #[cfg(windows)]
+        if windows_versions::managed(name) {
+            return windows_versions::snapshot(dir, name, max)?
+                .ok_or_else(|| "启动器本地文件文件不存在".into());
+        }
+        Self::physical(dir, name, max)
+    }
+    fn physical(dir: &Dir, name: &str, max: u64) -> Result<Self, String> {
         let mut file = dir.file(name)?.ok_or("启动器本地文件文件不存在")?;
         let stamp = Stamp::from_file(&file)?;
         if stamp.bytes == 0 || stamp.bytes > max {
@@ -723,7 +743,7 @@ impl Snapshot {
         if count != snapshot.stamp.bytes {
             return Err("启动器本地文件读取期间发生变化".into());
         }
-        snapshot.recheck(dir, name)?;
+        check_physical_file(&snapshot.file, &snapshot.stamp, dir, name)?;
         Ok(snapshot)
     }
     pub fn recheck(&self, dir: &Dir, name: &str) -> Result<(), String> {
@@ -746,6 +766,19 @@ impl Snapshot {
     }
 }
 pub(crate) fn check_file(file: &File, stamp: &Stamp, dir: &Dir, name: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    if windows_versions::managed(name) {
+        let current =
+            windows_versions::snapshot(dir, name, windows_versions::document_limit(name))?
+                .ok_or("启动器本地文件文件已消失")?;
+        if current.stamp != *stamp || Stamp::from_file(file)? != *stamp {
+            return Err("启动器本地文件文件已变化，请重新读取".into());
+        }
+        return Ok(());
+    }
+    check_physical_file(file, stamp, dir, name)
+}
+fn check_physical_file(file: &File, stamp: &Stamp, dir: &Dir, name: &str) -> Result<(), String> {
     let current = dir.file(name)?.ok_or("启动器本地文件文件已消失")?;
     if Stamp::from_file(file)? != *stamp || Stamp::from_file(&current)? != *stamp {
         Err("启动器本地文件文件已变化，请刷新启动器本地文件列表".into())

@@ -429,6 +429,8 @@ pub(super) fn run_if_enabled() -> io::Result<()> {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/windows-inherited-cwd-2026-10-30");
     fs::create_dir_all(&base)?;
     let exe = env::current_exe()?;
+    let mut counterexamples = 0usize;
+    let mut inconclusive = 0usize;
     for variant in ["std-default-null-cwd", "restricted-handle-list-suspended"] {
         for case in ["baseline", "cwd-junction", "ancestor-replace"] {
             let fixture = tempfile::tempdir_in(fs::canonicalize(&base)?)?.keep();
@@ -536,15 +538,25 @@ pub(super) fn run_if_enabled() -> io::Result<()> {
             if !outside_unchanged {
                 return Err(io::Error::other("outside changed"));
             }
+            match classification {
+                "counterexample-child-cwd" | "baseline-failed" => counterexamples += 1,
+                "baseline-observed" | "binding-observed-on-this-host" => {}
+                _ => inconclusive += 1,
+            }
         }
     }
-    // Diagnostic process success does not mean the candidate was verified;
-    // classify the emitted records using RESEARCH.md, especially mutation and
-    // child identity. A blocked mutation is not coverage of that attack case.
+    // Retain every case before failing. A measurement completing is not a safe
+    // backend result; counterexamples and unresolved cases must remain red.
     println!(
         "{}",
-        json!({"diagnostic_completed":true,"production_implementation_changed":false,"pinned_cwd_claim":false})
+        json!({"diagnostic_completed":true,"production_implementation_changed":false,"pinned_cwd_claim":false,"counterexamples":counterexamples,"inconclusive":inconclusive})
     );
+    if counterexamples != 0 || inconclusive != 0 {
+        return Err(io::Error::other(format!(
+            "cwd candidate rejected: {counterexamples} counterexamples, {inconclusive} inconclusive observations; retained evidence under {}",
+            base.display()
+        )));
+    }
     Ok(())
 }
 

@@ -341,7 +341,7 @@ impl LauncherPreferencesStore {
     ) {
         *self.before_replace.lock().unwrap() = Some(Box::new(hook));
     }
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn test_with_write_lock<R>(
         &self,
         action: impl FnOnce(std::os::fd::RawFd) -> R,

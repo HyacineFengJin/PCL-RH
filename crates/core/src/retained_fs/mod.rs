@@ -333,6 +333,36 @@ impl Directory {
         regular(&file, links)?;
         Ok(file)
     }
+    /// Windows read lease for one literal private single-link file. The native
+    /// handle admits only READ sharing, so existing/new data writers and DELETE
+    /// handles are refused for this lease's lifetime. Ordinary readonly handles
+    /// opened with READ/WRITE/DELETE sharing remain compatible.
+    ///
+    /// `allow_generated_delete` additionally requests DELETE for caller-proven
+    /// app-generated payload GC. It never establishes that recovery authority;
+    /// callers must bind a durable authorization and verify content themselves.
+    #[cfg(windows)]
+    pub fn read_lease(&self, name: &Leaf, allow_generated_delete: bool) -> io::Result<ReadLease> {
+        let parent = self.metadata()?;
+        parent.require_private()?;
+        if parent.kind != Kind::Directory || parent.reparse_tag.is_some() {
+            return Err(invalid("Read lease parent is not a literal directory"));
+        }
+        let file = native::open_read_lease(&self.file, name.as_os_str(), allow_generated_delete)?;
+        let stamp = regular(&file, Links::Single)?;
+        stamp.require_private()?;
+        self.recheck(name, &stamp.identity)?;
+        let lease = ReadLease {
+            parent_identity: parent.identity,
+            parent: self.clone(),
+            name: name.clone(),
+            file,
+            stamp,
+            allow_generated_delete,
+        };
+        lease.recheck()?;
+        Ok(lease)
+    }
     pub fn create_file(&self, name: &Leaf) -> io::Result<File> {
         let file = native::create_file(&self.file, name.as_os_str())?;
         regular(&file, Links::Single)?.require_private()?;
@@ -422,6 +452,76 @@ impl Directory {
     }
 }
 
+/// Identity-bound Windows READ-sharing lease. This is not a transaction or a
+/// proof that a file is launcher generated. Never use generated removal on a
+/// user's physical original/base, even if its bytes happen to match a payload.
+#[cfg(windows)]
+pub struct ReadLease {
+    parent_identity: Identity,
+    parent: Directory,
+    name: Leaf,
+    file: File,
+    stamp: Metadata,
+    allow_generated_delete: bool,
+}
+#[cfg(windows)]
+impl ReadLease {
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+    pub fn metadata(&self) -> &Metadata {
+        &self.stamp
+    }
+    pub fn recheck(&self) -> io::Result<()> {
+        let parent = self.parent.metadata()?;
+        parent.require_private()?;
+        if parent.identity != self.parent_identity
+            || parent.kind != Kind::Directory
+            || parent.reparse_tag.is_some()
+        {
+            return Err(conflict("Read lease parent identity or type changed"));
+        }
+        self.parent.recheck(&self.name, &self.stamp.identity)?;
+        if metadata(&self.file)? != self.stamp {
+            return Err(conflict("Read leased file metadata changed"));
+        }
+        Ok(())
+    }
+    /// Remove this exact held link only after the caller verifies a durable GC
+    /// authorization for an app-generated, non-current payload and its digest.
+    /// No name reopen, path deletion or chmod fallback is used.
+    pub fn remove_generated(self) -> io::Result<WorkspaceRemoval> {
+        if !self.allow_generated_delete {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "This read lease has no generated deletion authority",
+            ));
+        }
+        self.recheck()?;
+        let Self {
+            parent, name, file, ..
+        } = self;
+        if let Err(error) =
+            native::remove_workspace_entry(parent.file(), name.as_os_str(), file, Kind::Regular)
+        {
+            return Ok(WorkspaceRemoval::MayHaveRemoved { error });
+        }
+        match parent.entry(&name).and_then(|entry| {
+            if entry.is_some() {
+                return Err(conflict("Generated cleanup name remains or was recreated"));
+            }
+            parent.sync()?;
+            if parent.entry(&name)?.is_some() {
+                return Err(conflict("Generated cleanup name reappeared during sync"));
+            }
+            Ok(())
+        }) {
+            Ok(()) => Ok(WorkspaceRemoval::Removed),
+            Err(error) => Ok(WorkspaceRemoval::MayHaveRemoved { error }),
+        }
+    }
+}
+
 pub struct Lock(File);
 impl Lock {
     pub fn file(&self) -> &File {
@@ -489,3 +589,7 @@ mod workspace_tests;
 
 #[cfg(test)]
 mod append_tests;
+
+#[cfg(all(test, windows))]
+#[path = "read_lease_windows_tests.rs"]
+mod read_lease_windows_tests;

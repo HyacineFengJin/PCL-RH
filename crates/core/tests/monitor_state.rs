@@ -70,6 +70,41 @@ fn initial_session_keeps_its_native_lifetime_lock_and_exact_binding() {
 }
 
 #[test]
+fn repeated_marker_commits_are_observed_instead_of_the_physical_base() {
+    let (_temporary, project) = fixture();
+    let game_root = project.join("game");
+    fs::create_dir(&game_root).unwrap();
+    let mut session = state::Session::start(
+        &project,
+        "native-root".into(),
+        game_root.clone(),
+        "native-instance".into(),
+        game_root.join(".pcl-linux/logs/fixture.log"),
+    )
+    .unwrap();
+    let starting = state::read_status(&project).unwrap().unwrap();
+    let physical_base = project.join(".pcl-rust/game-monitor/active.json");
+    #[cfg(windows)]
+    let original = fs::read(&physical_base).unwrap();
+    session.record_log_start(23).unwrap();
+    let bound = state::read_status(&project).unwrap().unwrap();
+    assert_eq!(bound.log_start, Some(23));
+    assert_ne!(bound.revision, starting.revision);
+    session.finished(false, Some(7)).unwrap();
+    let finished = state::read_status(&project).unwrap().unwrap();
+    assert_eq!(finished.phase, "failed");
+    assert_eq!(finished.exit_code, Some(7));
+    assert_ne!(finished.revision, bound.revision);
+    drop(session);
+    let reopened = state::read_status(&project).unwrap().unwrap();
+    assert_eq!(reopened.revision, finished.revision);
+    #[cfg(windows)]
+    assert_eq!(fs::read(physical_base).unwrap(), original);
+    #[cfg(unix)]
+    assert!(physical_base.is_file());
+}
+
+#[test]
 fn launch_log_is_appended_without_replacing_its_existing_inode() {
     let (_temporary, root) = fixture();
     let path = root.join(".pcl-linux/logs/fixture.log");

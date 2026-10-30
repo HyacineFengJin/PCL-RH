@@ -5,19 +5,23 @@
 //! this durable phase fences old failure context across GUI restarts, while the
 //! captured log and optional legacy identity remain untouched.
 use super::process::{self, Identity};
+#[cfg(unix)]
+use crate::launcher_local::filesystem::Stamp;
 use crate::launcher_local::filesystem::{
-    optional_snapshot, revision, Dir, Scope, Snapshot, Stamp, WriteLock,
+    optional_snapshot, revision, Dir, Scope, Snapshot, WriteLock,
 };
 use pcl_core::retained_fs::{self as native_fs, Kind};
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use pcl_core::retained_fs::{Directory, Leaf, Links};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::{
     fs::File,
-    io::Read,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -163,6 +167,21 @@ pub(super) enum ReadPoint {
 /// Preserve the bounded old FD bytes before checking stability: the general
 /// Snapshot reader rightly refuses a replaced inode, but cannot classify this
 /// service's own phase transition after that refusal. No source text is logged.
+#[cfg(windows)]
+fn capture_marker(
+    folder: &Dir,
+    observed: &mut impl FnMut(ReadPoint),
+) -> Result<Option<Snapshot>, String> {
+    // Windows selects immutable logical revisions while keeping the physical
+    // base as its permanent CAS fence. Reading active.json directly would keep
+    // reporting that original Starting marker after later phase commits.
+    let snapshot = optional_snapshot(folder, NAME, LIMIT)?;
+    if snapshot.is_some() {
+        observed(ReadPoint::Opened);
+    }
+    Ok(snapshot)
+}
+#[cfg(unix)]
 fn capture_marker(
     folder: &Dir,
     observed: &mut impl FnMut(ReadPoint),
@@ -187,7 +206,7 @@ fn capture_marker(
         }
         unsafe { File::from_raw_fd(fd) }
     };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     let mut file = {
         let directory = Directory::from_file(folder.0.try_clone().map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
