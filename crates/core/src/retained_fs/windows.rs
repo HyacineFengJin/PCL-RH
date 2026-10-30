@@ -316,6 +316,19 @@ pub(super) fn open_regular(parent: &File, name: &OsStr) -> io::Result<File> {
         None,
     )
 }
+pub(super) fn open_append(parent: &File, name: &OsStr, create: bool) -> io::Result<File> {
+    // APPEND_DATA without WRITE_DATA makes WriteFile append atomically even
+    // when a caller changes the file position. No overwrite/truncate rights.
+    open(
+        parent,
+        name,
+        FILE_APPEND_DATA | FILE_GENERIC_READ,
+        if create { FILE_CREATE } else { FILE_OPEN },
+        FILE_NON_DIRECTORY_FILE,
+        SHARING,
+        if create { Some(false) } else { None },
+    )
+}
 pub(super) fn create_file(parent: &File, name: &OsStr) -> io::Result<File> {
     // A newly created writable object is protected by its held sharing lease.
     // Later stage publication must rename this handle, not reopen its name.
@@ -539,6 +552,38 @@ pub(super) fn lock(file: &File) -> io::Result<()> {
         )
     } != 0
     {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+pub(super) fn try_shared_lock(file: &File) -> io::Result<bool> {
+    let mut overlapped = windows_sys::Win32::System::IO::OVERLAPPED::default();
+    if unsafe {
+        LockFileEx(
+            file.as_raw_handle(),
+            LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            1,
+            0,
+            &mut overlapped,
+        )
+    } != 0
+    {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32)
+        {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+pub(super) fn unlock_checked(file: &File) -> io::Result<()> {
+    let mut overlapped = windows_sys::Win32::System::IO::OVERLAPPED::default();
+    if unsafe { UnlockFileEx(file.as_raw_handle(), 0, 1, 0, &mut overlapped) } != 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

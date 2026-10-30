@@ -83,15 +83,9 @@ fn validate(request: &MonitorRequest) -> Result<(), String> {
         &request.game_dir,
         &request.java,
     ] {
-        if !path.is_absolute()
+        if pcl_core::retained_fs::validate_absolute_path(path).is_err()
             || path.to_str().is_none()
             || path.as_os_str().len() > 4096
-            || path.components().any(|part| {
-                !matches!(
-                    part,
-                    std::path::Component::RootDir | std::path::Component::Normal(_)
-                )
-            })
         {
             return Err("游戏监控启动路径无效".into());
         }
@@ -352,9 +346,16 @@ impl Drop for Pending {
         };
         // Try to stop the captured game first, then the still-unreaped helper.
         // Java also has PDEATHSIG as a last resort before the PID handshake.
+        #[cfg(target_os = "linux")]
         if let Some(game) = &self.game {
             let _ = process::signal(game, libc::SIGKILL);
         } else if let Ok(Some(status)) = state::read_status(&self.project) {
+            if status.monitor_pid == child.id() {
+                let _ = state::stop_monitor(&self.project, &status.revision);
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        if let Ok(Some(status)) = state::read_status(&self.project) {
             if status.monitor_pid == child.id() {
                 let _ = state::stop_monitor(&self.project, &status.revision);
             }
@@ -382,8 +383,11 @@ pub fn dispatch_cli() -> Option<i32> {
     if args.len() != 1 {
         return Some(2);
     }
+    #[cfg(target_os = "linux")]
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    }
+    unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
     Some(if helper().is_ok() { 0 } else { 2 })
@@ -434,6 +438,7 @@ fn helper() -> Result<(), String> {
     let supervisor = std::process::id();
     drop(request.args);
     session.spawned(game.id())?;
+    let control = session.controller()?;
     let stop = Arc::new(AtomicBool::new(false));
     let stdout = game.take_stdout().ok_or(FAILURE)?;
     let stderr = game.take_stderr().ok_or(FAILURE)?;
@@ -465,7 +470,23 @@ fn helper() -> Result<(), String> {
     }
     write_pipe(1, b"ACK\n", deadline)?;
     // Parent pipes are no longer used. Java/log ownership stays entirely here.
-    let result = game.wait()?;
+    let mut next_control_poll = Instant::now();
+    let result = loop {
+        if let Some(result) = game.try_wait()? {
+            break result;
+        }
+        // A malformed or replaced control record must not terminate a running
+        // game. Only this monitor owns the child/group/job and can act on a
+        // successfully validated request for this exact session.
+        if Instant::now() >= next_control_poll {
+            if control.stop_requested().unwrap_or(false) {
+                game.terminate()?;
+                break game.wait()?;
+            }
+            next_control_poll = Instant::now() + Duration::from_millis(200);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
     let drain = Instant::now() + Duration::from_secs(2);
     while !(stdout.is_finished() && stderr.is_finished()) && Instant::now() < drain {
         std::thread::sleep(Duration::from_millis(10));

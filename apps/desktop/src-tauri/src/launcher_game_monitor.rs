@@ -7,6 +7,8 @@
 //! ownership to the helper; before that point every failure kills/reaps Java.
 //! Reopening the launcher restores running or completed attempts from the marker;
 //! legacy markers keep their root/log binding without inventing an instance ID.
+#[path = "launcher_game_monitor/control.rs"]
+mod control;
 #[path = "launcher_game_monitor/output.rs"]
 mod output;
 #[path = "launcher_game_monitor/process.rs"]

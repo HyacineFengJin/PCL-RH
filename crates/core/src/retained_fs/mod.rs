@@ -132,6 +132,27 @@ pub enum WorkspaceRemoval {
     },
 }
 
+/// Validate a physical filesystem path without opening it. Windows disk/UNC
+/// roots (including their verbatim forms) are supported; device namespaces,
+/// relative paths and explicit dot/parent components are rejected.
+pub fn validate_absolute_path(path: &Path) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(invalid("Expected an absolute filesystem path"));
+    }
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if bytes
+        .split(|byte| *byte == b'/' || (cfg!(windows) && *byte == b'\\'))
+        .any(|part| matches!(part, b"." | b".."))
+    {
+        return Err(invalid(
+            "Explicit dot/parent path components are not allowed",
+        ));
+    }
+    // This is syntax validation only. Capability admission owns its own
+    // traversal-depth budget; old durable paths gain no new depth restriction.
+    native::absolute_parts(path).map(|_| ())
+}
+
 #[derive(Clone)]
 pub struct Directory {
     file: Arc<File>,
@@ -317,6 +338,53 @@ impl Directory {
         regular(&file, Links::Single)?.require_private()?;
         Ok(file)
     }
+    /// Append to one private single-link ordinary file, or create it privately
+    /// with no replacement. Never truncates; validates the actual opened EOF
+    /// before returning write authority. The caller bounds subsequent output.
+    /// Initial parent acquisition and later pathname revalidation are caller
+    /// responsibilities; this operation uses only this retained directory.
+    pub fn open_append(&self, name: &Leaf, max_existing_bytes: u64) -> io::Result<File> {
+        let parent = self.metadata()?;
+        if parent.kind != Kind::Directory || parent.reparse_tag.is_some() {
+            return Err(invalid("Append parent is not a literal directory"));
+        }
+        let before = self.entry(name)?;
+        if let Some(before) = &before {
+            if before.kind != Kind::Regular
+                || before.reparse_tag.is_some()
+                || before.links != 1
+                || before.len > max_existing_bytes
+            {
+                return Err(invalid(
+                    "Append target is not a bounded single-link regular file",
+                ));
+            }
+            before.require_owned()?;
+        }
+        let file = native::open_append(&self.file, name.as_os_str(), before.is_none())?;
+        let opened = regular(&file, Links::Single)?;
+        opened.require_private()?;
+        if opened.len > max_existing_bytes
+            || before.as_ref().is_some_and(|old| !opened.same_object(old))
+        {
+            return Err(conflict("Append file changed or exceeds the allowed EOF"));
+        }
+        self.recheck(name, &opened.identity)?;
+        if !self.metadata()?.same_object(&parent) {
+            return Err(conflict("Append parent identity changed"));
+        }
+        // Real native directory sync, including for newly created log names.
+        self.sync()?;
+        self.recheck(name, &opened.identity)?;
+        let current = regular(&file, Links::Single)?;
+        current.require_private()?;
+        if current.len > max_existing_bytes || !current.same_object(&opened) {
+            return Err(conflict(
+                "Append file changed during durability confirmation",
+            ));
+        }
+        Ok(file)
+    }
     pub fn names(&self, limit: usize) -> io::Result<Vec<OsString>> {
         if limit == 0 || limit > 1_000_000 {
             return Err(invalid("Invalid directory entry limit"));
@@ -366,6 +434,23 @@ impl Drop for Lock {
     }
 }
 
+/// Probe an already-open existing lock with a real nonblocking shared lock.
+/// Returns true only when an incompatible exclusive lock is held. A successful
+/// shared probe is explicitly unlocked before return, even with duplicated FDs.
+/// This function neither opens nor creates a lock filename.
+pub fn shared_lock_is_held(file: &File) -> io::Result<bool> {
+    let before = regular(file, Links::Single)?;
+    before.require_private()?;
+    let acquired = native::try_shared_lock(file)?;
+    if acquired {
+        native::unlock_checked(file)?;
+    }
+    if metadata(file)? != before {
+        return Err(conflict("Lock file changed during shared probe"));
+    }
+    Ok(!acquired)
+}
+
 pub fn metadata(file: &File) -> io::Result<Metadata> {
     native::metadata(file)
 }
@@ -401,3 +486,6 @@ fn conflict(message: &'static str) -> io::Error {
 mod tests;
 #[cfg(test)]
 mod workspace_tests;
+
+#[cfg(test)]
+mod append_tests;

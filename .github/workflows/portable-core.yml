@@ -3,9 +3,9 @@ name: Portable core
 on:
   push:
     branches: [master]
-    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'crates/install/src/repair_evidence.rs', 'crates/install/src/repair_lock.rs', 'crates/install/src/repair_staging.rs', 'crates/install/src/repair_staging_tests.rs', 'apps/desktop/src-tauri/src/document_io.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
+    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'crates/install/src/repair_evidence.rs', 'crates/install/src/repair_lock.rs', 'crates/install/src/repair_staging.rs', 'crates/install/src/repair_staging_tests.rs', 'apps/desktop/src-tauri/src/document_io.rs', 'apps/desktop/src-tauri/src/launcher_local.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/launcher_game_monitor/control.rs', 'apps/desktop/src-tauri/src/launcher_game_monitor/state.rs', 'apps/desktop/src-tauri/src/launcher_game_monitor/process.rs', 'apps/desktop/src-tauri/src/launcher_game_monitor/output.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
   pull_request:
-    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'crates/install/src/repair_evidence.rs', 'crates/install/src/repair_lock.rs', 'crates/install/src/repair_staging.rs', 'crates/install/src/repair_staging_tests.rs', 'apps/desktop/src-tauri/src/document_io.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
+    paths: ['crates/core/**', 'crates/auth/**', 'crates/network/**', 'crates/install/src/repair_evidence.rs', 'crates/install/src/repair_lock.rs', 'crates/install/src/repair_staging.rs', 'crates/install/src/repair_staging_tests.rs', 'apps/desktop/src-tauri/src/document_io.rs', 'apps/desktop/src-tauri/src/launcher_local.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/launcher_game_monitor/control.rs', 'apps/desktop/src-tauri/src/launcher_game_monitor/state.rs', 'apps/desktop/src-tauri/src/launcher_game_monitor/process.rs', 'apps/desktop/src-tauri/src/launcher_game_monitor/output.rs', 'Cargo.toml', 'Cargo.lock', '.github/workflows/portable-core.yml']
   workflow_dispatch:
 
 permissions:

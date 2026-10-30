@@ -315,18 +315,26 @@ mod tests {
         let (previous, next) = segment(1, 192 * 1024);
         let path = scope.path().join("launcher-0.log");
         fs::write(&path, &previous).unwrap();
-        Diagnostics::new(f.0.clone())
-            .record(
-                DiagnosticPolicy {
-                    enabled: true,
-                    debug: false,
-                },
-                event(),
-            )
-            .unwrap();
+        let result = Diagnostics::new(f.0.clone()).record(
+            DiagnosticPolicy {
+                enabled: true,
+                debug: false,
+            },
+            event(),
+        );
         let saved = fs::read(path).unwrap();
-        assert!(saved.starts_with(&previous));
-        assert_eq!(last_sequence(&saved), Some(next));
+        #[cfg(unix)]
+        {
+            result.unwrap();
+            assert!(saved.starts_with(&previous));
+            assert_eq!(last_sequence(&saved), Some(next));
+        }
+        #[cfg(windows)]
+        {
+            assert!(result.unwrap_err().contains("尚未实现"));
+            assert_eq!(saved, previous);
+            assert_eq!(last_sequence(&saved), Some(next - 1));
+        }
         validate(&saved).unwrap();
     }
     #[test]
@@ -345,34 +353,50 @@ mod tests {
             enabled: true,
             debug: false,
         };
-        Diagnostics::new(f.0.clone())
-            .record(policy, event())
-            .unwrap();
-        // After wrapping to index zero, a new store must continue index zero.
-        Diagnostics::new(f.0.clone())
-            .record(policy, event())
-            .unwrap();
-        let wrapped = fs::read(scope.path().join("launcher-0.log")).unwrap();
-        assert_eq!(last_sequence(&wrapped), Some(next + 1));
-        assert_eq!(
-            wrapped
-                .split(|byte| *byte == b'\n')
-                .filter(|line| !line.is_empty())
-                .count(),
-            2
-        );
-        for index in 1..4 {
-            assert_eq!(
-                fs::read(scope.path().join(format!("launcher-{index}.log"))).unwrap(),
-                previous[index]
-            );
+        #[cfg(windows)]
+        {
+            assert!(Diagnostics::new(f.0.clone())
+                .record(policy, event())
+                .unwrap_err()
+                .contains("尚未实现"));
+            for index in 0..4 {
+                assert_eq!(
+                    fs::read(scope.path().join(format!("launcher-{index}.log"))).unwrap(),
+                    previous[index]
+                );
+            }
         }
-        assert!(fs::read_dir(scope.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .all(|entry| !entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".local-stage-")));
+        #[cfg(unix)]
+        {
+            Diagnostics::new(f.0.clone())
+                .record(policy, event())
+                .unwrap();
+            // After wrapping to index zero, a new store must continue index zero.
+            Diagnostics::new(f.0.clone())
+                .record(policy, event())
+                .unwrap();
+            let wrapped = fs::read(scope.path().join("launcher-0.log")).unwrap();
+            assert_eq!(last_sequence(&wrapped), Some(next + 1));
+            assert_eq!(
+                wrapped
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| !line.is_empty())
+                    .count(),
+                2
+            );
+            for index in 1..4 {
+                assert_eq!(
+                    fs::read(scope.path().join(format!("launcher-{index}.log"))).unwrap(),
+                    previous[index]
+                );
+            }
+            assert!(fs::read_dir(scope.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".local-stage-")));
+        }
     }
 }

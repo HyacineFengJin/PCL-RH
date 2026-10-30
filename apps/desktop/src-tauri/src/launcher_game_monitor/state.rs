@@ -8,15 +8,16 @@ use super::process::{self, Identity};
 use crate::launcher_local::filesystem::{
     optional_snapshot, revision, Dir, Scope, Snapshot, Stamp, WriteLock,
 };
+use pcl_core::retained_fs::{self as native_fs, Kind};
+#[cfg(not(target_os = "linux"))]
+use pcl_core::retained_fs::{Directory, Leaf, Links};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::{
     fs::File,
     io::Read,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -166,35 +167,51 @@ fn capture_marker(
     folder: &Dir,
     observed: &mut impl FnMut(ReadPoint),
 ) -> Result<Option<Snapshot>, String> {
-    let fd = unsafe {
-        libc::openat(
-            folder.0.as_raw_fd(),
-            c"active.json".as_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err("游戏监控状态无法读取，已保留文件".into())
+    #[cfg(target_os = "linux")]
+    let mut file = {
+        // Preserve the existing read-only openat path. Reading healthy monitor
+        // state must not acquire a new openat2/kernel-version requirement.
+        let fd = unsafe {
+            libc::openat(
+                folder.0.as_raw_fd(),
+                c"active.json".as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
         };
-    }
-    let mut file = unsafe { File::from_raw_fd(fd) };
-    let metadata = file.metadata().map_err(|_| "无法检查游戏监控状态")?;
-    // An exchange may already have unlinked this opened inode. It is still a
-    // bounded owned regular FD; nlink=0 only permits capture, never acceptance.
-    if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.nlink() > 1
-        || metadata.len() == 0
-        || metadata.len() > LIMIT
+        if fd < 0 {
+            return if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err("游戏监控状态无法读取，已保留文件".into())
+            };
+        }
+        unsafe { File::from_raw_fd(fd) }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut file = {
+        let directory = Directory::from_file(folder.0.try_clone().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        match directory.open_regular(&Leaf::new(NAME).map_err(|e| e.to_string())?, Links::Any) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("游戏监控状态无法读取，已保留文件".into()),
+        }
+    };
+    let metadata = native_fs::metadata(&file).map_err(|_| "无法检查游戏监控状态")?;
+    // An exchange may already have unlinked this opened inode. nlink=0 permits
+    // bounded capture only; final acceptance still requires Snapshot recheck.
+    if metadata.kind != Kind::Regular
+        || metadata.reparse_tag.is_some()
+        || metadata.require_owned().is_err()
+        || metadata.links > 1
+        || metadata.len == 0
+        || metadata.len > LIMIT
     {
         return Err("游戏监控状态不是当前用户独占的有限普通文件，已保留文件".into());
     }
-    let stamp = Stamp::of(&metadata);
+    let stamp = Stamp::from_file(&file)?;
     observed(ReadPoint::Opened);
-    let mut header = Vec::with_capacity(metadata.len() as usize);
+    let mut header = Vec::with_capacity(metadata.len as usize);
     (&mut file)
         .take(LIMIT + 1)
         .read_to_end(&mut header)
@@ -264,18 +281,7 @@ fn lock_is_held(folder: &Dir) -> Result<bool, String> {
     let Some(file) = folder.file(".monitor.lock")? else {
         return Ok(false);
     };
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
-        // Explicit unlock is required even if another descriptor is duplicated.
-        unsafe {
-            libc::flock(file.as_raw_fd(), libc::LOCK_UN);
-        }
-        return Ok(false);
-    }
-    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
-        Ok(true)
-    } else {
-        Err("无法确认独立游戏监控的占用状态".into())
-    }
+    native_fs::shared_lock_is_held(&file).map_err(|_| "无法确认独立游戏监控的占用状态".into())
 }
 pub(super) fn read_status_observed(
     project: &Path,
@@ -301,8 +307,8 @@ pub(super) fn read_status_observed(
         };
         let marker = parse(project, &snapshot)?;
         if let Some((old, old_snapshot)) = &previous {
-            if old_snapshot.stamp.device != snapshot.stamp.device
-                || old_snapshot.stamp.inode == snapshot.stamp.inode
+            if !old_snapshot.stamp.same_volume(&snapshot.stamp)
+                || old_snapshot.stamp.same_identity(&snapshot.stamp)
                 || !progresses(old, &marker)
             {
                 return Err("游戏监控状态被外部修改或替换，已保留文件；暂停启动和文件操作".into());
@@ -328,10 +334,15 @@ pub fn stop_monitor(project: &Path, expected_revision: &str) -> Result<(), Strin
     }
     scope.recheck()?;
     snapshot.recheck(folder, NAME)?;
-    process::signal(
-        marker.game.as_ref().ok_or("游戏尚未成功启动")?,
-        libc::SIGKILL,
-    )
+    let game = marker.game.as_ref().ok_or("游戏尚未成功启动")?;
+    #[cfg(target_os = "linux")]
+    {
+        pcl_core::game_process::terminate(game)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        super::control::request(&scope, &marker.monitor, game)
+    }
 }
 /// A new preparation has passed its admission checks. Retire only the exact
 /// observed record while owning the helper's lifetime lock. A stale revision,
@@ -460,6 +471,13 @@ impl Session {
         self.marker.phase = Phase::Running;
         self.save()
     }
+    pub fn controller(&self) -> Result<super::control::Controller, String> {
+        super::control::Controller::for_session(
+            &self.scope,
+            &self.marker.monitor,
+            self.marker.game.as_ref().ok_or("游戏尚未成功启动")?,
+        )
+    }
     pub fn finished(&mut self, success: bool, exit_code: Option<i32>) -> Result<(), String> {
         self.marker.phase = if success {
             Phase::Exited
@@ -479,16 +497,8 @@ impl Drop for Session {
     }
 }
 pub(super) fn validate_log_path(root: &Path, path: &Path) -> Result<(), String> {
-    if !root.is_absolute()
-        || root.components().any(|part| {
-            !matches!(
-                part,
-                std::path::Component::RootDir | std::path::Component::Normal(_)
-            )
-        })
-    {
-        return Err("游戏监控目录必须是捕获的绝对目录".into());
-    }
+    native_fs::validate_absolute_path(root).map_err(|_| "游戏监控目录必须是捕获的绝对目录")?;
+    native_fs::validate_absolute_path(path).map_err(|_| "游戏日志路径必须是捕获的绝对路径")?;
     if path.parent() != Some(root.join(".pcl-linux/logs").as_path()) {
         return Err("游戏监控只能写入该游戏目录的启动日志".into());
     }
@@ -509,6 +519,32 @@ pub(super) fn validate_instance_id(instance: &str) -> Result<(), String> {
 /// Only captured-root launch logs can be opened. Existing regular logs are
 /// appended; creation never overwrites a competing new file or follows links.
 pub(super) fn open_launch_log(root: &Path, path: &Path) -> Result<File, String> {
+    validate_log_path(root, path)?;
+    #[cfg(target_os = "linux")]
+    {
+        open_launch_log_linux(root, path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let root = Dir::absolute(root)?;
+        let owner = root.create(".pcl-linux")?;
+        let folder = owner.create("logs")?;
+        let native = Directory::from_file(folder.0.try_clone().map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let leaf = Leaf::new(path.file_name().ok_or("游戏日志文件名无效")?)
+            .map_err(|_| "游戏日志文件名无效")?;
+        let file = native
+            .open_append(&leaf, super::output::LOG_LIMIT)
+            .map_err(|e| format!("无法安全追加游戏日志，已保留现有文件：{e}"))?;
+        if Dir::absolute(path.parent().unwrap())?.identity()? != folder.identity()? {
+            return Err("游戏日志目录在打开时发生变化".into());
+        }
+        folder.sync()?;
+        Ok(file)
+    }
+}
+#[cfg(target_os = "linux")]
+fn open_launch_log_linux(root: &Path, path: &Path) -> Result<File, String> {
     validate_log_path(root, path)?;
     let root = Dir::absolute(root)?;
     let owner = root.create(".pcl-linux")?;

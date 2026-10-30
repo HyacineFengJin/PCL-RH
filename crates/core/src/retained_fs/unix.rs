@@ -175,6 +175,48 @@ pub(super) fn create_file(parent: &File, name: &OsStr) -> io::Result<File> {
     )
 }
 
+pub(super) fn open_append(parent: &File, name: &OsStr, create: bool) -> io::Result<File> {
+    let name = cstring(name)?;
+    let flags =
+        libc::O_WRONLY | libc::O_APPEND | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
+    if create {
+        return owned_fd(unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_CREAT | libc::O_EXCL,
+                0o600 as libc::c_int,
+            )
+        });
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Pin without device/FIFO I/O, then reopen only that verified inode.
+        // This compatibility path deliberately introduces no openat2 premise.
+        let pinned = owned_fd(unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })?;
+        let observed = regular(&pinned, Links::Single)?;
+        observed.require_private()?;
+        let path = CString::new(format!("/proc/self/fd/{}", pinned.as_raw_fd())).unwrap();
+        let file = owned_fd(unsafe { libc::open(path.as_ptr(), flags & !libc::O_NOFOLLOW) })?;
+        if !metadata(&file)?.same_object(&observed) {
+            return Err(conflict("Pinned append file identity changed"));
+        }
+        Ok(file)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The caller validates the opened type/identity/security before any
+        // write. O_NONBLOCK prevents a raced FIFO from blocking admission.
+        owned_fd(unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) })
+    }
+}
+
 pub(super) fn workspace_entropy(bytes: &mut [u8; 16]) -> io::Result<()> {
     if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } == 0 {
         Ok(())
@@ -418,6 +460,25 @@ pub(super) fn open_lock(parent: &File, name: &OsStr) -> io::Result<File> {
 }
 pub(super) fn lock(file: &File) -> io::Result<()> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+pub(super) fn try_shared_lock(file: &File) -> io::Result<bool> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        Ok(true)
+    } else {
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+}
+pub(super) fn unlock_checked(file: &File) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

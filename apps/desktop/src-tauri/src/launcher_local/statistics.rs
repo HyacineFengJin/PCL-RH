@@ -192,10 +192,22 @@ mod tests {
         assert_eq!(store.load().unwrap().launcher_opens, 0);
         assert!(!f.0.join(".pcl-rust").exists());
         store.increment(StatEvent::LauncherOpened).unwrap();
-        let view = store.increment(StatEvent::GameSpawned).unwrap();
-        assert_eq!(view.launcher_opens, 1);
-        assert_eq!(view.game_spawns, 1);
-        assert!(view.last_game_spawn.is_some());
+        let second = store.increment(StatEvent::GameSpawned);
+        #[cfg(unix)]
+        {
+            let view = second.unwrap();
+            assert_eq!(view.launcher_opens, 1);
+            assert_eq!(view.game_spawns, 1);
+            assert!(view.last_game_spawn.is_some());
+        }
+        #[cfg(windows)]
+        {
+            assert!(second.unwrap_err().contains("尚未实现"));
+            let view = store.load().unwrap();
+            assert_eq!(view.launcher_opens, 1);
+            assert_eq!(view.game_spawns, 0);
+            assert!(view.last_game_spawn.is_none());
+        }
         assert!(f
             .0
             .join(".pcl-rust/launcher-local/statistics.json")
@@ -211,16 +223,32 @@ mod tests {
             .map(|_| {
                 let store = store.clone();
                 std::thread::spawn(move || {
+                    let mut succeeded = 0;
                     for _ in 0..8 {
-                        store.increment(StatEvent::GameSpawned).unwrap();
+                        let result = store.increment(StatEvent::GameSpawned);
+                        if result.is_ok() {
+                            succeeded += 1;
+                        }
+                        #[cfg(unix)]
+                        result.unwrap();
+                        #[cfg(windows)]
+                        if let Err(error) = result {
+                            assert!(error.contains("尚未实现"));
+                        }
                     }
+                    succeeded
                 })
             })
             .collect();
-        for worker in workers {
-            worker.join().unwrap();
-        }
-        assert_eq!(store.load().unwrap().game_spawns, 32);
+        let succeeded: u64 = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        #[cfg(unix)]
+        assert_eq!(succeeded, 32);
+        #[cfg(windows)]
+        assert_eq!(succeeded, 1);
+        assert_eq!(store.load().unwrap().game_spawns, succeeded);
     }
     #[test]
     fn malformed_future_and_symlink_files_are_retained() {
@@ -232,8 +260,11 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let retained = f.0.join("retained.json");
         fs::write(&retained, b"retain").unwrap();
-        std::os::unix::fs::symlink(&retained, &path).unwrap();
-        assert!(store.increment(StatEvent::LauncherOpened).is_err());
-        assert_eq!(fs::read(retained).unwrap(), b"retain");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&retained, &path).unwrap();
+            assert!(store.increment(StatEvent::LauncherOpened).is_err());
+            assert_eq!(fs::read(retained).unwrap(), b"retain");
+        }
     }
 }

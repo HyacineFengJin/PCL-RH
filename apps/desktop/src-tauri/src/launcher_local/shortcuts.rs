@@ -2,11 +2,12 @@
 //! The existing install-desktop.sh template is recognized byte-for-byte; edited
 //! or foreign entries are retained. Withdrawal journals intent before a rename
 //! into private trash on the same filesystem, so no package/game data is touched.
-use super::filesystem::{optional_snapshot, Dir, Scope, Snapshot, Stamp};
+use super::filesystem::{optional_snapshot, Dir, DirectoryIdentity, Scope, Snapshot, Stamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -69,7 +70,7 @@ struct Journal {
     target: ShortcutTarget,
     operation_id: String,
     created_at: u64,
-    parent: (u64, u64),
+    parent: DirectoryIdentity,
     stamp: Stamp,
     digest: String,
 }
@@ -240,6 +241,7 @@ impl ShortcutStore {
         })
     }
     pub fn prepare_create(&self, target: ShortcutTarget) -> Result<ShortcutPlan, String> {
+        require_xdg_backend()?;
         self.contents()?;
         self.plan(&[target], true)
     }
@@ -286,6 +288,7 @@ impl ShortcutStore {
         })
     }
     pub fn prepare_withdraw(&self) -> Result<ShortcutPlan, String> {
+        require_xdg_backend()?;
         self.plan(&self.targets(), false)
     }
     pub fn withdraw(&self, expected_revision: &str) -> Result<ShortcutOutcome, String> {
@@ -384,6 +387,7 @@ impl ShortcutStore {
         })
     }
     pub fn recovery(&self) -> Result<Vec<ShortcutRecovery>, String> {
+        require_xdg_backend()?;
         let mut rows = Vec::new();
         for target in self.targets() {
             let Some(parent) = optional_dir(self.path(target)?)? else {
@@ -420,6 +424,7 @@ impl ShortcutStore {
         operation_id: &str,
         expected_revision: &str,
     ) -> Result<ShortcutOutcome, String> {
+        require_xdg_backend()?;
         let (target, id) = operation_id.split_once(':').ok_or("无效入口恢复标识")?;
         let target = match target {
             "applications" => ShortcutTarget::Applications,
@@ -601,11 +606,20 @@ fn optional_dir(path: &Path) -> Result<Option<Dir>, String> {
 fn private(dir: &Dir) -> Result<(), String> {
     dir.require_private()
 }
+fn require_xdg_backend() -> Result<(), String> {
+    if cfg!(target_os = "linux") {
+        Ok(())
+    } else {
+        Err("此平台尚未接入原生应用入口；XDG 桌面入口只适用于 Linux".into())
+    }
+}
 fn validate_launcher(project: &Path) -> Result<(), String> {
+    require_xdg_backend()?;
     let dir = Dir::absolute(project)?;
     let file = dir
         .file("start-native.sh")?
         .ok_or("项目缺少启动脚本，不能创建应用入口")?;
+    #[cfg(unix)]
     if file
         .metadata()
         .map_err(|_| "无法读取启动脚本")?
@@ -616,6 +630,8 @@ fn validate_launcher(project: &Path) -> Result<(), String> {
     {
         return Err("项目启动脚本不可执行，不能创建应用入口".into());
     }
+    #[cfg(not(unix))]
+    drop(file);
     Ok(())
 }
 fn read_journal(operation: &Dir) -> Result<(Journal, Snapshot), String> {
@@ -677,6 +693,55 @@ fn desktop_exec(path: &Path) -> Result<String, String> {
     desktop_value(&quoted)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "shortcuts_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    #[test]
+    fn journal_retains_native_parent_identity_and_legacy_unix_wire() {
+        let parent = super::super::filesystem::fixture_path("shortcut-native-wire");
+        std::fs::create_dir_all(&parent).unwrap();
+        let parent = std::fs::canonicalize(parent).unwrap();
+        let dir = Dir::absolute(&parent).unwrap();
+        let identity = dir.identity().unwrap();
+        let wire = serde_json::to_string(&identity).unwrap();
+        #[cfg(unix)]
+        assert_eq!(wire, format!("[{},{}]", identity.0, identity.1));
+        #[cfg(windows)]
+        {
+            let value = serde_json::to_value(&identity).unwrap();
+            assert_eq!(value["platform"], "windows");
+            assert_eq!(value["file"].as_array().unwrap().len(), 16);
+            assert!(serde_json::from_str::<DirectoryIdentity>("[42,7]").is_err());
+        }
+        assert_eq!(
+            identity,
+            serde_json::from_str::<DirectoryIdentity>(&wire).unwrap()
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unavailable_native_registration_never_creates_xdg_or_project_state() {
+        let project = super::super::filesystem::fixture_path("shortcut-unavailable-project");
+        let target = super::super::filesystem::fixture_path("shortcut-unavailable-target");
+        assert!(!project.exists() && !target.exists());
+        let store = ShortcutStore::new(
+            project.clone(),
+            XdgPaths {
+                applications: target.clone(),
+                desktop: None,
+            },
+        );
+        assert!(store.prepare_create(ShortcutTarget::Applications).is_err());
+        assert!(store
+            .create(ShortcutTarget::Applications, "unapproved")
+            .is_err());
+        assert!(store.prepare_withdraw().is_err());
+        assert!(store.recovery().is_err());
+        assert!(store.restore("applications:any", "unapproved").is_err());
+        assert!(!project.exists() && !target.exists());
+    }
+}

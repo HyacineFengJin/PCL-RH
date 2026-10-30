@@ -158,10 +158,12 @@ pub(super) fn stream(
             }
             if !disabled {
                 let mut file = log.lock().map_err(|_| "日志文件状态不可用")?;
-                let metadata = file.metadata().map_err(|_| "日志文件状态不可用")?;
-                use std::os::unix::fs::MetadataExt;
-                if metadata.nlink() != 1
-                    || metadata.len().saturating_add(cut as u64) > LOG_LIMIT
+                let metadata =
+                    pcl_core::retained_fs::metadata(&file).map_err(|_| "日志文件状态不可用")?;
+                if metadata.links != 1
+                    || metadata.kind != pcl_core::retained_fs::Kind::Regular
+                    || metadata.reparse_tag.is_some()
+                    || metadata.len.saturating_add(cut as u64) > LOG_LIMIT
                     || file.write_all(&frame[..cut]).is_err()
                 {
                     disabled = true;

@@ -13,6 +13,7 @@ pub(super) fn session_id(identity: &Identity) -> String {
     hash.update(identity.boot_id.as_bytes());
     format!("{:x}", hash.finalize())
 }
+#[cfg(target_os = "linux")]
 pub(super) fn signal(expected: &Identity, signal: i32) -> Result<(), String> {
     if signal != libc::SIGKILL {
         return Err("游戏停止信号不受支持".into());
@@ -22,6 +23,7 @@ pub(super) fn signal(expected: &Identity, signal: i32) -> Result<(), String> {
 /// Only an unreaped owned child is used here: its PID cannot be reused while
 /// killing the process group. Normal completed children never enter this path.
 pub(super) fn kill_owned(child: &mut Child) {
+    #[cfg(unix)]
     unsafe {
         libc::kill(-(child.id() as i32), libc::SIGKILL);
     }

@@ -51,34 +51,36 @@ impl Fixture {
                     && path.join("apps/desktop/src-tauri/Cargo.toml").is_file()).unwrap();
             let workspace = repo.join("work/launcher-monitor-helper");
             fs::create_dir_all(&workspace).unwrap();
-            fs::write(workspace.join("Cargo.toml"),r#"[package]
+            fs::write(workspace.join("Cargo.toml"),format!(r#"[package]
 name = "launcher-monitor-test-helper"
 version = "0.0.0"
 edition = "2021"
 [workspace]
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 sha2 = "0.10"
 libc = "0.2"
+pcl-core = {{ path = {:?} }}
 [[bin]]
 name = "launcher-monitor-test-helper"
 path = "main.rs"
-"#).unwrap();
+"#, repo.join("crates/core"))).unwrap();
             fs::copy(repo.join("Cargo.lock"),workspace.join("Cargo.lock")).unwrap();
             fs::write(workspace.join("main.rs"),format!(
-                "extern crate self as pcl_core;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] pub mod game_process;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_local;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_game_monitor;\nfn main() {{ if let Some(code) = launcher_game_monitor::dispatch_cli() {{ std::process::exit(code); }} std::process::exit(2); }}\n",
-                repo.join("crates/core/src/game_process.rs"),
+                "#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_local;\n#[allow(dead_code,unused_imports)]\n#[path = {:?}] mod launcher_game_monitor;\nfn main() {{ if let Some(code) = launcher_game_monitor::dispatch_cli() {{ std::process::exit(code); }} std::process::exit(2); }}\n",
                 repo.join("apps/desktop/src-tauri/src/launcher_local.rs"),
                 repo.join("apps/desktop/src-tauri/src/launcher_game_monitor.rs"))).unwrap();
             use std::os::unix::process::CommandExt;
             let mut command = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"));
-            command.args(["build","--offline","--quiet","--manifest-path"])
+            command.args(["build","--offline","--quiet","-j1","--manifest-path"])
                 .arg(workspace.join("Cargo.toml")).current_dir(&workspace)
                 .env("CARGO_TARGET_DIR",workspace.join("target"))
                 .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).process_group(0);
             let mut child = command.spawn().expect("start isolated helper compiler");
-            let deadline = Instant::now() + Duration::from_secs(30);
+            // This compiles the actual core dependency in an isolated target,
+            // not a protocol deadline or a wait for a launched game.
+            let deadline = Instant::now() + Duration::from_secs(180);
             loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     assert!(status.success(),"isolated monitor helper must compile offline"); break;
@@ -106,6 +108,26 @@ fn wait_idle(project: &Path) -> MonitorStatus {
         assert!(Instant::now() < deadline, "supervisor did not finish");
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn private_stop_request_is_executed_by_the_owning_detached_monitor() {
+    let fixture = Fixture::new();
+    let started = protocol::spawn_with_helper(
+        &fixture.helper(),
+        fixture.request(fixture.java("while :; do sleep 1; done")),
+    )
+    .unwrap();
+    let scope =
+        crate::launcher_local::filesystem::Scope::open(&fixture.0.join("project"), "game-monitor")
+            .unwrap();
+    let supervisor = process::identity(started.monitor_pid).unwrap().unwrap();
+    let game = process::identity(started.pid).unwrap().unwrap();
+    control::request(&scope, &supervisor, &game).unwrap();
+    let status = wait_idle(&fixture.0.join("project"));
+    assert!(!status.game_running);
+    assert_eq!(status.phase, "failed");
+    assert!(!process::alive(&game).unwrap());
 }
 #[test]
 fn redactor_covers_every_boundary_and_overlapping_prefix() {
