@@ -1,6 +1,6 @@
 use super::*;
 use crate::components::ComponentStats;
-use std::{io::Cursor, os::unix::fs::MetadataExt, sync::Barrier};
+use std::{io::Cursor, sync::Barrier};
 
 fn dependencies(server: &Server, payload: &[u8], count: usize) -> Vec<Download> {
     (0..count)
@@ -141,8 +141,12 @@ fn component_cache_is_copied_to_writable_distinct_inodes_before_remote_work() {
         .unwrap();
         let target = workspace.path().join(&download.relative);
         assert_ne!(
-            fs::metadata(&cached).unwrap().ino(),
-            fs::metadata(&target).unwrap().ino()
+            pcl_core::retained_fs::metadata(&fs::File::open(&cached).unwrap())
+                .unwrap()
+                .identity,
+            pcl_core::retained_fs::metadata(&fs::File::open(&target).unwrap())
+                .unwrap()
+                .identity
         );
         fs::write(target, b"processor rewrote its private copy").unwrap();
         assert_eq!(fs::read(cached).unwrap(), payload);

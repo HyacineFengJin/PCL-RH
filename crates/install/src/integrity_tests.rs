@@ -2,7 +2,9 @@
 //! constructed by the local integrity checker.
 use super::*;
 use serde_json::json;
-use std::{os::unix::fs::symlink, sync::atomic::AtomicUsize};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::sync::atomic::AtomicUsize;
 
 fn fixture() -> tempfile::TempDir {
     let work = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -36,7 +38,12 @@ fn library(path: &str, bytes: &[u8]) -> Value {
 }
 
 fn capture(root: &Path) -> IntegrityCheck {
-    IntegrityCheck::capture_bound(fs::File::open(root).unwrap(), root, "fixture").unwrap()
+    IntegrityCheck::capture_bound(
+        crate::native_port_tests::directory_file(root),
+        root,
+        "fixture",
+    )
+    .unwrap()
 }
 
 fn verify(request: &IntegrityCheck) -> IntegrityReport {
@@ -182,7 +189,7 @@ fn corrupt_or_invalid_index_never_authorizes_objects_and_missing_only_stays_stri
         );
         if bytes == b"not JSON" {
             assert!(MissingRepair::capture_bound(
-                fs::File::open(root.path()).unwrap(),
+                crate::native_port_tests::directory_file(root.path()),
                 root.path(),
                 "fixture"
             )
@@ -365,18 +372,21 @@ fn unsafe_destinations_and_changed_guards_are_rejected_without_following_links()
         json!({"id":"fixture","downloads":{"client":descriptor(b"client")}}),
     );
     put(outside.path(), "outside.jar", b"client");
-    symlink(
-        outside.path().join("outside.jar"),
-        root.path().join("versions/fixture/fixture.jar"),
-    )
-    .unwrap();
-    assert!(IntegrityCheck::capture_bound(
-        fs::File::open(root.path()).unwrap(),
-        root.path(),
-        "fixture"
-    )
-    .is_err());
-    fs::remove_file(root.path().join("versions/fixture/fixture.jar")).unwrap();
+    #[cfg(unix)]
+    {
+        symlink(
+            outside.path().join("outside.jar"),
+            root.path().join("versions/fixture/fixture.jar"),
+        )
+        .unwrap();
+        assert!(IntegrityCheck::capture_bound(
+            crate::native_port_tests::directory_file(root.path()),
+            root.path(),
+            "fixture"
+        )
+        .is_err());
+        fs::remove_file(root.path().join("versions/fixture/fixture.jar")).unwrap();
+    }
     put(root.path(), "versions/fixture/fixture.jar", b"client");
     let request = capture(root.path());
     let calls = AtomicUsize::new(0);

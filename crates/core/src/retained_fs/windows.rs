@@ -11,7 +11,9 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            NtCreateFile, NtFlushBuffersFile, FILE_CREATE, FILE_DIRECTORY_FILE,
+            FileDispositionInformationEx, NtCreateFile, NtFlushBuffersFile, NtSetInformationFile,
+            FILE_CREATE, FILE_DIRECTORY_FILE, FILE_DISPOSITION_DELETE,
+            FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
             FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OPEN_REPARSE_POINT,
             FILE_SYNCHRONOUS_IO_NONALERT,
         },
@@ -54,6 +56,73 @@ pub(super) fn validate_leaf(name: &OsStr) -> io::Result<()> {
         return Err(invalid("Reserved Windows file name"));
     }
     Ok(())
+}
+pub(super) fn workspace_entropy(bytes: &mut [u8; 16]) -> io::Result<()> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    };
+    let status = unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(native_error(status))
+    }
+}
+pub(super) fn open_workspace_entry(parent: &File, name: &OsStr, kind: Kind) -> io::Result<File> {
+    let (options, extra) = match kind {
+        Kind::Directory => (FILE_DIRECTORY_FILE, FILE_LIST_DIRECTORY | FILE_TRAVERSE),
+        Kind::Regular => (FILE_NON_DIRECTORY_FILE, 0),
+        _ => {
+            return Err(invalid(
+                "Workspace cleanup requires a regular file or directory",
+            ))
+        }
+    };
+    open(
+        parent,
+        name,
+        DELETE | FILE_READ_ATTRIBUTES | READ_CONTROL | extra,
+        FILE_OPEN,
+        options,
+        SHARING,
+        None,
+    )
+}
+pub(super) fn remove_workspace_entry(
+    _parent: &File,
+    _name: &OsStr,
+    held: File,
+    _kind: Kind,
+) -> io::Result<()> {
+    let information = FILE_DISPOSITION_INFORMATION_EX {
+        Flags: FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS,
+    };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtSetInformationFile(
+            held.as_raw_handle(),
+            &mut status_block,
+            (&information as *const FILE_DISPOSITION_INFORMATION_EX).cast(),
+            size_of::<FILE_DISPOSITION_INFORMATION_EX>() as u32,
+            FileDispositionInformationEx,
+        )
+    };
+    // POSIX disposition removes this handle's link on close while other held
+    // read/directory handles remain valid. Do not change readonly attributes or
+    // fall back to mutable paths/classic delayed-delete semantics.
+    drop(held);
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(native_error(status))
+    }
 }
 pub(super) fn absolute_parts(path: &Path) -> io::Result<(std::path::PathBuf, Vec<OsString>)> {
     use std::path::Prefix;

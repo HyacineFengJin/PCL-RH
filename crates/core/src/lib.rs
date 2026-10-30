@@ -461,6 +461,10 @@ fn library_path(root: &Path, artifact: &Value, name: &str) -> Result<PathBuf> {
     // safe_join to reject it instead of disguising it as libraries//absolute.
     safe_join(root, Path::new("libraries").join(relative))
 }
+#[path = "native_archive.rs"]
+mod native_archive;
+pub use native_archive::extract_natives_with;
+
 pub fn extract_natives(archive: &Path, target: &Path, excludes: &[Value]) -> Result<()> {
     extract_natives_for(archive, target, excludes, platform::Platform::current()?)
 }
@@ -472,45 +476,20 @@ fn extract_natives_for(
     platform: platform::Platform,
 ) -> Result<()> {
     let file = fs::File::open(archive).map_err(err)?;
-    let mut jar = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", archive.display()))?;
-    for i in 0..jar.len() {
-        let mut entry = jar.by_index(i).map_err(err)?;
-        if excludes
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|prefix| entry.name().starts_with(prefix))
-        {
-            continue;
-        }
-        let enclosed = entry
-            .enclosed_name()
-            .ok_or_else(|| format!("Unsafe native archive entry: {}", entry.name()))?;
-        if entry
-            .unix_mode()
-            .is_some_and(|mode| mode & 0o170000 == 0o120000)
-        {
-            continue;
-        }
-        let Some(name) = enclosed.file_name().and_then(|v| v.to_str()) else {
-            continue;
-        };
-        if !platform.native_filename(name) {
-            continue;
-        }
-        if entry.size() > 256 * 1024 * 1024 {
-            return Err("Native archive entry exceeds 256 MiB".into());
-        }
+    extract_natives_with(file, excludes, platform, |name, _size, reader| {
         let path = safe_join(target, name)?;
         // Never truncate an inode that a running JVM may have mmap'ed. Each
         // concurrent plan writes a unique same-directory file and atomically
-        // replaces the directory entry only after extraction succeeds. Existing
-        // mappings keep their complete old inode; failed copies clean up on drop.
+        // replaces the directory entry only after verified extraction succeeds.
+        // Existing mappings keep their complete old inode; failed copies drop
+        // their temporary file. The stream verifies EOF/CRC before final bytes.
         let mut output = tempfile::NamedTempFile::new_in(target).map_err(err)?;
-        std::io::copy(&mut entry, &mut output).map_err(err)?;
+        let bytes = std::io::copy(reader, &mut output).map_err(err)?;
         output.persist(&path).map_err(err)?;
-    }
-    Ok(())
+        Ok(bytes)
+    })
 }
+
 fn expand(
     raw: &[Value],
     replacements: &BTreeMap<&str, String>,

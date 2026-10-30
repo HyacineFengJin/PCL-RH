@@ -675,6 +675,124 @@ fn output_parent_preparation_uses_native_bound_parent_and_legacy_path_contract()
     );
     assert_outside(&outside);
 }
+
+#[test]
+fn native_temporary_workspace_creation_cleanup_and_publication_ignore_adapter_paths() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let mut parent = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    parent.redirect_adapter_for_test(outside.join("must-not-create"));
+    let temporary = InstallTemporary::new(&parent).unwrap();
+    let name = temporary.name().to_owned();
+    let suffix = name.to_str().unwrap().strip_prefix(".install-").unwrap();
+    assert_eq!(suffix.len(), 32);
+    temporary
+        .dir()
+        .file("nested/file")
+        .unwrap()
+        .write(b"private bytes")
+        .unwrap();
+    assert!(root.join(&name).is_dir());
+    assert!(!outside.join("must-not-create").exists());
+    temporary.close().unwrap();
+    assert!(!root.join(name).exists());
+
+    let mut temporary = InstallTemporary::new(&parent).unwrap();
+    let name = temporary.name().to_owned();
+    temporary
+        .dir()
+        .file("content")
+        .unwrap()
+        .write(b"published bytes")
+        .unwrap();
+    temporary.publish("published").unwrap();
+    assert!(!root.join(name).exists());
+    assert_eq!(
+        fs::read(root.join("published/content")).unwrap(),
+        b"published bytes"
+    );
+    assert!(!outside.join("must-not-create").exists());
+    assert_outside(&outside);
+}
+
+#[test]
+fn workspace_preflight_retains_all_contents_on_links_and_multiple_hard_links() {
+    for hard_link in [false, true] {
+        let fixture = fixture();
+        let root = root(fixture.path());
+        let outside = outside(fixture.path());
+        let parent = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+        let temporary = InstallTemporary::new(&parent).unwrap();
+        let name = temporary.name().to_owned();
+        temporary
+            .dir()
+            .file("retained")
+            .unwrap()
+            .write(b"keep every file")
+            .unwrap();
+        let unknown = root.join(&name).join("unknown");
+        if hard_link {
+            fs::hard_link(outside.join("sentinel"), &unknown).unwrap();
+        } else {
+            symlink(&outside, &unknown).unwrap();
+        }
+        assert!(temporary.close().is_err());
+        assert_eq!(
+            fs::read(root.join(&name).join("retained")).unwrap(),
+            b"keep every file"
+        );
+        assert!(fs::symlink_metadata(unknown).is_ok());
+        assert_outside(&outside);
+    }
+}
+
+#[test]
+fn temporary_close_refuses_a_replaced_source_directory_without_deleting_it() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let parent = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let temporary = InstallTemporary::new(&parent).unwrap();
+    let name = temporary.name().to_owned();
+    temporary
+        .dir()
+        .file("owned")
+        .unwrap()
+        .write(b"original workspace")
+        .unwrap();
+    let detached = root.join("detached-workspace");
+    fs::rename(root.join(&name), &detached).unwrap();
+    symlink(&outside, root.join(&name)).unwrap();
+    assert!(temporary.close().is_err());
+    assert_eq!(
+        fs::read(detached.join("owned")).unwrap(),
+        b"original workspace"
+    );
+    assert!(fs::symlink_metadata(root.join(name))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_outside(&outside);
+}
+
+#[test]
+fn legacy_temporary_workspace_creation_and_close_keep_tempdir_behavior() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let parent = InstallDir::legacy(root.clone());
+    let temporary = InstallTemporary::new(&parent).unwrap();
+    let name = temporary.name().to_owned();
+    temporary
+        .dir()
+        .file("owned")
+        .unwrap()
+        .write(b"legacy")
+        .unwrap();
+    assert!(root.join(&name).is_dir());
+    temporary.close().unwrap();
+    assert!(!root.join(name).exists());
+}
 #[test]
 fn bound_forge_and_all_neoforge_coordinate_branches_run_real_private_java_processors() {
     for (minecraft, provider, version) in [

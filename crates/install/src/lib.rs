@@ -489,11 +489,11 @@ impl Installer {
         cancel: &AtomicBool,
         on_progress: impl Fn(Progress) + Send + Sync,
     ) -> Result<InstallResult> {
-        self.install_request_with_resolution(root, request, None, None, cancel, on_progress)
+        self.install_request_with_resolution(Some(root), request, None, None, cancel, on_progress)
     }
     fn install_request_with_resolution(
         &self,
-        root: &Path,
+        root: Option<&Path>,
         request: &InstallRequest,
         resolved: Option<&ResolvedInstallRequest>,
         prepared_root: Option<InstallDir>,
@@ -502,7 +502,8 @@ impl Installer {
     ) -> Result<InstallResult> {
         request.validate()?;
         check(cancel)?;
-        if prepared_root.is_none() && root.exists() {
+        if prepared_root.is_none() && root.ok_or("缺少安装根目录")?.exists() {
+            let root = root.ok_or("缺少安装根目录")?;
             let existing = root.join("versions").join(&request.name);
             match fs::symlink_metadata(existing) {
                 Ok(_) => return Err("该版本目录已存在，请修改版本名称".into()),
@@ -537,7 +538,7 @@ impl Installer {
     }
     fn install_inner(
         &self,
-        root: &Path,
+        root: Option<&Path>,
         request: &InstallRequest,
         resolved: Option<&ResolvedInstallRequest>,
         prepared_root: Option<InstallDir>,
@@ -568,12 +569,13 @@ impl Installer {
         let root = match prepared_root {
             Some(root) => root,
             None => {
+                let root = root.ok_or("缺少安装根目录")?;
                 fs::create_dir_all(root).map_err(error)?;
                 InstallDir::legacy(fs::canonicalize(root).map_err(error)?)
             }
         };
         let versions = root.directory("versions", true)?;
-        if fs::symlink_metadata(versions.path().join(name)).is_ok() {
+        if versions.entry_exists(name)? {
             return Err("该版本目录已存在，请选择其他版本或安装目录".into());
         }
         let mut temporary = InstallTemporary::new(&versions)?;
@@ -773,7 +775,7 @@ impl Installer {
                 return Err(e);
             }
             check(cancel)?;
-            let native_dir = temporary.dir().directory("natives", true)?;
+            temporary.dir().directory("natives", true)?;
             on_progress(Progress {
                 steps: vec![],
                 stage: "installing".into(),
@@ -787,10 +789,10 @@ impl Installer {
             for (path, excludes) in natives {
                 check(cancel)?;
                 let source = root.file(path)?.open()?;
-                pcl_core::extract_natives(
-                    &bound_root::anchor(&source),
-                    native_dir.path(),
+                temporary.extract_natives(
+                    source,
                     &excludes,
+                    pcl_core::platform::Platform::current()?,
                 )?;
             }
             check(cancel)?;
@@ -841,7 +843,7 @@ impl Installer {
                 )?;
             }
             on_progress(component_stats.event("publishing", "正在完成安装", 1.0));
-            if temporary.dir().path().join("component-work").exists() {
+            if temporary.dir().entry_exists("component-work")? {
                 temporary
                     .dir()
                     .remove_directory(Path::new("component-work"))
@@ -883,12 +885,14 @@ impl Installer {
         installation
     }
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "bound_root_tests.rs"]
 mod bound_root_tests;
 #[cfg(test)]
 #[path = "download_policy_tests.rs"]
 mod download_policy_tests;
+#[cfg(test)]
+mod native_port_tests;
 fn record_failure(failure: &Mutex<Option<String>>, new: String) {
     let mut failure = failure.lock().unwrap();
     if failure.is_none()
@@ -973,6 +977,7 @@ mod tests {
             while !stopping.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(1)))
                             .unwrap();
@@ -1139,14 +1144,17 @@ mod tests {
                 .contains(expected));
             assert!(!root.path().join("versions/fixture").exists());
         }
-        let server = server(false, false);
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), root.path().join("libraries")).unwrap();
-        assert!(installer(&server)
-            .install(root.path(), "fixture", &AtomicBool::new(false), |_| {})
-            .is_err());
-        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            let server = server(false, false);
+            let root = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), root.path().join("libraries")).unwrap();
+            assert!(installer(&server)
+                .install(root.path(), "fixture", &AtomicBool::new(false), |_| {})
+                .is_err());
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        }
     }
     #[test]
     fn metadata_retries_server_failures_and_reports_transport_reason() {

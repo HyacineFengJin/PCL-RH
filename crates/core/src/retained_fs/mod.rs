@@ -120,6 +120,18 @@ pub enum Links {
     Any,
 }
 
+/// Result of removing one caller-authorized private-workspace entry. This is
+/// not a conditional delete primitive for user originals or a transaction log.
+#[derive(Debug)]
+pub enum WorkspaceRemoval {
+    Removed,
+    /// A native deletion was attempted. The name or durability could not be
+    /// confirmed afterwards; retain the remaining tree and inspect it again.
+    MayHaveRemoved {
+        error: io::Error,
+    },
+}
+
 #[derive(Clone)]
 pub struct Directory {
     file: Arc<File>,
@@ -185,6 +197,112 @@ impl Directory {
         directory.metadata()?.require_private()?;
         directory._parent = Some(Arc::new(self.clone()));
         Ok(directory)
+    }
+    /// Allocate a new private installation workspace with a fixed literal
+    /// prefix and 128 bits of system randomness. No mutable parent path or
+    /// permission repair is used. The caller owns namespace durability.
+    pub fn create_private_workspace(&self) -> io::Result<(Leaf, Self)> {
+        let parent = self.metadata()?;
+        if parent.kind != Kind::Directory || parent.reparse_tag.is_some() {
+            return Err(invalid("Workspace parent is not a literal directory"));
+        }
+        for _ in 0..32 {
+            let mut entropy = [0u8; 16];
+            native::workspace_entropy(&mut entropy)?;
+            let suffix = entropy
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let name = Leaf::new(format!(".install-{suffix}"))?;
+            match self.create_private(&name, Traversal::SameFilesystem) {
+                Ok(directory) => {
+                    self.recheck(&name, &directory.identity()?)?;
+                    return Ok((name, directory));
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(conflict("Could not allocate a unique private workspace"))
+    }
+
+    /// Remove one literal regular file or empty directory from a temporary
+    /// subtree the caller already owns and authorizes for cleanup. Privacy is
+    /// established at that workspace root: generated children may have normal
+    /// 0644/0755 permissions. Links, multiple file hard links and special nodes
+    /// are refused. Callers must preflight the whole tree before recursion.
+    ///
+    /// POSIX rechecking an identity and unlinkat are separate operations, not
+    /// atomic expected-FD deletion. Concurrent replacement can therefore affect
+    /// the final name. This API must never be used to delete user originals.
+    pub fn remove_workspace_entry(
+        &self,
+        name: &Leaf,
+        expected: &Metadata,
+    ) -> io::Result<WorkspaceRemoval> {
+        self.remove_workspace_entry_with_sync(name, expected, Self::sync)
+    }
+    fn remove_workspace_entry_with_sync(
+        &self,
+        name: &Leaf,
+        expected: &Metadata,
+        sync_parent: impl FnOnce(&Self) -> io::Result<()>,
+    ) -> io::Result<WorkspaceRemoval> {
+        let parent = self.metadata()?;
+        if parent.kind != Kind::Directory || parent.reparse_tag.is_some() {
+            return Err(invalid("Workspace parent is not a literal directory"));
+        }
+        workspace_node(expected)?;
+        let visible = self
+            .entry(name)?
+            .ok_or_else(|| conflict("Workspace entry disappeared before cleanup"))?;
+        workspace_node(&visible)?;
+        if !visible.same_object(expected) {
+            return Err(conflict("Workspace entry was replaced before cleanup"));
+        }
+        let held = native::open_workspace_entry(&self.file, name.as_os_str(), expected.kind)?;
+        let actual = metadata(&held)?;
+        workspace_node(&actual)?;
+        if !actual.same_object(expected) {
+            return Err(conflict(
+                "Workspace entry changed while opening cleanup handle",
+            ));
+        }
+        if actual.kind == Kind::Directory {
+            let directory = Self::from_file(held.try_clone()?)?;
+            if !directory.names(1)?.is_empty() {
+                return Err(conflict("Workspace directory is not empty"));
+            }
+        }
+        self.recheck(name, &actual.identity)?;
+        // The held object must still have the admitted kind and link policy.
+        // No chmod, attribute changes, retries or name-based rollback follows.
+        workspace_node(&metadata(&held)?)?;
+        if let Err(error) =
+            native::remove_workspace_entry(&self.file, name.as_os_str(), held, actual.kind)
+        {
+            return Ok(WorkspaceRemoval::MayHaveRemoved { error });
+        }
+        let confirmation = (|| {
+            if self.entry(name)?.is_some() {
+                return Err(conflict("Workspace cleanup name remains or was recreated"));
+            }
+            sync_parent(self)?;
+            let current = self.metadata()?;
+            if !current.same_object(&parent)
+                || current.reparse_tag.is_some()
+                || self.entry(name)?.is_some()
+            {
+                return Err(conflict(
+                    "Workspace parent or cleanup name changed during flush",
+                ));
+            }
+            Ok(())
+        })();
+        match confirmation {
+            Ok(()) => Ok(WorkspaceRemoval::Removed),
+            Err(error) => Ok(WorkspaceRemoval::MayHaveRemoved { error }),
+        }
     }
     pub fn entry(&self, name: &Leaf) -> io::Result<Option<Metadata>> {
         native::entry(&self.file, name.as_os_str())
@@ -263,6 +381,15 @@ fn regular(file: &File, links: Links) -> io::Result<Metadata> {
     }
     Ok(metadata)
 }
+fn workspace_node(metadata: &Metadata) -> io::Result<()> {
+    if metadata.reparse_tag.is_some()
+        || !matches!(metadata.kind, Kind::Regular | Kind::Directory)
+        || (metadata.kind == Kind::Regular && metadata.links != 1)
+    {
+        return Err(invalid("Workspace cleanup refuses links or special nodes"));
+    }
+    Ok(())
+}
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
@@ -272,3 +399,5 @@ fn conflict(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod workspace_tests;

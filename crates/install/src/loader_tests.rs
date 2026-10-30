@@ -98,6 +98,7 @@ fn fixture_server_with_forge_processor(
         while !stopping.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(1)))
                         .unwrap();
@@ -246,24 +247,27 @@ fn invalid_selection_and_dangling_collision_do_not_download_or_write() {
             .contains("暂不支持"));
     }
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
-    fs::create_dir(root.path().join("versions")).unwrap();
-    std::os::unix::fs::symlink(
-        root.path().join("absent"),
-        root.path().join("versions/collision"),
-    )
-    .unwrap();
-    assert!(i
-        .install_request(
-            root.path(),
-            &request("collision", None),
-            &AtomicBool::new(false),
-            |_| {}
+    #[cfg(unix)]
+    {
+        fs::create_dir(root.path().join("versions")).unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("absent"),
+            root.path().join("versions/collision"),
         )
-        .is_err());
-    assert!(fs::symlink_metadata(root.path().join("versions/collision"))
-        .unwrap()
-        .file_type()
-        .is_symlink());
+        .unwrap();
+        assert!(i
+            .install_request(
+                root.path(),
+                &request("collision", None),
+                &AtomicBool::new(false),
+                |_| {}
+            )
+            .is_err());
+        assert!(fs::symlink_metadata(root.path().join("versions/collision"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
 }
 #[test]
 fn stalled_headers_cancel_promptly_before_any_version_publication() {
@@ -355,6 +359,7 @@ fn fabric_and_embedded_forge_profiles_publish_complete_named_instances() {
     }
 }
 #[test]
+#[cfg(unix)]
 fn neoforge_retains_generated_runtime_libraries_missing_from_launch_json() {
     let server = fixture_server(Some("neoforge"), None);
     let root = tempfile::tempdir().unwrap();
@@ -392,6 +397,7 @@ fn neoforge_retains_generated_runtime_libraries_missing_from_launch_json() {
     assert!(root.path().join("versions/neo/neo.jar").is_file());
 }
 #[test]
+#[cfg(unix)]
 fn fixed_java_failure_prevents_forge_and_neoforge_processors_and_publication() {
     use std::os::unix::fs::PermissionsExt;
     for provider in ["forge", "neoforge"] {
@@ -520,6 +526,7 @@ fn component_cancellation_removes_installer_workspace_and_keeps_verified_base_ca
     }
 }
 #[test]
+#[cfg(unix)]
 fn cancelled_neoforge_child_is_reaped_and_its_working_files_are_removed() {
     use std::os::unix::fs::PermissionsExt;
     let server = fixture_server(Some("neoforge"), None);

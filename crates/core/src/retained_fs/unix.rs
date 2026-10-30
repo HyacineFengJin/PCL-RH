@@ -175,6 +175,41 @@ pub(super) fn create_file(parent: &File, name: &OsStr) -> io::Result<File> {
     )
 }
 
+pub(super) fn workspace_entropy(bytes: &mut [u8; 16]) -> io::Result<()> {
+    if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+pub(super) fn open_workspace_entry(parent: &File, name: &OsStr, kind: Kind) -> io::Result<File> {
+    match kind {
+        Kind::Directory => open_directory(parent, name, Traversal::SameFilesystem),
+        Kind::Regular => open_regular(parent, name),
+        _ => Err(invalid(
+            "Workspace cleanup requires a regular file or directory",
+        )),
+    }
+}
+pub(super) fn remove_workspace_entry(
+    parent: &File,
+    name: &OsStr,
+    _held: File,
+    kind: Kind,
+) -> io::Result<()> {
+    let name = cstring(name)?;
+    let flags = if kind == Kind::Directory {
+        libc::AT_REMOVEDIR
+    } else {
+        0
+    };
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 fn time(seconds: i64, nanos: i64) -> io::Result<Time> {
     if !(0..1_000_000_000).contains(&nanos) {
         return Err(invalid("Invalid native timestamp"));

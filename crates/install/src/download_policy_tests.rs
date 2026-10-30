@@ -74,6 +74,7 @@ fn server(payload: Vec<u8>) -> Server {
                     let component_active = component_active.clone();
                     let component_seen = component_seen.clone();
                     workers.push(thread::spawn(move || {
+                        socket.set_nonblocking(false).unwrap();
                         socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
                         socket.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
                         let mut buf = [0u8; 4096];
@@ -262,7 +263,7 @@ fn bound_publication_conflict_preserves_target_and_is_never_a_transfer_retry() {
     fs::create_dir_all(target.path().join("libraries")).unwrap();
     let existing = target.path().join("libraries/existing.jar");
     fs::write(&existing, b"pre-existing data must remain").unwrap();
-    let root = InstallDir::bound(fs::File::open(target.path()).unwrap()).unwrap();
+    let root = InstallDir::bound(crate::native_port_tests::directory_file(target.path())).unwrap();
     let artifact = Download {
         url: format!("{}/payload", server.base),
         relative: "libraries/existing.jar".into(),
@@ -299,7 +300,21 @@ fn bound_publication_conflict_preserves_target_and_is_never_a_transfer_retry() {
         fs::read(&existing).unwrap(),
         b"pre-existing data must remain"
     );
-    assert_eq!(fs::read_dir(existing.parent().unwrap()).unwrap().count(), 1);
+    let entries: Vec<_> = fs::read_dir(existing.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    #[cfg(target_os = "linux")]
+    assert_eq!(entries.len(), 1);
+    #[cfg(not(target_os = "linux"))]
+    {
+        // A failed named publication preserves its actual source as recovery
+        // evidence. Dropping the lease must never blindly unlink that name.
+        assert!(error.contains("已保留待恢复"), "{error}");
+        assert_eq!(entries.len(), 2);
+        let residue = entries.iter().find(|path| **path != existing).unwrap();
+        assert_eq!(fs::read(residue).unwrap(), payload);
+    }
     assert_eq!(installer.downloads.status().active_transfers, 0);
 }
 

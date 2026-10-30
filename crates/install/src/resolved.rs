@@ -271,7 +271,7 @@ impl Installer {
         on_progress: impl Fn(Progress) + Send + Sync,
     ) -> Result<InstallResult> {
         self.install_request_with_resolution(
-            root,
+            Some(root),
             resolved.request(),
             Some(resolved),
             None,
@@ -301,10 +301,18 @@ impl Installer {
         std::thread::scope(|scope| {
             scope
                 .spawn(|| {
+                    #[cfg(target_os = "linux")]
                     bound_root::confine_writes(root.fd().unwrap())?;
+                    #[cfg(not(target_os = "linux"))]
+                    if resolved.processor_java_requirement()?.is_some() {
+                        // Handle-only metadata/download installation executes no
+                        // third-party code. Java batches require a real process
+                        // confinement backend, never a successful empty stub.
+                        bound_root::confine_writes(root.fd().unwrap())?;
+                    }
                     let root = root.reanchor();
                     self.install_request_with_resolution(
-                        root.path(),
+                        None,
                         resolved.request(),
                         Some(resolved),
                         Some(root.clone()),

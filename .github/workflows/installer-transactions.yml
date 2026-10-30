@@ -1,4 +1,4 @@
-name: Installer transactions (Linux)
+name: Installer transactions
 
 on:
   push:
@@ -17,8 +17,13 @@ concurrency:
 
 jobs:
   transactions:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    name: Installer / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: '1'
@@ -26,15 +31,22 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Install stable Rust
         run: rustup toolchain install stable --profile minimal
+      - name: Compile the complete production installer on its native host
+        run: cargo +stable check --locked -p pcl-install --lib
       - name: Test installer publication and recovery
         shell: bash
-        # The image's JDK only compiles/runs synthetic processor fixtures.
-        # No real game, account, service credentials or user directory is used.
+        # Only Linux's Landlock tests compile/run synthetic processor fixtures.
+        # Every host runs the real installer, HTTP/native archive/retained root,
+        # staging registry, repair/recovery tests; no real game/JVM is downloaded.
         run: |
-          export JAVA_HOME="$JAVA_HOME_17_X64"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          java -version
-          javac -version
+          if [ "$RUNNER_OS" = Linux ]; then
+            export JAVA_HOME="$JAVA_HOME_17_X64"
+            export PATH="$JAVA_HOME/bin:$PATH"
+            java -version
+            javac -version
+          fi
           cargo +stable test --locked -p pcl-install --lib -- --test-threads=2
-      # The other native hosts exercise the shared primitive in Portable core.
-      # Full installer transactions still require Linux openat2 and Landlock.
+      - name: Report host toolchain
+        run: rustc +stable -vV
+      # Native installer tests are not evidence of a complete desktop app or of
+      # non-Linux Java-processor confinement; unsupported batches must fail.

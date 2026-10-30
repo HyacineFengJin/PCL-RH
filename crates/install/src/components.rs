@@ -632,7 +632,7 @@ impl Installer {
                     vanilla["javaVersion"]["majorVersion"].as_u64().unwrap_or(8) as u32;
                 let java = self.installer_java_in(
                     java_major,
-                    workspace.path(),
+                    workspace.process_path()?,
                     workspace.is_bound(),
                     cancel,
                 )?;
@@ -860,29 +860,29 @@ impl std::ops::DerefMut for ProcessorData {
     }
 }
 impl ProcessorData {
-    fn remember(&self, path: bound_root::InstallPath) -> String {
+    fn remember(&self, path: bound_root::InstallPath) -> Result<String> {
         let mut paths = self.paths.lock().unwrap();
         if let Some(existing) = paths
             .iter()
             .find(|existing| existing.relative() == path.relative())
         {
-            return existing.to_string_lossy().into_owned();
+            return Ok(existing.process_path()?.to_string_lossy().into_owned());
         }
-        let value = path.to_string_lossy().into_owned();
+        let value = path.process_path()?.to_string_lossy().into_owned();
         paths.push(path);
-        value
+        Ok(value)
     }
     fn relative_output(&self, workspace: &InstallDir, path: &Path) -> Result<PathBuf> {
-        if let Ok(relative) = path.strip_prefix(workspace.path()) {
+        if let Ok(relative) = path.strip_prefix(workspace.process_path()?) {
             return Ok(relative.into());
         }
         for source in self.paths.lock().unwrap().iter() {
-            if path == source.as_ref() {
+            if path == source.process_path()? {
                 return Ok(source.relative().into());
             }
         }
         for (relative, directory) in &self.directories {
-            if let Ok(suffix) = path.strip_prefix(directory.path()) {
+            if let Ok(suffix) = path.strip_prefix(directory.process_path()?) {
                 return Ok(relative.join(suffix));
             }
         }
@@ -892,8 +892,8 @@ impl ProcessorData {
 fn processor_data<R: Read + Seek>(
     profile: &Value,
     workspace: &InstallDir,
-    minecraft_jar: &Path,
-    installer: &Path,
+    minecraft_jar: &bound_root::InstallPath,
+    installer: &bound_root::InstallPath,
     archive: &mut zip::ZipArchive<R>,
 ) -> Result<ProcessorData> {
     let libraries = workspace.directory("libraries", true)?;
@@ -909,7 +909,7 @@ fn processor_data<R: Read + Seek>(
         {
             let path = workspace.file(format!("libraries/{}", maven_path(coordinate)?))?;
             path.prepare_parent()?;
-            data.remember(path)
+            data.remember(path)?
         } else if let Some(literal) = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
             literal.to_string()
         } else {
@@ -917,7 +917,7 @@ fn processor_data<R: Read + Seek>(
             let path = workspace.file(format!("extracted/{archive_path}"))?;
             path.prepare_parent()?;
             path.write(&archive_bytes(archive, archive_path, MAX_COMPONENT)?)?;
-            data.remember(path)
+            data.remember(path)?
         };
         data.insert(key.clone(), value);
     }
@@ -932,14 +932,20 @@ fn processor_data<R: Read + Seek>(
         ),
         (
             "MINECRAFT_JAR",
-            minecraft_jar.to_string_lossy().into_owned(),
+            minecraft_jar.process_path()?.to_string_lossy().into_owned(),
         ),
-        ("ROOT", workspace.path().to_string_lossy().into_owned()),
+        (
+            "ROOT",
+            workspace.process_path()?.to_string_lossy().into_owned(),
+        ),
         (
             "LIBRARY_DIR",
-            libraries.path().to_string_lossy().into_owned(),
+            libraries.process_path()?.to_string_lossy().into_owned(),
         ),
-        ("INSTALLER", installer.to_string_lossy().into_owned()),
+        (
+            "INSTALLER",
+            installer.process_path()?.to_string_lossy().into_owned(),
+        ),
     ] {
         data.insert(key.into(), value);
     }
@@ -947,7 +953,7 @@ fn processor_data<R: Read + Seek>(
 }
 fn expand(raw: &str, data: &ProcessorData, workspace: &InstallDir) -> Result<String> {
     if let Some(coordinate) = raw.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        return Ok(data.remember(workspace.file(format!("libraries/{}", maven_path(coordinate)?))?));
+        return data.remember(workspace.file(format!("libraries/{}", maven_path(coordinate)?))?);
     }
     let raw = raw
         .strip_prefix('\'')
@@ -970,8 +976,8 @@ fn expand(raw: &str, data: &ProcessorData, workspace: &InstallDir) -> Result<Str
     result.push_str(rest);
     Ok(result)
 }
-fn main_class(path: &Path) -> Result<String> {
-    let mut archive = zip::ZipArchive::new(fs::File::open(path).map_err(error)?).map_err(error)?;
+fn main_class(file: impl Read + Seek) -> Result<String> {
+    let mut archive = zip::ZipArchive::new(file).map_err(error)?;
     let raw = String::from_utf8(archive_bytes(
         &mut archive,
         "META-INF/MANIFEST.MF",
@@ -1022,27 +1028,42 @@ fn run_processor(
         .map(bound_root::InstallPath::open)
         .collect::<Result<Vec<_>>>()?;
     let classpath_argument = if workspace.is_bound() {
-        std::env::join_paths(classpath_files.iter().map(bound_root::anchor)).map_err(error)?
+        std::env::join_paths(
+            classpath_files
+                .iter()
+                .map(bound_root::anchor)
+                .collect::<Result<Vec<_>>>()?,
+        )
+        .map_err(error)?
     } else {
-        std::env::join_paths(classpath.iter().map(AsRef::<Path>::as_ref)).map_err(error)?
+        std::env::join_paths(
+            classpath
+                .iter()
+                .map(|path| path.process_path())
+                .collect::<Result<Vec<_>>>()?,
+        )
+        .map_err(error)?
     };
     let mut command = Command::new(java);
     if workspace.is_bound() {
         command
-            .arg(format!("-Djava.io.tmpdir={}", workspace.path().display()))
-            .env("TMPDIR", workspace.path());
+            .arg(format!(
+                "-Djava.io.tmpdir={}",
+                workspace.process_path()?.display()
+            ))
+            .env("TMPDIR", workspace.process_path()?);
     }
     command
         .args(["-Djava.awt.headless=true", "-cp"])
         .arg(classpath_argument)
-        .arg(main_class(&jar)?)
+        .arg(main_class(jar.open()?)?)
         .args(args)
-        .current_dir(workspace.path());
+        .current_dir(workspace.process_path()?);
     // Each processor owns a fresh log. Reopening/truncating one shared name
     // could follow an externally planted hard-link alias on the next processor.
     let log = tempfile::Builder::new()
         .prefix(".processor-")
-        .tempfile_in(workspace.path())
+        .tempfile_in(workspace.process_path()?)
         .map_err(error)?;
     command
         .stdin(if workspace.is_bound() {
@@ -1103,7 +1124,7 @@ fn file_hash(path: &bound_root::InstallPath, cancel: &AtomicBool) -> Result<Stri
     Ok(format!("{:x}", digest.finalize()))
 }
 fn collect_libraries(workspace: &InstallDir) -> Result<Vec<PathBuf>> {
-    if !workspace.path().join("libraries").exists() {
+    if !workspace.entry_exists("libraries")? {
         return Ok(vec![]);
     }
     let libraries = workspace.directory("libraries", false)?;
@@ -1303,7 +1324,7 @@ impl Installer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "components/java_tests.rs"]
 mod java_tests;
 
@@ -1369,6 +1390,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cancellation_kills_and_reaps_running_processor_before_return() {
         let cancelled = AtomicBool::new(false);
         let started = Instant::now();

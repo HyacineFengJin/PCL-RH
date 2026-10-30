@@ -63,12 +63,14 @@ pub(super) struct Store {
     filesystem: RepairFilesystem,
     directory: Arc<fs::File>,
     writer: Option<writer_lock::Lease>,
+    staging: Option<staging::Area>,
 }
 pub(super) struct Operation {
     directory: Arc<fs::File>,
     header: Header,
     header_hash: String,
     missing_header: bool,
+    staging: Option<staging::Area>,
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -104,22 +106,32 @@ fn read(parent: &fs::File, name: &str, limit: u64) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn put(parent: Arc<fs::File>, name: &str, bytes: &[u8]) -> Result<()> {
-    let mut temporary = RepairStage::new(parent.clone(), name, bytes.len() as u64)?;
+fn put(
+    parent: Arc<fs::File>,
+    name: &str,
+    bytes: &[u8],
+    staging: Option<&staging::Area>,
+) -> Result<()> {
+    let mut temporary = RepairStage::journal(parent.clone(), name, bytes.len() as u64, staging)?;
     temporary.file_mut().write_all(bytes).map_err(error)?;
     if !temporary.publish()? {
         return Err("损坏修复记录已存在，拒绝覆盖".into());
     }
     Ok(())
 }
-fn marker(parent: Arc<fs::File>, name: &str, expected: &str) -> Result<()> {
+fn marker(
+    parent: Arc<fs::File>,
+    name: &str,
+    expected: &str,
+    staging: Option<&staging::Area>,
+) -> Result<()> {
     if entry_metadata(&parent, name)?.is_some() {
         if read(&parent, name, 128)? == expected.as_bytes() {
             return Ok(());
         }
         return Err("损坏修复标记内容冲突，原文件与备份已保留".into());
     }
-    put(parent, name, expected.as_bytes())
+    put(parent, name, expected.as_bytes(), staging)
 }
 fn marked(parent: &fs::File, name: &str, expected: &str) -> Result<bool> {
     if entry_metadata(parent, name)?.is_none() {
@@ -213,12 +225,20 @@ pub(super) fn fingerprint(
 
 impl Store {
     pub fn open(root: fs::File, display: &Path, create: bool, lock: bool) -> Result<Option<Self>> {
-        // Reject unsupported named-stage recovery before mkdir/lock creation.
-        // Otherwise a failed header write could leave a permanently pending
-        // schema-1 operation even though no dependency was ever touched.
-        if create || lock {
-            require_repair_stage_support()?;
-        }
+        let staging = if create || lock {
+            prepare_stage_area(&root, create)?
+        } else {
+            None
+        };
+        Self::open_prepared(root, display, create, lock, staging)
+    }
+    fn open_prepared(
+        root: fs::File,
+        display: &Path,
+        create: bool,
+        lock: bool,
+        staging: Option<staging::Area>,
+    ) -> Result<Option<Self>> {
         let mut filesystem = RepairFilesystem::new(root, display)?;
         let Some(directory) = filesystem.parent(&format!("{STORE}/sentinel"), create)? else {
             return Ok(None);
@@ -242,6 +262,7 @@ impl Store {
             filesystem,
             directory,
             writer,
+            staging,
         }))
     }
     pub fn verify(&self) -> Result<()> {
@@ -295,6 +316,7 @@ impl Store {
                     header,
                     header_hash,
                     missing_header: true,
+                    staging: self.staging.clone(),
                 });
                 continue;
             }
@@ -316,6 +338,7 @@ impl Store {
                 header,
                 header_hash: sha256(&bytes),
                 missing_header: false,
+                staging: self.staging.clone(),
             };
             // Archived operations keep their backups, but must not retain one
             // descriptor per historical run during a readiness check.
@@ -327,7 +350,6 @@ impl Store {
         Ok(result)
     }
     pub fn begin(&mut self, name: &str, id: &str) -> Result<Operation> {
-        require_repair_stage_support()?;
         if !operation_name(name) {
             return Err("损坏修复操作标识无效".into());
         }
@@ -349,13 +371,19 @@ impl Store {
             operation: Key::of(&directory).map_err(error)?,
         };
         let bytes = serde_json::to_vec(&header).map_err(error)?;
-        put(directory.clone(), "header.json", &bytes)?;
+        put(
+            directory.clone(),
+            "header.json",
+            &bytes,
+            self.staging.as_ref(),
+        )?;
         self.verify()?;
         Ok(Operation {
             directory,
             header,
             header_hash: sha256(&bytes),
             missing_header: false,
+            staging: self.staging.clone(),
         })
     }
     fn target(&mut self, intent: &Intent) -> Result<Arc<fs::File>> {
@@ -402,6 +430,9 @@ impl Operation {
     pub fn directory(&self) -> Arc<fs::File> {
         self.directory.clone()
     }
+    pub fn staging_area(&self) -> Option<&staging::Area> {
+        self.staging.as_ref()
+    }
     pub fn done(&self) -> Result<bool> {
         if self.missing_header {
             Ok(false)
@@ -410,7 +441,12 @@ impl Operation {
         }
     }
     pub fn finish(&self) -> Result<()> {
-        marker(self.directory.clone(), "done", &self.header_hash)
+        marker(
+            self.directory.clone(),
+            "done",
+            &self.header_hash,
+            self.staging.as_ref(),
+        )
     }
     pub fn prepare(
         &self,
@@ -458,6 +494,7 @@ impl Operation {
             self.directory.clone(),
             &format!("intent-{ordinal}.json"),
             &bytes,
+            self.staging.as_ref(),
         )?;
         Ok(intent)
     }
@@ -466,6 +503,7 @@ impl Operation {
             self.directory.clone(),
             &format!("commit-{}", intent.ordinal),
             &sha256(&serde_json::to_vec(intent).map_err(error)?),
+            self.staging.as_ref(),
         )
     }
     fn rolled_back(&self, intent: &Intent) -> Result<()> {
@@ -473,6 +511,7 @@ impl Operation {
             self.directory.clone(),
             &format!("rollback-{}", intent.ordinal),
             &sha256(&serde_json::to_vec(intent).map_err(error)?),
+            self.staging.as_ref(),
         )
     }
     fn intents(&self) -> Result<Vec<Intent>> {
@@ -735,6 +774,7 @@ pub(super) fn recover(
             operation.directory.clone(),
             "header.json",
             &serde_json::to_vec(&operation.header).map_err(error)?,
+            operation.staging.as_ref(),
         )?;
     }
     if operation.done()? {
@@ -802,3 +842,7 @@ fn probe_directory(parent: &fs::File, name: &str) -> Result<fs::File> {
 fn probe_directory(parent: &fs::File, name: &str) -> Result<fs::File> {
     open_directory(parent, name).map_err(error)
 }
+
+#[cfg(test)]
+#[path = "damage_store_native_tests.rs"]
+mod native_tests;

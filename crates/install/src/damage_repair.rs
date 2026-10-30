@@ -171,7 +171,6 @@ impl Installer {
         validate_binding: &(impl Fn() -> Result<()> + Send + Sync),
         on_progress: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<DamageRepairReport> {
-        require_repair_stage_support()?;
         let mut state = request
             .captured
             .state
@@ -446,6 +445,7 @@ impl RepairRun<'_> {
             directory.clone(),
             &format!("backup-{ordinal}"),
             original.stamp.len,
+            operation.staging_area(),
         )?;
         original_file.seek(SeekFrom::Start(0)).map_err(error)?;
         let mut received = 0u64;
@@ -483,6 +483,7 @@ impl RepairRun<'_> {
             directory.clone(),
             &format!("incoming-{ordinal}"),
             download.size,
+            operation.staging_area(),
         )?;
         self.emit("damage-download", "正在下载并校验损坏依赖的替换文件");
         self.progress.total_bytes = self

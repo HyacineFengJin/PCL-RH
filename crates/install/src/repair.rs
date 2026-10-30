@@ -20,6 +20,9 @@ use pcl_core::{
 #[path = "repair_evidence.rs"]
 mod evidence;
 use evidence::Stamp;
+#[allow(dead_code)] // Registry is active for named-stage hosts; Linux retains anonymous staging.
+#[path = "repair_staging.rs"]
+mod staging;
 #[path = "repair_lock.rs"]
 mod writer_lock;
 use std::{
@@ -499,69 +502,128 @@ fn open_directory(parent: &fs::File, name: &str) -> std::io::Result<fs::File> {
 /// New bytes use the native staging owner. Linux remains anonymous: no partial
 /// artifact or cleanup pathname is exposed. The journalled replacement flow
 /// still owns recovery, and an uncertain publication never becomes `false`.
+enum RepairPayload {
+    Raw(pcl_core::retained_fs::stage::Stage),
+    Registered(staging::Ticket),
+}
 struct RepairStage {
-    stage: pcl_core::retained_fs::stage::Stage,
-    parent: pcl_core::retained_fs::Directory,
-    leaf: pcl_core::retained_fs::Leaf,
+    payload: RepairPayload,
+    parent: Directory,
+    leaf: Leaf,
     max_bytes: u64,
 }
 impl RepairStage {
-    // Schema-1 repair records do not register named native stage leases yet.
-    // Enabling those here would turn cancellation into an unknown orphan in
-    // the recovery store. Keep that port explicitly unavailable until the
-    // registry/receipt protocol can reconcile it; never guess by name prefix.
-    fn new(parent: Arc<fs::File>, leaf: &str, max_bytes: u64) -> Result<Self> {
-        use pcl_core::retained_fs::{stage::Stage, Directory, Leaf};
-        require_repair_stage_support()?;
+    fn new(
+        parent: Arc<fs::File>,
+        leaf: &str,
+        max_bytes: u64,
+        area: Option<&staging::Area>,
+    ) -> Result<Self> {
         let parent = Directory::from_file(parent.try_clone().map_err(error)?).map_err(error)?;
         let leaf = Leaf::new(leaf).map_err(error)?;
-        let stage = Stage::new(&parent).map_err(|e| format!("无法安全暂存补全文件：{e}"))?;
+        let payload = match area {
+            Some(area) => {
+                RepairPayload::Registered(area.allocate(&parent, &leaf, max_bytes).map_err(error)?)
+            }
+            None => RepairPayload::Raw(
+                pcl_core::retained_fs::stage::Stage::new(&parent).map_err(error)?,
+            ),
+        };
         Ok(Self {
-            stage,
+            payload,
+            parent,
+            leaf,
+            max_bytes,
+        })
+    }
+    /// Immutable business records may be needed to restore an original even
+    /// when the staging registry is corrupt. Their bytes are already validated
+    /// by the intent/marker protocol. The source still stays in the separate
+    /// private area, never as an unknown lease in a business operation directory.
+    fn journal(
+        parent: Arc<fs::File>,
+        leaf: &str,
+        max_bytes: u64,
+        area: Option<&staging::Area>,
+    ) -> Result<Self> {
+        let parent = Directory::from_file(parent.try_clone().map_err(error)?).map_err(error)?;
+        let leaf = Leaf::new(leaf).map_err(error)?;
+        let source = area.map(staging::Area::directory).unwrap_or(&parent);
+        let payload =
+            RepairPayload::Raw(pcl_core::retained_fs::stage::Stage::new(source).map_err(error)?);
+        Ok(Self {
+            payload,
             parent,
             leaf,
             max_bytes,
         })
     }
     fn file_mut(&mut self) -> &mut fs::File {
-        self.stage.file_mut()
+        match &mut self.payload {
+            RepairPayload::Raw(stage) => stage.file_mut(),
+            RepairPayload::Registered(ticket) => ticket.file_mut(),
+        }
     }
     fn publish(self) -> Result<bool> {
         use pcl_core::retained_fs::stage::PublishOutcome;
-        let sealed = self
-            .stage
-            .seal(self.max_bytes)
-            .map_err(|e| format!("补全文件封存失败：{e}"))?;
-        match sealed
-            .publish_new(&self.parent, &self.leaf)
-            .map_err(|e| format!("补全文件发布前检查失败：{e}"))?
-        {
-            PublishOutcome::Published { .. } => Ok(true),
-            PublishOutcome::Exists { .. } => {
-                // Preserve the missing-only rule: an existing regular file is
-                // left alone; links and special entries are still refused.
-                let leaf = self.leaf.as_os_str().to_str().ok_or("补全文件名无效")?;
-                leaf_state(self.parent.file(), leaf)?;
-                Ok(false)
+        let exists = || -> Result<bool> {
+            let leaf = self.leaf.as_os_str().to_str().ok_or("补全文件名无效")?;
+            leaf_state(self.parent.file(), leaf)?;
+            Ok(false)
+        };
+        match self.payload {
+            RepairPayload::Raw(stage) => {
+                let sealed = stage
+                    .seal(self.max_bytes)
+                    .map_err(|e| format!("补全文件封存失败：{e}"))?;
+                match sealed
+                    .publish_new(&self.parent, &self.leaf)
+                    .map_err(|e| format!("补全文件发布前检查失败：{e}"))?
+                {
+                    PublishOutcome::Published { .. } => Ok(true),
+                    PublishOutcome::Exists { .. } => exists(),
+                    PublishOutcome::MayHavePublished { error, .. } => {
+                        Err(uncertain_publication(error))
+                    }
+                }
             }
-            PublishOutcome::MayHavePublished { error, .. } => {
-                // Never roll back or retry an ambiguous namespace commit. The
-                // deterministic destination and any existing durable repair
-                // records remain for the next inspection/recovery attempt.
-                Err(format!("补全文件可能已经发布，但未能完成复核或持久化；文件与修复记录已保留，请重新检查：{error}"))
+            RepairPayload::Registered(ticket) => {
+                match ticket.publish(&self.parent, &self.leaf).map_err(error)? {
+                    staging::Outcome::Published { .. } => Ok(true),
+                    staging::Outcome::Exists { .. } => exists(),
+                    staging::Outcome::MayHavePublished { error, .. } => {
+                        Err(uncertain_publication(error))
+                    }
+                }
             }
         }
     }
 }
-
-fn require_repair_stage_support() -> Result<()> {
+fn uncertain_publication(error: std::io::Error) -> String {
+    format!(
+        "补全文件可能已经发布，但未能完成复核或持久化；文件与修复记录已保留，请重新检查：{error}"
+    )
+}
+fn prepare_stage_area(root: &fs::File, new_payloads: bool) -> Result<Option<staging::Area>> {
     #[cfg(target_os = "linux")]
     {
-        Ok(())
+        let _ = (root, new_payloads);
+        Ok(None)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Err("此平台的依赖修复暂存恢复协议尚未实现".into())
+        let root = Directory::from_file(root.try_clone().map_err(error)?).map_err(error)?;
+        let area = staging::Area::open(&root, true).map_err(error)?;
+        if matches!(
+            area.report().map_err(error)?.status,
+            staging::LogStatus::TruncatedTail { .. }
+        ) {
+            area.recover_tail().map_err(error)?;
+        }
+        if new_payloads && !area.report().map_err(error)?.writable() {
+            return Err("依赖暂存登记需要检查，已保留所有暂存与修复记录".into());
+        }
+        Ok(Some(area))
     }
 }
 
@@ -698,9 +760,9 @@ impl Installer {
         validate_binding: &(impl Fn() -> Result<()> + Send + Sync),
         on_progress: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<MissingRepairReport> {
-        require_repair_stage_support()?;
         let mut state = request.state.lock().map_err(|_| "缺失补全捕获锁损坏")?;
         validate(&state, cancel, validate_binding, true)?;
+        let staging = prepare_stage_area(&state.filesystem.directories[""], true)?;
         let mut progress = RepairProgress::default();
         on_progress(progress.event("repair-check", "正在检查缺失依赖"));
         let mut files = request.files.clone();
@@ -791,7 +853,8 @@ impl Installer {
                 .filesystem
                 .parent(relative, true)?
                 .ok_or("补全父目录缺失")?;
-            let mut temporary = RepairStage::new(parent, split(relative).1, download.size)?;
+            let mut temporary =
+                RepairStage::new(parent, split(relative).1, download.size, staging.as_ref())?;
             if let Some((_, bytes)) = downloaded_index
                 .as_ref()
                 .filter(|(path, _)| path == relative)

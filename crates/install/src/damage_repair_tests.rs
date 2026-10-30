@@ -3,10 +3,17 @@
 use super::*;
 use crate::repair::tests::{desc, fixture, installer, metadata, server};
 use serde_json::json;
-use std::{os::unix::fs::symlink, sync::atomic::AtomicUsize};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::sync::atomic::AtomicUsize;
 
 fn capture(root: &Path) -> DamageRepair {
-    DamageRepair::capture_bound(fs::File::open(root).unwrap(), root, "fixture").unwrap()
+    DamageRepair::capture_bound(
+        crate::native_port_tests::directory_file(root),
+        root,
+        "fixture",
+    )
+    .unwrap()
 }
 fn repair(installer: &Installer, request: &DamageRepair) -> DamageRepairReport {
     installer
@@ -21,7 +28,7 @@ fn repair(installer: &Installer, request: &DamageRepair) -> DamageRepairReport {
 }
 fn recover(root: &Path) -> DamageRecoveryReport {
     DamageRepair::recover_pending_bound(
-        fs::File::open(root).unwrap(),
+        crate::native_port_tests::directory_file(root),
         root,
         &AtomicBool::new(false),
         &|| Ok(()),
@@ -203,23 +210,35 @@ fn concurrent_target_edit_during_download_is_preserved_without_overwrite() {
 fn staged(root: &Path) -> (Store, Operation, store::Intent) {
     fs::create_dir(root.join("libraries")).unwrap();
     fs::write(root.join("libraries/fixture.jar"), b"old damaged bytes").unwrap();
-    let mut filesystem = RepairFilesystem::new(fs::File::open(root).unwrap(), root).unwrap();
+    let mut filesystem =
+        RepairFilesystem::new(crate::native_port_tests::directory_file(root), root).unwrap();
     filesystem.inspect("libraries/fixture.jar").unwrap();
     let original = fingerprint(
         &mut store::open_regular(&filesystem.directories["libraries"], "fixture.jar").unwrap(),
         &|| Ok(()),
     )
     .unwrap();
-    let mut storage = Store::open(fs::File::open(root).unwrap(), root, true, true)
-        .unwrap()
-        .unwrap();
+    let mut storage = Store::open(
+        crate::native_port_tests::directory_file(root),
+        root,
+        true,
+        true,
+    )
+    .unwrap()
+    .unwrap();
     let operation = storage.begin("d-a-b-c", "fixture").unwrap();
     let directory = operation.directory();
     for (name, bytes) in [
         ("backup-0", b"old damaged bytes".as_slice()),
         ("incoming-0", b"new verified bytes".as_slice()),
     ] {
-        let mut file = RepairStage::new(directory.clone(), name, bytes.len() as u64).unwrap();
+        let mut file = RepairStage::new(
+            directory.clone(),
+            name,
+            bytes.len() as u64,
+            operation.staging_area(),
+        )
+        .unwrap();
         file.file_mut().write_all(bytes).unwrap();
         assert!(file.publish().unwrap());
     }
@@ -326,7 +345,7 @@ fn recovery_conflicts_and_tampered_records_preserve_every_file_and_guard() {
         drop(operation);
         drop(storage);
         assert!(DamageRepair::recover_pending_bound(
-            fs::File::open(root.path()).unwrap(),
+            crate::native_port_tests::directory_file(root.path()),
             root.path(),
             &AtomicBool::new(false),
             &|| Ok(()),
@@ -362,6 +381,7 @@ fn empty_operation_creation_window_is_recoverable_without_deleting_files() {
 }
 
 #[test]
+#[cfg(unix)]
 fn root_parent_and_symlink_retarget_never_redirect_recovery() {
     for replacement in ["root", "parent", "link"] {
         let container = fixture();
@@ -517,7 +537,7 @@ fn oversized_or_unsafe_recovery_records_fail_before_any_target_move() {
         }
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(DamageRepair::recover_pending_bound(
-            fs::File::open(root.path()).unwrap(),
+            crate::native_port_tests::directory_file(root.path()),
             root.path(),
             &AtomicBool::new(false),
             &|| Ok(()),
@@ -542,8 +562,11 @@ fn healthy_existing_launcher_directory_and_unsafe_store_probes_are_read_only() {
     assert_eq!(DamageRepair::pending(root.path()).unwrap(), 0);
     let outside = fixture();
     fs::write(outside.path().join("retained"), b"outside").unwrap();
-    symlink(outside.path(), root.path().join(store::STORE)).unwrap();
-    assert!(DamageRepair::ensure_ready(root.path()).is_err());
+    #[cfg(unix)]
+    {
+        symlink(outside.path(), root.path().join(store::STORE)).unwrap();
+        assert!(DamageRepair::ensure_ready(root.path()).is_err());
+    }
     assert_eq!(
         fs::read(outside.path().join("retained")).unwrap(),
         b"outside"

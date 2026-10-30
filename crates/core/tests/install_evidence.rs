@@ -5,5 +5,8 @@
 #[path = "../../install/src/repair_evidence.rs"]
 mod evidence;
 #[allow(dead_code)]
+#[path = "../../install/src/repair_staging.rs"]
+mod staging;
+#[allow(dead_code)]
 #[path = "../../install/src/repair_lock.rs"]
 mod writer_lock;

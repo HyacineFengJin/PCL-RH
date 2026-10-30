@@ -1,7 +1,9 @@
 //! Only synthetic project-local roots and loopback HTTP fixtures are used.
 use super::*;
 use serde_json::json;
-use std::{net::TcpListener, os::unix::fs::symlink, thread};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::{net::TcpListener, thread};
 
 pub(super) fn fixture() -> tempfile::TempDir {
     let work = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -120,7 +122,7 @@ pub(super) fn metadata(root: &Path, id: &str, value: Value) {
     .unwrap();
 }
 fn capture(root: &Path, id: &str) -> MissingRepair {
-    MissingRepair::capture_bound(fs::File::open(root).unwrap(), root, id).unwrap()
+    MissingRepair::capture_bound(crate::native_port_tests::directory_file(root), root, id).unwrap()
 }
 fn repair(installer: &Installer, request: &MissingRepair) -> MissingRepairReport {
     installer
@@ -516,6 +518,7 @@ fn metadata_edit_and_external_binding_guard_stop_before_publication() {
 }
 
 #[test]
+#[cfg(unix)]
 fn root_retarget_and_parent_replacement_never_follow_new_directories() {
     for replace_root in [true, false] {
         let container = fixture();
@@ -571,7 +574,7 @@ fn root_retarget_and_parent_replacement_never_follow_new_directories() {
 fn missing_instance_and_symlink_or_special_destinations_are_rejected() {
     let root = fixture();
     assert!(MissingRepair::capture_bound(
-        fs::File::open(root.path()).unwrap(),
+        crate::native_port_tests::directory_file(root.path()),
         root.path(),
         "missing"
     )
@@ -580,25 +583,28 @@ fn missing_instance_and_symlink_or_special_destinations_are_rejected() {
     metadata(root.path(), "fixture", json!({"id":"fixture"}));
     let outside = fixture();
     fs::write(outside.path().join("user.jar"), b"untouched").unwrap();
-    symlink(
-        outside.path().join("user.jar"),
-        root.path().join("versions/fixture/fixture.jar"),
-    )
-    .unwrap();
-    assert!(MissingRepair::capture_bound(
-        fs::File::open(root.path()).unwrap(),
-        root.path(),
-        "fixture"
-    )
-    .is_err());
-    assert_eq!(
-        fs::read(outside.path().join("user.jar")).unwrap(),
-        b"untouched"
-    );
-    fs::remove_file(root.path().join("versions/fixture/fixture.jar")).unwrap();
+    #[cfg(unix)]
+    {
+        symlink(
+            outside.path().join("user.jar"),
+            root.path().join("versions/fixture/fixture.jar"),
+        )
+        .unwrap();
+        assert!(MissingRepair::capture_bound(
+            crate::native_port_tests::directory_file(root.path()),
+            root.path(),
+            "fixture"
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(outside.path().join("user.jar")).unwrap(),
+            b"untouched"
+        );
+        fs::remove_file(root.path().join("versions/fixture/fixture.jar")).unwrap();
+    }
     fs::create_dir(root.path().join("versions/fixture/fixture.jar")).unwrap();
     assert!(MissingRepair::capture_bound(
-        fs::File::open(root.path()).unwrap(),
+        crate::native_port_tests::directory_file(root.path()),
         root.path(),
         "fixture"
     )
