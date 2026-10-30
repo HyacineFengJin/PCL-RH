@@ -165,10 +165,9 @@ fn verify(
     size: u64,
     cancel: &AtomicBool,
 ) -> Result<bool> {
-    if !path.exists() {
+    let Some(mut f) = path.open_optional()? else {
         return Ok(false);
-    }
-    let mut f = path.open()?;
+    };
     if f.metadata().map_err(error)?.len() != size {
         return Ok(false);
     }
@@ -383,7 +382,6 @@ impl Installer {
             return Ok(false);
         }
         let url = self.url(&d.url)?;
-        fs::create_dir_all(path.parent().ok_or("下载文件路径无效")?).map_err(error)?;
         let path = root.file(&d.relative)?;
         let mut last = String::new();
         for _ in 0..3 {
@@ -392,12 +390,11 @@ impl Installer {
                 return Err("其他下载失败，传输已停止".into());
             }
             let mut transferred = 0;
-            let mut file =
-                tempfile::NamedTempFile::new_in(path.parent().unwrap()).map_err(error)?;
+            let mut file = path.output(d.size)?;
             let result = (|| {
                 let mut digest = Sha1::new();
                 self.transfer_with_abort(&url, d.size, cancel, abort, |chunk| {
-                    file.write_all(chunk).map_err(error)?;
+                    file.file_mut().write_all(chunk).map_err(error)?;
                     transferred += chunk.len() as u64;
                     digest.update(chunk);
                     bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
@@ -423,13 +420,17 @@ impl Installer {
                 {
                     return Err(format!("文件 SHA1 或大小校验失败：{}", d.relative));
                 }
-                file.as_file().sync_all().map_err(error)?;
                 root.file(&d.relative)?;
                 Ok(())
             })();
             let result = match result {
-                Ok(()) => persist_download(file, &path),
-                Err(e) => Err(close_download(file, e)),
+                // Publication can have committed even when durability or its
+                // postcheck fails. It is outside the transfer retry boundary.
+                Ok(()) => {
+                    file.publish()?;
+                    Ok(())
+                }
+                Err(e) => Err(file.close(e)),
             };
             match result {
                 Ok(()) => {
@@ -895,21 +896,6 @@ fn record_failure(failure: &Mutex<Option<String>>, new: String) {
             && !failure.as_ref().unwrap().starts_with("取消清理失败："))
     {
         *failure = Some(new);
-    }
-}
-fn close_download(file: tempfile::NamedTempFile, original: String) -> String {
-    match file.close() {
-        Ok(()) => original,
-        Err(cleanup) => format!("取消清理失败：无法移除未完成文件：{cleanup}；原错误：{original}"),
-    }
-}
-fn persist_download(file: tempfile::NamedTempFile, path: &Path) -> Result<()> {
-    match file.persist(path) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let original = error(&e.error);
-            Err(close_download(e.file, original))
-        }
     }
 }
 fn publish_directory(source: &Path, target: &Path) -> Result<()> {

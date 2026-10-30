@@ -423,6 +423,258 @@ fn bound_leaf_hardlinks_and_special_nodes_fail_without_truncating_outside_bytes(
     assert!(dir.file("fifo").is_err());
     assert_outside(&outside);
 }
+
+#[test]
+fn bound_file_streams_ignore_redirected_path_adapters() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let mut source = dir.file("nested/source").unwrap();
+    source.write(b"retained source bytes").unwrap();
+    // A deterministic adapter redirection must not redirect native I/O. This
+    // fault would make the previous path-based open read the outside sentinel.
+    source.redirect_adapter_for_test(outside.join("sentinel"));
+    let mut actual = Vec::new();
+    source.open().unwrap().read_to_end(&mut actual).unwrap();
+    assert_eq!(actual, b"retained source bytes");
+    let mut target = dir.file("nested/created").unwrap();
+    target.redirect_adapter_for_test(outside.join("sentinel"));
+    let mut writer = target.open_new_writer().unwrap();
+    writer.write_all(b"new retained bytes").unwrap();
+    drop(writer);
+    assert_eq!(
+        fs::read(root.join("nested/created")).unwrap(),
+        b"new retained bytes"
+    );
+    assert!(target.write(b"must not truncate").is_err());
+    assert_outside(&outside);
+}
+
+#[test]
+fn bound_tree_enumeration_uses_retained_directories_and_native_node_checks() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let mut dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    dir.file("nested/one").unwrap().write(b"one").unwrap();
+    dir.file("two").unwrap().write(b"two").unwrap();
+    dir.redirect_adapter_for_test(outside.clone());
+    let mut files = dir.files().unwrap();
+    files.sort();
+    assert_eq!(
+        files,
+        vec![PathBuf::from("nested/one"), PathBuf::from("two")]
+    );
+    symlink(&outside, root.join("untrusted-link")).unwrap();
+    assert!(dir.files().is_err());
+    assert_outside(&outside);
+}
+
+#[test]
+fn bound_stream_creation_preserves_existing_directory_mode_and_uses_private_new_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = fixture();
+    let root = root(fixture.path());
+    fs::create_dir(root.join("existing")).unwrap();
+    fs::set_permissions(root.join("existing"), fs::Permissions::from_mode(0o755)).unwrap();
+    let dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let target = dir.file("existing/library.jar").unwrap();
+    target.write(b"library bytes").unwrap();
+    assert_eq!(
+        fs::metadata(root.join("existing"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    let created = fs::metadata(root.join("existing/library.jar")).unwrap();
+    assert_eq!(created.permissions().mode() & 0o777, 0o600);
+    assert_eq!(created.nlink(), 1);
+    assert!(target.open_new_writer().is_err());
+    assert_eq!(
+        fs::read(root.join("existing/library.jar")).unwrap(),
+        b"library bytes"
+    );
+}
+
+#[test]
+fn legacy_write_overwrite_contract_and_explicit_new_writer_are_distinct() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let dir = InstallDir::legacy(root.clone());
+    let target = dir.file("existing").unwrap();
+    target.write(b"long original bytes").unwrap();
+    target.write(b"short").unwrap();
+    assert_eq!(fs::read(root.join("existing")).unwrap(), b"short");
+    assert!(target.open_new_writer().is_err());
+    let mut bytes = Vec::new();
+    target.open().unwrap().read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"short");
+}
+
+#[test]
+fn bound_output_publishes_new_bytes_only_after_native_sealing() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let target = dir.file("nested/download.jar").unwrap();
+    let mut output = target.output(1024).unwrap();
+    output
+        .file_mut()
+        .write_all(b"verified download bytes")
+        .unwrap();
+    assert!(!root.join("nested/download.jar").exists());
+    output.publish().unwrap();
+    assert_eq!(
+        fs::read(root.join("nested/download.jar")).unwrap(),
+        b"verified download bytes"
+    );
+    assert!(target.output(1024).unwrap().publish().is_err());
+    assert_eq!(
+        fs::read(root.join("nested/download.jar")).unwrap(),
+        b"verified download bytes"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bound_output_cancellation_releases_anonymous_storage_without_named_cleanup() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let target = dir.file("cancelled").unwrap();
+    let mut output = target.output(1024).unwrap();
+    assert_eq!(output.file_mut().metadata().unwrap().nlink(), 0);
+    output.file_mut().write_all(b"incomplete bytes").unwrap();
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    assert_eq!(output.close("安装已取消".into()), "安装已取消");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+    let mut discarded = target.output(1024).unwrap();
+    discarded.file_mut().write_all(b"discarded bytes").unwrap();
+    discarded.discard().unwrap();
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+}
+
+#[test]
+fn bound_output_no_replace_and_redirected_adapter_preserve_outside_bytes() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let mut target = dir.file("native-output").unwrap();
+    target.redirect_adapter_for_test(outside.join("sentinel"));
+    let mut output = target.output(1024).unwrap();
+    output.file_mut().write_all(b"held output").unwrap();
+    output.publish().unwrap();
+    assert_eq!(
+        fs::read(root.join("native-output")).unwrap(),
+        b"held output"
+    );
+    let raced_target = dir.file("raced-output").unwrap();
+    let mut raced = raced_target.output(1024).unwrap();
+    raced.file_mut().write_all(b"must not replace").unwrap();
+    symlink(outside.join("sentinel"), root.join("raced-output")).unwrap();
+    assert!(raced.publish().is_err());
+    assert!(fs::symlink_metadata(root.join("raced-output"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_outside(&outside);
+}
+
+#[test]
+fn output_seal_limit_prevents_publication_and_legacy_keeps_persist_overwrite() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let bound = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let target = bound.file("oversize").unwrap();
+    let mut output = target.output(3).unwrap();
+    output.file_mut().write_all(b"oversize bytes").unwrap();
+    assert!(output.publish().is_err());
+    assert!(!root.join("oversize").exists());
+    let legacy = InstallDir::legacy(root.clone());
+    let existing = legacy.file("legacy").unwrap();
+    existing.write(b"previous longer bytes").unwrap();
+    let mut output = existing.output(1024).unwrap();
+    output.file_mut().write_all(b"replacement").unwrap();
+    output.publish().unwrap();
+    assert_eq!(fs::read(root.join("legacy")).unwrap(), b"replacement");
+    let cancelled = legacy
+        .file("legacy-cancelled")
+        .unwrap()
+        .output(1024)
+        .unwrap();
+    assert_eq!(
+        cancelled.close("fixture transfer failure".into()),
+        "fixture transfer failure"
+    );
+    assert!(!root.join("legacy-cancelled").exists());
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+}
+
+#[test]
+fn optional_bound_streams_distinguish_missing_from_disallowed_existing_nodes() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let dir = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let missing = dir.file("missing").unwrap();
+    assert!(missing.open_optional().unwrap().is_none());
+    missing.write(b"now present").unwrap();
+    let mut bytes = Vec::new();
+    missing
+        .open_optional()
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(bytes, b"now present");
+    let linked = dir.file("linked").unwrap();
+    fs::hard_link(outside.join("sentinel"), root.join("linked")).unwrap();
+    assert!(linked.open_optional().is_err());
+    let dangling = dir.file("dangling").unwrap();
+    symlink("absent-target", root.join("dangling")).unwrap();
+    assert!(dangling.open_optional().is_err());
+    assert_outside(&outside);
+}
+
+#[test]
+fn output_parent_preparation_uses_native_bound_parent_and_legacy_path_contract() {
+    let fixture = fixture();
+    let root = root(fixture.path());
+    let outside = outside(fixture.path());
+    let bound = InstallDir::bound(fs::File::open(&root).unwrap()).unwrap();
+    let mut target = bound.file("nested/native").unwrap();
+    target.redirect_adapter_for_test(outside.join("must-not-create/target"));
+    target.prepare_parent().unwrap();
+    assert!(!outside.join("must-not-create").exists());
+    let mut output = target.output(1024).unwrap();
+    output.file_mut().write_all(b"native parent").unwrap();
+    output.publish().unwrap();
+    assert_eq!(
+        fs::read(root.join("nested/native")).unwrap(),
+        b"native parent"
+    );
+    let legacy = InstallDir::legacy(root.clone());
+    assert!(legacy
+        .file("absent")
+        .unwrap()
+        .open_optional()
+        .unwrap()
+        .is_none());
+    assert!(legacy.file("nested").unwrap().open_optional().is_err());
+    let deep = legacy.file("deep/not-yet-created/output").unwrap();
+    let mut output = deep.output(1024).unwrap();
+    output.file_mut().write_all(b"legacy parent").unwrap();
+    output.publish().unwrap();
+    assert_eq!(
+        fs::read(root.join("deep/not-yet-created/output")).unwrap(),
+        b"legacy parent"
+    );
+    assert_outside(&outside);
+}
 #[test]
 fn bound_forge_and_all_neoforge_coordinate_branches_run_real_private_java_processors() {
     for (minecraft, provider, version) in [

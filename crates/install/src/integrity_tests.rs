@@ -8,7 +8,7 @@ fn fixture() -> tempfile::TempDir {
     let work = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../work/launch-readiness-2026-10-18/integrity-tests");
     fs::create_dir_all(&work).unwrap();
-    tempfile::tempdir_in(work).unwrap()
+    tempfile::tempdir_in(work.canonicalize().unwrap()).unwrap()
 }
 
 fn put(root: &Path, path: &str, bytes: &[u8]) {

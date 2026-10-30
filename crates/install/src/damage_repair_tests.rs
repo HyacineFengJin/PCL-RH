@@ -65,8 +65,12 @@ fn bad_core_gets_verified_replacement_and_independent_persistent_backup() {
     let backup = root.path().join(&report.backup_directory).join("backup-0");
     assert_eq!(fs::read(&backup).unwrap(), b"damaged old jar");
     assert_ne!(
-        fs::metadata(&backup).unwrap().ino(),
-        fs::metadata(&path).unwrap().ino()
+        native_fs::metadata(&fs::File::open(&backup).unwrap())
+            .unwrap()
+            .identity,
+        native_fs::metadata(&fs::File::open(&path).unwrap())
+            .unwrap()
+            .identity
     );
     assert_eq!(DamageRepair::pending(root.path()).unwrap(), 0);
     DamageRepair::ensure_ready(root.path()).unwrap();

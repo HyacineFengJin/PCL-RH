@@ -13,15 +13,18 @@
 //! replacement -> report current existence. Cancellation drops unpublished
 //! inodes; already published verified files remain usable on the next attempt.
 use super::*;
-use pcl_core::repair::{self as manifest, RequiredFile};
+use pcl_core::{
+    repair::{self as manifest, RequiredFile},
+    retained_fs::{self as native_fs, Directory, Kind, Leaf, Links, Traversal},
+};
+#[path = "repair_evidence.rs"]
+mod evidence;
+use evidence::Stamp;
+#[path = "repair_lock.rs"]
+mod writer_lock;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
     time::Instant,
 };
 
@@ -245,30 +248,6 @@ impl RepairState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Stamp {
-    dev: u64,
-    ino: u64,
-    len: u64,
-    mtime: i64,
-    mtime_nsec: i64,
-    ctime: i64,
-    ctime_nsec: i64,
-}
-impl Stamp {
-    fn of(metadata: &fs::Metadata) -> Self {
-        Self {
-            dev: metadata.dev(),
-            ino: metadata.ino(),
-            len: metadata.len(),
-            mtime: metadata.mtime(),
-            mtime_nsec: metadata.mtime_nsec(),
-            ctime: metadata.ctime(),
-            ctime_nsec: metadata.ctime_nsec(),
-        }
-    }
-}
 struct FileSnapshot {
     relative: String,
     bytes: Vec<u8>,
@@ -306,14 +285,20 @@ impl RepairFilesystem {
         directories.insert(String::new(), Arc::new(root));
         // Keep room for the desktop, response sockets and the active temporary
         // inode. Dependency cardinality must not exhaust process descriptors.
-        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
-        let directory_limit =
+        #[cfg(unix)]
+        let directory_limit = {
+            let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
             if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr()) } == 0 {
                 let limit = unsafe { limit.assume_init() }.rlim_cur;
-                (limit.saturating_sub(128) as usize).min(MAX_BOUND_DIRECTORIES)
+                usize::try_from(limit.saturating_sub(128))
+                    .unwrap_or(usize::MAX)
+                    .min(MAX_BOUND_DIRECTORIES)
             } else {
                 MAX_BOUND_DIRECTORIES
-            };
+            }
+        };
+        #[cfg(windows)]
+        let directory_limit = MAX_BOUND_DIRECTORIES;
         if directory_limit < 1 {
             return Err("当前进程可用文件描述符不足以安全补全".into());
         }
@@ -327,20 +312,19 @@ impl RepairFilesystem {
         Ok(result)
     }
     fn verify(&self) -> Result<()> {
-        let expected = self.directories[""].metadata().map_err(error)?;
-        let actual =
-            fs::symlink_metadata(&self.display).map_err(|e| format!("补全根目录已失效：{e}"))?;
-        if !actual.is_dir() || actual.dev() != expected.dev() || actual.ino() != expected.ino() {
+        let expected = native_fs::metadata(&self.directories[""]).map_err(error)?;
+        let actual = Directory::open_absolute(&self.display)
+            .and_then(|directory| directory.metadata())
+            .map_err(|e| format!("补全根目录已失效：{e}"))?;
+        if !actual.same_object(&expected) {
             return Err("补全根目录绑定已变化，请重新检查".into());
         }
         for (path, file) in self.directories.iter().filter(|(path, _)| !path.is_empty()) {
             let (parent, leaf) = split(path);
-            let expected = file.metadata().map_err(error)?;
+            let expected = native_fs::metadata(file).map_err(error)?;
             let actual = entry_metadata(&self.directories[parent], leaf)?;
             if actual.is_none_or(|m| {
-                m.st_mode & libc::S_IFMT != libc::S_IFDIR
-                    || m.st_dev != expected.dev()
-                    || m.st_ino != expected.ino()
+                m.kind != Kind::Directory || m.reparse_tag.is_some() || !m.same_object(&expected)
             }) {
                 return Err("补全所需目录已替换或移除，请重新检查".into());
             }
@@ -366,12 +350,12 @@ impl RepairFilesystem {
             }
             prefix.push_str(name);
             if let Some(dir) = self.directories.get(&prefix) {
-                let expected = dir.metadata().map_err(error)?;
+                let expected = native_fs::metadata(dir).map_err(error)?;
                 let actual = entry_metadata(&current, name)?;
                 if actual.is_none_or(|m| {
-                    m.st_mode & libc::S_IFMT != libc::S_IFDIR
-                        || m.st_dev != expected.dev()
-                        || m.st_ino != expected.ino()
+                    m.kind != Kind::Directory
+                        || m.reparse_tag.is_some()
+                        || !m.same_object(&expected)
                 }) {
                     return Err("补全所需目录已替换或移除，请重新检查".into());
                 }
@@ -409,14 +393,13 @@ impl RepairFilesystem {
                     if prefix == "versions" || prefix.starts_with("versions/") {
                         return Err("核心 JAR 所属实例目录已失效".into());
                     }
-                    let name_c = cstring(name)?;
-                    if unsafe { libc::mkdirat(current.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
-                        return Err(format!(
-                            "无法创建缺失补全目录：{}",
-                            std::io::Error::last_os_error()
-                        ));
-                    }
-                    let dir = Arc::new(open_directory(&current, name).map_err(error)?);
+                    let dir = Directory::from_file(current.try_clone().map_err(error)?)
+                        .and_then(|parent| {
+                            parent.create_private(&Leaf::new(name)?, Traversal::SameFilesystem)
+                        })
+                        .and_then(|directory| directory.try_clone_file())
+                        .map_err(|e| format!("无法创建缺失补全目录：{e}"))?;
+                    let dir = Arc::new(dir);
                     self.absent.remove(&prefix);
                     self.directories.insert(prefix.clone(), dir.clone());
                     current = dir;
@@ -451,19 +434,9 @@ impl RepairFilesystem {
         let Some(metadata) = entry_metadata(parent, leaf)? else {
             return Ok(None);
         };
-        if metadata.st_mode & libc::S_IFMT != libc::S_IFREG {
-            return Err("补全元数据不是普通文件（禁止链接和特殊文件）".into());
-        }
-        Ok(Some(Stamp {
-            dev: metadata.st_dev,
-            ino: metadata.st_ino,
-            len: metadata.st_size as u64,
-            mtime: metadata.st_mtime,
-            mtime_nsec: metadata.st_mtime_nsec,
-            ctime: metadata.st_ctime,
-            ctime_nsec: metadata.st_ctime_nsec,
-        }))
+        Ok(Some(Stamp::from_metadata(&metadata).map_err(error)?))
     }
+
     fn snapshot(&mut self, relative: &str, limit: u64) -> Result<FileSnapshot> {
         self.parent(relative, false)?
             .ok_or("实例版本元数据目录缺失")?;
@@ -472,32 +445,20 @@ impl RepairFilesystem {
     fn read_existing(&self, relative: &str, limit: u64) -> Result<FileSnapshot> {
         let (parent, leaf) = split(relative);
         let parent = self.directories.get(parent).ok_or("元数据目录未绑定")?;
-        let name = cstring(leaf)?;
-        let fd = unsafe {
-            libc::openat(
-                parent.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            return Err(format!(
-                "无法读取补全元数据：{}",
-                std::io::Error::last_os_error()
-            ));
+        let mut file = Directory::from_file(parent.try_clone().map_err(error)?)
+            .and_then(|parent| parent.open_regular(&Leaf::new(leaf)?, Links::Any))
+            .map_err(|e| format!("无法读取补全元数据：{e}"))?;
+        let metadata = native_fs::metadata(&file).map_err(error)?;
+        if metadata.len > limit {
+            return Err("补全元数据超过大小上限".into());
         }
-        let mut file = unsafe { fs::File::from_raw_fd(fd) };
-        let metadata = file.metadata().map_err(error)?;
-        if !metadata.is_file() || metadata.len() > limit {
-            return Err("补全元数据不是普通文件或超过大小上限".into());
-        }
-        let stamp = Stamp::of(&metadata);
+        let stamp = Stamp::from_metadata(&metadata).map_err(error)?;
         let mut bytes = Vec::new();
         (&mut file)
             .take(limit + 1)
             .read_to_end(&mut bytes)
             .map_err(error)?;
-        if bytes.len() as u64 > limit || Stamp::of(&file.metadata().map_err(error)?) != stamp {
+        if bytes.len() as u64 > limit || Stamp::of(&file).map_err(error)? != stamp {
             return Err("补全元数据读取期间变化或超过大小上限".into());
         }
         Ok(FileSnapshot {
@@ -511,42 +472,18 @@ impl RepairFilesystem {
 fn split(path: &str) -> (&str, &str) {
     path.rsplit_once('/').unwrap_or(("", path))
 }
-fn cstring(raw: &str) -> Result<CString> {
-    CString::new(raw).map_err(error)
+fn entry_metadata(parent: &fs::File, name: &str) -> Result<Option<native_fs::Metadata>> {
+    Directory::from_file(parent.try_clone().map_err(error)?)
+        .and_then(|parent| parent.entry(&Leaf::new(name)?))
+        .map_err(|e| format!("无法检查补全目标：{e}"))
 }
-fn entry_metadata(parent: &fs::File, name: &str) -> Result<Option<libc::stat>> {
-    let name = cstring(name)?;
-    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-    if unsafe {
-        libc::fstatat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            metadata.as_mut_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    } == 0
-    {
-        return Ok(Some(unsafe { metadata.assume_init() }));
-    }
-    let e = std::io::Error::last_os_error();
-    if e.kind() == std::io::ErrorKind::NotFound {
-        Ok(None)
-    } else {
-        Err(format!("无法检查补全目标：{e}"))
-    }
-}
+
 fn leaf_state(parent: &fs::File, name: &str) -> Result<FileState> {
     match entry_metadata(parent, name)? {
         None => Ok(FileState::Missing),
-        Some(m) if m.st_mode & libc::S_IFMT == libc::S_IFREG => Ok(FileState::Present),
+        Some(m) if m.kind == Kind::Regular && m.reparse_tag.is_none() => Ok(FileState::Present),
         Some(_) => Err("补全目标不是普通文件（禁止链接和特殊文件）".into()),
     }
-}
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
 }
 fn open_directory(parent: &fs::File, name: &str) -> std::io::Result<fs::File> {
     use pcl_core::retained_fs::{Directory, Leaf, Traversal};
@@ -569,8 +506,13 @@ struct RepairStage {
     max_bytes: u64,
 }
 impl RepairStage {
+    // Schema-1 repair records do not register named native stage leases yet.
+    // Enabling those here would turn cancellation into an unknown orphan in
+    // the recovery store. Keep that port explicitly unavailable until the
+    // registry/receipt protocol can reconcile it; never guess by name prefix.
     fn new(parent: Arc<fs::File>, leaf: &str, max_bytes: u64) -> Result<Self> {
         use pcl_core::retained_fs::{stage::Stage, Directory, Leaf};
+        require_repair_stage_support()?;
         let parent = Directory::from_file(parent.try_clone().map_err(error)?).map_err(error)?;
         let leaf = Leaf::new(leaf).map_err(error)?;
         let stage = Stage::new(&parent).map_err(|e| format!("无法安全暂存补全文件：{e}"))?;
@@ -609,6 +551,17 @@ impl RepairStage {
                 Err(format!("补全文件可能已经发布，但未能完成复核或持久化；文件与修复记录已保留，请重新检查：{error}"))
             }
         }
+    }
+}
+
+fn require_repair_stage_support() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("此平台的依赖修复暂存恢复协议尚未实现".into())
     }
 }
 
@@ -745,6 +698,7 @@ impl Installer {
         validate_binding: &(impl Fn() -> Result<()> + Send + Sync),
         on_progress: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<MissingRepairReport> {
+        require_repair_stage_support()?;
         let mut state = request.state.lock().map_err(|_| "缺失补全捕获锁损坏")?;
         validate(&state, cancel, validate_binding, true)?;
         let mut progress = RepairProgress::default();

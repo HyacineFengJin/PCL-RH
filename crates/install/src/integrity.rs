@@ -241,8 +241,7 @@ impl IntegrityReader<'_> {
         }
         check(cancel)?;
         fast_guard()?;
-        if Stamp::of(&file.metadata().map_err(error)?) != stamp
-            || state.filesystem.stamp(path)? != Some(stamp)
+        if Stamp::of(&file).map_err(error)? != stamp || state.filesystem.stamp(path)? != Some(stamp)
         {
             return Err("所需文件在完整性检查读取期间变化".into());
         }
@@ -267,30 +266,10 @@ fn open_file(state: &RepairState, path: &str, stamp: Stamp) -> Result<fs::File> 
         .directories
         .get(parent)
         .ok_or("校验目录未绑定")?;
-    let name = cstring(leaf)?;
-    let how = OpenHow {
-        flags: (libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK) as u64,
-        mode: 0,
-        resolve: 0x01 | 0x04 | 0x08,
-    };
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            &how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if fd < 0 {
-        return Err(format!(
-            "无法安全打开校验文件：{}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let file = unsafe { fs::File::from_raw_fd(fd as i32) };
-    let metadata = file.metadata().map_err(error)?;
-    if !metadata.is_file() || Stamp::of(&metadata) != stamp {
+    let file = Directory::from_file(parent.try_clone().map_err(error)?)
+        .and_then(|parent| parent.open_regular(&Leaf::new(leaf)?, Links::Any))
+        .map_err(|e| format!("无法安全打开校验文件：{e}"))?;
+    if Stamp::of(&file).map_err(error)? != stamp {
         return Err("所需文件在完整性检查打开期间变化".into());
     }
     Ok(file)

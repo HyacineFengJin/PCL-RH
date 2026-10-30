@@ -12,24 +12,7 @@ const MAX_RECORD_BYTES: u64 = 64 * 1024;
 const MAX_RECORDS: usize = 10_000;
 const MAX_RECORD_TOTAL: usize = 32 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Key {
-    dev: u64,
-    ino: u64,
-}
-impl Key {
-    fn of(file: &fs::File) -> Result<Self> {
-        let m = file.metadata().map_err(error)?;
-        if !m.is_dir() {
-            return Err("损坏修复目录不是普通目录".into());
-        }
-        Ok(Self {
-            dev: m.dev(),
-            ino: m.ino(),
-        })
-    }
-}
+use super::evidence::Key;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,8 +23,7 @@ pub(super) struct Fingerprint {
 }
 impl Fingerprint {
     fn same_object(&self, other: &Self) -> bool {
-        self.stamp.dev == other.stamp.dev
-            && self.stamp.ino == other.stamp.ino
+        self.stamp.same_object(&other.stamp)
             && self.stamp.len == other.stamp.len
             && self.sha256 == other.sha256
     }
@@ -80,6 +62,7 @@ pub(super) struct Intent {
 pub(super) struct Store {
     filesystem: RepairFilesystem,
     directory: Arc<fs::File>,
+    writer: Option<writer_lock::Lease>,
 }
 pub(super) struct Operation {
     directory: Arc<fs::File>,
@@ -103,7 +86,7 @@ fn regular(parent: &fs::File, name: &str) -> Result<fs::File> {
 }
 fn read(parent: &fs::File, name: &str, limit: u64) -> Result<Vec<u8>> {
     let mut file = regular(parent, name)?;
-    let before = Stamp::of(&file.metadata().map_err(error)?);
+    let before = Stamp::of(&file).map_err(error)?;
     if before.len > limit {
         return Err("损坏修复记录超过大小上限".into());
     }
@@ -112,11 +95,11 @@ fn read(parent: &fs::File, name: &str, limit: u64) -> Result<Vec<u8>> {
         .take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(error)?;
-    if bytes.len() as u64 != before.len || Stamp::of(&file.metadata().map_err(error)?) != before {
+    if bytes.len() as u64 != before.len || Stamp::of(&file).map_err(error)? != before {
         return Err("损坏修复记录读取期间变化".into());
     }
     let current = regular(parent, name)?;
-    if Stamp::of(&current.metadata().map_err(error)?) != before {
+    if Stamp::of(&current).map_err(error)? != before {
         return Err("损坏修复记录身份变化".into());
     }
     Ok(bytes)
@@ -148,18 +131,15 @@ fn marked(parent: &fs::File, name: &str, expected: &str) -> Result<bool> {
     Ok(true)
 }
 fn names(directory: &fs::File, limit: usize) -> Result<Vec<String>> {
-    let mut result = Vec::new();
-    for item in fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd())).map_err(error)? {
-        if result.len() >= limit {
-            return Err("损坏修复记录数量超过安全上限".into());
-        }
-        result.push(
-            item.map_err(error)?
-                .file_name()
-                .into_string()
-                .map_err(|_| "损坏修复记录名称不是 UTF-8")?,
-        );
-    }
+    let mut result = Directory::from_file(directory.try_clone().map_err(error)?)
+        .and_then(|directory| directory.names(limit))
+        .map_err(|e| format!("无法枚举损坏修复记录：{e}"))?
+        .into_iter()
+        .map(|name| {
+            name.into_string()
+                .map_err(|_| "损坏修复记录名称不是 UTF-8".to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
     result.sort();
     Ok(result)
 }
@@ -195,11 +175,15 @@ pub(super) fn fingerprint(
     file: &mut fs::File,
     poll: &dyn Fn() -> Result<()>,
 ) -> Result<Fingerprint> {
-    let m = file.metadata().map_err(error)?;
-    if !m.is_file() || m.nlink() > 1 || m.len() > manifest::MAX_REPAIR_FILE_BYTES {
+    let m = native_fs::metadata(file).map_err(error)?;
+    if m.kind != Kind::Regular
+        || m.reparse_tag.is_some()
+        || m.links > 1
+        || m.len > manifest::MAX_REPAIR_FILE_BYTES
+    {
         return Err("损坏文件不是独占普通文件或超过 512 MiB 备份上限".into());
     }
-    let stamp = Stamp::of(&m);
+    let stamp = Stamp::from_metadata(&m).map_err(error)?;
     file.seek(SeekFrom::Start(0)).map_err(error)?;
     let mut sha1 = Sha1::new();
     let mut sha256 = Sha256::new();
@@ -217,7 +201,7 @@ pub(super) fn fingerprint(
         received += n as u64;
     }
     poll()?;
-    if Stamp::of(&file.metadata().map_err(error)?) != stamp {
+    if Stamp::of(&file).map_err(error)? != stamp {
         return Err("损坏文件读取期间变化".into());
     }
     Ok(Fingerprint {
@@ -229,37 +213,49 @@ pub(super) fn fingerprint(
 
 impl Store {
     pub fn open(root: fs::File, display: &Path, create: bool, lock: bool) -> Result<Option<Self>> {
+        // Reject unsupported named-stage recovery before mkdir/lock creation.
+        // Otherwise a failed header write could leave a permanently pending
+        // schema-1 operation even though no dependency was ever touched.
+        if create || lock {
+            require_repair_stage_support()?;
+        }
         let mut filesystem = RepairFilesystem::new(root, display)?;
         let Some(directory) = filesystem.parent(&format!("{STORE}/sentinel"), create)? else {
             return Ok(None);
         };
-        if lock && unsafe { libc::flock(directory.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-        {
-            return Err("另一个进程正在修复损坏依赖，请稍后重试".into());
-        }
+        let writer = if lock {
+            Some(
+                writer_lock::Lease::acquire(&directory)
+                    .map_err(|e| format!("无法取得损坏修复写锁：{e}"))?,
+            )
+        } else {
+            None
+        };
         // Persist every newly created ancestor before any target can move.
         if create {
             for directory in filesystem.directories.values() {
-                directory.sync_all().map_err(error)?;
+                sync_directory(directory)?;
             }
         }
         filesystem.verify()?;
         Ok(Some(Self {
             filesystem,
             directory,
+            writer,
         }))
     }
     pub fn verify(&self) -> Result<()> {
-        self.filesystem.verify()
+        self.filesystem.verify()?;
+        if let Some(writer) = &self.writer {
+            writer.verify(&self.directory).map_err(error)?;
+        }
+        Ok(())
     }
     fn verify_operation(&self, operation: &Operation) -> Result<()> {
         self.verify()?;
         let actual =
             entry_metadata(&self.directory, operation.id())?.ok_or("损坏修复记录目录已移除")?;
-        if actual.st_mode & libc::S_IFMT != libc::S_IFDIR
-            || actual.st_dev != operation.header.operation.dev
-            || actual.st_ino != operation.header.operation.ino
-        {
+        if !operation.header.operation.matches(&actual) {
             return Err("损坏修复记录目录已替换，已保留所有文件".into());
         }
         Ok(())
@@ -267,7 +263,15 @@ impl Store {
     pub fn operations(&self) -> Result<Vec<Operation>> {
         self.verify()?;
         let mut result = Vec::new();
-        for name in names(&self.directory, MAX_OPERATIONS)? {
+        let mut count = 0;
+        for name in names(&self.directory, MAX_OPERATIONS + 1)? {
+            if writer_lock::reserved_name(&self.directory, &name).map_err(error)? {
+                continue;
+            }
+            count += 1;
+            if count > MAX_OPERATIONS {
+                return Err("损坏修复记录数量超过安全上限".into());
+            }
             if !operation_name(&name) {
                 return Err("存在无法识别的损坏修复记录，已保留所有文件".into());
             }
@@ -281,9 +285,9 @@ impl Store {
                     operation_id: name,
                     instance_id: "recovery".into(),
                     root_display: self.filesystem.display.clone(),
-                    root: Key::of(&self.filesystem.directories[""])?,
-                    store: Key::of(&self.directory)?,
-                    operation: Key::of(&directory)?,
+                    root: Key::of(&self.filesystem.directories[""]).map_err(error)?,
+                    store: Key::of(&self.directory).map_err(error)?,
+                    operation: Key::of(&directory).map_err(error)?,
                 };
                 let header_hash = sha256(&serde_json::to_vec(&header).map_err(error)?);
                 result.push(Operation {
@@ -300,9 +304,9 @@ impl Store {
             if header.schema != 1
                 || header.operation_id != name
                 || header.root_display != self.filesystem.display
-                || header.root != Key::of(&self.filesystem.directories[""])?
-                || header.store != Key::of(&self.directory)?
-                || header.operation != Key::of(&directory)?
+                || header.root != Key::of(&self.filesystem.directories[""]).map_err(error)?
+                || header.store != Key::of(&self.directory).map_err(error)?
+                || header.operation != Key::of(&directory).map_err(error)?
             {
                 return Err("损坏修复记录目录身份不符，备份已保留".into());
             }
@@ -323,6 +327,7 @@ impl Store {
         Ok(result)
     }
     pub fn begin(&mut self, name: &str, id: &str) -> Result<Operation> {
+        require_repair_stage_support()?;
         if !operation_name(name) {
             return Err("损坏修复操作标识无效".into());
         }
@@ -333,15 +338,15 @@ impl Store {
             .filesystem
             .parent(&format!("{STORE}/{name}/header.json"), true)?
             .ok_or("无法创建损坏修复记录")?;
-        self.directory.sync_all().map_err(error)?;
+        sync_directory(&self.directory)?;
         let header = Header {
             schema: 1,
             operation_id: name.into(),
             instance_id: id.into(),
             root_display: self.filesystem.display.clone(),
-            root: Key::of(&self.filesystem.directories[""])?,
-            store: Key::of(&self.directory)?,
-            operation: Key::of(&directory)?,
+            root: Key::of(&self.filesystem.directories[""]).map_err(error)?,
+            store: Key::of(&self.directory).map_err(error)?,
+            operation: Key::of(&directory).map_err(error)?,
         };
         let bytes = serde_json::to_vec(&header).map_err(error)?;
         put(directory.clone(), "header.json", &bytes)?;
@@ -379,7 +384,7 @@ impl Store {
                     .filesystem
                     .directories
                     .get(expected)
-                    .map(|file| Key::of(file))
+                    .map(|file| Key::of(file).map_err(error))
                     .transpose()?
                     != Some(record.key)
             {
@@ -434,7 +439,7 @@ impl Operation {
                 .ok_or("损坏修复目标目录未绑定")?;
             parents.push(Parent {
                 path: prefix.clone(),
-                key: Key::of(file)?,
+                key: Key::of(file).map_err(error)?,
             });
         }
         let intent = Intent {
@@ -513,8 +518,7 @@ impl Operation {
                 }
                 if intent.backup.sha256 != intent.original.sha256
                     || intent.backup.stamp.len != intent.original.stamp.len
-                    || (intent.backup.stamp.dev == intent.original.stamp.dev
-                        && intent.backup.stamp.ino == intent.original.stamp.ino)
+                    || intent.backup.stamp.same_object(&intent.original.stamp)
                 {
                     return Err("损坏修复记录不包含独立原件备份".into());
                 }
@@ -559,21 +563,11 @@ pub(super) fn store_absent(path: &Path) -> Result<bool> {
     if !path.is_absolute() {
         return Err("损坏修复根目录必须为绝对路径".into());
     }
-    let raw = path.to_str().ok_or("损坏修复根目录不是 UTF-8")?;
-    let fd = unsafe {
-        libc::open(
-            cstring(raw)?.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(error(std::io::Error::last_os_error()));
-    }
-    let root = unsafe { fs::File::from_raw_fd(fd) };
-    let expected = Key::of(&root)?;
+    let root = probe_root(path)?;
+    let expected = Key::of(&root).map_err(error)?;
     let verify_root = || -> Result<()> {
-        let current = fs::symlink_metadata(path).map_err(error)?;
-        if !current.is_dir() || current.dev() != expected.dev || current.ino() != expected.ino {
+        let current = probe_root(path)?;
+        if Key::of(&current).map_err(error)? != expected {
             return Err("损坏修复根目录身份已变化".into());
         }
         Ok(())
@@ -586,31 +580,18 @@ pub(super) fn store_absent(path: &Path) -> Result<bool> {
         }
         return Ok(true);
     };
-    if parent.st_mode & libc::S_IFMT != libc::S_IFDIR {
+    if parent.kind != Kind::Directory || parent.reparse_tag.is_some() {
         return Err("损坏修复记录父目录不是安全目录".into());
     }
-    let fd = unsafe {
-        libc::openat(
-            root.as_raw_fd(),
-            cstring(".pcl-linux")?.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(error(std::io::Error::last_os_error()));
-    }
-    let directory = unsafe { fs::File::from_raw_fd(fd) };
-    let bound = Key::of(&directory)?;
-    if bound.dev != parent.st_dev || bound.ino != parent.st_ino {
+    let directory = probe_directory(&root, ".pcl-linux")?;
+    let bound = Key::of(&directory).map_err(error)?;
+    if !bound.matches(&parent) {
         return Err("损坏修复记录父目录在检查期间变化".into());
     }
     let store = entry_metadata(&directory, "dependency-repairs")?;
     let current = entry_metadata(&root, ".pcl-linux")?.ok_or("损坏修复记录父目录已移除")?;
     verify_root()?;
-    if current.st_mode & libc::S_IFMT != libc::S_IFDIR
-        || current.st_dev != bound.dev
-        || current.st_ino != bound.ino
-    {
+    if !bound.matches(&current) {
         return Err("损坏修复记录父目录在检查期间变化".into());
     }
     match store {
@@ -620,7 +601,9 @@ pub(super) fn store_absent(path: &Path) -> Result<bool> {
             }
             Ok(true)
         }
-        Some(metadata) if metadata.st_mode & libc::S_IFMT == libc::S_IFDIR => Ok(false),
+        Some(metadata) if metadata.kind == Kind::Directory && metadata.reparse_tag.is_none() => {
+            Ok(false)
+        }
         Some(_) => Err("损坏修复记录不是安全目录".into()),
     }
 }
@@ -638,8 +621,8 @@ fn rename_new(
         std::ffi::OsStr::new(target_name),
     )
     .map_err(|e| format!("无法无覆盖移动损坏修复文件：{e}"))?;
-    source.sync_all().map_err(error)?;
-    target.sync_all().map_err(error)
+    sync_directory(source)?;
+    sync_directory(target)
 }
 fn matches(parent: &fs::File, name: &str, expected: &Fingerprint) -> Result<bool> {
     if entry_metadata(parent, name)?.is_none() {
@@ -662,7 +645,7 @@ pub(super) fn publish(
     let original = format!("original-{}", intent.ordinal);
     let backup = format!("backup-{}", intent.ordinal);
     let current = regular(&target, leaf)?;
-    if Stamp::of(&current.metadata().map_err(error)?) != intent.original.stamp
+    if Stamp::of(&current).map_err(error)? != intent.original.stamp
         || !matches(&target, leaf, &intent.original)?
         || !matches(&operation.directory, &incoming, &intent.incoming)?
         || !matches(&operation.directory, &backup, &intent.backup)?
@@ -766,50 +749,56 @@ pub(super) fn recover(
 }
 
 pub(super) fn open_root(path: &Path) -> Result<fs::File> {
-    if !path.is_absolute() {
-        return Err("损坏修复根目录必须为绝对路径".into());
-    }
-    let slash = cstring("/")?;
+    Directory::open_absolute(path)
+        .and_then(|directory| directory.try_clone_file())
+        .map_err(|e| format!("无法安全打开损坏修复根目录：{e}"))
+}
+
+fn sync_directory(file: &fs::File) -> Result<()> {
+    Directory::from_file(file.try_clone().map_err(error)?)
+        .and_then(|directory| directory.sync())
+        .map_err(error)
+}
+
+// Read-only healthy-launch probes deliberately retain Linux's pre-openat2
+// admission. They never create directories or authorize repair writes.
+#[cfg(target_os = "linux")]
+fn probe_root(path: &Path) -> Result<fs::File> {
+    use std::os::{fd::FromRawFd, unix::ffi::OsStrExt};
+    let raw = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(error)?;
     let fd = unsafe {
         libc::open(
-            slash.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            raw.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     };
     if fd < 0 {
         return Err(error(std::io::Error::last_os_error()));
     }
-    let mut directory = unsafe { fs::File::from_raw_fd(fd) };
-    for component in path.components() {
-        match component {
-            std::path::Component::RootDir => {}
-            std::path::Component::Normal(name) => {
-                let name = name.to_str().ok_or("损坏修复根目录不是 UTF-8")?;
-                let how = OpenHow {
-                    flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                        as u64,
-                    mode: 0,
-                    resolve: 0x04 | 0x08,
-                };
-                let fd = unsafe {
-                    libc::syscall(
-                        libc::SYS_openat2,
-                        directory.as_raw_fd(),
-                        cstring(name)?.as_ptr(),
-                        &how,
-                        std::mem::size_of::<OpenHow>(),
-                    )
-                };
-                if fd < 0 {
-                    return Err(format!(
-                        "无法安全打开损坏修复根目录：{}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
-                directory = unsafe { fs::File::from_raw_fd(fd as i32) };
-            }
-            _ => return Err("损坏修复根目录路径无效".into()),
-        }
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    Ok(file)
+}
+#[cfg(not(target_os = "linux"))]
+fn probe_root(path: &Path) -> Result<fs::File> {
+    open_root(path)
+}
+#[cfg(target_os = "linux")]
+fn probe_directory(parent: &fs::File, name: &str) -> Result<fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let name = std::ffi::CString::new(name).map_err(error)?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(error(std::io::Error::last_os_error()));
     }
-    Ok(directory)
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+#[cfg(not(target_os = "linux"))]
+fn probe_directory(parent: &fs::File, name: &str) -> Result<fs::File> {
+    open_directory(parent, name).map_err(error)
 }

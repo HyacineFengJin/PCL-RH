@@ -171,6 +171,7 @@ impl Installer {
         validate_binding: &(impl Fn() -> Result<()> + Send + Sync),
         on_progress: &(impl Fn(Progress) + Send + Sync),
     ) -> Result<DamageRepairReport> {
+        require_repair_stage_support()?;
         let mut state = request
             .captured
             .state
@@ -359,8 +360,8 @@ impl RepairRun<'_> {
                 .ok_or("损坏修复目录未绑定")?;
             let observed_metadata =
                 entry_metadata(parent, split(path).1)?.ok_or("依赖在损坏检查前已移除")?;
-            if observed_metadata.st_nlink != 1
-                || observed_metadata.st_size as u64 > manifest::MAX_REPAIR_FILE_BYTES
+            if observed_metadata.links != 1
+                || observed_metadata.len > manifest::MAX_REPAIR_FILE_BYTES
             {
                 self.unsupported(&required, "原文件有硬链接或超过 512 MiB 独立备份上限");
                 self.progress.completed += 1;
@@ -461,7 +462,7 @@ impl RepairRun<'_> {
         }
         let copied = fingerprint(backup.file_mut(), &|| self.poll(state))?;
         if copied.sha256 != original.sha256
-            || Stamp::of(&original_file.metadata().map_err(error)?) != original.stamp
+            || Stamp::of(original_file).map_err(error)? != original.stamp
             || state.filesystem.stamp(path)? != Some(original.stamp)
         {
             return Err("原件备份期间源文件变化".into());
@@ -538,7 +539,7 @@ impl RepairRun<'_> {
             return Err("替换文件发布后变化".into());
         }
         validate(state, self.cancel, self.validate_binding, true)?;
-        if Stamp::of(&original_file.metadata().map_err(error)?) != original.stamp
+        if Stamp::of(original_file).map_err(error)? != original.stamp
             || state.filesystem.stamp(path)? != Some(original.stamp)
         {
             return Err("原文件在下载期间变化，拒绝替换".into());

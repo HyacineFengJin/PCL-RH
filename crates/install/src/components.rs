@@ -365,7 +365,7 @@ impl Installer {
                 continue;
             }
             let path = workspace.file(&d.relative)?;
-            fs::create_dir_all(path.parent().ok_or("组件文件路径无效")?).map_err(error)?;
+            path.prepare_parent()?;
             if verify(&path, &d.hash, d.size, cancel)? {
                 stats.component_completed += 1;
                 continue;
@@ -380,7 +380,7 @@ impl Installer {
                 let cached = cache.file(&d.relative)?;
                 if verify(&cached, &d.hash, d.size, cancel)? {
                     // Processors may rewrite inputs. Never share cache inodes.
-                    copy_cancel(&cached, &path, cancel)?;
+                    copy_cancel(&cached, &path, &d.hash, d.size, cancel)?;
                     reused = true;
                 } else if let Some(source) = &self.cache_source {
                     reused = source.copy_to(workspace, d, cancel)?;
@@ -615,7 +615,7 @@ impl Installer {
                         return Err("官方安装器内嵌组件校验失败".into());
                     }
                     let target = workspace.file(&d.relative)?;
-                    fs::create_dir_all(target.parent().unwrap()).map_err(error)?;
+                    target.prepare_parent()?;
                     target.write(&bytes)?;
                     stats.component_completed += 1;
                 } else if d.url.is_empty() {
@@ -709,7 +709,7 @@ impl Installer {
                             return Err(format!("组件运行文件 {key} 为空"));
                         }
                         if let Some(hash) = data.get(&format!("{key}_SHA")) {
-                            let size = fs::metadata(&path).map_err(error)?.len();
+                            let size = path.open()?.metadata().map_err(error)?.len();
                             if !hash_valid(hash) || !verify(&path, hash, size, cancel)? {
                                 return Err(format!("组件运行文件 {key} SHA1 校验失败"));
                             }
@@ -760,19 +760,21 @@ impl Installer {
             let source = workspace.file(relative)?;
             let destination = root.file(relative)?;
             let hash = file_hash(&source, cancel)?;
-            let size = fs::metadata(&source).map_err(error)?.len();
+            let mut input = source.open()?;
+            let size = input.metadata().map_err(error)?.len();
             if !verify(&destination, &hash, size, cancel)? {
-                fs::create_dir_all(destination.parent().unwrap()).map_err(error)?;
-                let mut output = tempfile::NamedTempFile::new_in(destination.parent().unwrap())
-                    .map_err(error)?;
-                let result = (|| {
-                    let mut input = source.open()?;
-                    copy_stream(&mut input, &mut output, cancel)?;
-                    output.as_file().sync_all().map_err(error)
-                })();
-                match result {
-                    Ok(()) => persist_download(output, &destination)?,
-                    Err(e) => return Err(close_download(output, e)),
+                let mut output = destination.output(size)?;
+                let copied =
+                    copy_stream(&mut input, output.file_mut(), size, cancel).and_then(|actual| {
+                        if actual.eq_ignore_ascii_case(&hash) {
+                            Ok(())
+                        } else {
+                            Err("组件运行库在复制期间变化".into())
+                        }
+                    });
+                match copied {
+                    Ok(()) => output.publish()?,
+                    Err(e) => return Err(output.close(e)),
                 }
             }
             cb(stats.event(
@@ -784,29 +786,57 @@ impl Installer {
         Ok(())
     }
 }
-fn copy_stream(input: &mut impl Read, output: &mut impl Write, cancel: &AtomicBool) -> Result<()> {
+fn copy_stream(
+    input: &mut fs::File,
+    output: &mut fs::File,
+    expected_size: u64,
+    cancel: &AtomicBool,
+) -> Result<String> {
+    let before = pcl_core::retained_fs::metadata(input).map_err(error)?;
+    if before.len != expected_size {
+        return Err("组件复制源大小已变化".into());
+    }
+    let mut digest = Sha1::new();
+    let mut received = 0u64;
     let mut buf = [0; 65536];
-    loop {
+    while received < expected_size {
         check(cancel)?;
-        let n = input.read(&mut buf).map_err(error)?;
+        let max = (expected_size - received).min(buf.len() as u64) as usize;
+        let n = input.read(&mut buf[..max]).map_err(error)?;
         if n == 0 {
-            break;
+            return Err("组件复制源在读取期间缩短".into());
         }
+        received += n as u64;
+        digest.update(&buf[..n]);
         output.write_all(&buf[..n]).map_err(error)?;
     }
-    Ok(())
+    check(cancel)?;
+    if input.read(&mut buf[..1]).map_err(error)? != 0
+        || pcl_core::retained_fs::metadata(input).map_err(error)? != before
+    {
+        return Err("组件复制源在读取期间变化".into());
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 fn copy_cancel(
     source: &bound_root::InstallPath,
     target: &bound_root::InstallPath,
+    hash: &str,
+    size: u64,
     cancel: &AtomicBool,
 ) -> Result<()> {
-    let mut output = tempfile::NamedTempFile::new_in(target.parent().ok_or("组件复制目标无效")?)
-        .map_err(error)?;
-    let copied = copy_stream(&mut source.open()?, &mut output, cancel);
+    let mut input = source.open()?;
+    let mut output = target.output(size)?;
+    let copied = copy_stream(&mut input, output.file_mut(), size, cancel).and_then(|actual| {
+        if actual.eq_ignore_ascii_case(hash) {
+            Ok(())
+        } else {
+            Err("组件缓存副本校验失败".into())
+        }
+    });
     match copied {
-        Ok(()) => persist_download(output, target),
-        Err(e) => Err(close_download(output, e)),
+        Ok(()) => output.publish(),
+        Err(e) => Err(output.close(e)),
     }
 }
 /// Strings passed to Java carry retained directory capabilities. Keep every
@@ -878,14 +908,14 @@ fn processor_data<R: Read + Seek>(
             raw.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
         {
             let path = workspace.file(format!("libraries/{}", maven_path(coordinate)?))?;
-            fs::create_dir_all(path.parent().unwrap()).map_err(error)?;
+            path.prepare_parent()?;
             data.remember(path)
         } else if let Some(literal) = raw.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')) {
             literal.to_string()
         } else {
             let archive_path = raw.trim_start_matches('/');
             let path = workspace.file(format!("extracted/{archive_path}"))?;
-            fs::create_dir_all(path.parent().unwrap()).map_err(error)?;
+            path.prepare_parent()?;
             path.write(&archive_bytes(archive, archive_path, MAX_COMPONENT)?)?;
             data.remember(path)
         };
@@ -981,9 +1011,6 @@ fn run_processor(
             maven_path(coordinate.as_str().ok_or("组件处理器依赖无效")?)?
         ))?);
     }
-    if classpath.iter().any(|path| !path.is_file()) {
-        return Err("组件处理器依赖下载不完整".into());
-    }
     let args = processor["args"]
         .as_array()
         .ok_or("组件处理器参数无效")?
@@ -1054,7 +1081,7 @@ fn verify_processor_outputs(
         if !hash_valid(&hash) {
             return Err("组件处理器输出缺少有效 SHA1".into());
         }
-        let size = fs::metadata(&path).map_err(error)?.len();
+        let size = path.open()?.metadata().map_err(error)?.len();
         if !verify(&path, &hash, size, cancel)? {
             return Err("组件处理器输出 SHA1 校验失败".into());
         }

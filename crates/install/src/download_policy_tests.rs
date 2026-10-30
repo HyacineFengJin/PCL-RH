@@ -254,6 +254,56 @@ fn forbid_cross_root_cache_copy_downloads_but_keeps_verified_target_reuse() {
     }
 }
 #[test]
+fn bound_publication_conflict_preserves_target_and_is_never_a_transfer_retry() {
+    let payload = b"verified replacement bytes";
+    let server = server(payload.to_vec());
+    let installer = installer(&server, 1, 0, false);
+    let target = fixture();
+    fs::create_dir_all(target.path().join("libraries")).unwrap();
+    let existing = target.path().join("libraries/existing.jar");
+    fs::write(&existing, b"pre-existing data must remain").unwrap();
+    let root = InstallDir::bound(fs::File::open(target.path()).unwrap()).unwrap();
+    let artifact = Download {
+        url: format!("{}/payload", server.base),
+        relative: "libraries/existing.jar".into(),
+        hash: format!("{:x}", Sha1::digest(payload)),
+        size: payload.len() as u64,
+    };
+    let cancel = AtomicBool::new(false);
+    let abort = AtomicBool::new(false);
+    let done = AtomicU64::new(0);
+    let bytes = AtomicU64::new(0);
+    let network = AtomicU64::new(0);
+    let group = AtomicU64::new(0);
+    let error = installer
+        .download_to(
+            &root,
+            &artifact,
+            &cancel,
+            &abort,
+            &done,
+            1,
+            &bytes,
+            &network,
+            artifact.size,
+            &group,
+            1,
+            &|_| {},
+        )
+        .unwrap_err();
+    assert!(error.contains("目标已存在"), "{error}");
+    assert_eq!(server.artifact_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(done.load(Ordering::Relaxed), 0);
+    assert_eq!(group.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        fs::read(&existing).unwrap(),
+        b"pre-existing data must remain"
+    );
+    assert_eq!(fs::read_dir(existing.parent().unwrap()).unwrap().count(), 1);
+    assert_eq!(installer.downloads.status().active_transfers, 0);
+}
+
+#[test]
 fn cancellation_during_throttled_read_stops_before_another_body_poll() {
     let server = server(vec![8; 1024 * 1024]);
     let installer = installer(&server, 1, 1, false);
