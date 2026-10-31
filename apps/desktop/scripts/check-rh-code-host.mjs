@@ -552,6 +552,115 @@ test("busy native work vetoes controller suspension", async (t) => {
   assert.equal(driver.child, controller);
 });
 
+test("a held idle check coalesces thirty ticks and retries busy work only on a later tick", async (t) => {
+  const driver = await fixture(t),
+    held = deferred();
+  await enter(driver);
+  const controller = driver.child;
+  driver.nativeResponses.push(
+    held.promise,
+    ...Array.from({ length: 30 }, () =>
+      Promise.resolve({ released: false, busy: true }),
+    ),
+  );
+  await eligible(driver);
+  for (let i = 0; i < 30; i++) driver.tick(15_000);
+  await driver.flush();
+  const calls = () =>
+    driver.calls.filter((call) => call.command === "experimental_suspend")
+      .length;
+  assert.equal(calls(), 1);
+  held.resolve({ released: false, busy: true });
+  await driver.flush();
+  assert.equal(
+    calls(),
+    1,
+    "Settling must not execute a backlog of timer callbacks",
+  );
+  assert.equal(controller.prepares, 0);
+  assert.equal(driver.child, controller);
+  driver.tick(15_000);
+  await driver.flush();
+  assert.equal(
+    calls(),
+    2,
+    "A busy reply releases the single check for a later retry",
+  );
+});
+
+test("one pending idle check survives visibility effect replacement without suspending a returning user", async (t) => {
+  const driver = await fixture(t),
+    held = deferred();
+  await enter(driver);
+  const controller = driver.child;
+  driver.nativeResponses.push(held.promise);
+  await eligible(driver);
+  driver.visible(true);
+  driver.visible(false);
+  driver.tick(10 * 60_000);
+  for (let i = 0; i < 30; i++) driver.tick(15_000);
+  await driver.flush();
+  driver.visible(true);
+  held.resolve({ released: true, busy: false });
+  await driver.flush();
+  assert.equal(
+    driver.calls.filter((call) => call.command === "experimental_suspend")
+      .length,
+    1,
+  );
+  assert.equal(controller.prepares, 0);
+  assert.equal(driver.child, controller);
+  assert.equal(driver.activeTimers, 0);
+  await eligible(driver);
+  assert.equal(
+    driver.calls.filter((call) => call.command === "experimental_suspend")
+      .length,
+    2,
+  );
+  assert.equal(driver.child, null);
+});
+
+test("unmount during a held idle check drops future ticks and rejects late retirement", async (t) => {
+  const driver = await fixture(t),
+    held = deferred();
+  await enter(driver);
+  const controller = driver.child;
+  driver.nativeResponses.push(held.promise);
+  await eligible(driver);
+  for (let i = 0; i < 30; i++) driver.tick(15_000);
+  driver.close();
+  assert.equal(driver.activeTimers, 0);
+  held.resolve({ released: true, busy: false });
+  await driver.flush();
+  assert.equal(
+    driver.calls.filter((call) => call.command === "experimental_suspend")
+      .length,
+    1,
+  );
+  assert.equal(controller.prepares, 0);
+  assert.equal(controller.state.suspended, false);
+  assert.equal(driver.kernels[0].disposed, true);
+});
+
+test("a failed native idle check releases its pending slot for a later retry", async (t) => {
+  const driver = await fixture(t),
+    held = deferred();
+  await enter(driver);
+  driver.nativeResponses.push(held.promise);
+  await eligible(driver);
+  held.reject(new Error("synthetic inspection failure"));
+  await driver.flush();
+  assert.ok(driver.child);
+  driver.tick(15_000);
+  await driver.flush();
+  assert.equal(
+    driver.calls.filter((call) => call.command === "experimental_suspend")
+      .length,
+    2,
+  );
+  assert.equal(driver.child, null);
+});
+
 test("returning during delayed preparation cancels retirement and preserves the mounted controller", async (t) => {
   const driver = await fixture(t),
     preparation = deferred();

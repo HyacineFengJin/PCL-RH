@@ -89,7 +89,10 @@ export function useDownloadTasks({
     let disposed = false,
       closing = false,
       generation = 0,
-      demand = 0;
+      demand = 0,
+      eventsReady = false,
+      readFailed = false;
+    let pollTimer: number | undefined, eventTimer: number | undefined;
     const waiters: {
       ticket: number;
       resolve: (view: DownloadTaskView | null) => void;
@@ -103,6 +106,25 @@ export function useDownloadTasks({
     setError("");
     setClosing(false);
     const current = () => !disposed && binding.current === owner && !closing;
+    function clearPoll() {
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer);
+      pollTimer = undefined;
+    }
+    function clearEvent() {
+      if (eventTimer !== undefined) window.clearTimeout(eventTimer);
+      eventTimer = undefined;
+    }
+    function armPoll() {
+      clearPoll();
+      if (!current()) return;
+      const idle = !snapshot.current.tasks.some(taskIsActive);
+      // Native events wake new/finished work immediately. Keep the old short
+      // fallback when subscription fails, and poll active tasks every second.
+      pollTimer = window.setTimeout(
+        wakeLatest,
+        eventsReady && idle && !readFailed ? 15_000 : 1000,
+      );
+    }
     function settle(ticket: number, value: DownloadTaskView | null) {
       for (let i = waiters.length - 1; i >= 0; i--)
         if (waiters[i].ticket <= ticket) waiters.splice(i, 1)[0].resolve(value);
@@ -120,6 +142,7 @@ export function useDownloadTasks({
         if (!validTaskView(candidate)) throw Error(t("task.invalidSnapshot"));
         const next = adoptTaskView(snapshot.current, candidate);
         snapshot.current = next;
+        readFailed = false;
         setView(next);
         setError("");
         adopted = next;
@@ -141,17 +164,34 @@ export function useDownloadTasks({
           if (ids.size > 512)
             for (const id of ids) if (!retained.has(id)) ids.delete(id);
       } catch (cause) {
-        if (current() && epoch === generation) setError(String(cause));
+        if (current() && epoch === generation) {
+          readFailed = true;
+          setError(String(cause));
+        }
       } finally {
         settle(ticket, adopted);
         if (physical.current === token) physical.current = null;
         if (current() && demand > ticket) void run();
+        else if (current()) armPoll();
         else if (wake.current !== wakeLatest) wake.current?.();
       }
     }
     function wakeLatest() {
+      clearPoll();
       demand++;
       void run();
+    }
+    function eventWake() {
+      if (!current() || eventTimer !== undefined) return;
+      // A burst can include several concurrent jobs. The payload is only a
+      // hint; one later authoritative read covers the entire burst.
+      eventTimer = window.setTimeout(() => {
+        eventTimer = undefined;
+        wakeLatest();
+      }, 50);
+    }
+    function focusWake() {
+      if (document.visibilityState !== "hidden") wakeLatest();
     }
     const refreshLatest = () =>
       new Promise<DownloadTaskView | null>((resolve) => {
@@ -159,20 +199,29 @@ export function useDownloadTasks({
           resolve(null);
           return;
         }
+        clearPoll();
+        clearEvent();
         waiters.push({ ticket: ++demand, resolve });
         void run();
       });
     wake.current = wakeLatest;
     request.current = refreshLatest;
     wakeLatest();
-    const timer = window.setInterval(wakeLatest, 1000);
+    window.addEventListener("focus", focusWake);
+    document.addEventListener("visibilitychange", focusWake);
     let unlistenTask: (() => void) | undefined,
       unlistenClose: (() => void) | undefined;
     if (native) {
-      void listen("task_changed", wakeLatest)
+      void listen("task_changed", eventWake)
         .then((stop) => {
           if (disposed) stop();
-          else unlistenTask = stop;
+          else {
+            unlistenTask = stop;
+            eventsReady = true;
+            // Events between the first read and subscription may be absent.
+            // Demand a read started after listening before using idle fallback.
+            wakeLatest();
+          }
         })
         .catch(() => {});
       void (subscribeClosing || closeSource.current!)((value) => {
@@ -180,8 +229,11 @@ export function useDownloadTasks({
         closing = value;
         generation++;
         setClosing(value);
-        if (closing) settle(Infinity, null);
-        else wakeLatest();
+        if (closing) {
+          clearPoll();
+          clearEvent();
+          settle(Infinity, null);
+        } else wakeLatest();
       })
         .then((stop) => {
           if (disposed) stop();
@@ -192,7 +244,10 @@ export function useDownloadTasks({
     return () => {
       disposed = true;
       generation++;
-      window.clearInterval(timer);
+      clearPoll();
+      clearEvent();
+      window.removeEventListener("focus", focusWake);
+      document.removeEventListener("visibilitychange", focusWake);
       unlistenTask?.();
       unlistenClose?.();
       settle(Infinity, null);

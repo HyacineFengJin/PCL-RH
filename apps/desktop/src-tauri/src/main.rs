@@ -2196,11 +2196,20 @@ fn main() {
             shared.launcher_local.opened();
             let handle = app.handle().clone();
             let weak = Arc::downgrade(&shared);
+            let task_events = Mutex::new(tasks::events::TaskEventGate::default());
             shared.tasks.set_listener(move |snapshot| {
                 if let Some(shared) = weak.upgrade() {
                     shared.launcher_local.task_changed(&snapshot);
                 }
-                let _ = handle.emit("task_changed", snapshot);
+                let emit = task_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .accept(&snapshot, std::time::Instant::now());
+                // Native event observers may reenter task APIs. No rate-limit
+                // mutex is held while publishing outside the scheduler lock.
+                if emit {
+                    let _ = handle.emit("task_changed", snapshot);
+                }
             });
             Ok(())
         })

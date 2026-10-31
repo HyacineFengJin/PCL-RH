@@ -37,6 +37,7 @@ export function RHCodeHost(props: Props) {
     alive = useRef(true),
     mounted = useRef(false),
     queue = useRef(Promise.resolve()),
+    suspensionPending = useRef(false),
     awaySince = useRef<number | null>(null),
     visibilityEpoch = useRef(0),
     leases = useRef(createWorkLeases()).current,
@@ -192,9 +193,13 @@ export function RHCodeHost(props: Props) {
   }, [props.visible, retry, enqueue]);
   useEffect(() => {
     if (props.visible || !loaded) return;
-    const timer = setInterval(
-      () =>
-        enqueue(async () => {
+    const timer = setInterval(() => {
+      // A slow native check may outlive multiple ticks or a visibility
+      // effect. Keep one check queued/running across those lifetimes.
+      if (suspensionPending.current) return;
+      suspensionPending.current = true;
+      enqueue(async () => {
+        try {
           const c = controller.current,
             epoch = visibilityEpoch.current;
           const stillAway = () =>
@@ -249,9 +254,11 @@ export function RHCodeHost(props: Props) {
           setLoaded(null);
           if (kernel.current)
             await configureKernel(kernel.current, ["launcher"]);
-        }),
-      15_000,
-    );
+        } finally {
+          suspensionPending.current = false;
+        }
+      });
+    }, 15_000);
     return () => clearInterval(timer);
   }, [props.visible, loaded, enqueue, leases]);
   return (

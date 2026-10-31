@@ -8,6 +8,8 @@ mod schedule;
 #[path = "tasks/scope.rs"]
 mod scope;
 pub use scope::TaskScope;
+#[path = "tasks/events.rs"]
+pub(crate) mod events;
 
 use serde::Serialize;
 use serde_json::Value;

@@ -119,6 +119,13 @@ import { InstanceLogs } from "./InstanceLogs";
 import { ContextMenu } from "./ContextMenu";
 import { useDownloadTasks } from "./useDownloadTasks";
 import {
+  createStatusPoller,
+  sameAuthState,
+  sameProcessStatus,
+  type ProcessStatus,
+  type StatusReadSlot,
+} from "./statusPolling";
+import {
   TaskManager,
   TaskStatistics,
   useAggregateDownloadSpeed,
@@ -153,15 +160,7 @@ import type {
   Settings,
 } from "./types";
 import "./roots.css";
-type Status = {
-  stage: string;
-  message: string;
-  version: string | null;
-  pid: number | null;
-  exit_code: number | null;
-  root_id?: string | null;
-  root_path?: string | null;
-};
+type Status = ProcessStatus;
 const emptyAuth: AuthState = {
   client_id: "",
   selected: null,
@@ -1408,6 +1407,20 @@ function App() {
   const [remember, setRemember] = useState(true);
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState("");
+  const pollingState = React.useRef({
+    data,
+    authWorking,
+    closing: tasks.closing,
+  });
+  pollingState.current = { data, authWorking, closing: tasks.closing };
+  const statusPolling = React.useRef<{
+    process: ReturnType<typeof createStatusPoller<Status>>;
+    auth: ReturnType<typeof createStatusPoller<AuthState>>;
+  } | null>(null);
+  const statusReadSlots = React.useRef<{
+    process: StatusReadSlot;
+    auth: StatusReadSlot;
+  }>({ process: { current: null }, auth: { current: null } });
   const accountPresentation = useAccountPresentation(
     api,
     native,
@@ -1666,25 +1679,74 @@ function App() {
   }
   useEffect(() => {
     load();
-    const t = setInterval(
-      () =>
-        api<Status>("process_status")
-          .then((status) => setData((d) => (d ? { ...d, status } : d)))
-          .catch(() => {}),
-      900,
-    );
-    const a = setInterval(
-      () =>
-        api<AuthState>("auth_status")
-          .then((auth) => setData((d) => (d ? { ...d, auth } : d)))
-          .catch(() => {}),
-      1000,
-    );
-    return () => {
-      clearInterval(t);
-      clearInterval(a);
-    };
   }, []);
+  useEffect(() => {
+    if (tasks.closing) return;
+    const process = createStatusPoller({
+      slot: statusReadSlots.current.process,
+      read: () => api<Status>("process_status"),
+      apply: (status) =>
+        setData((d) =>
+          d &&
+          !pollingState.current.closing &&
+          !sameProcessStatus(d.status, status)
+            ? { ...d, status }
+            : d,
+        ),
+      interval: () => {
+        const status = pollingState.current.data?.status;
+        return !status || ["preparing", "running"].includes(status.stage)
+          ? 900
+          : 15_000;
+      },
+      schedule: (callback, delay) => window.setTimeout(callback, delay),
+      cancel: (timer) => window.clearTimeout(timer),
+    });
+    const auth = createStatusPoller({
+      slot: statusReadSlots.current.auth,
+      read: () => api<AuthState>("auth_status"),
+      apply: (auth) =>
+        setData((d) =>
+          d && !pollingState.current.closing && !sameAuthState(d.auth, auth)
+            ? { ...d, auth }
+            : d,
+        ),
+      interval: () => {
+        const { data, authWorking } = pollingState.current;
+        return !data ||
+          authWorking ||
+          data.auth.saving ||
+          ["preparing", "waiting", "saving"].includes(data.auth.stage)
+          ? 1000
+          : 15_000;
+      },
+      schedule: (callback, delay) => window.setTimeout(callback, delay),
+      cancel: (timer) => window.clearTimeout(timer),
+    });
+    statusPolling.current = { process, auth };
+    const wake = () => {
+      if (document.visibilityState !== "hidden") {
+        process.wake();
+        auth.wake();
+      }
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    process.reschedule();
+    auth.reschedule();
+    return () => {
+      process.stop();
+      auth.stop();
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+      if (statusPolling.current?.process === process)
+        statusPolling.current = null;
+    };
+  }, [tasks.closing]);
+  useEffect(() => {
+    statusPolling.current?.process.reschedule();
+    statusPolling.current?.auth.reschedule();
+  }, [data?.status.stage, data?.auth.stage, data?.auth.saving, authWorking]);
   useEffect(() => {
     setInspectionTarget(null);
     setFailureTarget(null);
@@ -1769,8 +1831,7 @@ function App() {
     setAuthError("");
     try {
       await api(command, args);
-      const auth = await api<AuthState>("auth_status");
-      setData((d) => (d ? { ...d, auth } : d));
+      await statusPolling.current?.auth.refresh();
     } catch (e) {
       setAuthError(String(e));
     } finally {
@@ -1789,7 +1850,10 @@ function App() {
   }
   function closeAccountDialog() {
     // Cancel during code acquisition too, before a late challenge can open a browser.
-    if (native) void api("auth_cancel").catch(() => {});
+    if (native)
+      void api("auth_cancel")
+        .then(() => statusPolling.current?.auth.refresh())
+        .catch(() => {});
     setDialog(null);
   }
   async function saveOfflineAccount(name: string) {
@@ -1799,8 +1863,7 @@ function App() {
     try {
       await save({ ...data.settings, player: name });
       await api("auth_select", { id: null });
-      const auth = await api<AuthState>("auth_status");
-      setData((current) => (current ? { ...current, auth } : current));
+      await statusPolling.current?.auth.refresh();
       setDialog(null);
     } catch (error) {
       setAuthError(String(error));
@@ -1950,6 +2013,7 @@ function App() {
             }
           : d,
       );
+      statusPolling.current?.process.wake();
     } catch (e) {
       notify(String(e));
     }

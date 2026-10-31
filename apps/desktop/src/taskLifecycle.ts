@@ -158,6 +158,17 @@ export function adoptTaskView(
   next: DownloadTaskView,
 ): DownloadTaskView {
   if (taskRevisionOlder(next.revision, previous.revision)) return previous;
+  if (next.revision === previous.revision) {
+    // Scheduler revisions cover task membership/content, not root aliases on
+    // disk. Keep local terminal/cancel projections without cloning retained
+    // reports; root blocking and limits still come from this physical read.
+    const sameProjection =
+      next.runningLimit === previous.runningLimit &&
+      next.pendingLimit === previous.pendingLimit &&
+      next.blockedRootIds.length === previous.blockedRootIds.length &&
+      next.blockedRootIds.every((id, i) => id === previous.blockedRootIds[i]);
+    return sameProjection ? previous : { ...next, tasks: previous.tasks };
+  }
   const known = new Map(
     previous.tasks.map((task) => [taskIdentity(task), task]),
   );
