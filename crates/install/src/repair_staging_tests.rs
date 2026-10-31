@@ -54,6 +54,754 @@ fn read_locked_log(area: &Area) -> Vec<u8> {
     bytes
 }
 
+fn discard_area(root: &Directory, limits: Limits) -> (Directory, Area) {
+    let context = root
+        .create_private(&leaf("discard-context"), Traversal::SameFilesystem)
+        .unwrap();
+    let area = Area::open_at_private(&context, &leaf("import-staging"), true, limits).unwrap();
+    (context, area)
+}
+fn discarded(result: io::Result<DiscardOutcome>) -> DiscardReceipt {
+    match result.unwrap() {
+        DiscardOutcome::Discarded { receipt } => receipt,
+        DiscardOutcome::MayHaveDiscarded { error, receipt, .. } => {
+            panic!("Discard uncertain: {error}; {receipt:?}")
+        }
+    }
+}
+fn crash_after_discard_intent(ticket: Ticket) -> (DiscardIntent, Option<OsString>) {
+    let SealedTicket {
+        sealed,
+        allocation,
+        active,
+    } = ticket.seal().unwrap();
+    let intent = DiscardIntent {
+        allocation: allocation.clone(),
+        evidence: sealed.evidence().clone(),
+        metadata: sealed.metadata().clone(),
+    };
+    active
+        .area
+        .append(
+            Record::DiscardIntent {
+                ticket: allocation.ticket,
+                intent: intent.clone(),
+            },
+            false,
+        )
+        .unwrap();
+    let name = allocation.source_name;
+    drop(sealed);
+    drop(active);
+    (intent, name)
+}
+
+#[test]
+fn discarded_inputs_release_pending_quota_and_never_touch_allocated_target() {
+    let (temporary, root, target) = fixture();
+    let limits = Limits {
+        pending_tickets: 1,
+        ..Limits::default()
+    };
+    let (context, area) = discard_area(&root, limits.clone());
+    let mut original = target.create_file(&leaf("existing-target")).unwrap();
+    original.write_all(b"business original stays").unwrap();
+    original.sync_all().unwrap();
+    drop(original);
+    for index in 0..8 {
+        let mut ticket = area
+            .allocate(&target, &leaf("existing-target"), 4096)
+            .unwrap();
+        ticket
+            .file_mut()
+            .write_all(format!("cancelled input {index}").as_bytes())
+            .unwrap();
+        let expected = ticket.allocation().source_identity.clone();
+        let receipt = discarded(ticket.discard());
+        assert_eq!(receipt.source.identity, expected);
+        assert!(receipt.discard_confirmed && receipt.directory_synced);
+        assert_eq!(receipt.source_residue, SourceResidue::None);
+        assert_eq!(area.report().unwrap().pending_tickets, 0);
+    }
+    assert_eq!(area.report().unwrap().completed_tickets, 8);
+    assert_eq!(
+        area.directory().names(10).unwrap(),
+        vec![OsString::from(LOG_NAME)]
+    );
+    let bytes = read_locked_log(&area);
+    drop(area);
+    let reopened = Area::open_at_private(&context, &leaf("import-staging"), false, limits).unwrap();
+    assert_eq!(read_locked_log(&reopened), bytes);
+    assert_eq!(reopened.report().unwrap().pending_tickets, 0);
+    assert_eq!(reopened.reconcile_discarded().unwrap(), 0);
+    assert_eq!(
+        fs::read(temporary.path().join("targets/existing-target")).unwrap(),
+        b"business original stays"
+    );
+    assert!(!temporary.path().join(".pcl-linux").exists());
+}
+
+#[test]
+fn admitted_boundary_input_can_seal_discard_and_reopen_without_padding_deadlock() {
+    let (_temporary, root, target) = fixture();
+    let limits = Limits {
+        log_bytes: 64 * 1024,
+        area_bytes: 64 * 1024,
+        record_bytes: 4096,
+        pending_tickets: 1,
+        ..Limits::default()
+    };
+    let (context, area) = discard_area(&root, limits.clone());
+    let physical = area.report().unwrap().physical_bytes_lower_bound;
+    let frame_bound = (FRAME_HEADER + limits.record_bytes) as u64;
+    // The former one-padding formula left no room for sealing/discarding its
+    // own admitted body. Reject this overcommit before creating any Stage.
+    let former_max = limits.area_bytes - physical - frame_bound;
+    assert!(area
+        .allocate(&target, &leaf("overcommitted"), former_max)
+        .is_err());
+    assert_eq!(area.report().unwrap().pending_tickets, 0);
+    assert_eq!(
+        area.directory().names(10).unwrap(),
+        vec![OsString::from(LOG_NAME)]
+    );
+    // Reserve the allocation and the longest valid continuation, then consume
+    // every admitted payload byte. Actual frames spend that existing reserve.
+    let max = limits.area_bytes - physical - 5 * frame_bound;
+    assert!(max > 0 && max <= 64 * 1024);
+    let mut ticket = area
+        .allocate(&target, &leaf("read-only-input"), max)
+        .unwrap();
+    ticket
+        .file_mut()
+        .write_all(&vec![b'x'; max as usize])
+        .unwrap();
+    let held = area.report().unwrap();
+    assert!(held.physical_bytes_lower_bound + held.reserved_bytes <= limits.area_bytes);
+    discarded(ticket.discard());
+    assert_eq!(area.report().unwrap().pending_tickets, 0);
+    assert!(area.report().unwrap().physical_bytes_lower_bound <= limits.area_bytes);
+    drop(area);
+    let reopened = Area::open_at_private(&context, &leaf("import-staging"), false, limits).unwrap();
+    assert_eq!(reopened.reconcile_discarded().unwrap(), 0);
+    assert_eq!(reopened.report().unwrap().pending_tickets, 0);
+    assert_eq!(reopened.report().unwrap().completed_tickets, 1);
+    assert!(target.entry(&leaf("read-only-input")).unwrap().is_none());
+}
+
+#[test]
+fn boundary_collision_ticket_can_still_discard_from_its_existing_reservation() {
+    let (_temporary, root, target) = fixture();
+    let limits = Limits {
+        log_bytes: 64 * 1024,
+        area_bytes: 64 * 1024,
+        record_bytes: 4096,
+        pending_tickets: 1,
+        ..Limits::default()
+    };
+    let (_context, area) = discard_area(&root, limits.clone());
+    let mut original = target.create_file(&leaf("collision")).unwrap();
+    original.write_all(b"business original").unwrap();
+    drop(original);
+    let max = limits.area_bytes
+        - area.report().unwrap().physical_bytes_lower_bound
+        - 5 * (FRAME_HEADER + limits.record_bytes) as u64;
+    let mut ticket = area.allocate(&target, &leaf("collision"), max).unwrap();
+    ticket
+        .file_mut()
+        .write_all(&vec![b'y'; max as usize])
+        .unwrap();
+    let ticket = match ticket.publish(&target, &leaf("collision")).unwrap() {
+        Outcome::Exists { ticket } => ticket,
+        _ => panic!("collision did not preserve its sealed owner"),
+    };
+    discarded(ticket.discard());
+    assert_eq!(area.report().unwrap().pending_tickets, 0);
+    assert_eq!(area.report().unwrap().completed_tickets, 1);
+    let mut original = target
+        .open_regular(&leaf("collision"), Links::Single)
+        .unwrap();
+    let mut bytes = Vec::new();
+    original.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"business original");
+}
+
+#[test]
+fn durable_discard_intent_recovers_after_source_owner_exits_before_delete() {
+    let (_temporary, root, target) = fixture();
+    let (context, area) = discard_area(&root, Limits::default());
+    let mut ticket = area
+        .allocate(&target, &leaf("never-published"), 4096)
+        .unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"interrupted discard bytes")
+        .unwrap();
+    let (intent, name) = crash_after_discard_intent(ticket);
+    assert_eq!(area.report().unwrap().pending_tickets, 1);
+    drop(area);
+    let reopened =
+        Area::open_at_private(&context, &leaf("import-staging"), false, Limits::default()).unwrap();
+    assert_eq!(reopened.reconcile_discarded().unwrap(), 1);
+    assert_eq!(reopened.report().unwrap().pending_tickets, 0);
+    assert_eq!(reopened.report().unwrap().completed_tickets, 1);
+    if let Some(name) = name {
+        assert!(reopened
+            .directory()
+            .entry(&Leaf::new(name).unwrap())
+            .unwrap()
+            .is_none());
+    }
+    assert!(target.entry(&leaf("never-published")).unwrap().is_none());
+    let state = reopened.state().unwrap();
+    assert_eq!(
+        state.entries[&intent.allocation.ticket]
+            .discard_receipt
+            .as_ref()
+            .unwrap(),
+        &discarded_receipt(&intent)
+    );
+}
+
+#[test]
+fn failed_discard_receipt_append_recovers_missing_source_only_with_its_intent() {
+    let (_temporary, root, target) = fixture();
+    let (context, area) = discard_area(&root, Limits::default());
+    let mut ticket = area
+        .allocate(&target, &leaf("not-a-publication"), 4096)
+        .unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"finished read-only input")
+        .unwrap();
+    let name = ticket.allocation().source_name.clone();
+    area.inner
+        .fail_next_receipt_append
+        .store(true, std::sync::atomic::Ordering::Release);
+    match ticket.discard().unwrap() {
+        DiscardOutcome::MayHaveDiscarded {
+            ticket,
+            receipt,
+            error,
+        } => {
+            assert!(ticket.is_none());
+            assert!(receipt.discard_confirmed && receipt.directory_synced);
+            assert!(error.to_string().contains("fixture receipt append"));
+        }
+        _ => panic!("Missing discard receipt was reported as fully recorded"),
+    }
+    assert_eq!(area.report().unwrap().pending_tickets, 1);
+    if let Some(name) = name {
+        assert!(area
+            .directory()
+            .entry(&Leaf::new(name).unwrap())
+            .unwrap()
+            .is_none());
+    }
+    drop(area);
+    let reopened =
+        Area::open_at_private(&context, &leaf("import-staging"), false, Limits::default()).unwrap();
+    assert_eq!(reopened.reconcile_discarded().unwrap(), 1);
+    assert_eq!(reopened.report().unwrap().pending_tickets, 0);
+    assert!(target.entry(&leaf("not-a-publication")).unwrap().is_none());
+}
+
+#[test]
+fn source_changes_after_intent_preserve_original_owner_and_refuse_deletion() {
+    let (_temporary, root, target) = fixture();
+    let (_context, area) = discard_area(&root, Limits::default());
+    let mut ticket = area.allocate(&target, &leaf("never-target"), 4096).unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"original source bytes")
+        .unwrap();
+    let name = ticket.allocation().source_name.clone();
+    let mut outsider = ticket.file().try_clone().unwrap();
+    *area.inner.after_discard_intent.lock().unwrap() = Some(Box::new(move || {
+        outsider.seek(SeekFrom::Start(0)).unwrap();
+        outsider.write_all(b"modified source bytes").unwrap();
+        outsider.sync_all().unwrap();
+    }));
+    let retained = match ticket.discard().unwrap() {
+        DiscardOutcome::MayHaveDiscarded {
+            ticket: Some(ticket),
+            receipt,
+            error,
+        } => {
+            assert!(!receipt.discard_confirmed);
+            assert!(error.to_string().contains("recheck failed"));
+            ticket
+        }
+        _ => panic!("Modified stage was not preserved for inspection"),
+    };
+    assert_eq!(area.report().unwrap().pending_tickets, 1);
+    assert!(area.report().unwrap().sources[0].active);
+    assert!(area.report().unwrap().sources[0].discard_requested);
+    assert_eq!(
+        area.reconcile_discarded().unwrap(),
+        0,
+        "active original owner must exclude recovery"
+    );
+    if let Some(name) = name {
+        assert!(area
+            .directory()
+            .entry(&Leaf::new(name).unwrap())
+            .unwrap()
+            .is_some());
+    }
+    assert!(target.entry(&leaf("never-target")).unwrap().is_none());
+    drop(retained);
+}
+
+#[test]
+fn discard_recovery_retains_allocations_without_intent_and_unregistered_sources() {
+    let (_temporary, root, target) = fixture();
+    let (context, area) = discard_area(&root, Limits::default());
+    let mut orphan = Stage::new(area.directory()).unwrap();
+    orphan.file_mut().write_all(b"unregistered orphan").unwrap();
+    let orphan_name = orphan.source_name().cloned();
+    drop(orphan);
+    let mut ticket = area
+        .allocate(&target, &leaf("cancelled-without-intent"), 4096)
+        .unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"allocation has no discard authorization")
+        .unwrap();
+    let source_name = ticket.allocation().source_name.clone();
+    drop(ticket);
+    let before = read_locked_log(&area);
+    drop(area);
+    let reopened =
+        Area::open_at_private(&context, &leaf("import-staging"), false, Limits::default()).unwrap();
+    assert_eq!(reopened.reconcile_discarded().unwrap(), 0);
+    assert_eq!(read_locked_log(&reopened), before);
+    assert_eq!(reopened.report().unwrap().pending_tickets, 1);
+    for name in orphan_name
+        .into_iter()
+        .chain(source_name.map(|name| Leaf::new(name).unwrap()))
+    {
+        assert!(reopened.directory().entry(&name).unwrap().is_some());
+    }
+}
+
+#[test]
+fn original_repair_namespace_cannot_write_discard_records() {
+    let (_temporary, root, target) = fixture();
+    let area = Area::open(&root, true).unwrap();
+    let mut ticket = area.allocate(&target, &leaf("repair-owned"), 4096).unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"old repair staging bytes")
+        .unwrap();
+    let before = read_locked_log(&area);
+    assert!(ticket.discard().is_err());
+    assert_eq!(read_locked_log(&area), before);
+    assert!(area.reconcile_discarded().is_err());
+    assert_eq!(read_locked_log(&area), before);
+    assert_eq!(area.report().unwrap().frames, 2);
+    assert!(target.entry(&leaf("repair-owned")).unwrap().is_none());
+}
+
+#[test]
+fn legacy_header_serialization_stays_exact_without_null_or_discard_capability() {
+    let (_temporary, root, _target) = fixture();
+    let identity = root.identity().unwrap();
+    let old_wire = format!(
+        "{{\"kind\":\"header\",\"version\":1,\"area\":{}}}",
+        serde_json::to_string(&identity).unwrap()
+    );
+    let record = Record::Header {
+        version: VERSION,
+        area: identity,
+        discard_scope: None,
+    };
+    assert_eq!(serde_json::to_vec(&record).unwrap(), old_wire.as_bytes());
+    assert!(matches!(
+        serde_json::from_slice::<Record>(old_wire.as_bytes()).unwrap(),
+        Record::Header {
+            discard_scope: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn renaming_complete_legacy_repair_area_to_custom_name_never_grants_discard() {
+    let (_temporary, root, target) = fixture();
+    let original = Area::open(&root, true).unwrap();
+    write_ticket(
+        &original,
+        &target,
+        "legacy-published",
+        b"old format publication",
+    );
+    let identity = original.directory().identity().unwrap();
+    let old_bytes = read_locked_log(&original);
+    drop(original);
+    let storage = root
+        .child(&leaf(".pcl-linux"), Traversal::SameFilesystem)
+        .unwrap();
+    let context = root
+        .create_private(&leaf("moved-context"), Traversal::SameFilesystem)
+        .unwrap();
+    pcl_core::file_ops::rename_noreplace_at(
+        storage.file(),
+        leaf("dependency-staging").as_os_str(),
+        context.file(),
+        leaf("renamed-custom-area").as_os_str(),
+    )
+    .unwrap();
+    let moved = Area::open_at_private(
+        &context,
+        &leaf("renamed-custom-area"),
+        true,
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(moved.directory().identity().unwrap(), identity);
+    assert_eq!(read_locked_log(&moved), old_bytes);
+    assert!(moved.report().unwrap().writable());
+    let mut input = moved
+        .allocate(&target, &leaf("discard-must-not-publish"), 4096)
+        .unwrap();
+    input
+        .file_mut()
+        .write_all(b"legacy allocation remains legacy")
+        .unwrap();
+    let before_discard = read_locked_log(&moved);
+    assert!(input.discard().is_err());
+    assert_eq!(
+        read_locked_log(&moved),
+        before_discard,
+        "discard must fail before seal or any new record"
+    );
+    assert!(moved.state().unwrap().discard_scope.is_none());
+    assert!(moved.reconcile_discarded().is_err());
+    assert_eq!(read_locked_log(&moved), before_discard);
+    // An old Header remains usable for the original operation set. Moving it
+    // back must not leave records that an old fixed repair reader cannot parse.
+    write_ticket(
+        &moved,
+        &target,
+        "still-legacy-publish",
+        b"continued old operations",
+    );
+    let continued = read_locked_log(&moved);
+    drop(moved);
+    pcl_core::file_ops::rename_noreplace_at(
+        context.file(),
+        leaf("renamed-custom-area").as_os_str(),
+        storage.file(),
+        leaf("dependency-staging").as_os_str(),
+    )
+    .unwrap();
+    let restored = Area::open(&root, false).unwrap();
+    assert_eq!(restored.directory().identity().unwrap(), identity);
+    assert_eq!(read_locked_log(&restored), continued);
+    assert!(restored.report().unwrap().writable());
+    assert_eq!(restored.report().unwrap().completed_tickets, 2);
+    assert!(target
+        .entry(&leaf("discard-must-not-publish"))
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn declared_custom_discard_scope_cannot_be_rebound_by_renaming_namespace() {
+    let (_temporary, root, _target) = fixture();
+    let (context, original) = discard_area(&root, Limits::default());
+    let bytes = read_locked_log(&original);
+    assert!(original.state().unwrap().discard_scope.is_some());
+    drop(original);
+    pcl_core::file_ops::rename_noreplace_at(
+        context.file(),
+        leaf("import-staging").as_os_str(),
+        context.file(),
+        leaf("different-name").as_os_str(),
+    )
+    .unwrap();
+    let moved =
+        Area::open_at_private(&context, &leaf("different-name"), true, Limits::default()).unwrap();
+    assert!(matches!(
+        moved.report().unwrap().status,
+        LogStatus::Corrupt { .. }
+    ));
+    assert_eq!(read_locked_log(&moved), bytes);
+    assert!(moved.reconcile_discarded().is_err());
+}
+
+#[test]
+fn fixed_factory_and_its_custom_alias_reject_a_declared_discard_header() {
+    let (_temporary, root, _target) = fixture();
+    let (context, custom) = discard_area(&root, Limits::default());
+    let bytes = read_locked_log(&custom);
+    drop(custom);
+    let storage = root
+        .create_private(&leaf(".pcl-linux"), Traversal::SameFilesystem)
+        .unwrap();
+    pcl_core::file_ops::rename_noreplace_at(
+        context.file(),
+        leaf("import-staging").as_os_str(),
+        storage.file(),
+        leaf("dependency-staging").as_os_str(),
+    )
+    .unwrap();
+    let fixed = Area::open(&root, false).unwrap();
+    assert!(matches!(
+        fixed.report().unwrap().status,
+        LogStatus::Corrupt { .. }
+    ));
+    assert_eq!(read_locked_log(&fixed), bytes);
+    drop(fixed);
+    let alias = Area::open_at_private(
+        &storage,
+        &leaf("dependency-staging"),
+        false,
+        Limits::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        alias.report().unwrap().status,
+        LogStatus::Corrupt { .. }
+    ));
+    assert_eq!(read_locked_log(&alias), bytes);
+    assert!(alias.reconcile_discarded().is_err());
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn recovered_discard_refuses_changed_named_bytes_and_preserves_them() {
+    let (temporary, root, target) = fixture();
+    let (context, area) = discard_area(&root, Limits::default());
+    let mut ticket = area
+        .allocate(&target, &leaf("original-target"), 4096)
+        .unwrap();
+    ticket.file_mut().write_all(b"sealed input").unwrap();
+    let (_intent, name) = crash_after_discard_intent(ticket);
+    let name = Leaf::new(name.unwrap()).unwrap();
+    let path = temporary
+        .path()
+        .join("discard-context/import-staging")
+        .join(name.as_os_str());
+    fs::write(&path, b"external changed bytes must remain").unwrap();
+    drop(area);
+    let reopened =
+        Area::open_at_private(&context, &leaf("import-staging"), false, Limits::default()).unwrap();
+    assert!(reopened.reconcile_discarded().is_err());
+    assert_eq!(reopened.report().unwrap().pending_tickets, 1);
+    assert_eq!(
+        fs::read(path).unwrap(),
+        b"external changed bytes must remain"
+    );
+    assert!(target.entry(&leaf("original-target")).unwrap().is_none());
+}
+
+#[test]
+fn discard_receipt_capacity_is_checked_before_intent_or_source_removal() {
+    let (_temporary, root, target) = fixture();
+    // Header + Allocation + Sealed fit, but intent+receipt do not. Existing
+    // named bytes must remain evidence instead of an unrecordable native discard.
+    let limits = Limits {
+        frames: 4,
+        ..Limits::default()
+    };
+    let (_context, area) = discard_area(&root, limits);
+    let mut ticket = area
+        .allocate(&target, &leaf("unchanged-target"), 4096)
+        .unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"retained on receipt budget exhaustion")
+        .unwrap();
+    let name = ticket.allocation().source_name.clone();
+    assert!(ticket.discard().is_err());
+    assert_eq!(area.report().unwrap().frames, 3);
+    assert_eq!(area.report().unwrap().pending_tickets, 1);
+    assert!(area
+        .state()
+        .unwrap()
+        .entries
+        .values()
+        .all(|entry| entry.discard_intent.is_none()));
+    if let Some(name) = name {
+        assert!(area
+            .directory()
+            .entry(&Leaf::new(name).unwrap())
+            .unwrap()
+            .is_some());
+    }
+    assert!(target.entry(&leaf("unchanged-target")).unwrap().is_none());
+}
+
+#[test]
+fn discard_recovery_hashes_full_source_in_addition_to_metadata() {
+    let (_temporary, root, target) = fixture();
+    let (_context, area) = discard_area(&root, Limits::default());
+    let mut ticket = area
+        .allocate(&target, &leaf("not-published"), 4096)
+        .unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"same metadata but wrong recorded digest")
+        .unwrap();
+    let inspected = ticket.file().try_clone().unwrap();
+    let sealed = ticket.seal().unwrap();
+    let mut intent = DiscardIntent {
+        allocation: sealed.allocation.clone(),
+        evidence: sealed.sealed.evidence().clone(),
+        metadata: sealed.sealed.metadata().clone(),
+    };
+    intent.evidence.sha256[0] ^= 0x80;
+    intent.metadata = retained_fs::metadata(&inspected).unwrap();
+    // The helper receives the actual current native metadata but must reject
+    // the wrong digest. A metadata/ID-only cleanup would wrongly accept it.
+    let error = check_discard_hash(&inspected, &intent);
+    assert!(error.unwrap_err().to_string().contains("SHA-256"));
+    assert!(target.entry(&leaf("not-published")).unwrap().is_none());
+}
+
+#[test]
+fn custom_private_area_reuses_registry_and_borrowed_ticket_io_without_repair_pollution() {
+    let (temporary, root, target) = fixture();
+    let context = root
+        .create_private(&leaf("app-import-context"), Traversal::SameFilesystem)
+        .unwrap();
+    let name = leaf("verified-import-staging");
+    let area = Area::open_at_private(&context, &name, true, Limits::default()).unwrap();
+    assert!(area.report().unwrap().writable());
+    assert_eq!(area.report().unwrap().frames, 1);
+    assert!(!temporary.path().join(".pcl-linux").exists());
+    let area_identity = area.directory().identity().unwrap();
+    let mut ticket = area.allocate(&target, &leaf("imported"), 4096).unwrap();
+    ticket
+        .file_mut()
+        .write_all(b"verified import bytes")
+        .unwrap();
+    let expected = ticket.allocation().source_identity.clone();
+    let mut reader = ticket.file();
+    assert_eq!(retained_fs::metadata(reader).unwrap().identity, expected);
+    reader.seek(SeekFrom::Start(0)).unwrap();
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"verified import bytes");
+    let receipt = published(ticket.publish(&target, &leaf("imported")).unwrap());
+    assert_eq!(receipt.source.parent_identity, area_identity);
+    assert_eq!(receipt.source.identity, expected);
+    let before = read_locked_log(&area);
+    assert!(
+        Area::open_at_private(&context, &name, false, Limits::default()).is_err(),
+        "the same native registry lock must cover every factory"
+    );
+    drop(area);
+    let reopened = Area::open_at_private(&context, &name, false, Limits::default()).unwrap();
+    assert_eq!(read_locked_log(&reopened), before);
+    assert_eq!(reopened.directory().identity().unwrap(), area_identity);
+    assert_eq!(reopened.report().unwrap().completed_tickets, 1);
+    assert_eq!(
+        fs::read(temporary.path().join("targets/imported")).unwrap(),
+        b"verified import bytes"
+    );
+    assert!(!temporary.path().join(".pcl-linux").exists());
+}
+
+#[test]
+fn custom_factory_reopens_original_repair_namespace_with_identical_header_and_lock() {
+    let (_temporary, root, target) = fixture();
+    let original = Area::open(&root, true).unwrap();
+    write_ticket(&original, &target, "repair-original", b"repair evidence");
+    let storage = root
+        .child(&leaf(".pcl-linux"), Traversal::SameFilesystem)
+        .unwrap();
+    let before = read_locked_log(&original);
+    let identity = original.directory().identity().unwrap();
+    assert!(Area::open_at_private(
+        &storage,
+        &leaf("dependency-staging"),
+        false,
+        Limits::default()
+    )
+    .is_err());
+    drop(original);
+    let custom = Area::open_at_private(
+        &storage,
+        &leaf("dependency-staging"),
+        false,
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(read_locked_log(&custom), before);
+    assert_eq!(custom.directory().identity().unwrap(), identity);
+    assert_eq!(custom.report().unwrap().completed_tickets, 1);
+    drop(custom);
+    let original = Area::open(&root, false).unwrap();
+    assert_eq!(read_locked_log(&original), before);
+    assert!(original.report().unwrap().writable());
+}
+
+#[test]
+fn custom_factory_refuses_business_directories_without_creating_or_rewriting_registry() {
+    let (temporary, root, _target) = fixture();
+    let context = root
+        .create_private(&leaf("private-context"), Traversal::SameFilesystem)
+        .unwrap();
+    let business = context
+        .create_private(&leaf("business"), Traversal::SameFilesystem)
+        .unwrap();
+    let mut original = business.create_file(&leaf("user-original")).unwrap();
+    original.write_all(b"original business bytes").unwrap();
+    original.sync_all().unwrap();
+    drop(original);
+    assert!(Area::open_at_private(&context, &leaf("business"), true, Limits::default()).is_err());
+    assert!(business.entry(&leaf(LOG_NAME)).unwrap().is_none());
+    let path = temporary
+        .path()
+        .join("private-context/business/user-original");
+    assert_eq!(fs::read(&path).unwrap(), b"original business bytes");
+    let empty_log = business.create_file(&leaf(LOG_NAME)).unwrap();
+    drop(empty_log);
+    assert!(Area::open_at_private(&context, &leaf("business"), true, Limits::default()).is_err());
+    assert_eq!(business.entry(&leaf(LOG_NAME)).unwrap().unwrap().len, 0);
+    assert_eq!(fs::read(path).unwrap(), b"original business bytes");
+}
+
+#[test]
+fn custom_factory_rejects_transplanted_header_without_reinitializing_it() {
+    let (temporary, root, _target) = fixture();
+    let context = root
+        .create_private(&leaf("private-context"), Traversal::SameFilesystem)
+        .unwrap();
+    let first =
+        Area::open_at_private(&context, &leaf("first-staging"), true, Limits::default()).unwrap();
+    let bytes = read_locked_log(&first);
+    drop(first);
+    let second = context
+        .create_private(&leaf("second-staging"), Traversal::SameFilesystem)
+        .unwrap();
+    let mut transplanted = second.create_file(&leaf(LOG_NAME)).unwrap();
+    transplanted.write_all(&bytes).unwrap();
+    transplanted.sync_all().unwrap();
+    drop(transplanted);
+    let checked =
+        Area::open_at_private(&context, &leaf("second-staging"), true, Limits::default()).unwrap();
+    assert!(matches!(
+        checked.report().unwrap().status,
+        LogStatus::Corrupt { .. }
+    ));
+    assert!(!checked.report().unwrap().writable());
+    assert_eq!(read_locked_log(&checked), bytes);
+    drop(checked);
+    assert_eq!(
+        fs::read(
+            temporary
+                .path()
+                .join("private-context/second-staging/registry.log")
+        )
+        .unwrap(),
+        bytes
+    );
+}
+
 #[test]
 fn allocation_is_durable_before_payload_and_drop_does_not_pollute_business_namespace() {
     let (_temporary, root, target) = fixture();
@@ -710,6 +1458,7 @@ fn an_incomplete_first_registry_header_can_be_recovered_without_touching_busines
             &serde_json::to_vec(&Record::Header {
                 version: VERSION,
                 area: identity,
+                discard_scope: None,
             })
             .unwrap(),
         );

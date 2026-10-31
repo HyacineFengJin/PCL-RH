@@ -31,6 +31,122 @@ fn published(outcome: Result<PublishOutcome, PublishError>) -> Receipt {
 }
 
 #[test]
+fn explicit_discard_confirms_only_its_new_source_and_preserves_other_files() {
+    let (_fixture, parent) = fixture();
+    let mut original = parent.create_file(&leaf("business-original")).unwrap();
+    original.write_all(b"original must remain").unwrap();
+    original.sync_all().unwrap();
+    drop(original);
+    let stage = sealed(&parent, b"discarded input bytes");
+    let expected = stage.evidence().clone();
+    let expected_metadata = stage.metadata().clone();
+    match stage.discard().unwrap() {
+        DiscardOutcome::Discarded { receipt } => {
+            assert_eq!(receipt.source, expected);
+            assert_eq!(receipt.metadata, expected_metadata);
+            assert!(receipt.discard_confirmed && receipt.directory_synced);
+            assert_eq!(receipt.source_residue, SourceResidue::None);
+        }
+        DiscardOutcome::MayHaveDiscarded { error, receipt, .. } => {
+            panic!("unexpected discard uncertainty: {error}; {receipt:?}")
+        }
+    }
+    if let Some(name) = expected.source_name {
+        assert!(parent.entry(&Leaf::new(name).unwrap()).unwrap().is_none());
+    }
+    let mut original = parent
+        .open_regular(&leaf("business-original"), Links::Single)
+        .unwrap();
+    let mut bytes = Vec::new();
+    original.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"original must remain");
+}
+
+#[test]
+fn discard_rechecks_dirty_original_and_returns_its_owned_stage() {
+    let (_fixture, parent) = fixture();
+    let mut stage = Stage::new(&parent).unwrap();
+    stage
+        .file_mut()
+        .write_all(b"sealed original bytes")
+        .unwrap();
+    let mut outsider = stage.file().try_clone().unwrap();
+    let stage = stage.seal(4096).unwrap();
+    outsider.seek(SeekFrom::Start(0)).unwrap();
+    outsider.write_all(b"changed sealed bytes!").unwrap();
+    outsider.sync_all().unwrap();
+    drop(outsider);
+    let error = match stage.discard() {
+        Err(error) => error,
+        Ok(_) => panic!("dirty sealed bytes were discarded"),
+    };
+    assert!(error.error.to_string().contains("changed"));
+    let name = error.stage.stage.source_name.clone();
+    assert_eq!(
+        metadata(&error.stage.stage.file).unwrap().identity,
+        error.stage.evidence.identity
+    );
+    if let Some(name) = name {
+        assert!(parent.entry(&name).unwrap().is_some());
+    }
+}
+
+#[test]
+fn failed_native_discard_retains_original_and_reports_uncertainty() {
+    let (_fixture, parent) = fixture();
+    let stage = sealed(&parent, b"retained after native refusal");
+    let expected = stage.evidence().clone();
+    match stage
+        .discard_using(native::sync_parent, |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected native delete refusal",
+            ))
+        })
+        .unwrap()
+    {
+        DiscardOutcome::MayHaveDiscarded {
+            stage: Some(stage),
+            receipt,
+            error,
+        } => {
+            assert!(!receipt.discard_confirmed);
+            assert!(!receipt.directory_synced);
+            assert_eq!(receipt.source, expected);
+            assert_eq!(metadata(&stage.stage.file).unwrap(), *stage.metadata());
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+        _ => panic!("native delete refusal lost its owned source or claimed completion"),
+    }
+}
+
+#[test]
+fn failed_post_discard_sync_is_may_have_discarded_without_recreating_source() {
+    let (_fixture, parent) = fixture();
+    let stage = sealed(&parent, b"removed before injected sync failure");
+    let evidence = stage.evidence().clone();
+    match stage
+        .discard_with(|_| Err(io::Error::other("injected discard sync failure")))
+        .unwrap()
+    {
+        DiscardOutcome::MayHaveDiscarded {
+            stage: None,
+            receipt,
+            error,
+        } => {
+            assert_eq!(receipt.source, evidence);
+            assert!(!receipt.discard_confirmed);
+            assert!(!receipt.directory_synced);
+            assert!(error.to_string().contains("sync failure"));
+        }
+        _ => panic!("post-delete sync failure was reported as certain or source recreated"),
+    }
+    if let Some(name) = evidence.source_name {
+        assert!(parent.entry(&Leaf::new(name).unwrap()).unwrap().is_none());
+    }
+}
+
+#[test]
 fn new_stage_is_private_and_platform_anonymity_is_truthful() {
     let (_fixture, parent) = fixture();
     let mut stage = Stage::new(&parent).unwrap();

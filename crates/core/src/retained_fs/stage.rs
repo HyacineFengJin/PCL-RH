@@ -66,6 +66,19 @@ pub struct Receipt {
     pub directories_synced: bool,
 }
 
+/// Exact new-stage evidence for an explicitly authorized discard. This is not
+/// business/user-file deletion authority; the caller must persist its intent
+/// before invoking discard and reconcile every uncertain result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscardReceipt {
+    pub source: Evidence,
+    pub metadata: Metadata,
+    pub source_residue: SourceResidue,
+    pub discard_confirmed: bool,
+    pub directory_synced: bool,
+}
+
 pub struct Stage {
     parent: Directory,
     parent_identity: Identity,
@@ -88,6 +101,20 @@ pub struct SealError {
 pub struct PublishError {
     pub stage: Sealed,
     pub error: io::Error,
+}
+pub struct DiscardError {
+    pub stage: Sealed,
+    pub error: io::Error,
+}
+pub enum DiscardOutcome {
+    Discarded {
+        receipt: DiscardReceipt,
+    },
+    MayHaveDiscarded {
+        stage: Option<Sealed>,
+        receipt: DiscardReceipt,
+        error: io::Error,
+    },
 }
 
 pub enum PublishOutcome {
@@ -128,6 +155,7 @@ macro_rules! stage_error {
 }
 stage_error!(SealError);
 stage_error!(PublishError);
+stage_error!(DiscardError);
 
 impl Stage {
     pub fn new(parent: &Directory) -> io::Result<Self> {
@@ -146,6 +174,12 @@ impl Stage {
 
     pub fn file_mut(&mut self) -> &mut File {
         &mut self.file
+    }
+    /// Borrow the original stage handle for inspection or streaming adapters.
+    /// This does not turn a writable OS handle into a readonly capability;
+    /// callers must retire duplicate writers before sealing/publication.
+    pub fn file(&self) -> &File {
+        &self.file
     }
     pub fn source_name(&self) -> Option<&Leaf> {
         self.source_name.as_ref()
@@ -213,6 +247,109 @@ impl Stage {
 }
 
 impl Sealed {
+    pub fn metadata(&self) -> &Metadata {
+        &self.stamp
+    }
+    /// Discard only this sealed new stage through its original held object.
+    /// All caller-created duplicates must be closed first. A result never
+    /// authorizes cleanup of the target or of a replacement at the source name.
+    /// Darwin uses the existing private generated-workspace POSIX unlinkat
+    /// contract under cooperative locks after full checks; it has no atomic
+    /// compare-delete against a noncooperating namespace mutator. This API is
+    /// restricted to these newly created private stages, never user originals.
+    pub fn discard(self) -> Result<DiscardOutcome, DiscardError> {
+        self.discard_with(native::sync_parent)
+    }
+    fn discard_with(
+        self,
+        sync_parent: impl FnOnce(&Directory) -> io::Result<()>,
+    ) -> Result<DiscardOutcome, DiscardError> {
+        self.discard_using(sync_parent, native::discard)
+    }
+    fn discard_using(
+        mut self,
+        sync_parent: impl FnOnce(&Directory) -> io::Result<()>,
+        remove: impl FnOnce(&Stage, &Metadata) -> io::Result<()>,
+    ) -> Result<DiscardOutcome, DiscardError> {
+        let preparation = (|| {
+            if self.attempted {
+                return Err(changed(
+                    "An attempted stage requires reconciliation before discard",
+                ));
+            }
+            self.check_seal()
+        })();
+        if let Err(error) = preparation {
+            return Err(DiscardError { stage: self, error });
+        }
+        let mut receipt = DiscardReceipt {
+            source: self.evidence.clone(),
+            metadata: self.stamp.clone(),
+            source_residue: self.residue(),
+            discard_confirmed: false,
+            directory_synced: false,
+        };
+        self.attempted = true;
+        if let Err(error) = remove(&self.stage, &self.stamp) {
+            receipt.source_residue = self.residue();
+            return Ok(DiscardOutcome::MayHaveDiscarded {
+                stage: Some(self),
+                receipt,
+                error,
+            });
+        }
+        let parent = self.stage.parent.clone();
+        let name = self.stage.source_name.clone();
+        // Windows disposition takes effect when the owning DELETE file object
+        // closes; anonymous Linux sources lose their last owned FD here.
+        drop(self);
+        let observed = (|| {
+            check_parent(&parent.metadata()?)?;
+            if parent.identity()? != receipt.source.parent_identity {
+                return Err(changed("Discard parent identity changed"));
+            }
+            if let Some(name) = &name {
+                receipt.source_residue = match parent.entry(name)? {
+                    None => SourceResidue::None,
+                    Some(metadata) if metadata.identity == receipt.source.identity => {
+                        SourceResidue::LeasePresent
+                    }
+                    Some(_) => SourceResidue::NameReplaced,
+                };
+                if receipt.source_residue != SourceResidue::None {
+                    return Err(changed("Discard source remains or its name was replaced"));
+                }
+            }
+            sync_parent(&parent)?;
+            if let Some(name) = &name {
+                receipt.source_residue = match parent.entry(name) {
+                    Ok(None) => SourceResidue::None,
+                    Ok(Some(metadata)) if metadata.identity == receipt.source.identity => {
+                        SourceResidue::LeasePresent
+                    }
+                    Ok(Some(_)) => SourceResidue::NameReplaced,
+                    Err(error) => {
+                        receipt.source_residue = SourceResidue::Unknown;
+                        return Err(error);
+                    }
+                };
+                if receipt.source_residue != SourceResidue::None {
+                    return Err(changed("Discard source name reappeared during sync"));
+                }
+            }
+            receipt.discard_confirmed = true;
+            receipt.directory_synced = true;
+            Ok(())
+        })();
+        match observed {
+            Ok(()) => Ok(DiscardOutcome::Discarded { receipt }),
+            Err(error) => Ok(DiscardOutcome::MayHaveDiscarded {
+                stage: None,
+                receipt,
+                error,
+            }),
+        }
+    }
     pub fn evidence(&self) -> &Evidence {
         &self.evidence
     }

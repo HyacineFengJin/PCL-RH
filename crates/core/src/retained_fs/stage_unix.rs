@@ -144,3 +144,33 @@ pub(super) fn publish(stage: &Stage, target: &Directory, leaf: &Leaf) -> io::Res
 pub(super) fn sync_parent(parent: &Directory) -> io::Result<()> {
     parent.sync()
 }
+
+#[cfg(target_os = "linux")]
+pub(super) fn discard(stage: &Stage, expected: &Metadata) -> io::Result<()> {
+    if stage.source_name.is_some() || metadata(&stage.file)? != *expected || expected.links != 0 {
+        return Err(changed(
+            "Anonymous discard source metadata or namespace-link state changed",
+        ));
+    }
+    Ok(())
+}
+#[cfg(target_os = "macos")]
+pub(super) fn discard(stage: &Stage, expected: &Metadata) -> io::Result<()> {
+    let name = stage
+        .source_name
+        .as_ref()
+        .ok_or_else(|| changed("Missing Darwin stage lease name"))?;
+    if metadata(&stage.file)? != *expected {
+        return Err(changed(
+            "Discard source full metadata changed before private POSIX removal",
+        ));
+    }
+    // This is the existing private-generated-workspace POSIX removal contract,
+    // not original-FD unlink or atomic compare-delete. The caller's durable
+    // intent plus cooperative registry/source locks authorize only this newly
+    // generated private lease; noncooperating namespace races remain possible.
+    match stage.parent.remove_workspace_entry(name, expected)? {
+        super::super::WorkspaceRemoval::Removed => Ok(()),
+        super::super::WorkspaceRemoval::MayHaveRemoved { error } => Err(error),
+    }
+}

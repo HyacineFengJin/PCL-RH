@@ -4,8 +4,24 @@
 //! journals and conflict receipts.
 use std::{ffi::OsStr, fs::File, io, path::Path};
 
+#[path = "file_ops/hard_link.rs"]
+mod hard_link;
 #[path = "file_ops/relative.rs"]
 mod relative;
+
+/// Create a hard link between two retained directories without replacement.
+/// Both names are literal leaves and the source must be a regular file. No
+/// mutable parent path, copy, source removal or permission repair is used.
+/// This is not a transaction: callers own source hashes, authority and actual
+/// durability. A failed postcheck may follow publication; preserve evidence.
+pub fn hard_link_noreplace_at(
+    source_parent: &File,
+    source: &OsStr,
+    target_parent: &File,
+    target: &OsStr,
+) -> io::Result<()> {
+    hard_link::create(source_parent, source, target_parent, target)
+}
 
 /// Rename one entry between retained parent directories without replacement.
 /// Both names must be single leaf names, never paths. Neither parent's current

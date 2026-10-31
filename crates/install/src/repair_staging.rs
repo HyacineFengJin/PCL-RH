@@ -9,11 +9,16 @@
 //! One native lock protects a framed registry.log. Incomplete tails, checksum
 //! errors, unknown entries and substitutions are retained and diagnosed. This
 //! version truncates only a revalidated incomplete log tail under its owning
-//! lock; it never compacts/unlinks payloads or guesses business recovery. The
-//! original intent/marker protocol remains recovery authority.
+//! lock. The original fixed repair namespace never discards payloads. Separate
+//! caller-authorized namespaces can explicitly seal/sync a discard intent and
+//! reconcile only that generated source; they never guess business recovery.
+//! The original intent/marker protocol remains business recovery authority.
 use pcl_core::retained_fs::{
     self,
-    stage::{Evidence, PublishOutcome, Receipt, Sealed, SourceKind, SourceResidue, Stage},
+    stage::{
+        DiscardOutcome as NativeDiscardOutcome, DiscardReceipt, Evidence, PublishOutcome, Receipt,
+        Sealed, SourceKind, SourceResidue, Stage,
+    },
     Directory, Identity, Kind, Leaf, Links, Lock, Metadata, Traversal,
 };
 use serde::{Deserialize, Serialize};
@@ -32,7 +37,7 @@ const FRAME_HEADER: usize = 8 + 8 + 4 + 32;
 const VERSION: u32 = 1;
 
 #[derive(Clone, Debug)]
-pub(super) struct Limits {
+pub struct Limits {
     pub log_bytes: u64,
     pub frames: u64,
     pub record_bytes: usize,
@@ -73,7 +78,7 @@ impl Limits {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum LogStatus {
+pub enum LogStatus {
     Empty,
     Ready,
     TruncatedTail {
@@ -87,7 +92,7 @@ pub(super) enum LogStatus {
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum IssueKind {
+pub enum IssueKind {
     UnregisteredSource,
     UnknownEntry,
     ReplacedSource,
@@ -98,7 +103,7 @@ pub(super) enum IssueKind {
     LogChanged,
 }
 #[derive(Clone, Debug)]
-pub(super) struct Issue {
+pub struct Issue {
     pub kind: IssueKind,
     pub name: Option<OsString>,
     pub ticket: Option<u64>,
@@ -106,14 +111,14 @@ pub(super) struct Issue {
     pub blocks_writes: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum SourceState {
+pub enum SourceState {
     Present { len: u64 },
     Missing,
     Replaced,
     AnonymousUnobservable,
 }
 #[derive(Clone, Debug)]
-pub(super) struct SourceReport {
+pub struct SourceReport {
     pub ticket: u64,
     pub name: Option<OsString>,
     pub identity: Identity,
@@ -122,9 +127,10 @@ pub(super) struct SourceReport {
     pub sealed: bool,
     pub has_receipt: bool,
     pub publication_uncertain: bool,
+    pub discard_requested: bool,
 }
 #[derive(Clone, Debug)]
-pub(super) struct AreaReport {
+pub struct AreaReport {
     pub status: LogStatus,
     pub frames: u64,
     pub valid_prefix_bytes: u64,
@@ -171,9 +177,9 @@ impl AreaReport {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Allocation {
+pub struct Allocation {
     pub ticket: u64,
     pub source_parent: Identity,
     pub source_name: Option<OsString>,
@@ -186,20 +192,66 @@ pub(super) struct Allocation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Record {
-    Header { version: u32, area: Identity },
-    Allocation { allocation: Allocation },
-    Sealed { ticket: u64, evidence: Evidence },
-    Receipt { ticket: u64, receipt: Receipt },
-    Exists { ticket: u64 },
+    Header {
+        version: u32,
+        area: Identity,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        discard_scope: Option<DiscardScope>,
+    },
+    Allocation {
+        allocation: Allocation,
+    },
+    Sealed {
+        ticket: u64,
+        evidence: Evidence,
+    },
+    Receipt {
+        ticket: u64,
+        receipt: Receipt,
+    },
+    Exists {
+        ticket: u64,
+    },
+    DiscardIntent {
+        ticket: u64,
+        intent: DiscardIntent,
+    },
+    DiscardReceipt {
+        ticket: u64,
+        receipt: DiscardReceipt,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscardIntent {
+    allocation: Allocation,
+    evidence: Evidence,
+    metadata: Metadata,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscardScope {
+    purpose: String,
+    parent: Identity,
+    name: OsString,
 }
 struct Entry {
     allocation: Allocation,
     sealed: Option<Evidence>,
     receipt: Option<Receipt>,
     exists: bool,
+    discard_intent: Option<DiscardIntent>,
+    discard_receipt: Option<DiscardReceipt>,
 }
 impl Entry {
     fn completed(&self) -> bool {
+        if self.discard_receipt.as_ref().is_some_and(|receipt| {
+            receipt.discard_confirmed
+                && receipt.directory_synced
+                && receipt.source_residue == SourceResidue::None
+        }) {
+            return true;
+        }
         self.receipt.as_ref().is_some_and(|receipt| {
             receipt.publication_confirmed
                 && receipt.directories_synced
@@ -219,6 +271,7 @@ struct State {
     pending: HashSet<u64>,
     active: HashSet<u64>,
     prefix_sha256: Sha256,
+    discard_scope: Option<DiscardScope>,
 }
 struct Inner {
     directory: Directory,
@@ -227,13 +280,16 @@ struct Inner {
     // File closes before the owning native lock is released.
     state: Mutex<State>,
     _lock: Lock,
+    expected_discard_scope: Option<DiscardScope>,
     #[cfg(test)]
     fail_next_receipt_append: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     after_receipt_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    after_discard_intent: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 #[derive(Clone)]
-pub(super) struct Area {
+pub struct Area {
     inner: Arc<Inner>,
 }
 struct Active {
@@ -247,17 +303,17 @@ impl Drop for Active {
         }
     }
 }
-pub(super) struct Ticket {
+pub struct Ticket {
     stage: Stage,
     allocation: Allocation,
     active: Active,
 }
-pub(super) struct SealedTicket {
+pub struct SealedTicket {
     sealed: Sealed,
     allocation: Allocation,
     active: Active,
 }
-pub(super) enum Outcome {
+pub enum Outcome {
     Published {
         receipt: Receipt,
     },
@@ -270,6 +326,16 @@ pub(super) enum Outcome {
         error: io::Error,
     },
 }
+pub enum DiscardOutcome {
+    Discarded {
+        receipt: DiscardReceipt,
+    },
+    MayHaveDiscarded {
+        ticket: Option<SealedTicket>,
+        receipt: DiscardReceipt,
+        error: io::Error,
+    },
+}
 
 impl Area {
     pub fn open(root: &Directory, create: bool) -> io::Result<Self> {
@@ -279,6 +345,69 @@ impl Area {
         limits.validate()?;
         let storage = child(root, ".pcl-linux", create, false)?;
         let directory = child(&storage, "dependency-staging", create, true)?;
+        Self::open_directory(directory, create, limits, None)
+    }
+    /// Open one dedicated staging namespace below a caller-authorized private
+    /// app context. `name` is one literal leaf, never a business operation path.
+    /// Existing nonempty directories without a bound registry are refused
+    /// before creating registry.log; existing evidence is never deleted or
+    /// converted from another schema. Ownership/privacy are checked, not fixed.
+    ///
+    /// The same framed registry, native lock, checksums, limits, recovery and
+    /// no-replace publication implementation serves both this and repair's
+    /// original fixed `.pcl-linux/dependency-staging` namespace.
+    /// A newly initialized custom Header declares its discard purpose and binds
+    /// the context's full ID and this leaf. Existing legacy Headers stay in
+    /// their original publication-only mode; opening or renaming never upgrades
+    /// them to discard authority. Declared scopes cannot be rebound by moving.
+    pub fn open_at_private(
+        parent: &Directory,
+        name: &Leaf,
+        create: bool,
+        limits: Limits,
+    ) -> io::Result<Self> {
+        limits.validate()?;
+        parent.metadata()?.require_private()?;
+        // Leaf's fields are private, but revalidate at this public boundary so
+        // this constructor never depends on an unchecked future Leaf producer.
+        let name = Leaf::new(name.as_os_str())?;
+        let directory = child_leaf(parent, &name, create, true)?;
+        let identity = directory.identity()?;
+        parent.recheck(&name, &identity)?;
+        let log = Leaf::new(LOG_NAME)?;
+        let existing_log = directory.entry(&log)?;
+        if existing_log
+            .as_ref()
+            .is_none_or(|metadata| metadata.len == 0)
+        {
+            let names = directory.names(limits.entries)?;
+            if names.iter().any(|name| name != log.as_os_str()) {
+                return Err(invalid(
+                    "Nonempty unbound staging namespace retained without creating a registry",
+                ));
+            }
+        }
+        // The original fixed repair namespace must keep its old record set.
+        let scope = if name.as_os_str() == "dependency-staging" {
+            None
+        } else {
+            Some(DiscardScope {
+                purpose: "app-generated-input-discard-v1".into(),
+                parent: parent.identity()?,
+                name: name.as_os_str().to_owned(),
+            })
+        };
+        let area = Self::open_directory(directory, create, limits, scope)?;
+        parent.metadata()?.require_private()?;
+        parent.recheck(&name, &identity)?;
+        Ok(area)
+    }
+    fn open_directory(
+        directory: Directory,
+        create: bool,
+        limits: Limits,
+        expected_discard_scope: Option<DiscardScope>,
+    ) -> io::Result<Self> {
         let identity = directory.identity()?;
         let log = Leaf::new(LOG_NAME)?;
         if !create && directory.entry(&log)?.is_none() {
@@ -301,8 +430,16 @@ impl Area {
             pending: HashSet::new(),
             active: HashSet::new(),
             prefix_sha256: Sha256::new(),
+            discard_scope: None,
         };
-        read_log(&mut file, &identity, &directory, &limits, &mut state)?;
+        read_log(
+            &mut file,
+            &identity,
+            &directory,
+            &limits,
+            &mut state,
+            expected_discard_scope.as_ref(),
+        )?;
         if retained_fs::metadata(&file)? != stamp {
             state.status = LogStatus::Corrupt {
                 offset: 0,
@@ -317,10 +454,13 @@ impl Area {
                 limits,
                 state: Mutex::new(state),
                 _lock: lock,
+                expected_discard_scope,
                 #[cfg(test)]
                 fail_next_receipt_append: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 after_receipt_write: Mutex::new(None),
+                #[cfg(test)]
+                after_discard_intent: Mutex::new(None),
             }),
         };
         let empty = { area.state()?.status == LogStatus::Empty };
@@ -329,6 +469,7 @@ impl Area {
                 Record::Header {
                     version: VERSION,
                     area: area.inner.identity.clone(),
+                    discard_scope: area.inner.expected_discard_scope.clone(),
                 },
                 true,
             )?;
@@ -341,6 +482,73 @@ impl Area {
     pub fn report(&self) -> io::Result<AreaReport> {
         let state = self.state()?;
         self.inspect(&state, None)
+    }
+    /// Reconcile only already-durable discard intents in this dedicated Area.
+    /// Unregistered/orphan allocations without intent are retained. A present
+    /// source must match its full metadata and SHA-256; a missing source counts
+    /// only for a valid intent, followed by a namespace flush and receipt.
+    /// Darwin retains the private-workspace cooperative POSIX deletion limit.
+    pub fn reconcile_discarded(&self) -> io::Result<usize> {
+        let mut state = self.state()?;
+        self.require_discard_scope(&state)?;
+        if state.status != LogStatus::Ready {
+            return Err(invalid(
+                "Discard recovery requires a valid complete registry",
+            ));
+        }
+        self.check_log(&state)?;
+        let expected: [u8; 32] = state.prefix_sha256.clone().finalize().into();
+        let length = state.valid_end;
+        if hash_prefix(&mut state.file, length)? != expected {
+            return Err(invalid("Registry prefix changed before discard recovery"));
+        }
+        let intents: Vec<_> = state
+            .entries
+            .iter()
+            .filter_map(|(ticket, entry)| {
+                if entry.discard_receipt.is_none() && !state.active.contains(ticket) {
+                    entry.discard_intent.clone().map(|intent| (*ticket, intent))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut completed = 0;
+        for (ticket, intent) in intents {
+            self.check_log(&state)?;
+            let receipt = discarded_receipt(&intent);
+            let record = Record::DiscardReceipt { ticket, receipt };
+            self.check_capacity(&state, std::slice::from_ref(&record))?;
+            discard_intended_source(self.directory(), &intent)?;
+            self.append_locked(&mut state, record, false)?;
+            completed += 1;
+        }
+        Ok(completed)
+    }
+    fn check_capacity(&self, state: &State, records: &[Record]) -> io::Result<()> {
+        let mut bytes = state.valid_end;
+        let mut frames = state.next_sequence;
+        for record in records {
+            let length = serde_json::to_vec(record).map_err(io::Error::other)?.len();
+            if length > self.inner.limits.record_bytes {
+                return Err(invalid(
+                    "Discard evidence/receipt exceeds registry record quota; registry evidence retained",
+                ));
+            }
+            bytes = bytes
+                .checked_add(FRAME_HEADER as u64)
+                .and_then(|bytes| bytes.checked_add(length as u64))
+                .ok_or_else(|| invalid("Discard registry size overflow"))?;
+            frames = frames
+                .checked_add(1)
+                .ok_or_else(|| invalid("Discard registry sequence overflow"))?;
+        }
+        if bytes > self.inner.limits.log_bytes || frames > self.inner.limits.frames {
+            return Err(invalid(
+                "Registry cannot fit durable discard intent and receipt; discard not admitted and registry evidence retained",
+            ));
+        }
+        Ok(())
     }
     /// Repair only an incomplete frame suffix, never a checksum/format error.
     /// The lock, exact held log identity, metadata and full valid-prefix hash
@@ -392,6 +600,7 @@ impl Area {
                 self.directory(),
                 &self.inner.limits,
                 &mut fresh,
+                self.inner.expected_discard_scope.as_ref(),
             )?;
             if retained_fs::metadata(&file)? != after
                 || fresh.valid_end != prefix_len
@@ -411,6 +620,10 @@ impl Area {
                         Record::Header {
                             version: VERSION,
                             area: self.inner.identity.clone(),
+                            // A truncated first header has no durable discard
+                            // declaration to recover. Never infer it from a new
+                            // factory/path name while repairing an empty prefix.
+                            discard_scope: None,
                         },
                         true,
                     )?;
@@ -535,9 +748,92 @@ impl Area {
             .lock()
             .map_err(|_| io::Error::other("Staging registry lock was poisoned"))
     }
+    fn require_discard_scope(&self, state: &State) -> io::Result<()> {
+        if state.discard_scope.is_none()
+            || state.discard_scope.as_ref() != self.inner.expected_discard_scope.as_ref()
+        {
+            return Err(invalid("The durable Header has no matching custom discard capability; legacy records retained without upgrade"));
+        }
+        Ok(())
+    }
+    fn check_actual_append_budget(
+        &self,
+        state: &State,
+        record: &Record,
+        frame_bytes: u64,
+    ) -> io::Result<()> {
+        let report = self.inspect(state, None)?;
+        if !report.writable() || !report.usage_complete {
+            return Err(invalid(
+                "Staging Area is unknown, changed or over quota; append refused",
+            ));
+        }
+        let mut credit = 0u64;
+        if let Some(ticket) = record_ticket(record) {
+            if let Some(entry) = state.entries.get(&ticket) {
+                let reserved = state.active.contains(&ticket) || entry.discard_intent.is_some();
+                if reserved {
+                    let after = match record {
+                        Record::Sealed { .. } => 3,
+                        Record::Exists { .. } => 2,
+                        Record::DiscardIntent { .. } => 1,
+                        Record::Receipt { .. } | Record::DiscardReceipt { .. } => 0,
+                        _ => remaining_frames(entry),
+                    };
+                    credit = remaining_frames(entry)
+                        .saturating_sub(after)
+                        .saturating_mul((FRAME_HEADER + self.inner.limits.record_bytes) as u64);
+                }
+                let completed = matches!(record, Record::DiscardReceipt { .. })
+                    || matches!(record, Record::Receipt { receipt, .. }
+                        if receipt.publication_confirmed && receipt.directories_synced);
+                if completed && state.active.contains(&ticket) {
+                    // Completion retires the unused payload reservation too.
+                    // Never credit physical bytes of an observed replacement.
+                    let unused = report
+                        .sources
+                        .iter()
+                        .find(|source| source.ticket == ticket)
+                        .map_or(0, |source| match source.state {
+                            SourceState::Present { len } => {
+                                entry.allocation.max_bytes.saturating_sub(len)
+                            }
+                            SourceState::Missing | SourceState::AnonymousUnobservable => {
+                                entry.allocation.max_bytes
+                            }
+                            SourceState::Replaced => 0,
+                        });
+                    credit = credit.saturating_add(unused);
+                }
+                if let Record::DiscardReceipt { .. } = record {
+                    let intent = entry
+                        .discard_intent
+                        .as_ref()
+                        .ok_or_else(|| invalid("Missing discard intent"))?;
+                    if observed_residue(self.directory(), intent)? != SourceResidue::None {
+                        return Err(invalid(
+                            "Discard source reappeared before receipt; intent retained",
+                        ));
+                    }
+                }
+            }
+        }
+        let after = report
+            .physical_bytes_lower_bound
+            .checked_add(report.reserved_bytes)
+            .and_then(|bytes| bytes.checked_add(frame_bytes))
+            .and_then(|bytes| bytes.checked_sub(credit.min(report.reserved_bytes)))
+            .ok_or_else(|| invalid("Staging append quota overflow"))?;
+        if after > self.inner.limits.area_bytes {
+            return Err(invalid(
+                "Actual registry frame exceeds remaining Area budget; evidence retained",
+            ));
+        }
+        Ok(())
+    }
     fn append(&self, record: Record, initializing: bool) -> io::Result<()> {
         let mut state = self.state()?;
-        if !initializing {
+        if !initializing && self.require_discard_scope(&state).is_err() {
             self.ensure_budget(&state, None, 0, false)?;
         }
         self.append_locked(&mut state, record, initializing)
@@ -554,12 +850,28 @@ impl Area {
             ));
         }
         self.check_log(state)?;
+        if is_discard(&record) {
+            self.require_discard_scope(state)?;
+        }
+        if let Record::Header {
+            discard_scope: Some(scope),
+            ..
+        } = &record
+        {
+            if Some(scope) != self.inner.expected_discard_scope.as_ref() {
+                return Err(invalid(
+                    "Discard Header purpose differs from the authorized custom namespace",
+                ));
+            }
+        }
         #[cfg(test)]
-        if matches!(record, Record::Receipt { .. })
-            && self
-                .inner
-                .fail_next_receipt_append
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        if matches!(
+            record,
+            Record::Receipt { .. } | Record::DiscardReceipt { .. }
+        ) && self
+            .inner
+            .fail_next_receipt_append
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
             return Err(io::Error::other("fixture receipt append I/O failure"));
         }
@@ -572,6 +884,9 @@ impl Area {
             return Err(io::Error::other("Staging registry record quota exceeded"));
         }
         let frame = encode_frame(state.next_sequence, &payload);
+        if self.require_discard_scope(state).is_ok() {
+            self.check_actual_append_budget(state, &record, frame.len() as u64)?;
+        }
         let end = state
             .valid_end
             .checked_add(frame.len() as u64)
@@ -583,7 +898,13 @@ impl Area {
         let mut expected_prefix = state.prefix_sha256.clone();
         expected_prefix.update(&frame);
         let expected_digest: [u8; 32] = expected_prefix.clone().finalize().into();
-        let sync_directory = matches!(record, Record::Header { .. } | Record::Allocation { .. });
+        let sync_directory = matches!(
+            record,
+            Record::Header { .. }
+                | Record::Allocation { .. }
+                | Record::DiscardIntent { .. }
+                | Record::DiscardReceipt { .. }
+        );
         let result = (|| {
             state.file.seek(SeekFrom::Start(state.valid_end))?;
             state.file.write_all(&frame)?;
@@ -681,7 +1002,18 @@ impl Area {
             .checked_add(report.reserved_bytes)
             .and_then(|value| value.checked_add(additional))
             .and_then(|value| {
-                value.checked_add((FRAME_HEADER + self.inner.limits.record_bytes) as u64)
+                // A new custom ticket reserves its allocation plus the
+                // longest remaining route: seal, optional collision, discard
+                // intent and receipt. No wire field or second quota ledger is
+                // introduced; frame size is bounded by record_bytes already.
+                let frames = if allocation && self.require_discard_scope(state).is_ok() {
+                    5
+                } else {
+                    1
+                };
+                value.checked_add(
+                    ((FRAME_HEADER + self.inner.limits.record_bytes) as u64).saturating_mul(frames),
+                )
             })
             .ok_or_else(|| invalid("Staging quota overflow"))?;
         if estimated > self.inner.limits.area_bytes {
@@ -901,6 +1233,17 @@ impl Area {
                         .saturating_sub(source.map_or(0, |metadata| metadata.len)),
                 );
             }
+            if self.require_discard_scope(state).is_ok()
+                && (active || entry.discard_intent.is_some())
+            {
+                // A durable intent keeps its final receipt reservation even
+                // after restart. Ordinary inactive orphans gain no cleanup
+                // authority or unused-payload reservation.
+                report.reserved_bytes = report.reserved_bytes.saturating_add(
+                    remaining_frames(entry)
+                        .saturating_mul((FRAME_HEADER + limits.record_bytes) as u64),
+                );
+            }
             if report.sources.len() < limits.pending_tickets {
                 report.sources.push(SourceReport {
                     ticket: *ticket,
@@ -912,7 +1255,9 @@ impl Area {
                     has_receipt: entry.receipt.is_some(),
                     publication_uncertain: entry.sealed.is_some()
                         && !entry.exists
+                        && entry.discard_intent.is_none()
                         && !entry.completed(),
+                    discard_requested: entry.discard_intent.is_some(),
                 });
             }
         }
@@ -946,8 +1291,25 @@ impl Area {
 }
 
 impl Ticket {
+    /// Borrow the original stage handle for inspection/read/seek. This is not
+    /// an OS-readonly capability: File's existing rights are unchanged. Any
+    /// duplicated writer must be retired before seal so final metadata/bytes
+    /// can be checked through the original stage without delayed-close writes.
+    pub fn file(&self) -> &File {
+        self.stage.file()
+    }
     pub fn file_mut(&mut self) -> &mut File {
         self.stage.file_mut()
+    }
+    /// Cancel a generated input through the shared durable registry. Close all
+    /// duplicated handles first. The exact sealed intent is synced before any
+    /// discard; uncertain outcomes retain that intent for reconciliation.
+    pub fn discard(self) -> io::Result<DiscardOutcome> {
+        {
+            let state = self.active.area.state()?;
+            self.active.area.require_discard_scope(&state)?;
+        }
+        self.seal()?.discard()
     }
     pub fn allocation(&self) -> &Allocation {
         &self.allocation
@@ -984,6 +1346,99 @@ impl Ticket {
 impl SealedTicket {
     pub fn evidence(&self) -> &Evidence {
         self.sealed.evidence()
+    }
+    /// Discard only this allocated generated lease, never its target. Darwin
+    /// follows private-workspace POSIX unlinkat under cooperative locks after
+    /// full content/metadata/name checks, not atomic compare-delete against a
+    /// noncooperating namespace mutator. Unknown observed changes are refused.
+    pub fn discard(self) -> io::Result<DiscardOutcome> {
+        let Self {
+            sealed,
+            allocation,
+            active,
+        } = self;
+        let area = active.area.clone();
+        let intent = DiscardIntent {
+            allocation: allocation.clone(),
+            evidence: sealed.evidence().clone(),
+            metadata: sealed.metadata().clone(),
+        };
+        let expected_receipt = discarded_receipt(&intent);
+        let mut state = area.state()?;
+        area.require_discard_scope(&state)?;
+        let request = Record::DiscardIntent {
+            ticket: allocation.ticket,
+            intent: intent.clone(),
+        };
+        area.check_capacity(
+            &state,
+            &[
+                request.clone(),
+                Record::DiscardReceipt {
+                    ticket: allocation.ticket,
+                    receipt: expected_receipt.clone(),
+                },
+            ],
+        )?;
+        area.append_locked(&mut state, request, false)?;
+        #[cfg(test)]
+        if let Some(interfere) = area.inner.after_discard_intent.lock().unwrap().take() {
+            interfere();
+        }
+        match sealed.discard() {
+            Ok(NativeDiscardOutcome::Discarded { receipt }) => {
+                match area.append_locked(
+                    &mut state,
+                    Record::DiscardReceipt {
+                        ticket: allocation.ticket,
+                        receipt: receipt.clone(),
+                    },
+                    false,
+                ) {
+                    Ok(()) => Ok(DiscardOutcome::Discarded { receipt }),
+                    Err(error) => Ok(DiscardOutcome::MayHaveDiscarded {
+                        ticket: None,
+                        receipt,
+                        error,
+                    }),
+                }
+            }
+            Ok(NativeDiscardOutcome::MayHaveDiscarded {
+                stage,
+                receipt,
+                error,
+            }) => {
+                // Retain the original object on native failure, including an
+                // anonymous source. Dropping this returned owner is explicit;
+                // a pending disposition may finish then, so intent recovery
+                // must never interpret May as a definite non-removal.
+                let ticket = if let Some(sealed) = stage {
+                    Some(Self {
+                        sealed,
+                        allocation,
+                        active,
+                    })
+                } else {
+                    None
+                };
+                Ok(DiscardOutcome::MayHaveDiscarded {
+                    ticket,
+                    receipt,
+                    error,
+                })
+            }
+            Err(error) => {
+                let mut receipt = expected_receipt;
+                receipt.discard_confirmed = false;
+                receipt.directory_synced = false;
+                receipt.source_residue =
+                    observed_residue(area.directory(), &intent).unwrap_or(SourceResidue::Unknown);
+                Ok(DiscardOutcome::MayHaveDiscarded {
+                    ticket: Some(Self { sealed: error.stage, allocation, active }), receipt,
+                    error: io::Error::other(format!("Discard intent durable; sealed source recheck failed and evidence retained: {}", error.error)),
+                })
+            }
+        }
     }
     pub fn publish(self, target: &Directory, leaf: &Leaf) -> io::Result<Outcome> {
         let Self {
@@ -1101,23 +1556,32 @@ impl SealedTicket {
 
 fn child(parent: &Directory, name: &str, create: bool, private: bool) -> io::Result<Directory> {
     let leaf = Leaf::new(name)?;
+    child_leaf(parent, &leaf, create, private)
+}
+fn child_leaf(
+    parent: &Directory,
+    leaf: &Leaf,
+    create: bool,
+    private: bool,
+) -> io::Result<Directory> {
     let directory = if create {
-        match parent.create_private(&leaf, Traversal::SameFilesystem) {
+        match parent.create_private(leaf, Traversal::SameFilesystem) {
             Ok(directory) => {
                 parent.sync()?;
                 directory
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                parent.child(&leaf, Traversal::SameFilesystem)?
+                parent.child(leaf, Traversal::SameFilesystem)?
             }
             Err(error) => return Err(error),
         }
     } else {
-        parent.child(&leaf, Traversal::SameFilesystem)?
+        parent.child(leaf, Traversal::SameFilesystem)?
     };
     if private {
         directory.metadata()?.require_private()?;
     }
+    parent.recheck(leaf, &directory.identity()?)?;
     Ok(directory)
 }
 fn source_kind(named: bool) -> SourceKind {
@@ -1142,6 +1606,144 @@ fn matches_allocation(evidence: &Evidence, allocation: &Allocation) -> bool {
         && evidence.identity == allocation.source_identity
         && evidence.source_kind == allocation.source_kind
         && evidence.len <= allocation.max_bytes
+}
+fn is_discard(record: &Record) -> bool {
+    matches!(
+        record,
+        Record::DiscardIntent { .. } | Record::DiscardReceipt { .. }
+    )
+}
+fn remaining_frames(entry: &Entry) -> u64 {
+    if entry.receipt.is_some() || entry.discard_receipt.is_some() {
+        0
+    } else if entry.discard_intent.is_some() {
+        1
+    } else if entry.exists {
+        2
+    } else if entry.sealed.is_some() {
+        3
+    } else {
+        4
+    }
+}
+fn record_ticket(record: &Record) -> Option<u64> {
+    match record {
+        Record::Header { .. } => None,
+        Record::Allocation { allocation } => Some(allocation.ticket),
+        Record::Sealed { ticket, .. }
+        | Record::Receipt { ticket, .. }
+        | Record::Exists { ticket }
+        | Record::DiscardIntent { ticket, .. }
+        | Record::DiscardReceipt { ticket, .. } => Some(*ticket),
+    }
+}
+fn discarded_receipt(intent: &DiscardIntent) -> DiscardReceipt {
+    DiscardReceipt {
+        source: intent.evidence.clone(),
+        metadata: intent.metadata.clone(),
+        source_residue: SourceResidue::None,
+        discard_confirmed: true,
+        directory_synced: true,
+    }
+}
+fn observed_residue(directory: &Directory, intent: &DiscardIntent) -> io::Result<SourceResidue> {
+    let Some(name) = &intent.evidence.source_name else {
+        return Ok(SourceResidue::None);
+    };
+    Ok(match directory.entry(&Leaf::new(name)?)? {
+        None => SourceResidue::None,
+        Some(stamp) if stamp.identity == intent.evidence.identity => SourceResidue::LeasePresent,
+        Some(_) => SourceResidue::NameReplaced,
+    })
+}
+fn check_discard_hash(file: &File, intent: &DiscardIntent) -> io::Result<()> {
+    let before = retained_fs::metadata(file)?;
+    before.require_private()?;
+    if before != intent.metadata {
+        return Err(invalid(
+            "Discard source full metadata changed; source retained",
+        ));
+    }
+    let mut read = file.try_clone()?;
+    read.seek(SeekFrom::Start(0))?;
+    let mut hash = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; 32 * 1024];
+    loop {
+        let count = read.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        bytes = bytes
+            .checked_add(count as u64)
+            .ok_or_else(|| invalid("Discard source length overflow"))?;
+        if bytes > intent.evidence.len {
+            return Err(invalid("Discard source grew; source retained"));
+        }
+        hash.update(&buffer[..count]);
+    }
+    if bytes != intent.evidence.len
+        || <[u8; 32]>::from(hash.finalize()) != intent.evidence.sha256
+        || retained_fs::metadata(file)? != before
+    {
+        return Err(invalid(
+            "Discard source SHA-256 or metadata changed; source retained",
+        ));
+    }
+    // Retire this duplicate before disposition so Windows last-close semantics
+    // cannot be mistaken for a completed source disappearance.
+    drop(read);
+    Ok(())
+}
+fn discard_intended_source(directory: &Directory, intent: &DiscardIntent) -> io::Result<()> {
+    directory.metadata()?.require_private()?;
+    if directory.identity()? != intent.evidence.parent_identity {
+        return Err(invalid("Discard Area identity changed"));
+    }
+    if let Some(name) = &intent.evidence.source_name {
+        let name = Leaf::new(name)?;
+        if directory.entry(&name)?.is_some() {
+            #[cfg(windows)]
+            {
+                let held = directory.read_lease(&name, true)?;
+                check_discard_hash(held.file(), intent)?;
+                held.recheck()?;
+                match held.remove_generated()? {
+                    retained_fs::WorkspaceRemoval::Removed => {}
+                    retained_fs::WorkspaceRemoval::MayHaveRemoved { error } => return Err(error),
+                }
+            }
+            #[cfg(unix)]
+            {
+                let held = directory.open_regular(&name, Links::Single)?;
+                // Same cooperative source lock as native named Stage, never a
+                // claim of atomic unlink against noncooperating path mutation.
+                use std::os::fd::AsRawFd;
+                if unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                check_discard_hash(&held, intent)?;
+                directory.recheck(&name, &intent.evidence.identity)?;
+                match directory.remove_workspace_entry(&name, &intent.metadata)? {
+                    retained_fs::WorkspaceRemoval::Removed => {}
+                    retained_fs::WorkspaceRemoval::MayHaveRemoved { error } => return Err(error),
+                }
+            }
+        }
+        if directory.entry(&name)?.is_some() {
+            return Err(invalid("Discard source remains or its name was replaced"));
+        }
+    }
+    // Anonymous allocations had no namespace link and their original owner is
+    // no longer active. Missing named sources are accepted only from this
+    // fully validated durable intent, never from an arbitrary dropped ticket.
+    directory.sync()?;
+    if observed_residue(directory, intent)? != SourceResidue::None {
+        return Err(invalid(
+            "Discard source name reappeared during recovery sync",
+        ));
+    }
+    Ok(())
 }
 // Reject a target whose eventual evidence cannot fit before exposing payload
 // access. Publication must not knowingly create an unrecordable receipt merely
@@ -1232,6 +1834,7 @@ fn validate_record(
         Record::Header {
             version,
             area: observed,
+            ..
         } if sequence == 0 && *version == VERSION && observed == area => Ok(()),
         Record::Header { .. } => Err(invalid("Duplicate/wrong staging Area header")),
         _ if sequence == 0 => Err(invalid("Registry starts without its Area header")),
@@ -1278,6 +1881,7 @@ fn validate_record(
                 .ok_or_else(|| invalid("Seal has no allocation"))?;
             if entry.sealed.is_some()
                 || entry.receipt.is_some()
+                || entry.discard_intent.is_some()
                 || !matches_allocation(evidence, &entry.allocation)
             {
                 return Err(invalid("Duplicate or inconsistent sealed evidence"));
@@ -1291,6 +1895,7 @@ fn validate_record(
                 .ok_or_else(|| invalid("Receipt has no allocation"))?;
             if entry.receipt.is_some()
                 || entry.exists
+                || entry.discard_intent.is_some()
                 || entry.sealed.as_ref() != Some(&receipt.source)
                 || receipt.target_parent != entry.allocation.target_parent
                 || receipt.target_name != entry.allocation.target_leaf
@@ -1309,8 +1914,57 @@ fn validate_record(
                 .entries
                 .get(ticket)
                 .ok_or_else(|| invalid("Collision has no allocation"))?;
-            if entry.sealed.is_none() || entry.receipt.is_some() || entry.exists {
+            if entry.sealed.is_none()
+                || entry.receipt.is_some()
+                || entry.exists
+                || entry.discard_intent.is_some()
+            {
                 return Err(invalid("Duplicate or inconsistent collision record"));
+            }
+            Ok(())
+        }
+        Record::DiscardIntent { ticket, intent } => {
+            let entry = state
+                .entries
+                .get(ticket)
+                .ok_or_else(|| invalid("Discard intent has no allocation"))?;
+            if entry.discard_intent.is_some()
+                || entry.receipt.is_some()
+                || intent.allocation != entry.allocation
+                || entry.sealed.as_ref() != Some(&intent.evidence)
+                || !matches_allocation(&intent.evidence, &entry.allocation)
+                || intent.metadata.identity != intent.evidence.identity
+                || intent.metadata.kind != Kind::Regular
+                || intent.metadata.reparse_tag.is_some()
+                || intent.metadata.len != intent.evidence.len
+                || intent.metadata.links
+                    != if intent.evidence.source_name.is_some() {
+                        1
+                    } else {
+                        0
+                    }
+                || intent.metadata.require_private().is_err()
+            {
+                return Err(invalid(
+                    "Duplicate/inconsistent discard intent; source not authorized",
+                ));
+            }
+            Ok(())
+        }
+        Record::DiscardReceipt { ticket, receipt } => {
+            let entry = state
+                .entries
+                .get(ticket)
+                .ok_or_else(|| invalid("Discard receipt has no allocation"))?;
+            let intent = entry
+                .discard_intent
+                .as_ref()
+                .ok_or_else(|| invalid("Discard receipt has no durable intent"))?;
+            if entry.discard_receipt.is_some()
+                || entry.receipt.is_some()
+                || receipt != &discarded_receipt(intent)
+            {
+                return Err(invalid("Duplicate/inconsistent discard receipt"));
             }
             Ok(())
         }
@@ -1318,7 +1972,9 @@ fn validate_record(
 }
 fn apply_record(record: Record, sequence: u64, state: &mut State) -> io::Result<()> {
     match record {
-        Record::Header { .. } => {}
+        Record::Header { discard_scope, .. } => {
+            state.discard_scope = discard_scope;
+        }
         Record::Allocation { allocation } => {
             if let Some(name) = &allocation.source_name {
                 state.by_name.insert(name.clone(), allocation.ticket);
@@ -1331,6 +1987,8 @@ fn apply_record(record: Record, sequence: u64, state: &mut State) -> io::Result<
                     sealed: None,
                     receipt: None,
                     exists: false,
+                    discard_intent: None,
+                    discard_receipt: None,
                 },
             );
         }
@@ -1358,6 +2016,21 @@ fn apply_record(record: Record, sequence: u64, state: &mut State) -> io::Result<
                 .ok_or_else(|| invalid("Missing allocation"))?
                 .exists = true;
         }
+        Record::DiscardIntent { ticket, intent } => {
+            state
+                .entries
+                .get_mut(&ticket)
+                .ok_or_else(|| invalid("Missing discard allocation"))?
+                .discard_intent = Some(intent);
+        }
+        Record::DiscardReceipt { ticket, receipt } => {
+            state
+                .entries
+                .get_mut(&ticket)
+                .ok_or_else(|| invalid("Missing discard allocation"))?
+                .discard_receipt = Some(receipt);
+            state.pending.remove(&ticket);
+        }
     }
     let _ = sequence;
     Ok(())
@@ -1383,6 +2056,7 @@ fn read_log(
     directory: &Directory,
     limits: &Limits,
     state: &mut State,
+    expected_discard_scope: Option<&DiscardScope>,
 ) -> io::Result<()> {
     if state.stamp.len > limits.log_bytes {
         state.status = LogStatus::Corrupt {
@@ -1471,6 +2145,25 @@ fn read_log(
                 return Ok(());
             }
         };
+        let invalid_scope = match &record {
+            Record::Header {
+                discard_scope: Some(scope),
+                ..
+            } => Some(scope) != expected_discard_scope,
+            record if is_discard(record) => {
+                state.discard_scope.is_none()
+                    || state.discard_scope.as_ref() != expected_discard_scope
+            }
+            _ => false,
+        };
+        if invalid_scope {
+            state.status = LogStatus::Corrupt {
+                offset: state.valid_end,
+                reason: "Discard Header/record has no matching durable custom namespace purpose"
+                    .into(),
+            };
+            return Ok(());
+        }
         if let Err(error) = validate_record(&record, sequence, area, state) {
             state.status = LogStatus::Corrupt {
                 offset: state.valid_end,
@@ -1542,6 +2235,7 @@ fn empty_state(file: File, stamp: Metadata) -> State {
         pending: HashSet::new(),
         active: HashSet::new(),
         prefix_sha256: Sha256::new(),
+        discard_scope: None,
     }
 }
 fn hash_prefix(file: &mut File, length: u64) -> io::Result<[u8; 32]> {

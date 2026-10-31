@@ -6,6 +6,19 @@ mod cache;
 mod components;
 mod network;
 mod repair;
+/// Shared durable staging for caller-authorized, app-owned namespaces.
+///
+/// The caller supplies business authority and its private context. Registry
+/// evidence diagnoses staging/publication; explicit discard intents cover only
+/// generated stages, never business recovery or user-original deletion. The
+/// original repair namespace and schema are retained.
+pub mod staging {
+    pub use crate::repair::staging::{
+        Allocation, Area, AreaReport, DiscardOutcome, Issue, IssueKind, Limits, LogStatus, Outcome,
+        SealedTicket, SourceReport, SourceState, Ticket,
+    };
+    pub use pcl_core::retained_fs::stage::DiscardReceipt;
+}
 pub use repair::{
     DamageRecoveryReport, DamageRepair, DamageRepairReport, IntegrityCheck, IntegrityProblem,
     IntegrityProblemKind, IntegrityReport, MissingRepair, MissingRepairReport, RepairUnsupported,

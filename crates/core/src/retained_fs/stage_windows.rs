@@ -6,7 +6,9 @@ use std::{
 };
 use windows_sys::{
     Wdk::Storage::FileSystem::{
-        FileRenameInformation, NtSetInformationFile, FILE_RENAME_INFORMATION,
+        FileDispositionInformationEx, FileRenameInformation, NtSetInformationFile,
+        FILE_DISPOSITION_DELETE, FILE_DISPOSITION_INFORMATION_EX, FILE_DISPOSITION_POSIX_SEMANTICS,
+        FILE_RENAME_INFORMATION,
     },
     Win32::{
         Foundation::RtlNtStatusToDosError,
@@ -92,4 +94,32 @@ pub(super) fn publish(stage: &Stage, target: &Directory, leaf: &Leaf) -> io::Res
 
 pub(super) fn sync_parent(parent: &Directory) -> io::Result<()> {
     parent.sync()
+}
+
+pub(super) fn discard(stage: &Stage, expected: &Metadata) -> io::Result<()> {
+    if metadata(&stage.file)? != *expected {
+        return Err(changed(
+            "Discard source metadata changed before disposition",
+        ));
+    }
+    let information = FILE_DISPOSITION_INFORMATION_EX {
+        Flags: FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS,
+    };
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // The original stage was atomically created with DELETE and denied write/
+    // delete sharing. Never reopen its name or delete an observed replacement.
+    let status = unsafe {
+        NtSetInformationFile(
+            stage.file.as_raw_handle(),
+            &mut status_block,
+            (&information as *const FILE_DISPOSITION_INFORMATION_EX).cast(),
+            size_of::<FILE_DISPOSITION_INFORMATION_EX>() as u32,
+            FileDispositionInformationEx,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(native_error(status))
+    }
 }

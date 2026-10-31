@@ -22,7 +22,7 @@ mod evidence;
 use evidence::Stamp;
 #[allow(dead_code)] // Registry is active for named-stage hosts; Linux retains anonymous staging.
 #[path = "repair_staging.rs"]
-mod staging;
+pub(crate) mod staging;
 #[path = "repair_lock.rs"]
 mod writer_lock;
 use std::{
