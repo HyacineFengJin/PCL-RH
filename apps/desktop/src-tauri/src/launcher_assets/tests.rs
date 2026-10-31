@@ -64,9 +64,18 @@ fn listing_is_read_only_and_ids_are_stable_until_file_changes() {
     assert!(!response.partial);
     assert_eq!(response.bytes, Fixture::png());
     assert_eq!(response.mime, "image/png");
+    let head = store
+        .head_asset(AssetCollection::Backgrounds, &first[0].id, None)
+        .unwrap();
+    assert_eq!(head.mime, "image/png");
+    assert_eq!(head.content_length, Fixture::png().len() as u64);
+    assert_eq!(head.bytes.capacity(), 0);
     fs::write(&path, Fixture::png()).unwrap();
     assert!(store
         .read_asset(AssetCollection::Backgrounds, &first[0].id, None)
+        .is_err());
+    assert!(store
+        .head_asset(AssetCollection::Backgrounds, &first[0].id, None)
         .is_err());
     let changed = store.list(AssetCollection::Backgrounds).unwrap();
     assert_ne!(first[0].id, changed[0].id);
@@ -87,6 +96,9 @@ fn fixed_catalog_rejects_arbitrary_paths_symlinks_hardlinks_and_wrong_magic() {
         assert!(store
             .read_asset(AssetCollection::Backgrounds, "../../private.json", None)
             .is_err());
+        assert!(store
+            .head_asset(AssetCollection::Backgrounds, "../../private.json", None)
+            .is_err());
         assert!(store.read_title(&f.0.join("private.json")).is_err());
     }
 }
@@ -102,6 +114,9 @@ fn old_media_id_cannot_read_a_replacement_or_rebound_directory() {
     fs::write(folder.join("wall.png"), Fixture::png()).unwrap();
     assert!(store
         .read_asset(AssetCollection::Backgrounds, &row.id, None)
+        .is_err());
+    assert!(store
+        .head_asset(AssetCollection::Backgrounds, &row.id, None)
         .is_err());
     assert!(f.0.join("retained-backgrounds/wall.png").exists());
 }

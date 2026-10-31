@@ -3,6 +3,9 @@
 #[allow(dead_code)]
 #[path = "../../../apps/desktop/src-tauri/src/launcher_assets/filesystem.rs"]
 mod filesystem;
+#[allow(dead_code)]
+#[path = "../../../apps/desktop/src-tauri/src/launcher_assets/response.rs"]
+mod response;
 
 use filesystem::{Dir, Scope, Snapshot};
 use pcl_core::retained_fs::{Identity, Leaf};
@@ -18,6 +21,219 @@ fn fixture() -> tempfile::TempDir {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/launcher-assets-native-tests");
     fs::create_dir_all(&work).unwrap();
     tempfile::tempdir_in(fs::canonicalize(work).unwrap()).unwrap()
+}
+
+#[derive(Default)]
+struct BodyIo {
+    reads: usize,
+    bytes: usize,
+    seeks: usize,
+}
+struct CountedFile<'a> {
+    file: &'a mut fs::File,
+    io: BodyIo,
+}
+impl std::io::Read for CountedFile<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.io.reads += 1;
+        let count = self.file.read(bytes)?;
+        self.io.bytes += count;
+        Ok(count)
+    }
+}
+impl std::io::Seek for CountedFile<'_> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.io.seeks += 1;
+        std::io::Seek::seek(self.file, position)
+    }
+}
+
+fn media_binding<'a>(
+    name: &'a str,
+    stamp: &'a filesystem::Stamp,
+    root: &'a Identity,
+    owner: &'a Identity,
+    folder: &'a Identity,
+) -> response::Binding<'a> {
+    response::Binding {
+        name,
+        stamp,
+        root,
+        owner,
+        folder,
+    }
+}
+
+#[test]
+fn head_of_a_real_64mib_sparse_media_has_zero_body_io_and_preserves_range_lengths() {
+    use std::io::{Seek, Write};
+    let fixture = fixture();
+    let scope = Scope::create(fixture.path(), "backgrounds").unwrap();
+    let folder = scope.folder.as_ref().unwrap();
+    folder.write_new("large.mp4", b"").unwrap();
+    let path = scope.path().join("large.mp4");
+    let mut output = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        // FSCTL_SET_SPARSE from the locked Windows SDK binding (590020).
+        // Mark only this new synthetic file; no user path/system policy changes.
+        let mut returned = 0;
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::System::IO::DeviceIoControl(
+                    output.as_raw_handle(),
+                    590020,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+    }
+    output.set_len(response::MAX_MEDIA_BYTES).unwrap();
+    output
+        .write_all(b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00isommp42")
+        .unwrap();
+    drop(output);
+    // The full content hash is the existing catalog admission, outside the
+    // HEAD-body measurement. It uses the production fixed streaming buffer.
+    let snapshot = Snapshot::open(folder, "large.mp4", response::MAX_MEDIA_BYTES).unwrap();
+    let root_id = scope.root.identity().unwrap();
+    let owner_id = scope.owner.as_ref().unwrap().identity().unwrap();
+    let folder_id = folder.identity().unwrap();
+    for (range, expected_start, expected_length, partial) in [
+        (None, 0, response::MAX_MEDIA_BYTES, false),
+        (Some("bytes=7-11"), 7, 5, true),
+        (Some("bytes=0-"), 0, response::MAX_RANGE_BYTES, true),
+    ] {
+        let mut authorized = response::authorize(
+            &scope,
+            media_binding(
+                "large.mp4",
+                &snapshot.stamp,
+                &root_id,
+                &owner_id,
+                &folder_id,
+            ),
+            range,
+        )
+        .unwrap();
+        assert_eq!(authorized.file.stream_position().unwrap(), 0);
+        let span = authorized.span;
+        let mut counted = CountedFile {
+            file: &mut authorized.file,
+            io: BodyIo::default(),
+        };
+        let bytes = response::read_body(&mut counted, span, response::Method::Head).unwrap();
+        assert_eq!(
+            (counted.io.reads, counted.io.bytes, counted.io.seeks),
+            (0, 0, 0)
+        );
+        assert_eq!(bytes.capacity(), 0);
+        assert_eq!(counted.file.stream_position().unwrap(), 0);
+        drop(counted);
+        let head = authorized.respond(response::Method::Head).unwrap();
+        assert!(head.bytes.is_empty());
+        assert_eq!(head.bytes.capacity(), 0);
+        assert_eq!(authorized.file.stream_position().unwrap(), 0);
+        assert_eq!(head.span.start, expected_start);
+        assert_eq!(head.span.content_length(), expected_length);
+        assert_eq!(head.span.total, response::MAX_MEDIA_BYTES);
+        assert_eq!(head.span.partial, partial);
+    }
+    // A valid GET subrange still reads the exact admitted source bytes.
+    let mut authorized = response::authorize(
+        &scope,
+        media_binding(
+            "large.mp4",
+            &snapshot.stamp,
+            &root_id,
+            &owner_id,
+            &folder_id,
+        ),
+        Some("bytes=4-7"),
+    )
+    .unwrap();
+    let get = authorized.respond(response::Method::Get).unwrap();
+    assert_eq!(get.bytes, b"ftyp");
+    assert_eq!(get.span.content_length(), 4);
+}
+
+#[test]
+fn media_head_keeps_missing_changed_range_and_directory_identity_rejections() {
+    let fixture = fixture();
+    let scope = Scope::create(fixture.path(), "titles").unwrap();
+    let folder = scope.folder.as_ref().unwrap();
+    folder.write_new("title", b"catalog bytes").unwrap();
+    let snapshot = Snapshot::open(folder, "title", 1024).unwrap();
+    let root_id = scope.root.identity().unwrap();
+    let owner_id = scope.owner.as_ref().unwrap().identity().unwrap();
+    let folder_id = folder.identity().unwrap();
+    let unauthorized = Scope::create(fixture.path(), "music").unwrap();
+    assert!(response::authorize(
+        &unauthorized,
+        media_binding("title", &snapshot.stamp, &root_id, &owner_id, &folder_id),
+        None
+    )
+    .is_err());
+    assert!(response::authorize(
+        &scope,
+        media_binding("missing", &snapshot.stamp, &root_id, &owner_id, &folder_id),
+        None
+    )
+    .is_err());
+    for range in ["bytes=99-", "bytes=3-1", "bytes=0-2,4-6", "items=0-3"] {
+        assert!(response::authorize(
+            &scope,
+            media_binding("title", &snapshot.stamp, &root_id, &owner_id, &folder_id),
+            Some(range)
+        )
+        .is_err());
+    }
+    let mut get = response::authorize(
+        &scope,
+        media_binding("title", &snapshot.stamp, &root_id, &owner_id, &folder_id),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        get.respond(response::Method::Get).unwrap().bytes,
+        b"catalog bytes"
+    );
+    fs::OpenOptions::new()
+        .write(true)
+        .open(scope.path().join("title"))
+        .unwrap()
+        .set_len(2)
+        .unwrap();
+    assert!(response::authorize(
+        &scope,
+        media_binding("title", &snapshot.stamp, &root_id, &owner_id, &folder_id),
+        None
+    )
+    .is_err());
+    let changed = Snapshot::open(folder, "title", 1024).unwrap();
+    let mut head = response::authorize(
+        &scope,
+        media_binding("title", &changed.stamp, &root_id, &owner_id, &folder_id),
+        None,
+    )
+    .unwrap();
+    fs::rename(scope.path(), fixture.path().join("retained-titles")).unwrap();
+    fs::create_dir(scope.path()).unwrap();
+    assert!(head.respond(response::Method::Head).is_err());
+    let rebound = Scope::open(fixture.path(), "titles").unwrap();
+    assert!(response::authorize(
+        &rebound,
+        media_binding("title", &changed.stamp, &root_id, &owner_id, &folder_id),
+        None
+    )
+    .is_err());
 }
 
 #[cfg(windows)]

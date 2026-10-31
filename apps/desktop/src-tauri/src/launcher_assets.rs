@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -22,13 +21,16 @@ mod homepage;
 pub use fonts::discover_font_families;
 #[path = "launcher_assets/media.rs"]
 mod media;
-use filesystem::{check_file, component, revision, source, Scope, Snapshot, Stamp};
+use filesystem::{component, revision, source, Scope, Snapshot, Stamp};
+#[path = "launcher_assets/response.rs"]
+mod response;
 pub use homepage::*;
+#[cfg(test)]
+use response::{parse_range, MAX_RANGE_BYTES};
+use response::{Binding, Method, MAX_MEDIA_BYTES};
 
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_RANGE_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +82,7 @@ pub struct TitleImportPlan {
 pub struct AssetResponse {
     pub mime: String,
     pub bytes: Vec<u8>,
+    pub content_length: u64,
     pub start: u64,
     pub end: u64,
     pub total: u64,
@@ -147,6 +150,23 @@ impl AssetStore {
         id: &str,
         range: Option<&str>,
     ) -> Result<AssetResponse, String> {
+        self.respond(collection, id, range, Method::Get)
+    }
+    pub fn head_asset(
+        &self,
+        collection: AssetCollection,
+        id: &str,
+        range: Option<&str>,
+    ) -> Result<AssetResponse, String> {
+        self.respond(collection, id, range, Method::Head)
+    }
+    fn respond(
+        &self,
+        collection: AssetCollection,
+        id: &str,
+        range: Option<&str>,
+        method: Method,
+    ) -> Result<AssetResponse, String> {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("无效媒体标识".into());
         }
@@ -158,36 +178,26 @@ impl AssetStore {
             .cloned()
             .ok_or("媒体标识未登记或已过期，请刷新媒体列表")?;
         let scope = Scope::open(&self.project, collection.folder())?;
-        let folder = scope.folder.as_ref().ok_or("媒体目录不存在")?;
-        if scope.root.identity()? != cached.root
-            || scope.owner.as_ref().ok_or("媒体目录不存在")?.identity()? != cached.owner
-            || folder.identity()? != cached.folder
-        {
-            return Err("媒体目录已变化，请刷新媒体列表".into());
-        }
-        let mut file = folder.file(&cached.row.name)?.ok_or("媒体文件已消失")?;
-        check_file(&file, &cached.stamp, folder, &cached.row.name)?;
-        let (start, end, partial) = parse_range(range, cached.stamp.bytes)?;
-        let length = end - start + 1;
-        file.seek(SeekFrom::Start(start))
-            .map_err(|e| e.to_string())?;
-        let mut bytes = Vec::with_capacity(length as usize);
-        (&mut file)
-            .take(length)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        check_file(&file, &cached.stamp, folder, &cached.row.name)?;
-        scope.recheck()?;
-        if bytes.len() as u64 != length {
-            return Err("媒体内容已变化，请刷新列表".into());
-        }
+        let mut authorized = response::authorize(
+            &scope,
+            Binding {
+                name: &cached.row.name,
+                stamp: &cached.stamp,
+                root: &cached.root,
+                owner: &cached.owner,
+                folder: &cached.folder,
+            },
+            range,
+        )?;
+        let asset = authorized.respond(method)?;
         Ok(AssetResponse {
             mime: cached.mime,
-            bytes,
-            start,
-            end,
-            total: cached.stamp.bytes,
-            partial,
+            bytes: asset.bytes,
+            content_length: asset.span.content_length(),
+            start: asset.span.start,
+            end: asset.span.end,
+            total: asset.span.total,
+            partial: asset.span.partial,
         })
     }
     pub fn read_title(&self, owned_path: &Path) -> Result<AssetRow, String> {
@@ -290,52 +300,6 @@ fn cached(
         owner: scope.owner.as_ref().ok_or("媒体目录不存在")?.identity()?,
         folder: scope.folder.as_ref().ok_or("媒体目录不存在")?.identity()?,
     })
-}
-
-fn parse_range(range: Option<&str>, total: u64) -> Result<(u64, u64, bool), String> {
-    if total == 0 || total > MAX_MEDIA_BYTES {
-        return Err("媒体大小超出安全上限".into());
-    }
-    let Some(range) = range else {
-        return Ok((0, total - 1, false));
-    };
-    if range.len() > 128 {
-        return Err("媒体 Range 请求过长".into());
-    }
-    let value = range
-        .strip_prefix("bytes=")
-        .ok_or("媒体只支持 bytes 单段 Range")?;
-    let (first, last) = value.split_once('-').ok_or("媒体 Range 无效")?;
-    if value.contains(',')
-        || !first.bytes().all(|b| b.is_ascii_digit())
-        || !last.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err("媒体只支持一个有效的 bytes Range".into());
-    }
-    let (start, end) = if first.is_empty() {
-        let suffix = last.parse::<u64>().map_err(|_| "媒体 Range 无效")?;
-        if suffix == 0 {
-            return Err("媒体 Range 超出文件范围".into());
-        }
-        (total.saturating_sub(suffix), total - 1)
-    } else {
-        let start = first.parse::<u64>().map_err(|_| "媒体 Range 无效")?;
-        let end = if last.is_empty() {
-            total - 1
-        } else {
-            last.parse::<u64>()
-                .map_err(|_| "媒体 Range 无效")?
-                .min(total - 1)
-        };
-        (start, end)
-    };
-    if start >= total || end < start {
-        return Err(format!("媒体 Range 超出文件范围（总大小 {total}）"));
-    }
-    // RFC 9110 §15.3.7 permits serving a subset of the requested data. A legal
-    // large/open-ended range is served in a smaller valid subrange.
-    // The reported Content-Range describes exactly these bytes, never a 200 GET.
-    Ok((start, end.min(start + MAX_RANGE_BYTES - 1), true))
 }
 
 #[cfg(test)]

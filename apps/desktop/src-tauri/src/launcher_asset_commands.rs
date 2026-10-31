@@ -283,20 +283,22 @@ pub fn serve_media(
                 .get("Range")
                 .map(|v| v.to_str().map_err(|_| StatusCode::RANGE_NOT_SATISFIABLE))
                 .transpose()?;
-            let asset = shared
-                .launcher_assets
-                .read_asset(collection, id, range)
-                .map_err(|_| {
-                    if range.is_some() {
-                        StatusCode::RANGE_NOT_SATISFIABLE
-                    } else {
-                        StatusCode::NOT_FOUND
-                    }
-                })?;
+            let asset = (if request.method().as_str() == "HEAD" {
+                shared.launcher_assets.head_asset(collection, id, range)
+            } else {
+                shared.launcher_assets.read_asset(collection, id, range)
+            })
+            .map_err(|_| {
+                if range.is_some() {
+                    StatusCode::RANGE_NOT_SATISFIABLE
+                } else {
+                    StatusCode::NOT_FOUND
+                }
+            })?;
             let mut response = tauri::http::Response::builder()
                 .status(if asset.partial { 206 } else { 200 })
                 .header("Content-Type", asset.mime)
-                .header("Content-Length", asset.bytes.len())
+                .header("Content-Length", asset.content_length)
                 .header("Accept-Ranges", "bytes")
                 .header("Access-Control-Allow-Origin", "*")
                 .header("ETag", format!("\"{id}\""))
