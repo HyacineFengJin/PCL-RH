@@ -17,18 +17,45 @@ fn native_sources_and_retained_parents_bind_complete_content_and_identity() {
         format!("{:x}", Sha256::digest(b"synthetic source"))
     );
     let held = input.regular("pack.zip").unwrap();
-    fs::rename(path.join("source"), path.join("held-source")).unwrap();
-    let replacement = root.mkdir("source").unwrap();
-    replacement
-        .create("pack.zip")
-        .unwrap()
-        .write_all(b"different bytes")
-        .unwrap();
-    assert_eq!(hash_file(held, MAX_BYTES, None).unwrap(), first);
-    assert_ne!(
-        hash_file(replacement.regular("pack.zip").unwrap(), MAX_BYTES, None).unwrap(),
-        first
-    );
+    #[cfg(windows)]
+    {
+        // Windows refuses renaming an ancestor while this descendant file is
+        // open, even with delete sharing. Assert that native protection, then
+        // replace only the literal leaf (whose original handle allows delete).
+        let error = fs::rename(path.join("source"), path.join("held-source")).unwrap_err();
+        assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+        assert!(!path.join("held-source").exists());
+        assert_eq!(
+            hash_file(held.try_clone().unwrap(), MAX_BYTES, None).unwrap(),
+            first
+        );
+        move_new(&input, "pack.zip", &input, "retained-pack.zip").unwrap();
+        input
+            .create("pack.zip")
+            .unwrap()
+            .write_all(b"different bytes")
+            .unwrap();
+        assert!(first.owned_matches(&hash_file(held, MAX_BYTES, None).unwrap()));
+        assert_ne!(
+            hash_file(input.regular("pack.zip").unwrap(), MAX_BYTES, None).unwrap(),
+            first
+        );
+    }
+    #[cfg(unix)]
+    {
+        fs::rename(path.join("source"), path.join("held-source")).unwrap();
+        let replacement = root.mkdir("source").unwrap();
+        replacement
+            .create("pack.zip")
+            .unwrap()
+            .write_all(b"different bytes")
+            .unwrap();
+        assert_eq!(hash_file(held, MAX_BYTES, None).unwrap(), first);
+        assert_ne!(
+            hash_file(replacement.regular("pack.zip").unwrap(), MAX_BYTES, None).unwrap(),
+            first
+        );
+    }
 }
 #[test]
 fn native_no_replace_directory_move_preserves_both_originals_on_collision() {
