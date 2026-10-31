@@ -57,8 +57,10 @@ jobs:
         run: cargo +stable test --locked -p pcl-install --test tasks_scope --test toolbox_download --no-fail-fast -- --test-threads=2
       - name: Test resource transactions, transfers and instance rename
         # Includes actual settings, metadata, reference replay, HTTP and both
-        # publishers. All inputs are private synthetic files or loopback HTTP.
-        run: cargo +stable test --locked -p pcl-install --test resource_ops --test modrinth_target --test instance_rename --test instance_reset --no-fail-fast -- --test-threads=2
+        # publishers. The rename bundle already includes all resource_ops tests;
+        # do not execute that same large native suite twice. All inputs are
+        # private synthetic files or loopback HTTP.
+        run: cargo +stable test --locked -p pcl-install --test modrinth_target --test instance_rename --test instance_reset --no-fail-fast -- --test-threads=2
       - name: Report host toolchain
         run: rustc +stable -vV
       # Native installer tests are not evidence of a complete desktop app or of

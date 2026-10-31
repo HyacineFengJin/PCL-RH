@@ -52,13 +52,16 @@ impl Fixture {
     fn folder(&self, kind: &str) -> PathBuf {
         crate::ui_data::resource_dir(&self.root, "test", kind).unwrap()
     }
-    pub(crate) fn file(&self, kind: &str, name: &str, payload: &[u8]) -> VerifiedImport {
+    fn archive(payload: &[u8]) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         writer
             .start_file("payload.txt", zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(payload).unwrap();
-        let bytes = writer.finish().unwrap().into_inner();
+        writer.finish().unwrap().into_inner()
+    }
+    pub(crate) fn file(&self, kind: &str, name: &str, payload: &[u8]) -> VerifiedImport {
+        let bytes = Self::archive(payload);
         let size = bytes.len() as u64;
         let mut file = Dir::open(&self.source)
             .unwrap()
@@ -76,17 +79,17 @@ impl Fixture {
     }
     pub(crate) fn old(&self, kind: &str, name: &str, payload: &[u8]) -> Replacement {
         fs::create_dir_all(self.folder(kind)).unwrap();
-        let mut input = self.file(kind, name, payload);
-        let mut bytes = Vec::new();
-        input.file.seek(SeekFrom::Start(0)).unwrap();
-        input.file.read_to_end(&mut bytes).unwrap();
+        // Existing user resources are not download sources. Build their exact
+        // ZIP bytes directly; only real incoming files allocate source Tickets.
+        let bytes = Self::archive(payload);
+        let old_sha512 = format!("{:x}", Sha512::digest(&bytes));
         let path = self.folder(kind).join(name);
         fs::write(&path, bytes).unwrap();
         Replacement {
             kind: kind.into(),
             old_file_name: name.into(),
             old_fingerprint: super::super::fingerprint(&path).unwrap(),
-            old_sha512: input.sha512,
+            old_sha512,
             new_file_name: format!("next-{name}"),
         }
     }
