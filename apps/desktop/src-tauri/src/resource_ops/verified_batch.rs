@@ -45,22 +45,7 @@ pub struct VerifiedImport {
 }
 pub(crate) fn retire_sources(files: &mut [VerifiedImport]) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
-    {
-        let mut errors = Vec::new();
-        for input in files.iter_mut() {
-            if let Err(error) = input.file.retire() {
-                errors.push(error);
-            }
-        }
-        for input in files.iter() {
-            if let Err(error) = input.file.check_cleanup() {
-                errors.push(error);
-            }
-        }
-        if !errors.is_empty() {
-            return Err(errors.join("；"));
-        }
-    }
+    crate::modrinth_install::source::retire_batch(files.iter_mut().map(|input| &mut input.file))?;
     #[cfg(target_os = "linux")]
     let _ = files;
     Ok(())
@@ -340,7 +325,7 @@ fn absent_targets(root: &Dir, j: &Journal, created: bool) -> Result<()> {
     }
     Ok(())
 }
-fn prepare_sources<'a>(
+pub(in crate::resource_ops) fn prepare_sources<'a>(
     sources: impl IntoIterator<Item = preflight::SourceSpec<'a>>,
     cancel: &AtomicBool,
 ) -> Result<preflight::PreparedSources<'a>> {
@@ -470,10 +455,28 @@ fn stage(
     let total = j.items.iter().map(|i| i.size).sum();
     let mut done = 0u64;
     let mut buffer = [0u8; 128 * 1024];
-    for (index, f) in files.iter_mut().enumerate() {
+    let prepared = prepare_sources(
+        files.iter().map(|f| preflight::SourceSpec {
+            kind: &f.kind,
+            name: &f.file_name,
+            size: f.size,
+            sha512: &f.sha512,
+        }),
+        cancel,
+    )?;
+    let mut copies = preflight::AllocationPermit::allocate_batch_with(
+        prepared.into_permits().collect(),
+        |admitted| {
+            let requests = admitted
+                .iter()
+                .map(|(index, source)| (slot(*index), source.size))
+                .collect::<Vec<_>>();
+            destination.stage_batch_for(&requests, cancel)
+        },
+    )?;
+    for (index, (f, copy)) in files.iter_mut().zip(copies.iter_mut()).enumerate() {
         check(cancel)?;
         operation_binding(operation, j)?;
-        let mut copy = destination.stage_for(&slot(index), f.size)?;
         f.file.seek(SeekFrom::Start(0)).map_err(error)?;
         let before = token_for(&f.file)?;
         let mut size = 0u64;
@@ -495,12 +498,12 @@ fn stage(
             return Err("下载资源在复制期间已经变化".into());
         }
         copy.sync_all().map_err(error)?;
-        let owned = filesystem::verify_file(&mut copy, None, f.size, &f.sha512, Some(cancel))?;
-        archive::validate(&mut copy, cancel)?;
+        let owned = filesystem::verify_file(copy, None, f.size, &f.sha512, Some(cancel))?;
+        archive::validate(copy, cancel)?;
         register_owned(operation, j, index, &owned)?;
         j.items[index].owned = Some(owned);
         check(cancel)?;
-        destination.link_anonymous(&mut copy, &slot(index))?;
+        destination.link_anonymous(copy, &slot(index))?;
     }
     recheck_sources(files, tokens)?;
     Ok(())

@@ -189,8 +189,25 @@ fn native_bound_child_refuses_symlinks_and_uses_original_held_parent() {
 }
 #[cfg(windows)]
 #[test]
-fn windows_transaction_preflight_fails_before_any_filesystem_side_effect() {
+fn windows_raw_exchange_stays_unavailable_without_mutating_either_original() {
     let f = Fixture::new();
-    assert!(require_mutation_support().unwrap_err().contains("原实例"));
-    assert!(f.root.names().unwrap().is_empty());
+    let operation = f.root.create("operation").unwrap();
+    Fixture::write(&operation, "journal.json", b"first");
+    Fixture::write(&operation, "journal-fixture.next", b"second");
+    assert!(require_mutation_support().is_ok());
+    assert!(operation
+        .exchange("journal.json", "journal-fixture.next", "fixture")
+        .is_err());
+    assert_eq!(
+        read_bytes(&operation, "journal.json", MAX_JOURNAL)
+            .unwrap()
+            .1,
+        b"first"
+    );
+    assert_eq!(
+        read_bytes(&operation, "journal-fixture.next", MAX_JOURNAL)
+            .unwrap()
+            .1,
+        b"second"
+    );
 }

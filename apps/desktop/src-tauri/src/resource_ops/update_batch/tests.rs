@@ -855,19 +855,55 @@ fn maximum_replacements_have_bounded_phase_writes_and_readable_inventory() {
     let started = std::time::Instant::now();
     let f = Fixture::new(false, true);
     let mut replacements = Vec::new();
-    let mut files = Vec::new();
     for index in 0..MAX_FILES {
-        let r = f.old("mods", &format!("old-{index:04}.jar"), b"old");
-        files.push(f.file("mods", &r.new_file_name, b"new"));
-        replacements.push(r);
-        if files.len() % 64 == 0 {
-            eprintln!(
-                "max512 phase=setup count={} elapsed_ms={}",
-                files.len(),
-                started.elapsed().as_millis()
-            );
-        }
+        replacements.push(f.old("mods", &format!("old-{index:04}.jar"), b"old"));
     }
+    let bytes = Fixture::archive(b"new");
+    let size = bytes.len() as u64;
+    let sha512 = format!("{:x}", Sha512::digest(&bytes));
+    let prepared = super::super::verified_batch::prepare_sources(
+        replacements.iter().map(|r| preflight::SourceSpec {
+            kind: "mods",
+            name: &r.new_file_name,
+            size,
+            sha512: &sha512,
+        }),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let source_dir = Dir::open(&f.source).unwrap();
+    let mut inputs = preflight::AllocationPermit::allocate_batch_with(
+        prepared.into_permits().collect(),
+        |admitted| {
+            let requests = admitted
+                .iter()
+                .map(|(_, source)| ("verified-download-input".to_string(), source.size))
+                .collect::<Vec<_>>();
+            source_dir.stage_batch_for(&requests, &AtomicBool::new(false))
+        },
+    )
+    .unwrap();
+    for file in inputs.iter_mut() {
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+    let mut files: Vec<_> = replacements
+        .iter()
+        .zip(inputs.into_inputs())
+        .map(|(r, file)| VerifiedImport {
+            kind: "mods".into(),
+            file_name: r.new_file_name.clone(),
+            size,
+            sha512: sha512.clone(),
+            file,
+        })
+        .collect();
+    assert_eq!(files.len(), MAX_FILES);
+    eprintln!(
+        "max512 phase=setup count={} elapsed_ms={}",
+        files.len(),
+        started.elapsed().as_millis()
+    );
     let report = |phase: &str, event: &str, phase_started: std::time::Instant| {
         eprintln!(
             "max512 phase={phase} event={event} count={MAX_FILES} elapsed_ms={} phase_ms={}",

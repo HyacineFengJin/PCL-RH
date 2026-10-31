@@ -80,6 +80,10 @@ impl Dir {
             None => self.create(name),
         }
     }
+    #[cfg(windows)]
+    pub(crate) fn document_file(&self) -> Result<File> {
+        native(self.0.try_clone_file())
+    }
     pub(crate) fn key(&self) -> Result<Key> {
         Key::native(&native(self.0.metadata())?)
     }
@@ -195,6 +199,9 @@ impl Dir {
             self.sync()
         }
     }
+    // Production Windows journals never expose a raw swap path. The native
+    // test keeps an explicit refusal, with no two-rename approximation.
+    #[cfg(any(unix, test))]
     pub(crate) fn exchange(&self, first: &str, second: &str, context: &str) -> Result<()> {
         let first = leaf(first)?;
         let second = leaf(second)?;
@@ -232,7 +239,7 @@ impl Dir {
         #[cfg(windows)]
         {
             let _ = (first, second, context);
-            require_mutation_support()
+            Err("Windows 不提供实例删除原始文件交换；仅显式 journal Document CAS 可更新状态".into())
         }
     }
     pub(crate) fn remove_empty(&self, name: &str, expected: &Key) -> Result<()> {
@@ -457,14 +464,9 @@ pub(crate) fn rename_new(source: &Dir, old: &str, destination: &Dir, new: &str) 
     destination.sync()
 }
 pub(crate) fn require_mutation_support() -> Result<()> {
-    #[cfg(windows)]
-    {
-        Err("Windows 实例删除/恢复尚缺少可恢复原子事务记录更新；原实例和所有恢复副本已保留".into())
-    }
-    #[cfg(unix)]
-    {
-        Ok(())
-    }
+    // Windows service journals use an explicit opaque Document CAS. Raw
+    // exchange above remains unavailable and has no two-rename fallback.
+    Ok(())
 }
 
 #[cfg(test)]

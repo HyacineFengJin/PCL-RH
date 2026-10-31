@@ -316,6 +316,14 @@ fn external_inode_replacement_and_symlink_are_retained() {
 fn original_edit_after_plan_refuses_apply_before_journal_and_stage_is_released() {
     let fixture = Fixture::new();
     let (release, stage) = fixture.stage();
+    let identity = crate::launcher_updates::test_support::identity(fixture.binary());
+    let staging_path = fixture.0.join(".pcl-rust/launcher-update-staging");
+    #[cfg(not(target_os = "linux"))]
+    let cleanup = {
+        let staging = Staging::prepare(&fixture.0).unwrap();
+        assert_eq!(files::pending(&staging_path).unwrap(), 1);
+        staging.cleanup()
+    };
     let mut original = fs::read(fixture.binary()).unwrap();
     original[203] = 91;
     fs::write(fixture.binary(), &original).unwrap();
@@ -329,13 +337,22 @@ fn original_edit_after_plan_refuses_apply_before_journal_and_stage_is_released()
     );
     assert_eq!(view.state, InstallationState::Error);
     assert_eq!(fs::read(fixture.binary()).unwrap(), original);
+    assert_eq!(
+        crate::launcher_updates::test_support::identity(fixture.binary()),
+        identity
+    );
     assert!(!has_pending(&fixture.0).unwrap());
     assert_eq!(
-        fs::read_dir(fixture.0.join(".pcl-rust/launcher-update-staging"))
+        fs::read_dir(fixture.0.join(".pcl-rust/bin"))
             .unwrap()
             .count(),
-        0
+        1
     );
+    // Native stages retain the registry directory and its retirement receipts.
+    // Check the owned Ticket lifecycle rather than requiring an empty registry.
+    crate::launcher_updates::test_support::no_partial(&staging_path);
+    #[cfg(not(target_os = "linux"))]
+    cleanup.check().unwrap();
 }
 
 #[test]

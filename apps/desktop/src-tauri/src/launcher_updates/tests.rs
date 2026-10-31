@@ -514,6 +514,8 @@ async fn dropping_an_operation_future_releases_admission_and_anonymous_stage() {
 #[tokio::test]
 async fn symlink_and_replaced_staging_directory_are_refused_without_writing_target() {
     let fixture = Fixture::new();
+    let original = fs::read(fixture.binary()).unwrap();
+    let original_identity = super::test_support::identity(fixture.binary());
     let outside = fixture.0.join("outside");
     fs::create_dir(&outside).unwrap();
     super::test_support::symlink_dir(&outside, fixture.staging()).unwrap();
@@ -535,8 +537,31 @@ async fn symlink_and_replaced_staging_directory_are_refused_without_writing_targ
     let staging = fixture.staging();
     let old = fixture.0.join("retained-staging");
     *provider.hook.lock().unwrap() = Some(Box::new(move || {
-        fs::rename(&staging, &old).unwrap();
-        fs::create_dir(&staging).unwrap();
+        #[cfg(not(windows))]
+        {
+            fs::rename(&staging, &old).unwrap();
+            fs::create_dir(&staging).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // The live source is a retained descendant. Windows refuses this
+            // ancestor replacement while it is held; no directory was swapped.
+            let identity = files::Directory::open(&staging)
+                .unwrap()
+                .identity()
+                .unwrap();
+            assert_eq!(files::pending(&staging).unwrap(), 1);
+            let error = fs::rename(&staging, &old).unwrap_err();
+            assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+            assert_eq!(
+                files::Directory::open(&staging)
+                    .unwrap()
+                    .identity()
+                    .unwrap(),
+                identity
+            );
+            assert!(!old.exists());
+        }
     }));
     let service = fixture.service(provider);
     let token = service
@@ -546,11 +571,26 @@ async fn symlink_and_replaced_staging_directory_are_refused_without_writing_targ
         .release
         .unwrap()
         .token;
-    assert_eq!(
-        service.download(&token).await.unwrap().download.state,
-        DownloadState::Error
-    );
+    let view = service.download(&token).await.unwrap();
+    #[cfg(not(windows))]
+    assert_eq!(view.download.state, DownloadState::Error);
+    #[cfg(windows)]
+    {
+        assert_eq!(view.download.state, DownloadState::Staged);
+        assert!(!view.plan.unwrap().can_apply);
+        assert_eq!(files::pending(&fixture.staging()).unwrap(), 1);
+        assert!(service.discard_staged().unwrap().plan.is_none());
+        assert!(service.state.lock().unwrap().staged.is_none());
+        assert!(!fixture.0.join("retained-staging").exists());
+    }
     fixture.no_partial_names();
+    assert_eq!(fs::read(fixture.binary()).unwrap(), original);
+    assert_eq!(
+        super::test_support::identity(fixture.binary()),
+        original_identity
+    );
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    #[cfg(not(windows))]
     super::test_support::no_partial(&fixture.0.join("retained-staging"));
 }
 

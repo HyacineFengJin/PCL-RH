@@ -36,6 +36,10 @@ const MAGIC: &[u8; 8] = b"PCLSRG01";
 const FRAME_HEADER: usize = 8 + 8 + 4 + 32;
 const VERSION: u32 = 1;
 
+#[path = "repair_staging/batch.rs"]
+mod batch;
+pub use batch::{AllocationBatchError, BatchOwner, DiscardBatchError};
+
 #[derive(Clone, Debug)]
 pub struct Limits {
     pub log_bytes: u64,
@@ -666,6 +670,28 @@ impl Area {
         max_bytes: u64,
         state: &mut State,
     ) -> io::Result<Ticket> {
+        let (allocation, _) = self
+            .register_stage_locked(&mut stage, target, leaf, max_bytes, state, None, &mut None)?;
+        state.active.insert(allocation.ticket);
+        Ok(Ticket {
+            stage,
+            allocation: allocation.clone(),
+            active: Active {
+                area: self.clone(),
+                ticket: allocation.ticket,
+            },
+        })
+    }
+    fn register_stage_locked(
+        &self,
+        stage: &mut Stage,
+        target: &Directory,
+        leaf: &Leaf,
+        max_bytes: u64,
+        state: &mut State,
+        mut ledger: Option<&mut batch::Ledger>,
+        attempted: &mut Option<Allocation>,
+    ) -> io::Result<(Allocation, Metadata)> {
         let source_parent = stage.parent().identity()?;
         if source_parent != self.inner.identity {
             return Err(invalid("Stage is not in this private staging Area"));
@@ -703,7 +729,11 @@ impl Area {
                 .recheck(&Leaf::new(name)?, &source.identity)?;
         }
         let candidate = source_name.as_ref().map(|name| (name, &source.identity));
-        self.ensure_budget(state, candidate, max_bytes, true)?;
+        if let Some(ledger) = ledger.as_deref_mut() {
+            ledger.admit_source(self, candidate)?;
+        } else {
+            self.ensure_budget(state, candidate, max_bytes, true)?;
+        }
         let destination = target.metadata()?;
         if destination.kind != Kind::Directory
             || destination.reparse_tag.is_some()
@@ -725,22 +755,16 @@ impl Area {
             max_bytes,
         };
         check_record_capacity(&allocation, self.inner.limits.record_bytes)?;
-        self.append_locked(
+        *attempted = Some(allocation.clone());
+        self.append_locked_with_ledger(
             state,
             Record::Allocation {
                 allocation: allocation.clone(),
             },
             false,
+            ledger,
         )?;
-        state.active.insert(ticket);
-        Ok(Ticket {
-            stage,
-            allocation,
-            active: Active {
-                area: self.clone(),
-                ticket,
-            },
-        })
+        Ok((allocation, confirmed))
     }
     fn state(&self) -> io::Result<MutexGuard<'_, State>> {
         self.inner
@@ -844,6 +868,15 @@ impl Area {
         record: Record,
         initializing: bool,
     ) -> io::Result<()> {
+        self.append_locked_with_ledger(state, record, initializing, None)
+    }
+    fn append_locked_with_ledger(
+        &self,
+        state: &mut State,
+        record: Record,
+        initializing: bool,
+        ledger: Option<&mut batch::Ledger>,
+    ) -> io::Result<()> {
         if !(state.status == LogStatus::Ready || initializing && state.status == LogStatus::Empty) {
             return Err(io::Error::other(
                 "Staging registry requires reconciliation; bytes were retained",
@@ -884,7 +917,11 @@ impl Area {
             return Err(io::Error::other("Staging registry record quota exceeded"));
         }
         let frame = encode_frame(state.next_sequence, &payload);
-        if self.require_discard_scope(state).is_ok() {
+        #[cfg(test)]
+        let batched = ledger.is_some();
+        if let Some(ledger) = ledger {
+            ledger.check_frame(self, state, &record, frame.len() as u64)?;
+        } else if self.require_discard_scope(state).is_ok() {
             self.check_actual_append_budget(state, &record, frame.len() as u64)?;
         }
         let end = state
@@ -917,6 +954,15 @@ impl Area {
                 if let Some(interfere) = self.inner.after_receipt_write.lock().unwrap().take() {
                     interfere();
                 }
+            }
+            #[cfg(test)]
+            if batched {
+                batch::point(
+                    self,
+                    batch::Point::FrameWritten,
+                    state.next_sequence,
+                    Some(&state.file),
+                );
             }
             let after = retained_fs::metadata(&state.file)?;
             if after.identity != before.identity
@@ -1028,6 +1074,8 @@ impl Area {
         state: &State,
         candidate: Option<(&OsString, &Identity)>,
     ) -> io::Result<AreaReport> {
+        #[cfg(test)]
+        batch::note_inspect();
         let limits = &self.inner.limits;
         let mut report = AreaReport {
             status: state.status.clone(),
@@ -1352,55 +1400,86 @@ impl SealedTicket {
     /// full content/metadata/name checks, not atomic compare-delete against a
     /// noncooperating namespace mutator. Unknown observed changes are refused.
     pub fn discard(self) -> io::Result<DiscardOutcome> {
+        let area = self.active.area.clone();
+        let mut state = area.state()?;
+        let step = self.discard_locked(&area, &mut state, None);
+        // Active::drop takes this mutex. Retire or return owners only after
+        // unlocking, including every pre-intent rejection.
+        drop(state);
+        step.into_single()
+    }
+    fn discard_locked(
+        self,
+        area: &Area,
+        state: &mut State,
+        mut ledger: Option<&mut batch::Ledger>,
+    ) -> batch::DiscardStep {
+        let intent = DiscardIntent {
+            allocation: self.allocation.clone(),
+            evidence: self.sealed.evidence().clone(),
+            metadata: self.sealed.metadata().clone(),
+        };
+        let expected_receipt = discarded_receipt(&intent);
+        let request = Record::DiscardIntent {
+            ticket: self.allocation.ticket,
+            intent: intent.clone(),
+        };
+        let admission = (|| {
+            area.require_discard_scope(state)?;
+            area.check_capacity(
+                state,
+                &[
+                    request.clone(),
+                    Record::DiscardReceipt {
+                        ticket: self.allocation.ticket,
+                        receipt: expected_receipt.clone(),
+                    },
+                ],
+            )?;
+            area.append_locked_with_ledger(state, request, false, ledger.as_deref_mut())
+        })();
+        if let Err(error) = admission {
+            return batch::DiscardStep::Rejected {
+                ticket: self,
+                error,
+            };
+        }
         let Self {
             sealed,
             allocation,
             active,
         } = self;
-        let area = active.area.clone();
-        let intent = DiscardIntent {
-            allocation: allocation.clone(),
-            evidence: sealed.evidence().clone(),
-            metadata: sealed.metadata().clone(),
-        };
-        let expected_receipt = discarded_receipt(&intent);
-        let mut state = area.state()?;
-        area.require_discard_scope(&state)?;
-        let request = Record::DiscardIntent {
-            ticket: allocation.ticket,
-            intent: intent.clone(),
-        };
-        area.check_capacity(
-            &state,
-            &[
-                request.clone(),
-                Record::DiscardReceipt {
-                    ticket: allocation.ticket,
-                    receipt: expected_receipt.clone(),
-                },
-            ],
-        )?;
-        area.append_locked(&mut state, request, false)?;
         #[cfg(test)]
         if let Some(interfere) = area.inner.after_discard_intent.lock().unwrap().take() {
             interfere();
         }
         match sealed.discard() {
             Ok(NativeDiscardOutcome::Discarded { receipt }) => {
-                match area.append_locked(
-                    &mut state,
-                    Record::DiscardReceipt {
-                        ticket: allocation.ticket,
-                        receipt: receipt.clone(),
-                    },
-                    false,
-                ) {
-                    Ok(()) => Ok(DiscardOutcome::Discarded { receipt }),
-                    Err(error) => Ok(DiscardOutcome::MayHaveDiscarded {
+                let recorded = (|| {
+                    if let Some(ledger) = ledger.as_deref_mut() {
+                        ledger.removed(area, &receipt)?;
+                    }
+                    area.append_locked_with_ledger(
+                        state,
+                        Record::DiscardReceipt {
+                            ticket: allocation.ticket,
+                            receipt: receipt.clone(),
+                        },
+                        false,
+                        ledger,
+                    )
+                })();
+                let outcome = match recorded {
+                    Ok(()) => DiscardOutcome::Discarded { receipt },
+                    Err(error) => DiscardOutcome::MayHaveDiscarded {
                         ticket: None,
                         receipt,
                         error,
-                    }),
+                    },
+                };
+                batch::DiscardStep::Finished {
+                    outcome,
+                    retired: Some(active),
                 }
             }
             Ok(NativeDiscardOutcome::MayHaveDiscarded {
@@ -1412,20 +1491,26 @@ impl SealedTicket {
                 // anonymous source. Dropping this returned owner is explicit;
                 // a pending disposition may finish then, so intent recovery
                 // must never interpret May as a definite non-removal.
-                let ticket = if let Some(sealed) = stage {
-                    Some(Self {
-                        sealed,
-                        allocation,
-                        active,
-                    })
+                let (ticket, retired) = if let Some(sealed) = stage {
+                    (
+                        Some(Self {
+                            sealed,
+                            allocation,
+                            active,
+                        }),
+                        None,
+                    )
                 } else {
-                    None
+                    (None, Some(active))
                 };
-                Ok(DiscardOutcome::MayHaveDiscarded {
-                    ticket,
-                    receipt,
-                    error,
-                })
+                batch::DiscardStep::Finished {
+                    outcome: DiscardOutcome::MayHaveDiscarded {
+                        ticket,
+                        receipt,
+                        error,
+                    },
+                    retired,
+                }
             }
             Err(error) => {
                 let mut receipt = expected_receipt;
@@ -1433,10 +1518,13 @@ impl SealedTicket {
                 receipt.directory_synced = false;
                 receipt.source_residue =
                     observed_residue(area.directory(), &intent).unwrap_or(SourceResidue::Unknown);
-                Ok(DiscardOutcome::MayHaveDiscarded {
-                    ticket: Some(Self { sealed: error.stage, allocation, active }), receipt,
-                    error: io::Error::other(format!("Discard intent durable; sealed source recheck failed and evidence retained: {}", error.error)),
-                })
+                batch::DiscardStep::Finished {
+                    outcome: DiscardOutcome::MayHaveDiscarded {
+                        ticket: Some(Self { sealed: error.stage, allocation, active }), receipt,
+                        error: io::Error::other(format!("Discard intent durable; sealed source recheck failed and evidence retained: {}", error.error)),
+                    },
+                    retired: None,
+                }
             }
         }
     }

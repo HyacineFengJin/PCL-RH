@@ -36,14 +36,29 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "instance_delete/filesystem.rs"]
 mod filesystem;
+#[cfg(windows)]
+#[path = "instance_delete/journal_windows.rs"]
+mod journal_windows;
+#[path = "instance_delete/project_gate.rs"]
 pub(crate) mod project_gate;
+use filesystem::FileToken;
 use filesystem::{
     absolute, anonymous_key, canonical, hash, lock, name_ok, read_bytes, rename_new, scan, Dir,
-    FileToken, Key, Tree, MAX_DEPTH, MAX_FILES,
+    Key, Tree, MAX_DEPTH, MAX_FILES,
 };
+#[cfg(windows)]
+use journal_windows::{cleanup_journal_temps, journal_exists, read_record, write_record};
 use project_gate::{app, operation_ok, read_marker, scope_ok, Marker, MARKER, READY};
 
+fn journal_schema() -> u32 {
+    if cfg!(windows) {
+        2
+    } else {
+        1
+    }
+}
 const STORE: &str = "instance-deletions";
 const MAX_INSTANCES: usize = 4096;
 const MAX_JOURNAL: usize = 64 * 1024 * 1024;
@@ -85,6 +100,8 @@ fn dependencies(
     if names.len() > MAX_INSTANCES {
         return Err("实例数量超过安全上限".into());
     }
+    #[cfg(windows)]
+    let victim = versions.child(id)?.key()?;
     let mut profiles = BTreeMap::new();
     let mut bytes = 0u64;
     for name in names {
@@ -111,7 +128,14 @@ fn dependencies(
                     if let Some(reference) = value.get(field) {
                         let reference = reference.as_str().ok_or("版本引用标识无效")?;
                         name_ok(reference)?;
-                        if reference == id {
+                        #[cfg(windows)]
+                        let physical_alias = match versions.optional(reference)? {
+                            Some(directory) => directory.key()? == victim,
+                            None => false,
+                        };
+                        #[cfg(unix)]
+                        let physical_alias = false;
+                        if reference == id || physical_alias {
                             return Err(format!(
                                 "实例 {name} 的 {field} 引用了待删除实例，请先处理依赖实例"
                             ));
@@ -213,6 +237,13 @@ fn prepare_bound(
     let root_dir = Dir::open(&root)?;
     let project_dir = Dir::open(&project)?;
     let versions = root_dir.child("versions")?;
+    #[cfg(windows)]
+    if !versions.names()?.iter().any(|name| name == id) {
+        // A physical alias is insufficient: settings/metadata IDs use exact
+        // logical strings. Never journal a case/8.3 spelling for another leaf,
+        // which would reserve only the alias after moving its long-name source.
+        return Err("Windows 实例标识必须与 versions 中的实际目录名称完全一致，不接受大小写或短名称别名；原实例未改动".into());
+    }
     let instance = versions.child(id)?;
     let tree = scan(&instance, cancel)?;
     let profiles = dependencies(&versions, id, cancel)?;
@@ -312,7 +343,10 @@ struct Journal {
 }
 struct Record {
     journal: Journal,
+    #[cfg(unix)]
     token: Option<FileToken>,
+    #[cfg(windows)]
+    token: Option<crate::launcher_local::filesystem::documents::DocumentState>,
 }
 fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
     let app = if create {
@@ -332,7 +366,7 @@ fn validate(j: &Journal, name: &str) -> Result<()> {
     scope_ok(&j.root_id)?;
     absolute(&j.root)?;
     absolute(&j.project)?;
-    if j.schema != 1
+    if j.schema != journal_schema()
         || j.operation_id != name
         || !operation_ok(name)
         || j.tree.entries.is_empty()
@@ -389,6 +423,7 @@ fn validate(j: &Journal, name: &str) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(unix)]
 fn read_record(operation: &Dir, name: &str) -> Result<Record> {
     let (token, bytes) = read_bytes(operation, "journal.json", MAX_JOURNAL)?;
     let journal: Journal =
@@ -407,6 +442,7 @@ fn read_record(operation: &Dir, name: &str) -> Result<Record> {
         token: Some(token),
     })
 }
+#[cfg(unix)]
 fn write_record(operation: &Dir, record: &mut Record) -> Result<()> {
     if operation.key() != Ok(record.journal.operation_key.clone()) {
         return Err("实例恢复记录目录已被替换".into());
@@ -485,6 +521,7 @@ fn immutable_journal(j: &Journal) -> Result<Vec<u8>> {
     ))
     .map_err(|e| e.to_string())
 }
+#[cfg(unix)]
 fn cleanup_journal_temps(
     root: &Dir,
     store: &Dir,
@@ -665,6 +702,11 @@ fn rollback_restore(root: &Dir, store: &Dir, operation: &Dir, record: &mut Recor
     clear_marker(operation, record)
 }
 
+#[cfg(unix)]
+fn journal_exists(operation: &Dir) -> Result<bool> {
+    Ok(operation.stat("journal.json")?.is_some())
+}
+
 fn visit_records(
     root: &Dir,
     store: &Dir,
@@ -682,7 +724,7 @@ fn visit_records(
             return Err("实例恢复区含未知记录，已保留".into());
         }
         let operation = store.child(&name)?;
-        if operation.stat("journal.json")?.is_none() {
+        if !journal_exists(&operation)? {
             return Err(READY.into());
         }
         let record = read_record(&operation, &name)?;
@@ -709,9 +751,48 @@ pub fn ensure_ready(root: &Path) -> Result<()> {
         Ok(())
     })
 }
-/// A Deleted tombstone reserves its original physical ID even if a user has
-/// manually created another directory at that path. Never address that new
-/// directory through the deleted instance's retained launcher references.
+// Unix callers keep the existing exact BTreeSet API and comparisons.
+#[cfg(unix)]
+pub type ReservedNames = BTreeSet<String>;
+
+/// Original wire names plus a conservative Windows ordinal reservation test.
+/// This does not grant filesystem authority or claim every FS normalization.
+#[cfg(windows)]
+pub struct ReservedNames(BTreeSet<String>);
+#[cfg(windows)]
+impl ReservedNames {
+    pub fn contains(&self, name: &str) -> bool {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Globalization::CompareStringOrdinal;
+        let wanted: Vec<_> = std::ffi::OsStr::new(name).encode_wide().collect();
+        self.0.iter().any(|reserved| {
+            let actual: Vec<_> = std::ffi::OsStr::new(reserved).encode_wide().collect();
+            let result = unsafe {
+                CompareStringOrdinal(
+                    actual.as_ptr(),
+                    actual.len() as i32,
+                    wanted.as_ptr(),
+                    wanted.len() as i32,
+                    1,
+                )
+            };
+            result == 2 || result == 0
+        })
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+#[cfg(windows)]
+impl From<BTreeSet<String>> for ReservedNames {
+    fn from(names: BTreeSet<String>) -> Self {
+        Self(names)
+    }
+}
+
+/// A Deleted tombstone reserves its original name even after external recreation.
+/// Windows scan and writer admission both conservatively reserve ordinal aliases;
+/// retained launcher references must never acquire the external new instance.
 pub fn ensure_name_available(root: &Path, id: &str) -> Result<()> {
     name_ok(id)?;
     if reserved_names(root)?.contains(id) {
@@ -720,11 +801,11 @@ pub fn ensure_name_available(root: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 /// Batch read for scans: avoid parsing every journal once per visible instance.
-pub fn reserved_names(root: &Path) -> Result<BTreeSet<String>> {
+pub fn reserved_names(root: &Path) -> Result<ReservedNames> {
     let path = canonical(root)?;
     let root = Dir::open(&path)?;
     let Some(store) = storage(&root, false)? else {
-        return Ok(BTreeSet::new());
+        return Ok(BTreeSet::new().into());
     };
     let mut names = BTreeSet::new();
     visit_records(&root, &store, |_, record| {
@@ -736,7 +817,7 @@ pub fn reserved_names(root: &Path) -> Result<BTreeSet<String>> {
         }
         Ok(())
     })?;
-    Ok(names)
+    Ok(names.into())
 }
 
 pub fn execute(
@@ -794,7 +875,7 @@ fn execute_locked(
     let name = nonce();
     let operation = store.create(&name)?;
     let journal = Journal {
-        schema: 1,
+        schema: journal_schema(),
         operation_id: name.clone(),
         root_id: plan.root_id.clone(),
         id: plan.id.clone(),
@@ -1085,21 +1166,6 @@ fn undo_locked(
     }
 }
 pub fn recover_pending(root: &Path, project: &Path) -> Result<Value> {
-    #[cfg(windows)]
-    {
-        // An empty read-only probe needs no journal update or settings lock.
-        // Use the same literal-directory and validated marker readers as real
-        // recovery; missing, malformed and inaccessible state stay distinct.
-        let path = canonical(root)?;
-        let project_path = canonical(project)?;
-        ensure_rename_ready(&project_path)?;
-        let directory = Dir::open(&path)?;
-        let store = storage(&directory, false)?;
-        let marker = pending_root(&project_path)?;
-        if store.is_none() && marker.is_none() {
-            return Ok(json!({"recovered": 0}));
-        }
-    }
     filesystem::require_mutation_support()?;
     instance_rename_refs::with_settings_lock(project, || recover_locked(root, project))
 }
@@ -1117,8 +1183,8 @@ fn recover_locked(root: &Path, project: &Path) -> Result<Value> {
     let _lock = lock(&store)?;
     let mut recovered = 0usize;
     // Empty directories are the only possible unregistered setup artifact:
-    // initial journal publication is anonymous+atomic, and no game move can
-    // happen before that publication. Preserve every nonempty unknown slot.
+    // no game move starts before initial durable journal publication.
+    // Preserve every nonempty unknown slot, including incomplete Doc setup.
     for name in store.names()? {
         if name == ".lock" {
             continue;
@@ -1127,7 +1193,7 @@ fn recover_locked(root: &Path, project: &Path) -> Result<Value> {
             return Err("实例恢复区含未知记录，已保留".into());
         }
         let operation = store.child(&name)?;
-        if operation.stat("journal.json")?.is_none() {
+        if !journal_exists(&operation)? {
             if !operation.names()?.is_empty() {
                 return Err("未登记的实例恢复目录含文件，已保留".into());
             }
@@ -1182,4 +1248,5 @@ fn recover_locked(root: &Path, project: &Path) -> Result<Value> {
 }
 
 #[cfg(test)]
+#[path = "instance_delete/tests.rs"]
 mod tests;

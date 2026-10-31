@@ -363,6 +363,20 @@ impl Dir {
     ) -> Result<crate::modrinth_install::source::Input> {
         self.anonymous()
     }
+    pub(in crate::resource_ops) fn stage_batch_for(
+        &self,
+        requests: &[(String, u64)],
+        cancel: &AtomicBool,
+    ) -> Result<crate::modrinth_install::source::InputBatch> {
+        let mut inputs = Vec::with_capacity(requests.len());
+        for (name, max) in requests {
+            check(cancel)?;
+            inputs.push(self.stage_for(name, *max)?);
+        }
+        Ok(crate::modrinth_install::source::InputBatch::from_inputs(
+            inputs,
+        ))
+    }
     pub(in crate::resource_ops) fn with_documents(&self) -> Result<Self> {
         self.duplicate()
     }

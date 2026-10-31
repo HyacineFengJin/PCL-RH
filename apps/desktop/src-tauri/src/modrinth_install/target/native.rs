@@ -154,12 +154,21 @@ impl Dir {
             Some(area),
         ))
     }
+    #[cfg(test)]
     pub fn allocate(&self, max: u64) -> Result<super::super::source::Input> {
         if max == 0 || max > MAX_FILE_BYTES {
             return Err("资源下载声明超过大小限制".into());
         }
         let area = self.1.as_ref().ok_or("资源下载缺少来源登记能力")?;
         super::super::source::allocate(area, &self.0, "verified-download-input", max)
+    }
+    pub fn allocate_batch(
+        &self,
+        requests: &[(String, u64)],
+        cancel: &AtomicBool,
+    ) -> Result<super::super::source::InputBatch> {
+        let area = self.1.as_ref().ok_or("资源下载缺少来源登记能力")?;
+        super::super::source::allocate_batch(area, &self.0, requests, cancel)
     }
     pub fn check_cleanup(&self) -> Result<()> {
         if let Some(area) = &self.1 {

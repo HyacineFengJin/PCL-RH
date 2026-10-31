@@ -324,7 +324,7 @@ fn cancellation_during_queue_and_pacing_releases_every_owned_file() {
     let fixture = Fixture::new();
     let body = vec![7; 1024 * 1024];
     let server = LocalServer::new(&body);
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = AtomicBool::new(false);
     let scheduler = DownloadScheduler::new(DownloadPolicy {
         max_concurrent_transfers: 1,
         total_rate_limit_mib_per_second: 1,
@@ -332,24 +332,108 @@ fn cancellation_during_queue_and_pacing_releases_every_owned_file() {
     })
     .unwrap();
     let provider = provider(&cancel, scheduler.clone());
-    let signal = cancel.clone();
-    let trigger = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(120));
-        signal.store(true, Ordering::Release);
+    let live = Arc::new(AtomicUsize::new(0));
+    let responded = AtomicUsize::new(0);
+    let stalled = AtomicUsize::new(0);
+    let cancelled_at = std::cell::Cell::new(None::<Instant>);
+    let response_elapsed = std::cell::Cell::new(None::<Duration>);
+    let hash = tests::sha(&body);
+    let mut jobs = VecDeque::<Job<'_, OwnedAnonymous>>::new();
+    for index in 0..3 {
+        // All three real source leases exist before any HTTP future is polled.
+        // Durable native allocation is not transport cancellation latency.
+        let file = fixture.dir.allocate(body.len() as u64).unwrap();
+        live.fetch_add(1, Ordering::Relaxed);
+        let mut owned = OwnedAnonymous {
+            file,
+            live: live.clone(),
+        };
+        let provider = &provider;
+        let cancel = &cancel;
+        let url = &server.url;
+        let body = &body;
+        let hash = &hash;
+        let responded = &responded;
+        let stalled = &stalled;
+        let cancelled_at = &cancelled_at;
+        let response_elapsed = &response_elapsed;
+        let live = &live;
+        jobs.push_back(Box::pin(async move {
+            let error = match transfer::response_into_file(
+                provider,
+                provider.client.get(url),
+                body.len() as u64,
+                hash,
+                &mut owned.file,
+                cancel,
+                |_| {},
+            )
+            .await
+            {
+                Ok(()) => panic!("cancelled batch must not produce verified files"),
+                Err(error) => error,
+            };
+            assert_eq!(error, CANCELLED);
+            responded.fetch_add(1, Ordering::SeqCst);
+            if index == 0 {
+                // Both queued transports must observe cancellation before this
+                // error can release any owner or retire its durable ticket.
+                while stalled.load(Ordering::SeqCst) != 2 {
+                    tokio::task::yield_now().await;
+                }
+                assert_eq!(responded.load(Ordering::SeqCst), 3);
+                assert_eq!(live.load(Ordering::Relaxed), 3);
+                response_elapsed.set(Some(cancelled_at.get().unwrap().elapsed()));
+                Err(error)
+            } else {
+                stalled.fetch_add(1, Ordering::SeqCst);
+                // A collector that awaits peers after the first error never
+                // completes: only dropping these futures releases their files.
+                std::future::pending::<()>().await;
+                Ok(owned)
+            }
+        }));
+    }
+    assert_eq!(live.load(Ordering::Relaxed), 3);
+    let mut collecting = Box::pin(transfer::collect_bounded(jobs, 3));
+    let result = tests::run(async {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            std::future::poll_fn(|context| {
+                let result = collecting.as_mut().poll(context);
+                if result.is_pending() && !cancel.load(Ordering::Acquire) {
+                    let status = scheduler.status();
+                    // Inspect the collector only after all its jobs yielded.
+                    // Received but unpaced bytes then prove the active HTTP
+                    // future is inside throttle(), with two real slot waiters.
+                    if status.active_transfers == 1
+                        && status.queued_transfers == 2
+                        && provider.network_bytes.load(Ordering::Relaxed)
+                            > status.paced_payload_bytes
+                    {
+                        assert_eq!(server.requests.load(Ordering::Relaxed), 1);
+                        assert_eq!(live.load(Ordering::Relaxed), 3);
+                        cancelled_at.set(Some(Instant::now()));
+                        cancel.store(true, Ordering::Release);
+                    }
+                }
+                result
+            }),
+        )
+        .await
+        .expect("queue waited for non-completing owners after cancellation")
     });
-    let start = Instant::now();
-    // Queue permits and the bounded future collector are independently tested:
-    // polling three futures here forces two of them to await the one slot.
-    let error = match tests::run(transfer::collect_bounded(
-        jobs(&provider, &fixture, &cancel, &server.url, &body, 3),
-        3,
-    )) {
+    let error = match result {
         Ok(_) => panic!("cancelled batch must not produce verified files"),
         Err(error) => error,
     };
     assert_eq!(error, CANCELLED);
-    assert!(start.elapsed() < Duration::from_millis(400));
-    trigger.join().unwrap();
+    // This bounds cancellation response before file Drop. Final native ticket
+    // retirement may flush several durable records and is checked separately.
+    assert!(response_elapsed.get().unwrap() < Duration::from_millis(400));
+    assert_eq!(responded.load(Ordering::SeqCst), 3);
+    assert_eq!(stalled.load(Ordering::SeqCst), 2);
+    assert_eq!(live.load(Ordering::Relaxed), 0);
     assert_eq!(scheduler.status().active_transfers, 0);
     assert_eq!(scheduler.status().queued_transfers, 0);
     assert!(scheduler.status().paced_payload_bytes < 1024 * 1024);

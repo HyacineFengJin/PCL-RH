@@ -197,6 +197,13 @@ impl Dir {
     ) -> Result<crate::modrinth_install::source::Input> {
         crate::modrinth_install::source::allocate(&self.area()?, &self.0, name, max)
     }
+    pub(in crate::resource_ops) fn stage_batch_for(
+        &self,
+        requests: &[(String, u64)],
+        cancel: &AtomicBool,
+    ) -> Result<crate::modrinth_install::source::InputBatch> {
+        crate::modrinth_install::source::allocate_batch(&self.area()?, &self.0, requests, cancel)
+    }
     #[cfg(test)]
     pub(in crate::resource_ops) fn anonymous(
         &self,

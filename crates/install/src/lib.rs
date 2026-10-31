@@ -32,8 +32,9 @@ mod repair;
 /// original repair namespace and schema are retained.
 pub mod staging {
     pub use crate::repair::staging::{
-        Allocation, Area, AreaReport, DiscardOutcome, Issue, IssueKind, Limits, LogStatus, Outcome,
-        SealedTicket, SourceReport, SourceState, Ticket,
+        Allocation, AllocationBatchError, Area, AreaReport, BatchOwner, DiscardBatchError,
+        DiscardOutcome, Issue, IssueKind, Limits, LogStatus, Outcome, SealedTicket, SourceReport,
+        SourceState, Ticket,
     };
     pub use pcl_core::retained_fs::stage::DiscardReceipt;
 }

@@ -344,23 +344,33 @@ pub(super) async fn download(
         completed,
         0,
     );
-    let jobs = prepared
+    let permits = prepared
         .into_permits()
         .filter(|permit| !plan.files[permit.index()].reused)
-        .map(|permit| {
-            let index = permit.index();
+        .collect();
+    let (indices, mut sources) =
+        preflight::AllocationPermit::allocate_batch_with(permits, |admitted| {
+            let indices: Vec<_> = admitted.iter().map(|(index, _)| *index).collect();
+            let requests: Vec<_> = admitted
+                .iter()
+                .map(|(_, source)| ("verified-download-input".to_string(), source.size))
+                .collect();
+            Ok((indices, staging.allocate_batch(&requests, cancel)?))
+        })?;
+    let jobs = indices
+        .iter()
+        .copied()
+        .zip(sources.iter_mut())
+        .map(|(index, destination)| {
             let file = &plan.files[index];
             let counters = &counters;
             let plan = &plan;
             let report = &report;
-            let staging = &staging;
             let project = &project;
             let stage_key = &stage_key;
             Box::pin(async move {
                 target::cancelled(cancel)?;
                 let url = provider::cdn_url(&file.url)?;
-                let mut destination =
-                    permit.allocate_with(|source| staging.allocate(source.size))?;
                 response_into_file(
                     provider,
                     provider
@@ -369,7 +379,7 @@ pub(super) async fn download(
                         .header(reqwest::header::ACCEPT_ENCODING, "identity"),
                     file.size,
                     &file.sha512,
-                    &mut destination,
+                    destination,
                     cancel,
                     |amount| {
                         let mut counters = counters.lock().unwrap();
@@ -393,7 +403,7 @@ pub(super) async fn download(
                         .key()
                         != Ok(stage_key.clone())
                 {
-                    return Err("匿名资源暂存目录已被替换，暂存内容已丢弃".into());
+                    return Err("资源暂存目录已被替换，暂存来源已退役或保留证据".into());
                 }
                 let mut counters = counters.lock().unwrap();
                 counters.0 += 1;
@@ -406,17 +416,8 @@ pub(super) async fn download(
                     counters.0,
                     counters.1,
                 );
-                Ok((
-                    index,
-                    VerifiedFile {
-                        kind: file.kind.clone(),
-                        file_name: file.file_name.clone(),
-                        size: file.size,
-                        sha512: file.sha512.clone(),
-                        file: destination,
-                    },
-                ))
-            }) as QueuedTransfer<'_, (usize, VerifiedFile)>
+                Ok(())
+            }) as QueuedTransfer<'_, ()>
         })
         .collect();
     let collected = collect_bounded(
@@ -424,25 +425,36 @@ pub(super) async fn download(
         usize::from(provider.downloads.policy().max_concurrent_transfers),
     )
     .await;
-    let mut ordered = match collected {
-        Ok(ordered) => ordered,
-        Err(error) => {
-            return match staging.check_cleanup() {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(format!("{error}；来源退役未确认：{cleanup}")),
-            }
-        }
-    };
-    ordered.sort_by_key(|(index, _)| *index);
-    let files = ordered.into_iter().map(|(_, file)| file).collect();
-    let (completed, bytes_done) = counters.into_inner().map_err(|_| "资源下载进度锁异常")?;
-    if let Err(error) = target::check(&plan.target, cancel) {
-        drop(files);
-        return match staging.check_cleanup() {
+    // collect_bounded owns the borrowed futures; returning from await drops
+    // every response before any Ticket is handed to batch retirement.
+    if let Err(error) = collected {
+        return match sources.retire() {
             Ok(()) => Err(error),
             Err(cleanup) => Err(format!("{error}；来源退役未确认：{cleanup}")),
         };
     }
+    let (completed, bytes_done) = counters.into_inner().map_err(|_| "资源下载进度锁异常")?;
+    if let Err(error) = target::check(&plan.target, cancel) {
+        return match sources.retire() {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}；来源退役未确认：{cleanup}")),
+        };
+    }
+    staging.check_cleanup()?;
+    let files = indices
+        .into_iter()
+        .zip(sources.into_inputs())
+        .map(|(index, source)| {
+            let file = &plan.files[index];
+            VerifiedFile {
+                kind: file.kind.clone(),
+                file_name: file.file_name.clone(),
+                size: file.size,
+                sha512: file.sha512.clone(),
+                file: source,
+            }
+        })
+        .collect();
     progress(
         provider,
         &plan,

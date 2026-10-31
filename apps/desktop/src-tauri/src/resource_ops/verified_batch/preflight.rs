@@ -72,6 +72,19 @@ impl<'a> PreparedSources<'a> {
 }
 
 impl<'a> AllocationPermit<'a> {
+    /// Consumes every non-Clone admission before one real batch allocator call.
+    pub(crate) fn allocate_batch_with<T>(
+        permits: Vec<Self>,
+        allocate: impl FnOnce(Vec<(usize, SourceSpec<'a>)>) -> Result<T>,
+    ) -> Result<T> {
+        allocate(
+            permits
+                .into_iter()
+                .map(|permit| (permit.index, permit.source))
+                .collect(),
+        )
+    }
+
     pub(crate) fn index(&self) -> usize {
         self.index
     }

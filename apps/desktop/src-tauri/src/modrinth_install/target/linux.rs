@@ -215,6 +215,18 @@ impl Dir {
 }
 
 impl Dir {
+    pub fn allocate_batch(
+        &self,
+        requests: &[(String, u64)],
+        cancel: &AtomicBool,
+    ) -> Result<super::super::source::InputBatch> {
+        let mut inputs = Vec::with_capacity(requests.len());
+        for (_, max) in requests {
+            super::cancelled(cancel)?;
+            inputs.push(self.allocate(*max)?);
+        }
+        Ok(super::super::source::InputBatch::from_inputs(inputs))
+    }
     pub fn with_input_sources(&self) -> Result<Self> {
         self.0.try_clone().map(Self).map_err(|e| e.to_string())
     }
