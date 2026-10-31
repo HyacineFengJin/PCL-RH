@@ -62,8 +62,8 @@ public class GradleWrapperMain {
     if (!args[0].equals("--no-daemon") || !args[1].equals("--console=plain") || !args[2].equals("--offline")) throw new Exception("wrong fixed arguments");
     if (target.equals("classes")) { byte[] bytes = new byte[100000]; java.util.Arrays.fill(bytes, (byte)0xff); System.out.write(bytes); System.out.flush(); }
     else if (target.equals("test")) {
-      new ProcessBuilder("/usr/bin/setsid", "/usr/bin/sleep", "60").inheritIO().start();
-      System.out.println("DESCENDANT_READY"); System.out.flush(); Thread.sleep(60000);
+      new ProcessBuilder("/usr/bin/setsid", "/usr/bin/sh", "-c", "printf 'DESCENDANT_READY\\n'; exec /usr/bin/sleep 60").inheritIO().start();
+      Thread.sleep(60000);
     } else { System.out.println("PRIVATE_SANDBOX_READY"); System.out.flush(); Thread.sleep(60000); }
   }
 }"#.replace("OUTSIDE_MARKER", &hidden.to_string_lossy());
@@ -117,7 +117,7 @@ fn pipe() -> (File, File) {
     }
 }
 fn run(
-    command: Command,
+    command: process::Launch,
     input: &mut protocol::Input,
     request: &Request,
     started: impl FnMut(u32) -> Result<(), Failure>,
@@ -166,6 +166,63 @@ fn live(pid: u32) -> bool {
     text.rfind(')')
         .and_then(|end| text[end + 1..].split_whitespace().next())
         .is_some_and(|state| !matches!(state, "Z" | "X"))
+}
+
+struct CapturedProcess {
+    pid: u32,
+    exit: process::PidFd,
+    identity: process::Identity,
+    namespace: String,
+}
+impl CapturedProcess {
+    fn new(pid: u32) -> Self {
+        let directory = File::open(format!("/proc/{pid}")).unwrap();
+        let before = process::Identity::read(&directory).unwrap();
+        let exit = process::PidFd::open(pid).unwrap();
+        let identity = process::Identity::read(&directory).unwrap();
+        assert_eq!(
+            before.start, identity.start,
+            "PID changed while capturing {pid}"
+        );
+        assert_eq!(before.parent, identity.parent);
+        assert_eq!(before.namespace_pids, identity.namespace_pids);
+        assert!(
+            !exit.exited().unwrap(),
+            "fixture process {pid} exited before cancellation"
+        );
+        assert_eq!(identity.namespace_pids.first(), Some(&pid));
+        assert!(
+            identity.namespace_pids.len() >= 2,
+            "missing private PID namespace: {identity:?}"
+        );
+        assert!(
+            identity
+                .uids
+                .iter()
+                .all(|uid| *uid == unsafe { libc::geteuid() }),
+            "fixture host UID changed: {identity:?}"
+        );
+        let namespace = format!(
+            "{:?}",
+            fs::read_link(format!("/proc/self/fd/{}/ns/pid", directory.as_raw_fd()))
+        );
+        Self {
+            pid,
+            exit,
+            identity,
+            namespace,
+        }
+    }
+    fn assert_exited(&self) {
+        assert!(
+            self.exit.exited().unwrap(),
+            "owned descendant {} is still alive; captured={:?}; namespace={}; current={:?}",
+            self.pid,
+            self.identity,
+            self.namespace,
+            fs::read_to_string(format!("/proc/{}/stat", self.pid))
+        );
+    }
 }
 
 #[test]
@@ -350,7 +407,22 @@ fn cancellation_kills_descendants_that_change_session_before_reaping() {
         |_, text| {
             diagnostics.push_str(text);
             if diagnostics.contains("DESCENDANT_READY") && children.is_empty() {
-                children = descendants(pid.get());
+                children = descendants(pid.get())
+                    .into_iter()
+                    .map(CapturedProcess::new)
+                    .collect();
+                let init = children
+                    .iter()
+                    .find(|child| child.identity.namespace_pids.last() == Some(&1))
+                    .expect("actual namespace init was not captured");
+                assert!(
+                    children
+                        .iter()
+                        .any(|child| child.identity.session != init.identity.session
+                            && child.identity.session == child.pid
+                            && child.identity.group == child.pid),
+                    "no descendant completed setsid before cancellation"
+                );
                 write.write_all(b"{\"type\":\"cancel\"}\n").unwrap();
             }
             Ok(())
@@ -364,8 +436,131 @@ fn cancellation_kills_descendants_that_change_session_before_reaping() {
     assert!(started_at.elapsed() < Duration::from_secs(3));
     assert!(!live(pid.get()));
     for child in children {
-        assert!(!live(child), "owned descendant {child} is still alive");
+        child.assert_exited();
     }
+}
+
+#[test]
+fn cancellation_after_binding_keeps_the_author_gate_closed_until_init_retires() {
+    let fixture = Fixture::new();
+    fixture.wrapper();
+    let request = fixture.request(Recipe::Gradle, Target::Test);
+    let prepared = sandbox::Prepared::new(&request).unwrap();
+    let (read, mut write) = pipe();
+    let mut input = protocol::Input::new(read.as_raw_fd()).unwrap();
+    let mut init = None;
+    let mut diagnostics = String::new();
+    let result = run(
+        prepared.command(&request, false).unwrap(),
+        &mut input,
+        &request,
+        |leader| {
+            let children = descendants(leader);
+            assert_eq!(
+                children.len(),
+                1,
+                "author fork crossed the held startup gate"
+            );
+            let captured = CapturedProcess::new(children[0]);
+            assert_eq!(captured.identity.parent, leader);
+            assert_eq!(captured.identity.namespace_pids.last(), Some(&1));
+            init = Some(captured);
+            write.write_all(b"{\"type\":\"cancel\"}\n").unwrap();
+            Ok(())
+        },
+        |_, text| {
+            diagnostics.push_str(text);
+            Ok(())
+        },
+    );
+    assert_eq!(result.status, "cancelled", "{diagnostics}");
+    assert!(!diagnostics.contains("DESCENDANT_READY"));
+    init.expect("started was not backed by a namespace init")
+        .assert_exited();
+}
+
+#[test]
+fn started_callback_failure_does_not_release_the_author_gate_or_skip_cleanup() {
+    let fixture = Fixture::new();
+    fixture.wrapper();
+    let request = fixture.request(Recipe::Gradle, Target::Test);
+    let prepared = sandbox::Prepared::new(&request).unwrap();
+    let (read, _write) = pipe();
+    let mut input = protocol::Input::new(read.as_raw_fd()).unwrap();
+    let mut init = None;
+    let mut diagnostics = String::new();
+    let error = process::run(
+        prepared.command(&request, false).unwrap(),
+        &mut input,
+        Duration::from_millis(request.timeout_ms),
+        request.max_output_bytes,
+        |leader| {
+            let children = descendants(leader);
+            assert_eq!(
+                children.len(),
+                1,
+                "author fork crossed the held startup gate"
+            );
+            init = Some(CapturedProcess::new(children[0]));
+            Err(Failure::new(
+                "SYNTHETIC_STARTED_FAILURE",
+                "synthetic callback closed",
+            ))
+        },
+        |_, text| {
+            diagnostics.push_str(text);
+            Ok(())
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "SYNTHETIC_STARTED_FAILURE");
+    assert!(!diagnostics.contains("DESCENDANT_READY"));
+    init.expect("started was not backed by a namespace init")
+        .assert_exited();
+}
+
+#[test]
+fn startup_info_eof_preserves_the_real_diagnostic_and_never_emits_started() {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    // A real bwrap parse error closes the info pipe before a namespace exists.
+    // No synthetic command, author project, or detached helper is executed.
+    let mut command = process::Launch::new(Command::new("/usr/bin/bwrap")).unwrap();
+    command
+        .arg("--synthetic-unsupported-option")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let inherited = command.child_fds();
+    unsafe {
+        command.pre_exec(move || {
+            for fd in inherited {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let (read, _write) = pipe();
+    let mut input = protocol::Input::new(read.as_raw_fd()).unwrap();
+    let error = process::run(
+        command,
+        &mut input,
+        Duration::from_secs(3),
+        8192,
+        |_| panic!("unbound sandbox emitted started"),
+        |_, _| panic!("unbound sandbox emitted a public output frame"),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "BUILD_SANDBOX_IDENTITY", "{}", error.message);
+    assert!(
+        error.message.contains("synthetic-unsupported-option"),
+        "missing actual bwrap diagnostic: {}",
+        error.message
+    );
 }
 
 #[test]

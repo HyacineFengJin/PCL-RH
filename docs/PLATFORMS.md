@@ -27,6 +27,7 @@ PCL RH 已通过 Linux x64、Windows x64、macOS Intel / Apple Silicon 的完整
 | RH Code 可信 Node 宿主与有界 RPC | Linux 回归通过 | 原生锁、管道与退役夹具通过，完整 AI 待实测 | Intel / Apple Silicon 原生夹具通过，完整 AI 待实测 |
 | WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
 | 完整桌面编译与链接 | 原生 CI 通过，x64 | 原生 CI 通过，x64 | Intel / Apple Silicon 原生 CI 通过 |
+| 未签名便携测试包 | 归档、解压与 CLI / 插件宿主检查通过 | ZIP 解压与 CLI / 插件宿主检查通过 | Intel / Apple Silicon 归档与解压检查通过 |
 | 标准安装包与实机游戏验证 | 待完成发行验证 | 待完成 | Intel / Apple Silicon 待完成 |
 
 架构判断不会把 `x86` 当成 `x86_64`，也不会把 ARM 当成 x64。原生库提取使用平台对应的 `.so`、`.dll`、`.dylib` / `.jnilib`；旧元数据中的 `${arch}` 按目标位数展开。Mojang 没有提供的 Java 平台会报告不可用，不会自动下载其他架构的运行时。仅有分类支持不表示所有 Minecraft 版本都有对应架构的原生库。
@@ -93,11 +94,13 @@ Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约
 
 ## 桌面构建检查
 
-在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面程序；不使用服务密钥、不发布 Release，也不生成供用户安装的发行包。
+在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面与 CLI 程序，并生成未签名的便携测试包；不使用服务密钥、不发布 Release，也不生成 MSI / `.app` 等标准安装包。
 
 各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184802305)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
+
+[Linux 与两种 macOS 架构](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41187465885)以及[Windows](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41188367747)的便携测试包已通过实际归档、解压、文件哈希、原生可执行架构、CLI 扫描和声明型插件宿主 RPC 检查。该检查不打开桌面窗口、不启动游戏或模型。下载和依赖要求见[便携测试包说明](BUILDING.md#便携测试包)。
 
 构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773913)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773868)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184802305)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
@@ -107,7 +110,7 @@ PCL RH now compiles and links as a complete desktop application on native Linux 
 
 The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. A separate installer workflow compiles the production installer and passes actual vanilla/Fabric installation, repair/recovery, resource publication/undo and instance mutation fixtures on all four hosts. Non-Linux confined Java processors, native Code publication, Windows running-executable replacement, distribution packages and interactive game validation remain unfinished. Architecture-specific Minecraft natives must also exist for the selected game version. The portable source-build entry is `tools/build-native.py`; desktop shortcut installation remains Linux-specific.
 
-The manual **Desktop platform builds** workflow separately builds the WebUI and compiles/links the complete desktop application on Linux x64, Windows x64, macOS arm64 and macOS x64. Unsupported native ports fail visibly. Toolchain details and compiler logs are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
+The manual **Desktop platform builds** workflow builds the WebUI and compiles/links the desktop and CLI on Linux x64, Windows x64, macOS arm64 and macOS x64. It also assembles unsigned portable previews, verifies their extracted files/native architecture, and runs the actual CLI and declarative host against temporary data. These archive checks have passed on all four hosts. Toolchain details, compiler logs and successful previews are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
 
 The desktop-platform crate isolates native clipboard, edit-command and default-app operations, with GTK dependencies restricted to Linux. Its isolated tests compile/pass on all four hosts without accessing the real clipboard or opening applications. The core supplies retained-directory identity, private staging, bounded sealing, no-replace publication and actual native flushes. Publication uncertainty is explicit. Linux staging is anonymous; Darwin and Windows use named leases with a separate bounded repair registry. Windows records full FileId128 and native SID/DACL evidence. The registry preserves uncertain or corrupt state and does not gain authority over business originals; existing verified recovery intents remain authoritative. Rechecking its full prefix currently has a cumulative performance cost for large histories. Full desktop compilation/linking passes on all four CI hosts; this does not replace interactive application/game verification.
 

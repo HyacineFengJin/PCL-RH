@@ -439,8 +439,8 @@ impl Prepared {
             recipe,
         })
     }
-    pub fn command(&self, request: &Request, probe: bool) -> Result<Command, Failure> {
-        let mut command = Command::new("/usr/bin/bwrap");
+    pub fn command(&self, request: &Request, probe: bool) -> Result<process::Launch, Failure> {
+        let mut command = process::Launch::new(Command::new("/usr/bin/bwrap"))?;
         command.args([
             "--unshare-all",
             "--unshare-user",
@@ -547,6 +547,7 @@ impl Prepared {
             .into_iter()
             .chain(self.configuration.iter().map(|(_, file)| file))
             .map(AsRawFd::as_raw_fd)
+            .chain(command.child_fds())
             .collect();
         let configuration_fds: Vec<_> = self
             .configuration
