@@ -329,6 +329,10 @@ Rust 的 `tasks/events.rs` 仅将同一任务、阶段和可取消状态的进�
 
 `experimental/host.mjs` 是轻量 stdio 与插件接线入口，首次请求 AI 服务时才导入 `agent-host.mjs`。两层共用一个 `ExtensionStore`，插件卡片请求不会初始化 AI 引擎。共享运行时在 `experimental/runtime/src/`，确定性的 Python 工具在 `vendor/maker`、`vendor/porter`。`SOURCES.json` 记录集成版本与当前发布的工具源码哈希；修改工具后运行 `node experimental/scripts/sync-sources.mjs`，发布前用 `--check` 检查，组件版本须单独同步。引擎管理工程任务、产物哈希与修改确认，模型只能提出修改；授权和应用仍由宿主 UI 调用。制作器恢复和模板更新通过宿主选择的工程副本进入源码编辑器；模型的源码编辑工具只接受原有补丁结构，不接受恢复路径。
 
+无活动会话和退役进程时，原生宿主可在同一会话锁下为固定插槽、无过滤器的卡片读取及目录读取返回空投影，前提是保留目录句柄、权限和名字复核证明插件记录确实不存在，且没有另一宿主持有现有锁。此路径不创建目录或锁文件、不启动 Node，也不授权操作。任何现有记录都交给真实插件服务处理；损坏记录的卡片和目录读取会报告 `STORE_UNREADABLE`，保留原文件与安全模式。
+
+Node 候选全部确实缺失时才返回 `PCL_NODE_MISSING:`；成功版本探测得到不支持的旧版本时返回 `PCL_NODE_UNSUPPORTED:`。权限、坏链接、进程失败及无效版本输出不会降级成这两类提示。界面只识别固定前缀，重试仍受原页面、请求与控制器归属约束；普通引擎后台刷新保持原生命周期。
+
 `ExperimentalTools` 分发制作器与搬运工作区，`ExperimentalMaker` 负责物品表单，`ExperimentalProjects` 管理制作器产物登记与项目说明，`ExperimentalProjectFiles` 提供只读文件索引。`ExperimentalPorterWorkspace` 管理持续搬运项目与讨论，`ExperimentalExtensions` 负责授权与纯文本卡片，`ExperimentalAi` 负责预设与共享引擎状态；它们使用现有 CE 控件与中英消息目录。异步结果只更新所属页面和选择；页面退役不撤销已提交的宿主事务。
 
 制作器项目存储在 `vendor/maker/projects.mjs`，搬运项目存储在 `porter-projects.mjs`；两个格式独立，共用运行时、源码产物和 AI 预设。项目版本引用宿主持有的任务产物，不接受界面提供的源码目录权限。`artifact-snapshot.mjs` 统一检查产物收据、输出目录与文件指纹；`vendor/maker/source-index.mjs` 用有界流式读取验证完整清单，再返回文件页、文本片段或搜索页。较大的只读索引不扩大源码编辑与 AI 续作的快照限额。

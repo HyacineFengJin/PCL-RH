@@ -60,7 +60,9 @@ python tools/build-native.py --jobs 2
 
 下载对应架构的 artifact 后，继续解压其中的 ZIP（Windows）或 tar.gz（Linux/macOS），保持整个 `PCL-RH` 文件夹完整。Windows 运行 `start-native.ps1`，Linux/macOS 在终端运行 `./start-native.sh`。程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。
 
-便携包包含 Code 与社区声明型插件服务的 npm 依赖，这些服务需要单独安装 Node.js 22.19+；首页的社区插件卡片也会使用该服务。系统 WebView / WebKit 依赖同样需要可用；普通测试包不包含官方 CurseForge 服务凭据。签名、标准安装包和实机游戏验证的状态见[平台说明](PLATFORMS.md)。
+便携包包含 Code 与社区声明型插件服务的 npm 依赖，运行这些服务需要单独安装 Node.js 22.19+。首次启动且没有社区插件记录文件时，首页和设置中的社区插槽由 Rust 返回空内容，不为读取空内容启动 Node；插件管理与 RH Code 在实际使用时检查运行依赖。已有插件记录损坏或目录不可读会明确报告原因。系统 WebView / WebKit 依赖同样需要可用；普通测试包不包含官方 CurseForge 服务凭据。签名、标准安装包和实机游戏验证的状态见[平台说明](PLATFORMS.md)。
+
+插件宿主使用系统标准位置的 Node：Linux 为 `/usr/bin/node`，Windows 为系统 Program Files 下的 `nodejs/node.exe`，macOS 为 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node` 及其受支持的 Homebrew 安装。NVM 等用户级目录目前不会自动识别。安装或升级后可直接点击界面中的「重试」，无需重新启动整个启动器；权限、目录替换和存储损坏错误仍需按原原因处理。
 
 维护者使用 **Official native candidates** 可从官方 `master` 构建包含官方 CF 服务凭据的四平台优化候选包，仍只上传 Actions artifact。归档名包含应用版本；解压检查会实际读取桌面程序的 `--build-info` 并核对独立 CLI 版本，避免错装旧二进制或开发配置。候选构建与首发剩余工作见[发行说明](RELEASING.md)。
 

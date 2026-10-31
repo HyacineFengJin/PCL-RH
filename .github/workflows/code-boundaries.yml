@@ -52,9 +52,10 @@ jobs:
       - name: Test actual trusted host lease, RPC and retirement
         if: ${{ !cancelled() }}
         # The source wrapper also compiles Code dependencies tested above.
-        # Filter to host cases so compiler/process fixtures do not run twice.
+        # Include the actual filesystem/discovery modules' focused tests too;
+        # compiler/process fixtures outside this host are not run twice.
         run: |
-          cargo +stable test --locked -p pcl-install --test experimental_host experimental_host::tests -- --test-threads=2 --nocapture
+          cargo +stable test --locked -p pcl-install --test experimental_host experimental_host:: -- --test-threads=2 --nocapture
       - name: Report native toolchain
         run: rustc +stable -vV
       # Same-process protocol/source tests are not evidence of reexec ownership,

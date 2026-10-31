@@ -70,6 +70,9 @@ jobs:
           node apps/desktop/scripts/check-launcher-surfaces.mjs
           node --test apps/desktop/scripts/plugin-consumers.test.mjs apps/desktop/scripts/product-runtime.test.mjs apps/desktop/scripts/instance-snapshots.test.mjs apps/desktop/scripts/instance-copy.test.mjs apps/desktop/scripts/backup-restore.test.mjs apps/desktop/scripts/clipboard-discovery.test.mjs
           node apps/desktop/scripts/check-rh-code-host.mjs
+      - name: Check prerequisite recovery and community UI lifetimes
+        # Actual components with deferred synthetic IPC; no model or user data.
+        run: node --test apps/desktop/scripts/extensions-launcher-ui.test.mjs apps/desktop/scripts/extensions-manager-ui.test.mjs apps/desktop/scripts/extensions-panels-ui.test.mjs apps/desktop/scripts/extensions-settings-ui.test.mjs
       - name: Check idle work, source lifetimes and bounded project witnesses
         # Synthetic source snapshots only. No SDK/model, native app or user data.
         run: |
