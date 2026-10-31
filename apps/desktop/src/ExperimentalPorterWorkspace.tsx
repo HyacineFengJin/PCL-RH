@@ -13,6 +13,7 @@ import { InstanceOperationDialog } from "./instanceOperationUi";
 import { ExperimentalVersion } from "./ExperimentalVersion";
 import { ExperimentalPorterCompare } from "./ExperimentalPorterCompare";
 import type { ExperimentalDraft } from "./ExperimentalTools";
+import type { PorterSourceOwner, SourceRelease } from "./porterSourceOwner";
 import {
   experimentalCall as call,
   type EngineStatus,
@@ -47,6 +48,8 @@ export function ExperimentalPorterWorkspace({
   api: pageApi,
   native,
   drafts,
+  sourceOwner,
+  releaseSource,
   onConfigureAi,
   onBrowseMods,
   intake,
@@ -57,12 +60,19 @@ export function ExperimentalPorterWorkspace({
   drafts: RefObject<
     Partial<Record<"maker" | "porter" | "extensions", ExperimentalDraft>>
   >;
+  sourceOwner: PorterSourceOwner;
+  releaseSource: SourceRelease;
   onConfigureAi?: () => void;
   onBrowseMods?: (origin?: PorterOrigin | null) => void;
   intake?: PorterIntake | null;
   onIntakeConsumed?: () => void;
 }) {
   const draft = drafts.current.porter;
+  const clearSource = () => {
+    void sourceOwner.clear();
+    setSource(null);
+    if (drafts.current.porter) drafts.current.porter.source = null;
+  };
   const [projectId, setProjectId] = useState(draft?.porterProjectId || "");
   const [project, setProject] = useState<PorterProject | null>(null);
   const [listing, setListing] = useState<PorterProjectList | null>(null);
@@ -204,7 +214,7 @@ export function ExperimentalPorterWorkspace({
     setNewProject(true);
     setEditing(false);
     setGoal("");
-    setSource(null);
+    clearSource();
     setDirectory("");
     setAllowed([]);
     setRights("unknown");
@@ -349,6 +359,7 @@ export function ExperimentalPorterWorkspace({
   async function perform<T>(
     action: () => Promise<T>,
     accept?: (value: T) => void,
+    discard?: (value: T) => void,
   ) {
     if (!interactive() || !native) return;
     const run = { scope };
@@ -360,7 +371,7 @@ export function ExperimentalPorterWorkspace({
       if (current()) {
         accept?.(value);
         await refreshList();
-      }
+      } else discard?.(value);
     } catch (e) {
       if (current()) {
         setError(serviceError(e));
@@ -410,7 +421,7 @@ export function ExperimentalPorterWorkspace({
     setOrigin(null);
     setName("");
     setGoal("");
-    setSource(null);
+    clearSource();
     setDirectory("");
     setAllowed([]);
     setRights("unknown");
@@ -436,7 +447,7 @@ export function ExperimentalPorterWorkspace({
     setRights(project.rights);
     setBeta(project.acknowledgeBeta);
     setIdentifierDeclared(project.identifierProfile === identifierProfile);
-    setSource(null);
+    clearSource();
     setDirectory("");
     setAllowed(project.snapshot?.permittedPaths || []);
     setEditingRevision(project.revision);
@@ -719,11 +730,20 @@ export function ExperimentalPorterWorkspace({
                 },
                 (v) => {
                   if (v) {
+                    if (!sourceOwner.adopt(v.imported.sourceId, releaseSource))
+                      return;
                     setSource(v.imported);
                     setDirectory(v.directory);
                     setAllowed([]);
                     setIdentifierDeclared(false);
                   }
+                },
+                (v) => {
+                  if (v)
+                    void sourceOwner.discard(
+                      v.imported.sourceId,
+                      releaseSource,
+                    );
                 },
               )
             }
@@ -800,7 +820,7 @@ export function ExperimentalPorterWorkspace({
                       setProject(v.project);
                       setNewProject(false);
                       setEditing(false);
-                      setSource(null);
+                      clearSource();
                       setDirectory("");
                       if (!editing) commitJobSelection(v.jobId);
                       if ("startError" in v) setError(String(v.startError));

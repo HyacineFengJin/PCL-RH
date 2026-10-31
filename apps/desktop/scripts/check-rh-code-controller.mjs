@@ -1378,3 +1378,25 @@ test("a failed build log read retains no mutation failure or dirty workspace", a
   assert.equal(ui.value.getLifecycleState().dirty, false);
   assert.equal(await ui.value.prepareSuspend(), true);
 });
+
+test("retired views retain only exact source-token cleanup through their original native API", async (t) => {
+  const { host, ui } = await fixture(t);
+  const release = ui.value.releasePorterSource;
+  const token = "00000000-0000-4000-8000-000000000001";
+  host.handlers.set("source_release", (args) => {
+    assert.deepEqual(args, { sourceId: token });
+    return true;
+  });
+  assert.equal(await ui.value.prepareSuspend(), true);
+  await assert.rejects(
+    ui.value.api("experimental_call", { operation: "status", args: {} }),
+    /suspended/,
+  );
+  assert.equal(await release(token), true);
+  const count = host.calls.length;
+  await assert.rejects(
+    release("arbitrary project path"),
+    /Invalid source release/,
+  );
+  assert.equal(host.calls.length, count);
+});

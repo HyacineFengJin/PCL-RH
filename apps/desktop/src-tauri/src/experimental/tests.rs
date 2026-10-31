@@ -66,6 +66,53 @@ fn never_used_suspend_does_not_start_or_create_data() {
     assert!(host.is_stopped());
 }
 #[test]
+fn source_release_without_a_session_never_starts_or_creates_data() {
+    let fixture = Fixture::new();
+    let host = Host::new(fixture.0.clone());
+    let token = "00000000-0000-4000-8000-000000000001";
+    assert_eq!(
+        host.release_source(json!({"sourceId": token})).unwrap(),
+        false
+    );
+    assert_eq!(
+        host.release_source(json!({"sourceId": token})).unwrap(),
+        false
+    );
+    assert!(host.release_source(json!({"sourceId": "invalid"})).is_err());
+    assert!(host
+        .release_source(json!({"sourceId": token, "operation": "status"}))
+        .is_err());
+    assert!(host.session.lock().unwrap().is_none());
+    assert!(!fixture.0.join(".pcl-rust").exists());
+    assert!(host.is_stopped());
+    host.closing.store(true, Ordering::SeqCst);
+    assert!(host.release_source(json!({"sourceId": token})).is_err());
+    assert!(host.is_stopped());
+}
+#[test]
+fn source_release_uses_only_the_existing_session() {
+    let fixture = Fixture::new();
+    let host = Host::new(fixture.0.clone());
+    host.call("status", json!({})).unwrap();
+    let pid = host.session.lock().unwrap().as_ref().unwrap().child.id();
+    host.release_source(json!({"sourceId":"00000000-0000-4000-8000-000000000001"}))
+        .unwrap();
+    assert_eq!(
+        host.session.lock().unwrap().as_ref().unwrap().child.id(),
+        pid
+    );
+    assert!(!host.is_stopped());
+    assert!(host.suspend().unwrap().released);
+    assert!(host.is_stopped());
+    assert_eq!(
+        host.release_source(json!({"sourceId":"00000000-0000-4000-8000-000000000001"}))
+            .unwrap(),
+        false
+    );
+    assert!(host.session.lock().unwrap().is_none());
+    assert!(host.is_stopped());
+}
+#[test]
 fn stale_retirement_flag_cannot_override_real_session_ownership() {
     let fixture = Fixture::new();
     let host = Host::new(fixture.0.clone());

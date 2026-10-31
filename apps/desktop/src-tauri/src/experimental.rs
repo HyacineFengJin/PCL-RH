@@ -58,6 +58,7 @@ pub enum Operation {
     ExtensionsAction,
     ExtensionsSettings,
     SourceImport,
+    SourceRelease,
     ProviderCatalog,
     ProviderPresets,
     ProviderPresetSave,
@@ -177,6 +178,43 @@ impl Host {
     }
     fn call(&self, operation: &str, args: Value) -> Result<Value, String> {
         self.call_with_effect(operation, args, None, |result, _| Ok(result))
+    }
+    // Releasing one volatile source token never starts a host for cleanup.
+    fn release_source(&self, args: Value) -> Result<Value, String> {
+        let token = args["sourceId"]
+            .as_str()
+            .ok_or("Invalid source release token")?;
+        if args.as_object().is_none_or(|fields| fields.len() != 1)
+            || token.len() != 36
+            || !token.bytes().enumerate().all(|(index, byte)| {
+                if [8, 13, 18, 23].contains(&index) {
+                    byte == b'-'
+                } else {
+                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                }
+            })
+        {
+            return Err("Invalid source release token".into());
+        }
+        self.callers.fetch_add(1, Ordering::SeqCst);
+        let _admission = CallAdmission(&self.callers);
+        let mut owner = self.session.lock().map_err(|_| "实验功能引擎状态不可用")?;
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("启动器正在关闭".into());
+        }
+        let Some(session) = owner.as_mut().filter(|session| !session.broken) else {
+            return Ok(json!(false));
+        };
+        let result = session.call("source_release", args);
+        if owner.as_ref().is_some_and(|session| session.broken) {
+            if let Some(session) = owner.take() {
+                session.retire(false);
+            }
+            if self.retiring.load(Ordering::Acquire) == 0 {
+                self.stopped.store(true, Ordering::SeqCst);
+            }
+        }
+        result
     }
     /// An effect consumes a host permission decision before the session can
     /// process revoke, disable, settings changes or shutdown. The optional game
@@ -415,7 +453,11 @@ pub async fn experimental_call(
             args = shared.code_store().call("agent_context", args)?;
             capture = Some(args.clone());
         }
-        let result = host.call(&operation, args)?;
+        let result = if operation == "source_release" {
+            host.release_source(args)?
+        } else {
+            host.call(&operation, args)?
+        };
         if let Some(captured) = capture {
             let job = result["jobId"]
                 .as_str()

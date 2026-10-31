@@ -98,6 +98,8 @@ export class PorterProjects {
   #root;
   #runtime;
   #queues = new Map();
+  // Remember exact UTF-8 generations, not every project's full source/history.
+  // The current read and write CAS still compare the actual raw bytes below.
   #seen = new Map();
   constructor(root, runtime) {
     this.#root = path.join(root, "porter-projects");
@@ -142,8 +144,9 @@ export class PorterProjects {
     } finally {
       await handle.close();
     }
+    const generation = hash(raw);
     check(
-      !this.#seen.has(id) || this.#seen.get(id) === raw,
+      !this.#seen.has(id) || this.#seen.get(id) === generation,
       "PROJECT_CHANGED",
       "Project changed externally; original file retained. Repair it and restart the host before writing.",
     );
@@ -245,7 +248,7 @@ export class PorterProjects {
         "INVALID_SOURCE",
         "Source baseline fingerprint changed; original file retained",
       );
-    this.#seen.set(id, raw);
+    this.#seen.set(id, generation);
     return { project: p, raw };
   }
   async #write(p, previous) {
@@ -271,7 +274,7 @@ export class PorterProjects {
     await new Workspace(directory)
       .init()
       .then((w) => w.write("project.json", raw));
-    this.#seen.set(p.id, raw);
+    this.#seen.set(p.id, hash(raw));
   }
   async #exclusive(id, mutate) {
     const previous = this.#queues.get(id) || Promise.resolve();

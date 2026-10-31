@@ -7,6 +7,7 @@ import { ExperimentalProjects } from "./ExperimentalProjects";
 import { MakerSource } from "./MakerSource";
 import { createProjectManagerDraft } from "./makerWorkspaceState";
 import type { Api } from "./types";
+import type { PorterSourceOwner, SourceRelease } from "./porterSourceOwner";
 import type {
   ImportedSource,
   PorterOrigin,
@@ -41,6 +42,8 @@ type ExperimentalToolsProps = {
   native: boolean;
   page: ExperimentalPage;
   drafts: RefObject<Partial<Record<ExperimentalPage, ExperimentalDraft>>>;
+  sourceOwner: PorterSourceOwner;
+  releaseSource: SourceRelease;
   initialSource?: ProjectSourceSelection;
   onConfigureAi?: () => void;
   onNavigate: ExperimentalNavigate;
@@ -74,6 +77,8 @@ export function ExperimentalTools(props: ExperimentalToolsProps) {
         api={props.api}
         native={props.native}
         drafts={props.drafts}
+        sourceOwner={props.sourceOwner}
+        releaseSource={props.releaseSource}
         onConfigureAi={props.onConfigureAi}
         onBrowseMods={props.onPorterBrowseMods}
         intake={props.porterIntake}

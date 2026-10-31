@@ -107,6 +107,16 @@ async function dispatch(operation, a) {
       if (agent) return agent.dispatch(operation, a);
       resumePresetId = typeof a.presetId === "string" ? a.presetId : null;
       return true;
+    case "source_release":
+      if (
+        !a ||
+        Object.keys(a).join() !== "sourceId" ||
+        typeof a.sourceId !== "string" ||
+        !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(a.sourceId)
+      )
+        throw new Error("Invalid source release token");
+      // Cleanup cannot initialize Agent/project services on a plugin-only host.
+      return agent ? agent.dispatch(operation, a) : false;
     case "shutdown":
       closing = true;
       return agent ? agent.dispatch(operation, a) : true;

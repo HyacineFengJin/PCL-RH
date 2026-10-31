@@ -177,6 +177,36 @@ test("stale writes and unsupported records are refused while history is retained
   assert.deepEqual(await fs.readFile(file), corrupted);
 });
 
+test("exact generation witness rejects external whitespace and accepts owned durable writes", async (t) => {
+  const { root, projects, p } = await fixture(t);
+  const updated = await projects.addMessage(p.id, {
+    revision: p.revision,
+    content: "Owned update",
+  });
+  assert.equal((await projects.read(p.id)).revision, updated.revision);
+  const file = path.join(root, "porter-projects", p.id, "project.json");
+  const original = await fs.readFile(file, "utf8");
+  const spaced = original + "\n";
+  assert.deepEqual(JSON.parse(spaced), JSON.parse(original));
+  await fs.writeFile(file, spaced, { mode: 0o600 });
+  await assert.rejects(projects.read(p.id), /changed externally/);
+  await assert.rejects(
+    projects.addMessage(p.id, {
+      revision: updated.revision,
+      content: "Refused",
+    }),
+    /changed externally/,
+  );
+  assert.equal(await fs.readFile(file, "utf8"), spaced);
+  await fs.writeFile(file, original, { mode: 0o600 });
+  const next = await projects.addMessage(p.id, {
+    revision: updated.revision,
+    content: "Recovered original generation",
+  });
+  assert.equal(next.revision, updated.revision + 1);
+  assert.equal((await projects.read(p.id)).messages.length, 2);
+});
+
 test("interrupted rounds release project admission without deleting old job records", async (t) => {
   const { projects, p, active, jobs, createJob } = await fixture(t);
   const round = await projects.beginRound(

@@ -3,6 +3,7 @@
  * conversation, cancels a job or discards a typed buffer. */
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { Api } from "../types";
+import { createSourceRelease } from "../porterSourceOwner";
 import {
   experimentalCall,
   type JobView,
@@ -1082,6 +1083,9 @@ export function useController(
   }).current;
   return {
     api: publicApi,
+    // The only cleanup allowed after a view retires is its exact volatile
+    // source token. Capture this render's transport, not a future API ref.
+    releasePorterSource: createSourceRelease(hostApi),
     ...lifecycleMethods,
     native,
     engine,

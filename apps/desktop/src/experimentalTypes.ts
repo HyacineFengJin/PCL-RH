@@ -376,6 +376,7 @@ export type ExperimentalOperation =
   | "extensions_action"
   | "extensions_settings"
   | "source_import"
+  | "source_release"
   | "provider_catalog"
   | "provider_presets"
   | "provider_preset_save"

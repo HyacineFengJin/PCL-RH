@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { ExperimentalProjects } from "../ExperimentalProjects";
 import { ExperimentalPorterWorkspace } from "../ExperimentalPorterWorkspace";
 import { createProjectManagerDraft } from "../makerWorkspaceState";
-import type { ExperimentalDraft } from "../ExperimentalTools";
+import { usePorterDraftOwner } from "../usePorterDraftOwner";
 import type { PorterIntake } from "../experimentalPorterTypes";
 import { useCode } from "./controller";
 import type { Area } from "./types";
@@ -20,9 +20,7 @@ export function LegacyArchive({
   const c = useCode(),
     [page, setPage] = useState(intake ? "porter" : "maker"),
     maker = useRef(createProjectManagerDraft()),
-    porter = useRef<
-      Partial<Record<"maker" | "porter" | "extensions", ExperimentalDraft>>
-    >({});
+    porter = usePorterDraftOwner();
   return (
     <div className="rc-legacy">
       <div className="rc-row">
@@ -39,7 +37,9 @@ export function LegacyArchive({
         <ExperimentalPorterWorkspace
           api={c.api}
           native={c.native}
-          drafts={porter}
+          drafts={porter.drafts}
+          sourceOwner={porter.sourceOwner}
+          releaseSource={c.releasePorterSource}
           intake={intake}
           onIntakeConsumed={onConsumed}
         />

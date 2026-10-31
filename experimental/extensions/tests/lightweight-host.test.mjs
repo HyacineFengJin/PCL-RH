@@ -76,6 +76,9 @@ test('plugin install, cards, grants, enable, remove and shutdown work without an
   assert.deepEqual((await readdir(path.dirname(f.entry))).sort(), ['extensions', 'host.mjs']);
   let host = connect(t, f);
   assert.deepEqual(await host.call('idle_prepare'), { busy: false, resumePresetId: null });
+  assert.equal(await host.call('source_release', { sourceId: '00000000-0000-4000-8000-000000000001' }), false);
+  assert.equal((await host.rpc('source_release', { sourceId: 'invalid' })).ok, false);
+  assert.deepEqual((await readdir(path.dirname(f.entry))).sort(), ['extensions', 'host.mjs']);
   assert.equal(await host.call('idle_resume', { presetId: 'unused-native-locator' }), true);
   assert.deepEqual((await host.call('extensions_list')).entries, []);
   const cancelled = await host.call('extensions_review', { source });

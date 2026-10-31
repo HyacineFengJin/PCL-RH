@@ -727,6 +727,16 @@ export async function createAgentHost({ root, extensions }) {
         sourceImports.set(id, result.files);
         return { sourceId: id, files: result.files, skipped: result.skipped };
       }
+      case "source_release": {
+        if (
+          !a ||
+          Object.keys(a).join() !== "sourceId" ||
+          typeof a.sourceId !== "string" ||
+          !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(a.sourceId)
+        )
+          throw new Error("Invalid source release token");
+        return sourceImports.delete(a.sourceId);
+      }
       case "provider_catalog":
         return getPiCatalog();
       case "provider_presets":
