@@ -413,6 +413,16 @@ class NativePackageTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     PACKAGE.validate_binary(b"not an executable", system, arch)
 
+    def test_finder_entry_uses_the_same_script_and_survives_archive_modes(self) -> None:
+        result = self.run_package()
+        restored = self.unpack(self.output / result["archive"])
+        entry = restored / "Start PCL RH.command"
+        if self.system == "macos":
+            self.assertEqual(entry.read_bytes(), (restored / "start-native.sh").read_bytes())
+            self.assertEqual(stat.S_IMODE(entry.stat().st_mode), 0o755)
+        else:
+            self.assertFalse(entry.exists())
+
     def test_host_rejects_unsupported_native_platform(self) -> None:
         with mock.patch.object(PACKAGE.platform, "system", return_value="Plan9"):
             with self.assertRaisesRegex(ValueError, "Unsupported native"):

@@ -371,6 +371,11 @@ def package(root: Path, binaries: Path, output: Path, profile: str, *,
         for name in sorted(head.entries):
             if selected_resource(name, startup):
                 stage.add_bytes(name, head.read(name), 0o755 if name == "start-native.sh" else 0o644)
+        if system == "macos":
+            # Finder recognizes .command as a Terminal launch entry. It is the
+            # same script, with the same quoted root/argv handling, not an .app
+            # bundle with writable state hidden inside its signed resources.
+            stage.add_bytes("Start PCL RH.command", head.read("start-native.sh"), 0o755)
         for name, data in documents.items():
             if name not in stage.names:
                 stage.add_bytes(name, data)
@@ -386,7 +391,7 @@ def package(root: Path, binaries: Path, output: Path, profile: str, *,
         prerequisites = {
             "linux": "Linux: WebKitGTK 4.1 and its normal desktop runtime libraries are required.",
             "windows": "Windows: Microsoft Edge WebView2 Runtime must already be installed.",
-            "macos": "macOS: uses the system WebKit; use the archive for your native CPU architecture.",
+            "macos": "macOS: uses the system WebKit; use the archive for your native CPU architecture.\nOpen Start PCL RH.command in Finder, or run ./start-native.sh from Terminal.",
         }
         credential_notice = (
             "CurseForge service credentials are declared embedded in this build.\n"

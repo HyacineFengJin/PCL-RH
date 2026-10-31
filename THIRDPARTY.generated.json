@@ -38,7 +38,7 @@
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.toml",
-      "sha256": "743db980b9a5c4af113ff4d06688494a3701e85536d84e0c6c60dd8bac12c02c"
+      "sha256": "49420e6db3acb327c71dddc1c7000cdfd57252c29b47c6f4aa72a89ec053f71d"
     },
     {
       "path": "crates/auth/Cargo.toml",

@@ -3,9 +3,9 @@ name: Native packaging tools
 on:
   push:
     branches: [master]
-    paths: ['tools/*native.py', 'tools/ci/verify-native-package.py', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
+    paths: ['tools/*native.py', 'tools/ci/verify-native-*.py', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
   pull_request:
-    paths: ['tools/*native.py', 'tools/ci/verify-native-package.py', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
+    paths: ['tools/*native.py', 'tools/ci/verify-native-*.py', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
   workflow_dispatch:
 
 permissions:

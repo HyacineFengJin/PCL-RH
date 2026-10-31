@@ -43,6 +43,8 @@ PCL / PCL CE、HMCL、PCL N / Nex 和 DSH 的参考关系另见版权说明。�
 
 ## 分发
 
+Windows 安装器由 [Inno Setup](https://jrsoftware.org/isinfo.php) 生成，安装与卸载引擎版权属于 Jordan Russell、Martijn Laan 等原作者，适用其[独立许可](https://jrsoftware.org/files/is/license.txt)；编译器原有的版权与网站信息保留，不属于本项目的 MIT 授权范围。
+
 随源码或应用分发时保留主许可证、版权范围、第三方说明、许可正文汇总和第三方目录内的原有许可证。若分发新的平台包、修改第三方库或改变链接方式，应按实际构建再次核对对应源代码和许可要求。
 
 应用的「设置 → 关于 → 许可与版权声明」可离线查看这些资料，大份正文按需加载。独立分发附件可由 `python3 tools/licenses/release.py` 生成，包含固定资料及逐文件指纹；该附件和阅读器不将上述证据缺口视作已解决。

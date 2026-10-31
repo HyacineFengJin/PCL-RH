@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod account_appearance;
 mod account_commands;
 mod accounts;
@@ -85,6 +87,7 @@ mod resource_update_commands;
 mod rh_code;
 mod root_removal;
 mod snapshot_commands;
+mod startup_failure;
 mod tasks;
 mod toolbox_download;
 mod toolbox_download_commands;
@@ -2101,13 +2104,8 @@ fn main() {
     ) {
         std::process::exit(code);
     }
-    let project = match project() {
-        Ok(project) => project,
-        Err(error) => {
-            eprintln!("PCL RH 启动失败：{error}");
-            std::process::exit(1);
-        }
-    };
+    let project = project()
+        .unwrap_or_else(|error| startup_failure::exit(startup_failure::Stage::Project, error));
     let launcher_preferences = launcher_prefs::LauncherPreferencesStore::load(&project);
     let initial_preferences = launcher_preferences.snapshot().preferences;
     let network_warning =
@@ -2115,7 +2113,9 @@ fn main() {
             .err()
             .map(|_| "启动器网络设置未能应用，本次会话暂用系统网络策略".to_string());
     pcl_network::install_download_policy(launcher_commands::download_policy(&initial_preferences))
-        .expect("已验证的下载策略无效");
+        .unwrap_or_else(|error| {
+            startup_failure::exit(startup_failure::Stage::DownloadPolicy, error)
+        });
     let xdg = launcher_local_commands::xdg_paths().unwrap_or(launcher_local::XdgPaths {
         applications: PathBuf::new(),
         desktop: None,
@@ -2138,7 +2138,7 @@ fn main() {
         &project,
         launcher_update_commands::current_build(&project),
     )
-    .expect("更新服务初始化失败");
+    .unwrap_or_else(|error| startup_failure::exit(startup_failure::Stage::Updater, error));
     // Recover our executable transaction before any configuration migration or
     // task can write. This is read-only when no update journal exists.
     if let Err(error) = launcher_updates.service.recover() {
@@ -2181,7 +2181,7 @@ fn main() {
         log: Mutex::new(None),
     });
     let _ = launcher_monitor_runtime::refresh(&state);
-    tauri::Builder::default()
+    if let Err(error) = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol(
             "pcl-media",
             launcher_asset_commands::serve_media,
@@ -2434,7 +2434,9 @@ fn main() {
             download_cancel
         ])
         .run(tauri::generate_context!())
-        .expect("桌面应用运行失败");
+    {
+        startup_failure::exit(startup_failure::Stage::Desktop, error);
+    }
 }
 
 #[cfg(test)]

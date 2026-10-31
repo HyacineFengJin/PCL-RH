@@ -365,6 +365,10 @@ CF 下载使用独立来源分支，仅接受允许的官方文件节点之间�
 
 统一打包器只取 HEAD 中白名单生产资源及显式二进制、运行依赖，不导出整个源码树或预建用户状态。解压验证会直接运行桌面程序的 `--build-info`，在项目、账号、网络和 WebView 初始化前取得固定编译信息，核对版本、提交、目标平台、Cargo 配置、`custom-protocol` 和内置 CF 可用状态；CLI 版本独立核对。打包器不执行输入程序，清单中的 `binary_source_commit` 仍保持未知；编译信息的检查结果单独出现在候选验证报告中，不冒充签名或来源认证。流程不创建 tag、发布 Release 或更新本机安装。
 
+`tools/installer-native.py` 从已核验的 Windows 便携包生成 Inno Setup 当前用户安装器。每个资源按清单独立列出并绑定 SHA256，拒绝 Windows 路径别名、指令插入和用户状态目录，不递归复制源码树。卸载使用安装器自己的文件日志，保留运行后产生的用户数据。主 EXE、CLI 优先于其他资源安装，使被占用的主程序尽早阻止升级；这不是任意晚失败可回滚的事务。`tools/ci/verify-native-installer.py` 仅限临时 Windows runner，验证实际安装、快捷方式、占用失败、解锁重装及保留数据的卸载。
+
+正式 Windows 桌面程序使用 GUI subsystem，CLI 保留 console。辅助模式在路径和 WebView 初始化前分流，候选检查读取真实 PE Subsystem，并用显式管道运行 `--build-info` 和拒绝无效构建请求；独立 monitor 夹具也是真实 GUI PE。普通启动的致命错误由 `startup_failure` 输出详细诊断并显示固定原生提示，不把私密路径或未知输入放入弹窗。
+
 ## 多文件下载并发
 
 `pcl-network::for_each_bounded` 轮询有界、借用的 transfer futures，不创建脱离提交者的异步任务。Java 与整合包将已校验的匿名 FD 在每个完成回调中立即暂存；普通资源批量下载使用同一收集器保留待事务导入的文件。出现错误或取消时，所有在途响应、FD 与连接许可先释放，外层才清理暂存。全局连接数与总字节节奏仍由捕获的 `DownloadScheduler` 统一管理；元数据读取和按依赖排序的加载器处理器不变成无序并发。

@@ -160,6 +160,37 @@ def verify_cli_version(raw: str, expected: str) -> None:
     require(raw == f"pcl-cli {expected}\n", "Packaged CLI version differs from its declared version")
 
 
+def pe_subsystem(path: Path) -> int:
+    with path.open("rb") as source:
+        header = source.read(1024 * 1024)
+    require(len(header) >= 64 and header[:2] == b"MZ", "Missing DOS header")
+    offset = struct.unpack_from("<I", header, 60)[0]
+    require(offset + 94 <= len(header) and header[offset:offset + 4] == b"PE\0\0"
+            and struct.unpack_from("<H", header, offset + 24)[0] == 0x20B,
+            "Missing PE32+ optional header")
+    return struct.unpack_from("<H", header, offset + 24 + 68)[0]
+
+
+def verify_windows_entry(root: Path, scratch: Path, build: dict) -> None:
+    if platform.system() != "Windows":
+        return
+    # The production attribute follows assertions, not the Cargo profile label.
+    require(pe_subsystem(root / "pcl-desktop.exe") == (3 if build["debug_assertions"] else 2),
+            "Desktop PE subsystem differs from the native GUI build contract")
+    require(pe_subsystem(root / "pcl-cli.exe") == 3, "CLI lost its console subsystem")
+    # This executes the actual GUI PE with explicit inherited pipes. Invalid
+    # input must fail through NDJSON, before any window, project or compiler.
+    result = subprocess.run([str(root / "pcl-desktop.exe"), "--rh-code-build-runner"],
+                            input="{}\n", capture_output=True, text=True,
+                            encoding="utf-8", cwd=scratch, timeout=15)
+    require(result.returncode == 1 and len(result.stdout) <= 16 * 1024
+            and len(result.stderr) <= 16 * 1024, "GUI build helper failed its bounded pipe protocol")
+    frames = [json.loads(line) for line in result.stdout.splitlines()]
+    require(len(frames) == 1 and frames[0].get("type") == "finished"
+            and frames[0].get("error", {}).get("code") == "INVALID_BUILD_REQUEST",
+            "GUI PE did not return the actual invalid-request frame")
+
+
 def run(command: list[str], cwd: Path, *, input_text: str | None = None) -> str:
     result = subprocess.run(command, cwd=cwd, input=input_text, capture_output=True,
                             text=True, encoding="utf-8", timeout=20, check=False)
@@ -236,6 +267,13 @@ def main() -> None:
         root = unpack(archive, scratch)
         manifest = verify_manifest(root, args.directory / "package-manifest.json")
         desktop_build = smoke(root, scratch, manifest)
+        verify_windows_entry(root, scratch, desktop_build)
+        if platform.system() == "Darwin":
+            entry = root / "Start PCL RH.command"
+            require(entry.read_bytes() == (root / "start-native.sh").read_bytes()
+                    and entry.stat().st_mode & stat.S_IXUSR, "Finder launch entry differs from the portable script")
+            require(verify_desktop_build(run([str(entry), "--build-info"], scratch), manifest) == desktop_build,
+                    "Finder entry did not execute the packaged desktop")
     print(json.dumps({"archive": archive.name, "sha256": actual,
                       "relocated_cli": True, "declarative_host_rpc": True,
                       "desktop_build": desktop_build,

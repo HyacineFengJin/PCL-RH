@@ -6,7 +6,7 @@ use pcl_core::{
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -193,7 +193,32 @@ fn request_bytes(base: &Path) -> Vec<u8> {
     let request = request(base, "live");
     serde_json::to_vec(&serde_json::json!({"schema_version":2,"project":request.project,"root_id":request.root_id,"root_path":request.root_path,"instance_id":request.instance_id,"java":request.java,"args":request.args,"game_dir":request.game_dir,"log_path":request.log_path,"redactions":request.redactions})).unwrap()
 }
+fn assert_gui_pe() {
+    // Check this actual executable, which also serves every helper/game role.
+    // A console wrapper cannot stand in for GUI PE stdio inheritance.
+    let mut file = fs::File::open(env::current_exe().unwrap()).unwrap();
+    let mut dos = [0; 64];
+    file.read_exact(&mut dos).unwrap();
+    assert_eq!(&dos[..2], b"MZ");
+    let offset = u32::from_le_bytes(dos[60..64].try_into().unwrap());
+    assert!(offset >= 64 && offset <= 1024 * 1024);
+    file.seek(SeekFrom::Start(u64::from(offset))).unwrap();
+    let mut pe = [0; 94];
+    file.read_exact(&mut pe).unwrap();
+    assert_eq!(&pe[..4], b"PE\0\0");
+    assert!(u16::from_le_bytes(pe[20..22].try_into().unwrap()) >= 70);
+    assert!(matches!(
+        u16::from_le_bytes(pe[24..26].try_into().unwrap()),
+        0x10b | 0x20b
+    ));
+    assert_eq!(
+        u16::from_le_bytes(pe[92..94].try_into().unwrap()),
+        2,
+        "detached monitor fixture must run as a real Windows GUI PE"
+    );
+}
 pub(super) fn run() {
+    assert_gui_pe();
     // Real production READY/COMMIT/ACK -> normal exit, relative IO and redaction.
     let fixture = Fixture::new();
     let started = monitor::spawn_monitor(request(&fixture.base, "normal")).unwrap();

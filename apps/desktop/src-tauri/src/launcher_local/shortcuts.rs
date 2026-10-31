@@ -20,6 +20,8 @@ const TRASH: &str = ".pcl-linux-entry-trash";
 const LIMIT: u64 = 16 * 1024;
 const CURRENT_NAMES: &str = "Name=PCL RH\nName[zh_CN]=PCL RH\n";
 const FORMER_NAMES: &str = "Name=PCL Linux (实验版)\nName[zh_CN]=PCL Linux（实验版）\n";
+const CURRENT_COMMENTS: &str = "Comment=Minecraft launcher\nComment[zh_CN]=Minecraft 启动器\n";
+const FORMER_COMMENTS: &str = "Comment=Launch existing Minecraft versions on Linux\nComment[zh_CN]=在 Linux 上启动已有的 Minecraft 版本\n";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 pub const PACKAGE_UNINSTALL_UNSUPPORTED:&str="软件包安装的启动器请使用原包管理器（如 paru）移除。本地入口服务仅管理本项目的应用入口与桌面快捷方式，游戏和账号数据会保留。";
 
@@ -139,9 +141,17 @@ impl ShortcutStore {
         )
     }
     fn contents(&self) -> Result<Vec<u8>, String> {
+        self.registered_contents(CURRENT_NAMES, CURRENT_COMMENTS, "pcl-rh.png")
+    }
+    fn registered_contents(
+        &self,
+        names: &str,
+        comments: &str,
+        icon: &str,
+    ) -> Result<Vec<u8>, String> {
         let project = self.project.to_str().ok_or("项目路径必须是 UTF-8")?;
         let exec = desktop_exec(&self.project.join("start-native.sh"))?;
-        Ok(format!("[Desktop Entry]\nType=Application\nVersion=1.0\nName=PCL RH\nName[zh_CN]=PCL RH\nComment=Launch existing Minecraft versions on Linux\nComment[zh_CN]=在 Linux 上启动已有的 Minecraft 版本\nExec={exec}\nPath={}\nIcon={}\nTerminal=false\nCategories=Game;\nKeywords=Minecraft;PCL;Forge;\nStartupNotify=true\nStartupWMClass=pcl-desktop\nX-PCL-Linux-Owner=launcher-local-v1\nX-PCL-Linux-Project={}\n",desktop_value(project)?,desktop_value(&self.project.join("assets/pcl-linux.png").display().to_string())?,self.project_key()).into_bytes())
+        Ok(format!("[Desktop Entry]\nType=Application\nVersion=1.0\n{names}{comments}Exec={exec}\nPath={}\nIcon={}\nTerminal=false\nCategories=Game;\nKeywords=Minecraft;PCL;Forge;\nStartupNotify=true\nStartupWMClass=pcl-desktop\nX-PCL-Linux-Owner=launcher-local-v1\nX-PCL-Linux-Project={}\n",desktop_value(project)?,desktop_value(&self.project.join("assets").join(icon).display().to_string())?,self.project_key()).into_bytes())
     }
     fn legacy(&self) -> Result<Vec<u8>, String> {
         let project = self.project.to_str().ok_or("项目路径必须是 UTF-8")?;
@@ -154,15 +164,19 @@ impl ShortcutStore {
         // Legacy ownership remains recognizable even when its path cannot be
         // encoded into a new Exec token (for example '='). Withdrawal may still
         // preserve that exact registered file for undo.
-        let current = self.contents()?;
-        let former = String::from_utf8(current.clone())
-            .map_err(|_| "应用入口文本无效")?
-            .replace(CURRENT_NAMES, FORMER_NAMES);
-        // Renaming the product must not abandon exact entries or undo records
-        // created by its former name. Ownership/path bytes remain authoritative.
-        Ok(self.legacy_owned(snapshot)?
-            || snapshot.header == current
-            || snapshot.header == former.as_bytes())
+        if self.legacy_owned(snapshot)? || snapshot.header == self.contents()? {
+            return Ok(true);
+        }
+        // Keep the exact former icon/comment bytes with each historical name.
+        // A brand update grants no ownership over arbitrary edited variants.
+        for names in [CURRENT_NAMES, FORMER_NAMES] {
+            if snapshot.header
+                == self.registered_contents(names, FORMER_COMMENTS, "pcl-linux.png")?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     fn legacy_owned(&self, snapshot: &Snapshot) -> Result<bool, String> {
         let former = self.legacy()?;

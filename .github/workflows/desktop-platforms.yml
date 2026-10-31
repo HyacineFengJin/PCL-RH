@@ -178,6 +178,26 @@ jobs:
         # Only private synthetic data, CLI scanning and declarative host RPC.
         # Never opens a GUI, contacts a model or accesses accounts/game roots.
         run: python tools/ci/verify-native-package.py --directory target/native-packages
+      - name: Build a per-user Windows installer
+        if: runner.os == 'Windows'
+        run: python tools/installer-native.py --directory target/native-packages --output target/native-installers
+      - name: Verify installation, occupied files and data-preserving uninstall
+        if: runner.os == 'Windows'
+        # Only this disposable runner's new registration and temporary files.
+        # It never opens a launcher window, game, account or AI session.
+        run: python tools/ci/verify-native-installer.py --directory target/native-installers --portable target/native-packages
+      - name: Save verified Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-user-installer-${{ inputs.profile }}
+          path: |
+            target/native-installers/*.exe
+            target/native-installers/*.sha256
+            target/native-installers/*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Save portable preview
         uses: actions/upload-artifact@v7
         with:
@@ -191,6 +211,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: desktop-build-${{ matrix.os }}
-          path: platform-build-report/
+          path: |
+            platform-build-report/
+            target/native-installers/*.log
           if-no-files-found: ignore
           retention-days: 7

@@ -1,5 +1,8 @@
 //! Production detached-monitor lifecycle using this executable as GUI/helper
 //! and synthetic game. No shell, JVM, Tauri or real game is involved.
+// Exercise real GUI PE inherited pipes even in the debug test profile.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 #[allow(dead_code)]
 #[path = "../../../apps/desktop/src-tauri/src/launcher_game_monitor/control.rs"]
 mod control_port;

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -30,6 +31,23 @@ def desktop() -> dict:
 
 
 class NativeCandidateVerifierTests(unittest.TestCase):
+    def test_actual_pe_optional_header_subsystem_is_read_with_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "native.exe"
+            header = bytearray(512)
+            header[:2] = b"MZ"
+            struct.pack_into("<I", header, 60, 128)
+            header[128:132] = b"PE\0\0"
+            struct.pack_into("<H", header, 152, 0x20B)
+            for value in (2, 3):
+                struct.pack_into("<H", header, 220, value)
+                path.write_bytes(header)
+                self.assertEqual(VERIFY.pe_subsystem(path), value)
+            struct.pack_into("<I", header, 60, 900_000)
+            path.write_bytes(header)
+            with self.assertRaisesRegex(ValueError, "optional header"):
+                VERIFY.pe_subsystem(path)
+
     def setUp(self) -> None:
         self.environment = mock.patch.dict(os.environ, {"GITHUB_SHA": COMMIT})
         self.environment.start()
