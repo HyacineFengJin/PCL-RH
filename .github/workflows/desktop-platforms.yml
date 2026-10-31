@@ -10,12 +10,17 @@ on:
         type: choice
         default: debug
         options: [debug, release]
+      platform:
+        description: Native platform to build (all runs the complete matrix)
+        type: choice
+        default: all
+        options: [all, linux, windows, macos-arm64, macos-x64]
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-platforms-${{ github.ref }}
+  group: desktop-platforms-${{ github.ref }}-${{ inputs.platform }}-${{ inputs.profile }}
   cancel-in-progress: true
 
 jobs:
@@ -24,15 +29,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            label: Linux x64
-          - os: windows-2025
-            label: Windows x64
-          - os: macos-15
-            label: macOS arm64
-          - os: macos-15-intel
-            label: macOS x64
+        include: >-
+          ${{ fromJSON(
+            inputs.platform == 'linux' && '[{"os":"ubuntu-24.04","label":"Linux x64"}]' ||
+            inputs.platform == 'windows' && '[{"os":"windows-2025","label":"Windows x64"}]' ||
+            inputs.platform == 'macos-arm64' && '[{"os":"macos-15","label":"macOS arm64"}]' ||
+            inputs.platform == 'macos-x64' && '[{"os":"macos-15-intel","label":"macOS x64"}]' ||
+            '[{"os":"ubuntu-24.04","label":"Linux x64"},{"os":"windows-2025","label":"Windows x64"},{"os":"macos-15","label":"macOS arm64"},{"os":"macos-15-intel","label":"macOS x64"}]'
+          ) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:

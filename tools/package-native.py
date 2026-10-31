@@ -143,8 +143,19 @@ def reparse(metadata: os.stat_result) -> bool:
 
 
 def stamp(metadata: os.stat_result) -> tuple:
-    return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns)
+    mode = metadata.st_mode
+    if os.name == "nt":
+        # CPython's path stat adds 0111 for .exe/.bat/.cmd/.com; fstat has
+        # no filename and does not. These are suffix-derived bits, not an
+        # NTFS access check. Keep kind/readonly permissions and all identity,
+        # time and native attributes, rather than dropping the mode field.
+        # https://github.com/python/cpython/blob/v3.13.7/Modules/posixmodule.c
+        # update_st_mode_from_path; Python/fileutils.c _Py_fstat_noraise.
+        mode &= ~0o111
+    return (metadata.st_dev, metadata.st_ino, mode, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_nlink,
+            getattr(metadata, "st_file_attributes", None),
+            getattr(metadata, "st_reparse_tag", None))
 
 
 def regular_directory(path: Path) -> None:

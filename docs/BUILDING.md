@@ -56,7 +56,7 @@ python tools/build-native.py --jobs 2
 
 ## 便携测试包
 
-维护者可在 **Actions → Desktop platform builds → Run workflow** 选择 `debug` 或 `release` 构建配置。四个平台分别构建桌面与 CLI，生成对应的 `portable-preview-*` artifact；只有解压、文件校验和命令行 / 声明型插件宿主检查通过才上传测试包。`release` 是编译优化配置，不代表已经正式发行或签名。
+维护者可在 **Actions → Desktop platform builds → Run workflow** 选择 `debug` 或 `release` 构建配置；平台默认 `all`，也可单独验证某个平台。各原生 runner 构建桌面与 CLI，生成对应的 `portable-preview-*` artifact；只有解压、文件校验和命令行 / 声明型插件宿主检查通过才上传测试包。`release` 是编译优化配置，不代表已经正式发行或签名。
 
 下载对应架构的 artifact 后，继续解压其中的 ZIP（Windows）或 tar.gz（Linux/macOS），保持整个 `PCL-RH` 文件夹完整。Windows 运行 `start-native.ps1`，Linux/macOS 在终端运行 `./start-native.sh`。程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。
 

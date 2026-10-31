@@ -212,6 +212,48 @@ class NativePackageTests(unittest.TestCase):
             self.run_package()
         self.assert_no_scratch()
 
+    @unittest.skipUnless(os.name == "nt", "CPython Windows path-derived execute bits")
+    def test_windows_exe_path_and_handle_have_same_snapshot_despite_synthetic_execute_bits(self) -> None:
+        path = self.binaries / "pcl-cli.exe"
+        before = path.lstat()
+        with path.open("rb") as source:
+            held = os.fstat(source.fileno())
+            diagnostic = f"synthetic EXE path={before!r}, handle={held!r}"
+            self.assertEqual(before.st_mode ^ held.st_mode, 0o111, diagnostic)
+            self.assertEqual(PACKAGE.stamp(before), PACKAGE.stamp(held), diagnostic)
+        # A real edit still changes the snapshot. Growth guarantees an
+        # observable difference without depending on NTFS timestamp timing.
+        with path.open("ab") as output:
+            output.write(b"real synthetic input edit")
+        changed = path.lstat()
+        self.assertNotEqual(PACKAGE.stamp(before), PACKAGE.stamp(changed))
+        with path.open("rb") as source:
+            self.assertEqual(PACKAGE.stamp(changed), PACKAGE.stamp(os.fstat(source.fileno())))
+
+    def test_snapshot_keeps_file_identity_after_same_size_replacement(self) -> None:
+        path = self.base / "snapshot-input.bin"
+        path.write_bytes(b"old input bytes")
+        before = path.lstat()
+        replacement = self.base / "snapshot-replacement.bin"
+        replacement.write_bytes(b"new input bytes")
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+        after = path.lstat()
+        self.assertEqual(before.st_size, after.st_size)
+        self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
+        self.assertNotEqual(before.st_ino, after.st_ino)
+        self.assertNotEqual(PACKAGE.stamp(before), PACKAGE.stamp(after))
+
+    @unittest.skipIf(os.name == "nt", "Unix execute permissions are real metadata")
+    def test_unix_snapshot_keeps_real_execute_permission_changes(self) -> None:
+        path = self.base / "snapshot-permissions"
+        path.write_bytes(b"synthetic bytes")
+        path.chmod(0o644)
+        before = path.lstat()
+        path.chmod(0o755)
+        after = path.lstat()
+        self.assertNotEqual(PACKAGE.stamp(before), PACKAGE.stamp(after))
+
     def test_installed_runtime_version_must_match_commit(self) -> None:
         self.node("@earendil-works/pi-coding-agent/package.json", b'{"version":"999"}')
         with self.assertRaisesRegex(ValueError, "Installed Pi version"):
