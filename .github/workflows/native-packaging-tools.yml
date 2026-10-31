@@ -3,9 +3,9 @@ name: Native packaging tools
 on:
   push:
     branches: [master]
-    paths: ['tools/*native.py', 'tools/ci/verify-native-package.py', 'tools/licenses/**', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
+    paths: ['tools/*native.py', 'tools/ci/verify-native-package.py', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
   pull_request:
-    paths: ['tools/*native.py', 'tools/ci/verify-native-package.py', 'tools/licenses/**', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
+    paths: ['tools/*native.py', 'tools/ci/verify-native-package.py', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml']
   workflow_dispatch:
 
 permissions:
@@ -26,8 +26,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Prepare Rust for the incremental identity fixture
+        run: rustup toolchain install stable --profile minimal
       - name: Test actual temporary files and archive round trips
-        # Synthetic bytes only: no compiler, launcher, game, Node host or AI.
+        # Synthetic archives and one std-only incremental Cargo fixture.
+        # Never starts a launcher window, game, Node host or AI.
         run: python -m unittest discover -s tools -p 'test_*native.py'
       - name: Verify attribution bytes on this native checkout
         run: python tools/licenses/release.py --check

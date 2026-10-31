@@ -56,7 +56,11 @@ Java 生命周期检查使用专门的原生可执行夹具，覆盖卡死、输
 cargo test --locked -p pcl-core --test java_probe_lifecycle
 ```
 
-安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口；需要 Java 处理器的 Forge / NeoForge 私有安装仍缺 Windows、macOS 的受限执行后端，会明确拒绝。Java 获取、资源保存、实例改名、重置、删除与还原、引用重放、资源安装与更新的原生业务夹具已通过。启动器自身更新已接 macOS 的原生交换；Windows 能下载、校验与退役更新来源，运行中 EXE 的替换在操作前明确拒绝，尚缺专用 helper。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。日常发行包仍在准备；跨平台源码构建可使用 `tools/build-native.py`，Windows 入口为 `start-native.ps1`，Linux/macOS 入口为 `start-native.sh`，`install-desktop.sh` 仅用于 Linux。
+安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口。通过私有暂存重建游戏核心的整合包安装，在 Windows/macOS 上仍缺 Java 处理器的受限执行后端；检查计划时会依据实际客户端处理器记录给出阻止原因，在下载 Java 或创建私有实例前拒绝。原版、Fabric、没有客户端处理器的计划及无需重建核心的完整游戏包不受这项限制。Linux 仍在工作线程中验证实际 Landlock/openat2 能力。
+
+「下载游戏」的普通组件安装沿用用户选择目标目录与加载器的原有授权和 Java 处理器流程；它与上述私有安装、RH Code 作者代码隔离是不同入口。普通路径没有因这项平台检查而被禁止，也不能据此认为任意 Forge/NeoForge 版本已通过三平台实机验证。
+
+Java 获取、资源保存、实例改名、重置、删除与还原、引用重放、资源安装与更新的原生业务夹具已通过。启动器自身更新已接 macOS 的原生交换；Windows 能下载、校验与退役更新来源，运行中 EXE 的替换在操作前明确拒绝，尚缺专用 helper。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。日常发行包仍在准备；跨平台源码构建可使用 `tools/build-native.py`，Windows 入口为 `start-native.ps1`，Linux/macOS 入口为 `start-native.sh`，`install-desktop.sh` 仅用于 Linux。
 
 ## 原生接口
 

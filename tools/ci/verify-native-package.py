@@ -2,7 +2,8 @@
 """Smoke-check a CI portable archive in a separate extracted tree.
 
 This is a packaging check, not a desktop/game or author-code execution test.
-Only the packaged CLI and trusted declarative Node host run, against new data.
+Only the desktop's build-info path, CLI and trusted declarative Node host run,
+against new data. The desktop report exits before any GUI/state initialization.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import stat
 import struct
@@ -90,7 +92,7 @@ def native_binary(path: Path) -> None:
         require(bool(path.stat().st_mode & stat.S_IXUSR), "Executable permission was lost")
 
 
-def verify_manifest(root: Path, external: Path) -> None:
+def verify_manifest(root: Path, external: Path) -> dict:
     raw = (root / "package-manifest.json").read_bytes()
     require(raw == external.read_bytes(), "Internal and external manifests differ")
     manifest = json.loads(raw)
@@ -99,6 +101,8 @@ def verify_manifest(root: Path, external: Path) -> None:
             and manifest["layout"] == "flat" and manifest["signed"] is False,
             "Unsupported portable preview manifest")
     require(manifest["profile"] in ("debug", "release"), "Unknown Cargo profile")
+    require(isinstance(manifest.get("version"), str) and isinstance(manifest.get("cli_version"), str)
+            and type(manifest.get("curseforge_embedded")) is bool, "Missing package version or service declaration")
     expected_system = {"Linux": "linux", "Windows": "windows", "Darwin": "macos"}[platform.system()]
     expected_arch = "aarch64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64"
     require(manifest["platform"] == expected_system and manifest["arch"] == expected_arch,
@@ -120,6 +124,40 @@ def verify_manifest(root: Path, external: Path) -> None:
             require(stat.S_IMODE(path.stat().st_mode) == entry["mode"], "Member permissions changed: " + name)
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
     require(actual == expected | {"package-manifest.json"}, "Unrecorded or missing packaged files")
+    return manifest
+
+
+def verify_desktop_build(raw: str, manifest: dict) -> dict:
+    require(len(raw.encode("utf-8")) <= 16 * 1024, "Desktop build information exceeds its output bound")
+    info = json.loads(raw)
+    fields = {"schema_version", "product_id", "version", "commit", "profile", "target",
+              "target_os", "target_arch", "debug_assertions", "custom_protocol", "curseforge_embedded"}
+    require(isinstance(info, dict) and set(info) == fields
+            and type(info["schema_version"]) is int and info["schema_version"] == 1
+            and info["product_id"] == "dev.pcl-rh.desktop", "Unsupported desktop build information")
+    require(info["version"] == manifest["version"], "Desktop version differs from the package")
+    require(isinstance(info["commit"], str) and re.fullmatch(r"[0-9a-fA-F]{40}", info["commit"]) is not None
+            and info["commit"] == manifest["commit"], "Desktop commit differs from the package or is unknown")
+    if os.environ.get("GITHUB_SHA"):
+        require(info["commit"] == os.environ["GITHUB_SHA"], "Desktop belongs to another CI commit")
+    require(info["profile"] == manifest["profile"] and info["profile"] in ("debug", "release"),
+            "Desktop profile differs from the package")
+    require(info["target_os"] == manifest["platform"] and info["target_arch"] == manifest["arch"],
+            "Desktop target differs from the package")
+    require(isinstance(info["target"], str) and len(info["target"]) <= 128
+            and re.fullmatch(r"[a-zA-Z0-9_-]+", info["target"]) is not None
+            and info["target"] != "unknown", "Desktop Cargo target is unavailable")
+    require(type(info["debug_assertions"]) is bool, "Desktop debug_assertions must be boolean")
+    require(info["custom_protocol"] is True, "Desktop does not embed the production WebUI")
+    require(type(info["curseforge_embedded"]) is bool
+            and info["curseforge_embedded"] == manifest["curseforge_embedded"],
+            "Desktop embedded service declaration differs from the package")
+    return info
+
+
+def verify_cli_version(raw: str, expected: str) -> None:
+    # subprocess text mode normalizes the native Windows CRLF to one newline.
+    require(raw == f"pcl-cli {expected}\n", "Packaged CLI version differs from its declared version")
 
 
 def run(command: list[str], cwd: Path, *, input_text: str | None = None) -> str:
@@ -131,7 +169,7 @@ def run(command: list[str], cwd: Path, *, input_text: str | None = None) -> str:
     return result.stdout
 
 
-def smoke(root: Path, scratch: Path) -> None:
+def smoke(root: Path, scratch: Path, manifest: dict) -> dict:
     require(not (root / ".pcl-rust").exists(), "Package must not precreate user state")
     marker = json.loads((root / "pcl-rh.json").read_text(encoding="utf-8"))
     require(marker == {"schemaVersion": 1, "productId": "dev.pcl-rh.portable"},
@@ -139,8 +177,12 @@ def smoke(root: Path, scratch: Path) -> None:
     suffix = ".exe" if platform.system() == "Windows" else ""
     for name in ("pcl-desktop", "pcl-cli"):
         native_binary(root / (name + suffix))
+    desktop = str(root / ("pcl-desktop" + suffix))
+    build = verify_desktop_build(run([desktop, "--build-info"], scratch), manifest)
+    require(not (root / ".pcl-rust").exists() and not (scratch / ".pcl-rust").exists(),
+            "Desktop build report initialized launcher state")
     cli = str(root / ("pcl-cli" + suffix))
-    require(run([cli, "--version"], scratch).startswith("pcl-cli "), "Unexpected packaged CLI")
+    verify_cli_version(run([cli, "--version"], scratch), manifest["cli_version"])
     game = scratch / "empty synthetic game"
     game.mkdir()
     listed = run([cli, "--project", str(root), "--root", str(game), "list"], scratch)
@@ -169,7 +211,9 @@ def smoke(root: Path, scratch: Path) -> None:
     for entry in ("experimental/agent-host.mjs", "experimental/runtime/src/index.mjs",
                   "code/agent-adapter.mjs"):
         run([node, "--check", str(root / entry)], scratch)
-    require(not (root / ".pcl-rust").exists(), "Smoke check accidentally initialized launcher state")
+    require(not (root / ".pcl-rust").exists() and not (scratch / ".pcl-rust").exists(),
+            "Smoke check accidentally initialized launcher state")
+    return build
 
 
 def main() -> None:
@@ -190,10 +234,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="relocated space & 项目-", dir=args.directory) as temporary:
         scratch = Path(temporary).resolve()
         root = unpack(archive, scratch)
-        verify_manifest(root, args.directory / "package-manifest.json")
-        smoke(root, scratch)
+        manifest = verify_manifest(root, args.directory / "package-manifest.json")
+        desktop_build = smoke(root, scratch, manifest)
     print(json.dumps({"archive": archive.name, "sha256": actual,
                       "relocated_cli": True, "declarative_host_rpc": True,
+                      "desktop_build": desktop_build,
                       "desktop_or_game_started": False}))
 
 

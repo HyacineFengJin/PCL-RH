@@ -1,8 +1,23 @@
 name: Desktop platform builds
 
 # Compile on each native host and verify a relocated portable preview archive.
-# This workflow does not sign, install or publish a release.
+# This workflow does not sign, install or publish a release. The official
+# caller passes one build-only service credential explicitly, never to npm.
 on:
+  workflow_call:
+    inputs:
+      profile:
+        type: string
+        default: debug
+      platform:
+        type: string
+        default: all
+      official:
+        type: boolean
+        default: false
+    secrets:
+      PCL_RH_CURSEFORGE_API_KEY:
+        required: false
   workflow_dispatch:
     inputs:
       profile:
@@ -20,11 +35,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-platforms-${{ github.ref }}-${{ inputs.platform }}-${{ inputs.profile }}
+  group: desktop-platforms-${{ github.workflow }}-${{ github.ref }}-${{ inputs.platform }}-${{ inputs.profile }}
   cancel-in-progress: true
 
 jobs:
   desktop:
+    if: ${{ !inputs.official || (github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch') }}
     name: Desktop / ${{ matrix.label }}
     strategy:
       fail-fast: false
@@ -53,6 +69,20 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Validate candidate inputs
+        env:
+          BUILD_PLATFORM: ${{ inputs.platform }}
+          OFFICIAL_BUILD: ${{ inputs.official || false }}
+        run: |
+          python - <<'PY'
+          import os
+          profile = os.environ['BUILD_PROFILE']
+          platform = os.environ['BUILD_PLATFORM']
+          if profile not in ('debug', 'release') or platform not in ('all', 'linux', 'windows', 'macos-arm64', 'macos-x64'):
+              raise SystemExit('Unsupported native build input')
+          if os.environ['OFFICIAL_BUILD'] == 'true' and profile != 'release':
+              raise SystemExit('Official candidates require the release profile')
+          PY
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -62,6 +92,19 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Test portable build and archive tools
         run: python -m unittest discover -s tools -p 'test_*native.py'
+      - name: Test build credential validation without service access
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          with tempfile.TemporaryDirectory(prefix='credential-fixture-') as directory:
+              binary = Path(directory) / ('credential-tests.exe' if os.name == 'nt' else 'credential-tests')
+              subprocess.run(['rustc', '+stable', '--edition=2021', '--test',
+                              'apps/desktop/src-tauri/build_credentials.rs', '-o', str(binary)], check=True)
+              subprocess.run([str(binary)], check=True)
+          PY
       - name: Test native UI ports without a desktop session
         # These tests exercise ownership, bounds and invalid-target rejection;
         # they never open a window, access the real clipboard or launch a browser.
@@ -77,8 +120,11 @@ jobs:
           npm ci --prefix experimental/runtime --omit=dev --ignore-scripts --no-audit --no-fund
           python tools/licenses/release.py --check
       - name: Build the complete desktop application
-        # No service credentials, installer signing or publishing. Python keeps
-        # the Cargo exit status and saves the full compiler output on every OS.
+        # The optional credential reaches only Cargo in this step, never npm,
+        # commands, build reports, source resources or package manifests.
+        env:
+          OFFICIAL_BUILD: ${{ inputs.official || false }}
+          OFFICIAL_CURSEFORGE_KEY: ${{ inputs.official && secrets.PCL_RH_CURSEFORGE_API_KEY || '' }}
         run: |
           python - <<'PY'
           import os
@@ -95,10 +141,18 @@ jobs:
                      '-p', 'pcl-cli', '--features', 'pcl-desktop/custom-protocol', '-j', '2']
           if os.environ['BUILD_PROFILE'] == 'release':
               command.append('--release')
+          environment = os.environ.copy()
+          key = environment.pop('OFFICIAL_CURSEFORGE_KEY', '')
+          environment.pop('PCL_RH_CURSEFORGE_API_KEY', None)
+          environment.pop('PCL_RH_CURSEFORGE_API_KEY_FILE', None)
+          if os.environ['OFFICIAL_BUILD'] == 'true':
+              if not key or len(key) > 4096 or not all(33 <= ord(c) <= 126 for c in key):
+                  raise SystemExit('Missing or invalid official CurseForge build secret')
+              environment['PCL_RH_CURSEFORGE_API_KEY'] = key
           with (output / 'desktop-build.log').open('w', encoding='utf-8') as log:
               process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, text=True,
-                                         encoding='utf-8', errors='replace')
+                                         encoding='utf-8', errors='replace', env=environment)
               for line in process.stdout:
                   print(line, end='', flush=True)
                   log.write(line)
@@ -114,8 +168,12 @@ jobs:
           sys.exit(0 if code == 0 else 1)
           PY
       - name: Assemble a native portable preview
+        env:
+          OFFICIAL_BUILD: ${{ inputs.official || false }}
         run: |
-          python tools/package-native.py --binaries "target/$BUILD_PROFILE" --profile "$BUILD_PROFILE" --output target/native-packages
+          args=()
+          if [ "$OFFICIAL_BUILD" = true ]; then args+=(--curseforge-embedded); fi
+          python tools/package-native.py --binaries "target/$BUILD_PROFILE" --profile "$BUILD_PROFILE" --output target/native-packages "${args[@]}"
       - name: Verify the relocated archive and actual bundled plugin host
         # Only private synthetic data, CLI scanning and declarative host RPC.
         # Never opens a GUI, contacts a model or accesses accounts/game roots.

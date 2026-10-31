@@ -1,0 +1,30 @@
+name: Official native candidates
+
+# Optimized, unsigned candidates for manual verification. This workflow has no
+# release-write permission and never creates a tag, publishes or installs.
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Native platform to build
+        type: choice
+        default: all
+        options: [all, linux, windows, macos-arm64, macos-x64]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: official-native-${{ github.ref }}-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  candidates:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/desktop-platforms.yml
+    with:
+      profile: release
+      platform: ${{ inputs.platform }}
+      official: true
+    secrets:
+      PCL_RH_CURSEFORGE_API_KEY: ${{ secrets.PCL_RH_CURSEFORGE_API_KEY }}

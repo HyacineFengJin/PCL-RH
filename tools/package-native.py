@@ -14,18 +14,25 @@ import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
+import re
 import shutil
 import stat
 import struct
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import types
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_FILES = 100_000
 MAX_BYTES = 2 * 1024**3
+SEMVER_NUMBER = r"(?:0|[1-9][0-9]*)"
+SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER = re.compile(SEMVER_NUMBER + r"\." + SEMVER_NUMBER + r"\." + SEMVER_NUMBER
+                    + r"(?:-" + SEMVER_IDENTIFIER + r"(?:\." + SEMVER_IDENTIFIER + r")*)?"
+                    + r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
 REQUIRED = (
     "pcl-rh.json", "code/plugins.json", "code/agent-adapter.mjs",
     "experimental/host.mjs", "experimental/agent-host.mjs", "experimental/python-host.py",
@@ -48,6 +55,12 @@ def relative_name(name: str) -> str:
             and not any(ord(character) < 32 for character in name),
             "Unsafe resource name: " + repr(name))
     return name
+
+
+def checked_version(value: object) -> str:
+    require(isinstance(value, str) and len(value) <= 128 and SEMVER.fullmatch(value) is not None,
+            "Expected a filename-safe SemVer version")
+    return value
 
 
 def native_host() -> tuple[str, str]:
@@ -107,6 +120,17 @@ class Head:
         mode, oid = self.entries[name]
         require(mode in ("100644", "100755"), "Linked or special HEAD resource: " + name)
         return self.git("cat-file", "blob", oid)
+
+
+def package_versions(head: Head) -> tuple[str, str]:
+    desktop = tomllib.loads(head.read("apps/desktop/src-tauri/Cargo.toml").decode("utf-8"))["package"]
+    cli = tomllib.loads(head.read("crates/cli/Cargo.toml").decode("utf-8"))["package"]
+    tauri = json.loads(head.read("apps/desktop/src-tauri/tauri.conf.json"))
+    require(desktop.get("name") == "pcl-desktop" and cli.get("name") == "pcl-cli",
+            "Unexpected Cargo package identity")
+    version, cli_version = checked_version(desktop.get("version")), checked_version(cli.get("version"))
+    require(checked_version(tauri.get("version")) == version, "Desktop Cargo and Tauri versions differ")
+    return version, cli_version
 
 
 def selected_resource(name: str, startup: str) -> bool:
@@ -311,13 +335,16 @@ def write_archive(destination: Path, stage: Stage, system: str) -> None:
                         archive.addfile(info, source)
 
 
-def package(root: Path, binaries: Path, output: Path, profile: str) -> dict[str, str]:
+def package(root: Path, binaries: Path, output: Path, profile: str, *,
+            curseforge_embedded: bool = False) -> dict[str, str]:
     system, arch = native_host()
     require(profile in ("debug", "release"), "Unsupported Cargo profile")
     require(not output.is_relative_to(root / "experimental/runtime/node_modules"),
             "Package output must be outside the installed runtime tree")
     regular_directory(binaries)
     head = Head(root)
+    version, cli_version = package_versions(head)
+    require(type(curseforge_embedded) is bool, "CurseForge embedded declaration must be boolean")
     startup = "start-native.ps1" if system == "windows" else "start-native.sh"
     for name in (*REQUIRED, startup):
         head.read(name)
@@ -330,7 +357,7 @@ def package(root: Path, binaries: Path, output: Path, profile: str) -> dict[str,
             "Runtime package lock does not describe the committed runtime dependencies")
     module, documents, issues = license_inputs(head)
     suffix = ".zip" if system == "windows" else ".tar.gz"
-    archive_name = f"pcl-rh-{system}-{arch}-{profile}" + suffix
+    archive_name = f"pcl-rh-{version}-{system}-{arch}-{profile}" + suffix
     names = {"archive": archive_name, "sha256": archive_name + ".sha256",
              "manifest": "package-manifest.json", "license": "licenses/pcl-rh-license-notices.zip"}
     output.mkdir(parents=True, exist_ok=True)
@@ -361,19 +388,27 @@ def package(root: Path, binaries: Path, output: Path, profile: str) -> dict[str,
             "windows": "Windows: Microsoft Edge WebView2 Runtime must already be installed.",
             "macos": "macOS: uses the system WebKit; use the archive for your native CPU architecture.",
         }
-        readme = (f"PCL RH portable {system}/{arch} ({profile})\n\n"
+        credential_notice = (
+            "CurseForge service credentials are declared embedded in this build.\n"
+            if curseforge_embedded else
+            "No CurseForge service credential is declared for this package.\n")
+        readme = (f"PCL RH {version} portable {system}/{arch} ({profile})\n\n"
                   f"Start with {startup} from this extracted folder. Keep its resources together.\n"
                   + prerequisites[system] + "\n"
-                  "RH Code additionally needs Node.js >=22.19 at a supported standard installation location.\n"
+                  "RH Code and community declarative plugin services need external Node.js >=22.19\n"
+                  "at a supported standard installation location.\n"
                   "The archive includes runtime dependencies, not a Node.js or Java installation.\n"
+                  "Game Java can be downloaded by the launcher; author builds need an external supported JDK.\n"
                   "Native author-code builds and Forge processor execution remain platform restricted.\n"
                   "This unsigned development/test archive uses manual replacement for updates.\n"
-                  "No official CurseForge API key is included.\n")
+                  + credential_notice)
         stage.add_bytes("README-native.txt", readme.encode("utf-8"))
         license_path = scratch / "license-notices.zip"
         module.write_bundle(license_path, documents, issues)
         stage.add_file("pcl-rh-license-notices.zip", license_path, 0o644)
         manifest = {"schema_version": 1, "product_id": "dev.pcl-rh.portable", "commit": head.commit,
+                    "version": version, "cli_version": cli_version,
+                    "curseforge_embedded": curseforge_embedded,
                     "commit_scope": "tracked_resources", "binary_source_commit": None,
                     "binary_provenance": "explicit_native_inputs",
                     "platform": system, "arch": arch, "profile": profile, "layout": "flat",
@@ -412,9 +447,12 @@ def main() -> None:
     parser.add_argument("--binaries", type=Path, required=True, help="explicit native Cargo output directory")
     parser.add_argument("--profile", choices=("debug", "release"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--curseforge-embedded", action="store_true",
+                        help="declare an embedded service credential; archive verification must confirm it")
     args = parser.parse_args()
     try:
-        print(json.dumps(package(ROOT, args.binaries.absolute(), args.output.absolute(), args.profile)))
+        print(json.dumps(package(ROOT, args.binaries.absolute(), args.output.absolute(), args.profile,
+                                 curseforge_embedded=args.curseforge_embedded)))
     except (ValueError, OSError, KeyError, UnicodeError, subprocess.CalledProcessError) as error:
         parser.exit(1, "Native packaging failed: " + str(error) + "\n")
 

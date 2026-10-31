@@ -57,6 +57,9 @@ class NativePackageTests(unittest.TestCase):
         self.git("init", "-q")
         for name in PACKAGE.REQUIRED:
             self.write(name, b"synthetic production resource\n")
+        self.write("apps/desktop/src-tauri/Cargo.toml", b'[package]\nname="pcl-desktop"\nversion="0.2.0"\n')
+        self.write("apps/desktop/src-tauri/tauri.conf.json", b'{"version":"0.2.0"}')
+        self.write("crates/cli/Cargo.toml", b'[package]\nname="pcl-cli"\nversion="0.1.0"\n')
         self.write("pcl-rh.json", json.dumps({"schemaVersion": 1, "productId": "dev.pcl-rh.portable"}).encode())
         dependencies = {"@earendil-works/pi-coding-agent": "1.0.4"}
         self.write("experimental/runtime/package.json", json.dumps({"dependencies": dependencies}).encode())
@@ -145,6 +148,10 @@ class NativePackageTests(unittest.TestCase):
         self.assertEqual(manifest["binary_provenance"], "explicit_native_inputs")
         self.assertEqual(manifest["platform"], self.system)
         self.assertEqual(manifest["arch"], self.arch)
+        self.assertEqual(manifest["version"], "0.2.0")
+        self.assertEqual(manifest["cli_version"], "0.1.0")
+        self.assertIs(manifest["curseforge_embedded"], False)
+        self.assertIn("pcl-rh-0.2.0-", archive.name)
         self.assertEqual(manifest["layout"], "flat")
         self.assertFalse(manifest["signed"])
         expected = set()
@@ -184,6 +191,38 @@ class NativePackageTests(unittest.TestCase):
         self.assertEqual(list(self.output.iterdir()), [sentinel])
         self.assertEqual(sentinel.read_bytes(), b"untouched")
         self.assert_no_scratch()
+
+    def test_versions_come_from_head_and_reject_cargo_tauri_mismatch(self) -> None:
+        self.write("apps/desktop/src-tauri/Cargo.toml", b'[package]\nname="pcl-desktop"\nversion="9.9.9"\n')
+        self.assertEqual(PACKAGE.package_versions(PACKAGE.Head(self.root)), ("0.2.0", "0.1.0"))
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "Cargo and Tauri versions differ"):
+            self.run_package()
+        self.assertFalse(self.output.exists())
+
+    def test_versions_are_strict_semver_and_safe_in_archive_names(self) -> None:
+        for version in ("0.2.0", "1.2.3-rc.1+ci.001", "0.0.0-0", "10.20.30-alpha-1"):
+            self.assertEqual(PACKAGE.checked_version(version), version)
+        for invalid in (None, 2, "v1.2.3", "01.2.3", "1.02.3", "1.2.03", "1.2.3-01", "1.2.3+",
+                        "1.2.3/../../private", "1.2.3\n", "1.2.3-测试", "1.2.3:private", "1.2.3;command"):
+            with self.subTest(version=invalid), self.assertRaisesRegex(ValueError, "SemVer"):
+                PACKAGE.checked_version(invalid)
+        self.write("apps/desktop/src-tauri/Cargo.toml", b'[package]\nname="pcl-desktop"\nversion="1.2.3-01"\n')
+        self.write("apps/desktop/src-tauri/tauri.conf.json", b'{"version":"1.2.3-01"}')
+        self.commit()
+        with self.assertRaisesRegex(ValueError, "SemVer"):
+            self.run_package()
+
+    def test_explicit_embedded_credential_declaration_changes_manifest_and_readme(self) -> None:
+        result = PACKAGE.package(self.root, self.binaries, self.output, "debug", curseforge_embedded=True)
+        extracted = self.unpack(self.output / result["archive"])
+        manifest = json.loads((extracted / "package-manifest.json").read_bytes())
+        self.assertIs(manifest["curseforge_embedded"], True)
+        self.assertIsNone(manifest["binary_source_commit"])
+        readme = (extracted / "README-native.txt").read_text(encoding="utf-8")
+        self.assertIn("credentials are declared embedded", readme)
+        self.assertNotIn("No official CurseForge API key", readme)
+        self.assertIn("community declarative plugin services", readme)
 
     def test_missing_marker_or_lock_is_not_satisfied_by_worktree_copy(self) -> None:
         for name in ("pcl-rh.json", "experimental/runtime/package-lock.json"):

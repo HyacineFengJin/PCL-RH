@@ -357,7 +357,9 @@ CF 下载使用独立来源分支，仅接受允许的官方文件节点之间�
 
 运行时的同名环境变量优先于内置值，供开发者覆盖。自行构建也可设置 `PCL_RH_CURSEFORGE_API_KEY_FILE` 指向自己的私有文件；构建时环境变量优先于文件。未提供凭据的源码构建仍可使用其他资源服务，CF 入口会报告未配置。无效覆盖不会静默回退到官方凭据。维护者应将私有文件置于版本管理之外，限制文件访问权限。
 
-`Official Linux build` 工作流仅由官方仓库 `master` 手动触发，生成含原生可执行文件、源码、RH Code 运行依赖及版权资料的 Linux x86_64 压缩包，不自动创建 Release。下载后解压到可写目录，运行 `./start-native.sh`；主机仍需 Node.js 22.19+、GTK 3、WebKitGTK 4.1 与系统密钥环等运行依赖。该构建不代表 Windows/macOS 桌面发行已完成。
+`Official native candidates` 工作流仅由官方仓库 `master` 手动触发，复用 `desktop-platforms.yml` 在四个原生主机生成 `release` 配置的未签名候选包。官方 CF 凭据只显式传给 Cargo 构建步骤，npm、运行检查、清单和日志不接收凭据值。普通 `Desktop platform builds` 继续构建不含官方凭据的预览。
+
+统一打包器只取 HEAD 中白名单生产资源及显式二进制、运行依赖，不导出整个源码树或预建用户状态。解压验证会直接运行桌面程序的 `--build-info`，在项目、账号、网络和 WebView 初始化前取得固定编译信息，核对版本、提交、目标平台、Cargo 配置、`custom-protocol` 和内置 CF 可用状态；CLI 版本独立核对。打包器不执行输入程序，清单中的 `binary_source_commit` 仍保持未知；编译信息的检查结果单独出现在候选验证报告中，不冒充签名或来源认证。流程不创建 tag、发布 Release 或更新本机安装。
 
 ## 多文件下载并发
 
