@@ -29,7 +29,13 @@ fn native_sources_and_retained_parents_bind_complete_content_and_identity() {
             hash_file(held.try_clone().unwrap(), MAX_BYTES, None).unwrap(),
             first
         );
-        move_new(&input, "pack.zip", &input, "retained-pack.zip").unwrap();
+        pcl_core::file_ops::rename_noreplace_at(
+            &input.0,
+            "pack.zip".as_ref(),
+            &input.0,
+            "retained-pack.zip".as_ref(),
+        )
+        .unwrap();
         input
             .create("pack.zip")
             .unwrap()
