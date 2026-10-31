@@ -79,6 +79,18 @@ impl ResolvedInstallRequest {
         }
         Ok(Some(ProcessorJavaRequirement { major, exact: true }))
     }
+    /// Reject only a known missing platform backend for a private bound install.
+    /// This inspects captured client processors, not the loader's name. Success
+    /// does not prove that this host's kernel supports confinement: Linux still
+    /// checks Landlock/openat2 in its owned worker before installation writes.
+    /// The ordinary path-based installation API keeps its existing contract.
+    pub fn check_bound_platform_support(&self) -> Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        if self.processor_java_requirement()?.is_some() {
+            return Err("此平台的 Java 安装处理器写入隔离尚未可用".into());
+        }
+        Ok(())
+    }
     /// The launch metadata represented by this captured native authority.
     /// This performs no HTTP or Java work and retains no extra cached value.
     /// Pack adapters can compare their declared runtime against the same profile
@@ -294,6 +306,7 @@ impl Installer {
         on_progress: impl Fn(Progress) + Send + Sync,
     ) -> Result<InstallResult> {
         check(cancel)?;
+        resolved.check_bound_platform_support()?;
         let root = InstallDir::bound(root)?;
         // Initialize the shared HTTP executor outside the confined worker. It
         // only handles HTTP futures; consume/copy/persist run on this worker.

@@ -297,6 +297,11 @@ impl ConfirmationCache {
                 .with_cache_source(Path::new(&root.path))?
                 .with_download_policy(scheduler.clone());
             let resolved = installer.resolve_request(&checked.request()?, cancel)?;
+            if let Err(reason) = resolved.check_bound_platform_support() {
+                checked.plan.installable = false;
+                checked.plan.preview.blockers.push(reason);
+                return Ok(checked.plan);
+            }
             Some(ConfirmedCore {
                 installer,
                 resolved,
@@ -622,6 +627,9 @@ pub(super) fn start_source(
         &name,
         &revision,
     )?;
+    if let Some(core) = &authority.core {
+        core.resolved.check_bound_platform_support()?;
+    }
     let mut scope = TaskScope::root(Path::new(&root.path))?;
     let java = if authority
         .core
@@ -719,6 +727,11 @@ fn execute(
     mut java: Option<crate::installer_java::Context>,
 ) -> Result<serde_json::Value> {
     task.wait_turn()?;
+    // Recheck captured authority before recovery, Java acquisition or creating
+    // a private build. An older confirmation cannot authorize a missing backend.
+    if let Some(core) = &authority.core {
+        core.resolved.check_bound_platform_support()?;
+    }
     let cancel = task.cancellation_token();
     app_gate(shared, root, &authority.checked.plan.name)?;
     if let Some(java) = &java {

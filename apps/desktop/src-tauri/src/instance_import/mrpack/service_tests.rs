@@ -239,7 +239,17 @@ fn bundled_pack_never_probes_missing_manual_java_or_creates_the_managed_store() 
     f.shared.tasks.set_listener(move |snapshot| {
         observed.lock().unwrap().push(snapshot.phase);
     });
+    let before = tree(Path::new(&f.root.path));
     let plan = f.prepare("BundledWithoutJava");
+    assert!(plan.installable);
+    assert!(plan.preview.blockers.is_empty());
+    assert!(plan.revision.starts_with("pack-confirm-v1:"));
+    assert_eq!(tree(Path::new(&f.root.path)), before);
+    assert!(!f.project.0.join(".pcl-rust/java").exists());
+    assert!(f.shared.pack_confirmations.entries.lock().unwrap()[0]
+        .authority
+        .core
+        .is_none());
     let id = f.submit(&f.root, &plan);
     let terminal = f.shared.tasks.wait_terminal(&id).unwrap();
     assert_eq!(terminal.stage, TaskStage::Complete, "{:?}", terminal.error);
@@ -250,6 +260,7 @@ fn bundled_pack_never_probes_missing_manual_java_or_creates_the_managed_store() 
         .unwrap()
         .iter()
         .all(|phase| !phase.starts_with("java-")));
+    assert_eq!(budget(&f.shared.pack_confirmations), (0, 0));
 }
 
 #[test]

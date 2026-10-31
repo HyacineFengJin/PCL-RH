@@ -193,6 +193,33 @@ impl Fixture {
         routes.insert(path.clone(), archive);
         path
     }
+    fn installer_processors(&self, path: &str, processors: Value) {
+        let raw = self.routes.lock().unwrap()[path].clone();
+        let mut archive = zip::ZipArchive::new(Cursor::new(raw)).unwrap();
+        let mut entries = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            if name == "install_profile.json" {
+                let mut install: Value = serde_json::from_slice(&bytes).unwrap();
+                install["processors"] = processors.clone();
+                bytes = serde_json::to_vec(&install).unwrap();
+            }
+            entries.push((name, bytes));
+        }
+        let raw = jar(&entries
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect::<Vec<_>>());
+        let mut routes = self.routes.lock().unwrap();
+        routes.insert(
+            format!("{path}.sha1"),
+            format!("{:x}", Sha1::digest(&raw)).into_bytes(),
+        );
+        routes.insert(path.into(), raw);
+    }
 }
 
 fn processor_authority(install: Option<Value>, major: u32) -> ResolvedInstallRequest {
@@ -282,6 +309,82 @@ fn processor_java_requirement_rejects_invalid_major_only_when_processors_need_it
                 .unwrap(),
             None
         );
+    }
+}
+
+#[test]
+fn bound_platform_support_uses_resolved_client_processors_not_provider_names() {
+    for provider in ["forge", "neoforge"] {
+        let fixture = Fixture::new("fixture");
+        let version = if provider == "forge" {
+            "fixture-1"
+        } else {
+            "1"
+        };
+        let path = fixture.fabricate_installer(provider, "1", "fixture", version, true);
+        for (processors, client) in [
+            (json!([]), false),
+            (json!([{"sides":["server"]}]), false),
+            (json!([{"sides":[]}]), false),
+            (json!([{}]), true),
+            (json!([{"sides":["client"]}]), true),
+            (json!([{"sides":["server","client"]}]), true),
+        ] {
+            fixture.installer_processors(&path, processors);
+            let installer = fixture.installer();
+            let resolved = installer
+                .resolve_request(
+                    &fixture.request(Some(provider), "1"),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            assert_eq!(
+                resolved.processor_java_requirement().unwrap().is_some(),
+                client
+            );
+            fixture.clear_hits();
+            let support = resolved.check_bound_platform_support();
+            if cfg!(target_os = "linux") || !client {
+                support.unwrap(); // Known platform capability only, not a kernel probe.
+            } else {
+                assert!(support.unwrap_err().contains("写入隔离尚未可用"));
+                let root = tempfile::tempdir().unwrap();
+                fs::write(root.path().join("keep"), b"original").unwrap();
+                let held = pcl_core::retained_fs::Directory::open_absolute(
+                    &root.path().canonicalize().unwrap(),
+                )
+                .unwrap();
+                let error = installer
+                    .with_java(root.path().join("must-not-probe-java"))
+                    .install_resolved_request_bound(
+                        held.try_clone_file().unwrap(),
+                        &resolved,
+                        &AtomicBool::new(false),
+                        |_| panic!("unsupported install emitted progress"),
+                    )
+                    .unwrap_err();
+                assert!(error.contains("写入隔离尚未可用"), "{error}");
+                assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+                assert_eq!(fs::read(root.path().join("keep")).unwrap(), b"original");
+            }
+            assert!(
+                fixture.hits.lock().unwrap().is_empty(),
+                "pure check must not fetch or install"
+            );
+        }
+    }
+    let fixture = Fixture::new("fixture");
+    fixture.fabricate_fabric();
+    for request in [
+        fixture.request(None, ""),
+        fixture.request(Some("fabric"), "0.16.0"),
+    ] {
+        let resolved = fixture
+            .installer()
+            .resolve_request(&request, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(resolved.processor_java_requirement().unwrap(), None);
+        resolved.check_bound_platform_support().unwrap();
     }
 }
 
