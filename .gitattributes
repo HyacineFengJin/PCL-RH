@@ -1,3 +1,7 @@
+# Keep hashed source/lock inputs stable on Windows as well as Unix. Explicit
+# verbatim notices below retain their original bytes and line endings.
+* text=auto eol=lf
+
 # Preserve upstream notice bytes, including mixed CRLF and original spaces.
 LICENSES/DEPENDENCIES.txt -text -whitespace
 

@@ -17,17 +17,17 @@ PCL RH 已通过 Linux x64、Windows x64、macOS Intel / Apple Silicon 的完整
 | 独立游戏子进程生命周期 | 已接生产监控器 | 已接独立监控；原生会话、管道截止时间与句柄继承夹具通过 | 原生进程组与独立监控夹具通过 |
 | Java 获取、资源另存、实例日志与本机状态存储 | 已实现 | 原生服务检查通过 | Intel / Apple Silicon 原生服务检查通过 |
 | 整合包导入、实例导出与导出预设 | Linux 回归通过 | 已接原生端口，完整业务仍待验证 | 已接原生端口，完整业务仍待验证 |
-| 模组下载、资源安装 / 更新 / 撤销、实例改名与引用重放 | Linux 业务回归通过 | 原生事务已通过；文件变更指纹修复待原生复验 | Intel / Apple Silicon 原生业务 CI 通过 |
+| 模组下载、资源安装 / 更新 / 撤销、实例改名与引用重放 | Linux 业务回归通过 | 原生业务 CI 通过，含内容指纹、取消与旧撤销记录保留 | Intel / Apple Silicon 原生业务 CI 通过 |
 | 实例重置、启动准备、内存估算与诊断导出 | Linux 回归通过 | 原生业务 CI 通过 | Intel / Apple Silicon 原生业务 CI 通过 |
 | 可恢复实例删除与还原 | Linux 回归通过 | 原生 journal、依赖检查与还原夹具通过 | Intel / Apple Silicon 原生业务 CI 通过 |
 | 启动器自身更新 | Linux 回归通过 | 下载、校验与退役夹具通过；运行中 exe 替换未实现 | 原生交换、校验与恢复夹具通过 |
-| RH Code 项目扫描与来源绑定 | 回归通过 | 已接真实文件身份与来源文档，原生 CI 待验证 | 已接保留目录与来源文档，原生 CI 待验证 |
+| RH Code 项目扫描与来源绑定 | 回归通过 | 原生文件与来源绑定夹具通过 | Intel / Apple Silicon 原生夹具通过 |
 | RH Code 源码应用与资源保存 | 原有事务回归通过 | 尚未实现原生事务，修改前明确拒绝 | 尚未实现原生事务，修改前明确拒绝 |
 | RH Code 作者代码构建 | Linux bubblewrap 隔离 | 缺少隔离实现，返回 blocked | 缺少隔离实现，返回 blocked |
-| RH Code 可信 Node 宿主与有界 RPC | Linux 回归通过 | 已接原生锁、管道与退役端口，CI 待验证 | 已接原生锁、管道与退役端口，CI 待验证 |
+| RH Code 可信 Node 宿主与有界 RPC | Linux 回归通过 | 原生锁、管道与退役夹具通过，完整 AI 待实测 | Intel / Apple Silicon 原生夹具通过，完整 AI 待实测 |
 | WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
 | 完整桌面编译与链接 | 原生 CI 通过，x64 | 原生 CI 通过，x64 | Intel / Apple Silicon 原生 CI 通过 |
-| 安装与恢复事务、进程监控、发行包 | Linux 实现 | 尚未适配完成 | 尚未适配完成 |
+| 标准安装包与实机游戏验证 | 待完成发行验证 | 待完成 | Intel / Apple Silicon 待完成 |
 
 架构判断不会把 `x86` 当成 `x86_64`，也不会把 ARM 当成 x64。原生库提取使用平台对应的 `.so`、`.dll`、`.dylib` / `.jnilib`；旧元数据中的 `${arch}` 按目标位数展开。Mojang 没有提供的 Java 平台会报告不可用，不会自动下载其他架构的运行时。仅有分类支持不表示所有 Minecraft 版本都有对应架构的原生库。
 
@@ -55,7 +55,7 @@ Java 生命周期检查使用专门的原生可执行夹具，覆盖卡死、输
 cargo test --locked -p pcl-core --test java_probe_lifecycle
 ```
 
-安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口；需要 Java 处理器的 Forge / NeoForge 私有安装仍缺 Windows、macOS 的受限执行后端，会明确拒绝。Java 获取与资源保存已接原生端口；实例改名、重置、引用重放、资源安装与更新已接原生文件接口，新增业务检查仍待原生 CI。启动器自身更新已接 macOS 的原生交换；Windows 能下载、校验与退役更新来源，运行中 EXE 的替换在操作前明确拒绝，尚缺专用 helper。Code 宿主仍有 Linux 接口，Windows 实例删除的日志事务也未完成。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。其他平台尚无可供日常使用的安装包；当前 `build-native.sh`、`start-native.sh` 与 `install-desktop.sh` 是 Linux 脚本。
+安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口；需要 Java 处理器的 Forge / NeoForge 私有安装仍缺 Windows、macOS 的受限执行后端，会明确拒绝。Java 获取、资源保存、实例改名、重置、删除与还原、引用重放、资源安装与更新的原生业务夹具已通过。启动器自身更新已接 macOS 的原生交换；Windows 能下载、校验与退役更新来源，运行中 EXE 的替换在操作前明确拒绝，尚缺专用 helper。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。日常发行包仍在准备；跨平台源码构建可使用 `tools/build-native.py`，Windows 入口为 `start-native.ps1`，Linux/macOS 入口为 `start-native.sh`，`install-desktop.sh` 仅用于 Linux。
 
 ## 原生接口
 
@@ -83,29 +83,29 @@ GitHub 的 **Native UI ports** 工作流在四个原生 runner 上独立执行�
 
 Windows/macOS 会额外拒绝同一文件的别名改名；如果发布后源名字被其他操作重新创建，也会报冲突，此时文件可能已经发布，调用方须核对事务状态。这个原语不替代父目录准入、源文件身份核验、持久化刷新、事务日志或中断恢复，不能据此认为整个安装器已经跨平台。
 
-**Installer transactions** 工作流在四个原生 runner 先编译完整生产安装器，再运行安装与恢复测试。[四个平台均已通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41167694800)。夹具包含实际回环 HTTP、原版 / Fabric 安装、各平台原生 ZIP 提取、取消清理、并发冲突、损坏修复和中断恢复；不访问真实游戏目录。Linux 另有依赖 Landlock 的合成 Java 处理器测试。该结果不是完整桌面编译、真实 Mojang 下载或游戏启动验证。
+**Installer transactions** 工作流在四个原生 runner 先编译完整生产安装器，再运行安装与恢复测试。[四个平台均已通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773888)。夹具包含实际回环 HTTP、原版 / Fabric 安装、各平台原生 ZIP 提取、取消清理、并发冲突、损坏修复和中断恢复；资源事务包含 512 个真实输入的发布、历史和撤销检查，不访问真实游戏目录。Linux 另有依赖 Landlock 的合成 Java 处理器测试。该结果不是完整桌面编译、真实 Mojang 下载或游戏启动验证。
 
 Windows 的启动器状态文档通过不可变修订日志保存，保留原文件作为身份与内容基线；不会用两次改名模拟原子替换。动态导出预设与导入日志使用调用者显式授予的文档能力，不按任意文件名前缀开放权限。损坏、外部修改或无法确认的提交会保留证据并拒绝覆盖。该机制不能在没有外部锚点时检测整个状态目录同时回滚。
 
 Windows 的状态文档支持显式缺失与重新创建：删除后保存会产生新的逻辑修订，旧状态不能重新授权写入。Unix 的既有日志字段与顺序保持兼容。资源来源的命名暂存由登记凭据持有；已写入退役意图的来源可以恢复清理，只有分配或封存记录的中断来源会保留并阻止新写，不按文件名前缀删除。Windows 的资源终态日志也保留原始基线，仍受历史数量与字节配额约束。
 
-Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约。原生夹具覆盖相对文件操作、目录替换拒绝、停止与独立监控进程退出；它约束拥有者存活期间的目录生命周期，不是任意程序沙箱，也尚未代替完整桌面监控器的接线。macOS 自定义 Seatbelt 规则与 Windows 普通路径工作目录的候选实现出现过实际反例，未作为安全后端启用。
+Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约，已接独立监控器。原生夹具覆盖相对文件操作、目录替换拒绝、GUI 退出后游戏继续运行、精确会话停止与管道退役；它约束拥有者存活期间的目录生命周期，不是任意程序沙箱。macOS 自定义 Seatbelt 规则与 Windows 普通路径工作目录的候选实现出现过实际反例，未作为安全后端启用。
 
 ## 桌面构建检查
 
 在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面程序；不使用服务密钥、不发布 Release，也不生成供用户安装的发行包。
 
-各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41181551037)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
+各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184802305)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41170805069)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773913)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773868)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184802305)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 
 PCL RH now compiles and links as a complete desktop application on native Linux x64, Windows x64, macOS Intel and Apple Silicon CI hosts. Runtime validation and distribution packages remain unfinished. The table above distinguishes verified transactions from unavailable native Code publication and author-code confinement.
 
-The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. A separate installer workflow now compiles the complete production installer and passes actual vanilla/Fabric, staging and repair/recovery fixtures on all four hosts. Non-Linux confined Java processors, remaining desktop transactions, complete process supervision and distribution packages are unfinished. Architecture-specific Minecraft natives must also exist for the selected game version. The current build and desktop installation scripts remain Linux-specific.
+The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. A separate installer workflow compiles the production installer and passes actual vanilla/Fabric installation, repair/recovery, resource publication/undo and instance mutation fixtures on all four hosts. Non-Linux confined Java processors, native Code publication, Windows running-executable replacement, distribution packages and interactive game validation remain unfinished. Architecture-specific Minecraft natives must also exist for the selected game version. The portable source-build entry is `tools/build-native.py`; desktop shortcut installation remains Linux-specific.
 
 The manual **Desktop platform builds** workflow separately builds the WebUI and compiles/links the complete desktop application on Linux x64, Windows x64, macOS arm64 and macOS x64. Unsupported native ports fail visibly. Toolchain details and compiler logs are kept as artifacts for seven days; this workflow does not publish releases, use service credentials or verify interactive application/game startup.
 

@@ -1,9 +1,15 @@
 name: Desktop platform builds
 
-# An explicit adaptation probe until all native ports build successfully. Do not
-# mark unsupported hosts green or turn this into a release/publishing workflow.
+# Compile on each native host and verify a relocated portable preview archive.
+# This workflow does not sign, install or publish a release.
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Cargo build profile (debug previews compile faster)
+        type: choice
+        default: debug
+        options: [debug, release]
 
 permissions:
   contents: read
@@ -28,11 +34,12 @@ jobs:
           - os: macos-15-intel
             label: macOS x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: never
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
+      BUILD_PROFILE: ${{ inputs.profile }}
     defaults:
       run:
         shell: bash
@@ -49,6 +56,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libdbus-1-dev librsvg2-dev
       - name: Prepare stable Rust
         run: rustup toolchain install stable --profile minimal
+      - name: Test portable build and archive tools
+        run: python -m unittest discover -s tools -p 'test_*native.py'
       - name: Test native UI ports without a desktop session
         # These tests exercise ownership, bounds and invalid-target rejection;
         # they never open a window, access the real clipboard or launch a browser.
@@ -57,6 +66,12 @@ jobs:
         run: |
           npm ci --prefix apps/desktop --ignore-scripts --no-audit --no-fund
           npm run build --prefix apps/desktop
+      - name: Prepare locked Code runtime dependencies
+        # Code remains lazy at runtime; these are packaged resources, not an
+        # instruction to start AI, run package scripts or bundle a Node binary.
+        run: |
+          npm ci --prefix experimental/runtime --omit=dev --ignore-scripts --no-audit --no-fund
+          python tools/licenses/release.py --check
       - name: Build the complete desktop application
         # No service credentials, installer signing or publishing. Python keeps
         # the Cargo exit status and saves the full compiler output on every OS.
@@ -73,7 +88,9 @@ jobs:
           (output / 'toolchain.txt').write_text(host, encoding='utf-8')
           print(host, flush=True)
           command = ['cargo', '+stable', 'build', '--locked', '-p', 'pcl-desktop',
-                     '--features', 'custom-protocol', '-j', '2']
+                     '-p', 'pcl-cli', '--features', 'pcl-desktop/custom-protocol', '-j', '2']
+          if os.environ['BUILD_PROFILE'] == 'release':
+              command.append('--release')
           with (output / 'desktop-build.log').open('w', encoding='utf-8') as log:
               process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT, text=True,
@@ -86,11 +103,27 @@ jobs:
               summary.write('### Full desktop build\n\n')
               summary.write('Result: **' + ('passed' if code == 0 else 'failed') + '**\n\n')
               summary.write('```text\n' + host + '```\n\n')
-              summary.write('This checks compilation and linking, not application startup, '
-                            'game launching, installation packages or signing. '
+              summary.write('This checks compilation and linking. The following steps '
+                            'assemble and check a portable preview; neither step verifies '
+                            'desktop-window/game startup or signing. '
                             'Compiler logs are attached to this run.\n')
           sys.exit(0 if code == 0 else 1)
           PY
+      - name: Assemble a native portable preview
+        run: |
+          python tools/package-native.py --binaries "target/$BUILD_PROFILE" --profile "$BUILD_PROFILE" --output target/native-packages
+      - name: Verify the relocated archive and actual bundled plugin host
+        # Only private synthetic data, CLI scanning and declarative host RPC.
+        # Never opens a GUI, contacts a model or accesses accounts/game roots.
+        run: python tools/ci/verify-native-package.py --directory target/native-packages
+      - name: Save portable preview
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-preview-${{ matrix.os }}-${{ inputs.profile }}
+          path: target/native-packages/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Save platform build diagnostics
         if: always()
         uses: actions/upload-artifact@v7

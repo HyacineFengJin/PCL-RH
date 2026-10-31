@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Smoke-check a CI portable archive in a separate extracted tree.
+
+This is a packaging check, not a desktop/game or author-code execution test.
+Only the packaged CLI and trusted declarative Node host run, against new data.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import platform
+import shutil
+import stat
+import struct
+import subprocess
+import tarfile
+import tempfile
+import zipfile
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(message)
+
+
+def relative_name(name: str) -> PurePosixPath:
+    value = PurePosixPath(name)
+    require(bool(name) and not value.is_absolute() and "\\" not in name
+            and all(part not in ("", ".", "..") for part in name.rstrip("/").split("/"))
+            and value.parts[0] == "PCL-RH", "Invalid archive member: " + name)
+    return value
+
+
+def unpack(archive: Path, destination: Path) -> Path:
+    # The assembler emits only regular files/directories. Reject links rather
+    # than letting platform-specific extractors silently change their meaning.
+    names: set[str] = set()
+    total = 0
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as source:
+            entries = source.infolist()
+            for entry in entries:
+                relative_name(entry.filename)
+                mode = entry.external_attr >> 16
+                require(not stat.S_ISLNK(mode), "Archive contains a symbolic link")
+                require(entry.filename not in names, "Duplicate archive member")
+                names.add(entry.filename)
+                total += entry.file_size
+            require(len(entries) <= 100_000 and total <= 2 * 1024**3,
+                    "Archive exceeds smoke-check bounds")
+            source.extractall(destination)
+    else:
+        with tarfile.open(archive, "r:gz") as source:
+            entries = source.getmembers()
+            for entry in entries:
+                relative_name(entry.name)
+                require(entry.isfile() or entry.isdir(), "Archive contains a link or special file")
+                require(entry.name not in names, "Duplicate archive member")
+                names.add(entry.name)
+                total += entry.size
+            require(len(entries) <= 100_000 and total <= 2 * 1024**3,
+                    "Archive exceeds smoke-check bounds")
+            source.extractall(destination, filter="data")
+    return destination / "PCL-RH"
+
+
+def native_binary(path: Path) -> None:
+    with path.open("rb") as source:
+        header = source.read(1024 * 1024)
+    arm = platform.machine().lower() in ("arm64", "aarch64")
+    if platform.system() == "Windows":
+        require(header[:2] == b"MZ" and len(header) >= 64, "Missing PE executable header")
+        offset = struct.unpack_from("<I", header, 60)[0]
+        require(offset + 6 <= len(header) and header[offset:offset + 4] == b"PE\0\0",
+                "Invalid PE header offset")
+        require(struct.unpack_from("<H", header, offset + 4)[0] == (0xAA64 if arm else 0x8664),
+                "Executable architecture differs from native runner")
+    elif platform.system() == "Darwin":
+        require(header[:4] == b"\xcf\xfa\xed\xfe", "Missing native 64-bit Mach-O header")
+        require(struct.unpack_from("<I", header, 4)[0] == (0x100000C if arm else 0x1000007),
+                "Executable architecture differs from native runner")
+    else:
+        require(header[:6] == b"\x7fELF\x02\x01", "Missing native 64-bit little-endian ELF header")
+        require(struct.unpack_from("<H", header, 18)[0] == (183 if arm else 62),
+                "Executable architecture differs from native runner")
+    if platform.system() != "Windows":
+        require(bool(path.stat().st_mode & stat.S_IXUSR), "Executable permission was lost")
+
+
+def verify_manifest(root: Path, external: Path) -> None:
+    raw = (root / "package-manifest.json").read_bytes()
+    require(raw == external.read_bytes(), "Internal and external manifests differ")
+    manifest = json.loads(raw)
+    require(manifest["schema_version"] == 1
+            and manifest["product_id"] == "dev.pcl-rh.portable"
+            and manifest["layout"] == "flat" and manifest["signed"] is False,
+            "Unsupported portable preview manifest")
+    require(manifest["profile"] in ("debug", "release"), "Unknown Cargo profile")
+    expected_system = {"Linux": "linux", "Windows": "windows", "Darwin": "macos"}[platform.system()]
+    expected_arch = "aarch64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64"
+    require(manifest["platform"] == expected_system and manifest["arch"] == expected_arch,
+            "Manifest does not describe this native runner")
+    if os.environ.get("GITHUB_SHA"):
+        require(manifest["commit"] == os.environ["GITHUB_SHA"], "Package belongs to another commit")
+    expected: set[str] = set()
+    for entry in manifest["files"]:
+        name = entry["path"]
+        relative_name("PCL-RH/" + name)
+        require(name not in expected and name != "package-manifest.json", "Duplicate manifest member")
+        expected.add(name)
+        path = root / name
+        require(path.is_file() and path.stat().st_size == entry["bytes"], "Missing or truncated member: " + name)
+        with path.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+        require(digest == entry["sha256"], "Member hash mismatch: " + name)
+        if platform.system() != "Windows":
+            require(stat.S_IMODE(path.stat().st_mode) == entry["mode"], "Member permissions changed: " + name)
+    actual = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
+    require(actual == expected | {"package-manifest.json"}, "Unrecorded or missing packaged files")
+
+
+def run(command: list[str], cwd: Path, *, input_text: str | None = None) -> str:
+    result = subprocess.run(command, cwd=cwd, input=input_text, capture_output=True,
+                            text=True, encoding="utf-8", timeout=20, check=False)
+    require(result.returncode == 0, f"Packaged command failed ({result.returncode}): {result.stderr[-4000:]}")
+    require(len(result.stdout) <= 1024 * 1024 and len(result.stderr) <= 1024 * 1024,
+            "Packaged command exceeded smoke-check output bounds")
+    return result.stdout
+
+
+def smoke(root: Path, scratch: Path) -> None:
+    require(not (root / ".pcl-rust").exists(), "Package must not precreate user state")
+    marker = json.loads((root / "pcl-rh.json").read_text(encoding="utf-8"))
+    require(marker == {"schemaVersion": 1, "productId": "dev.pcl-rh.portable"},
+            "Missing portable layout identity")
+    suffix = ".exe" if platform.system() == "Windows" else ""
+    for name in ("pcl-desktop", "pcl-cli"):
+        native_binary(root / (name + suffix))
+    cli = str(root / ("pcl-cli" + suffix))
+    require(run([cli, "--version"], scratch).startswith("pcl-cli "), "Unexpected packaged CLI")
+    game = scratch / "empty synthetic game"
+    game.mkdir()
+    listed = run([cli, "--project", str(root), "--root", str(game), "list"], scratch)
+    require(json.loads(listed) == [], "Packaged CLI could not scan an empty relocated root")
+    node = shutil.which("node")
+    require(node is not None, "CI Node interpreter is missing")
+    data = scratch / "private plugin data"
+    requests = [{"operation": "extensions_list"}, {"operation": "idle_prepare"},
+                {"operation": "shutdown"}]
+    output = run([node, str(root / "experimental/host.mjs"), str(data)], scratch,
+                 input_text="".join(json.dumps(request) + "\n" for request in requests))
+    replies = [json.loads(line) for line in output.splitlines()]
+    require(len(replies) == 3 and all(reply.get("ok") is True for reply in replies),
+            "Actual packaged plugin host did not complete its protocol")
+    require(replies[0]["result"]["entries"] == [] and replies[1]["result"]["busy"] is False
+            and replies[2]["result"] is True, "Unexpected packaged plugin state")
+    # Resolution checks that the assembled host includes its installed engine
+    # tree. It does not initialize a model, use a key, or execute domain tools.
+    resolver = ("import {existsSync} from 'node:fs';"
+                "import {fileURLToPath} from 'node:url';"
+                "import path from 'node:path';"
+                "const entry=fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent'));"
+                "if (!entry.startsWith(path.resolve('node_modules')+path.sep) || "
+                "!existsSync(entry)) process.exit(1);")
+    run([node, "--input-type=module", "--eval", resolver], root / "experimental/runtime")
+    for entry in ("experimental/agent-host.mjs", "experimental/runtime/src/index.mjs",
+                  "code/agent-adapter.mjs"):
+        run([node, "--check", str(root / entry)], scratch)
+    require(not (root / ".pcl-rust").exists(), "Smoke check accidentally initialized launcher state")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--directory", type=Path, required=True)
+    args = parser.parse_args()
+    archives = sorted([*args.directory.glob("*.tar.gz"), *args.directory.glob("*.zip")])
+    require(len(archives) == 1, "Expected exactly one native archive")
+    archive = archives[0].resolve()
+    sidecar = archive.with_name(archive.name + ".sha256")
+    with archive.open("rb") as source:
+        actual = hashlib.file_digest(source, "sha256").hexdigest()
+    expected = sidecar.read_text(encoding="utf-8").strip().split()
+    require(len(expected) == 2 and expected[0] == actual and expected[1] == archive.name,
+            "Archive SHA256 sidecar does not match")
+    # Keep all synthetic runtime data in the CI output folder, never a user's
+    # game/config tree. TemporaryDirectory removes only this owned generation.
+    with tempfile.TemporaryDirectory(prefix="relocated space & 项目-", dir=args.directory) as temporary:
+        scratch = Path(temporary).resolve()
+        root = unpack(archive, scratch)
+        verify_manifest(root, args.directory / "package-manifest.json")
+        smoke(root, scratch)
+    print(json.dumps({"archive": archive.name, "sha256": actual,
+                      "relocated_cli": True, "declarative_host_rpc": True,
+                      "desktop_or_game_started": False}))
+
+
+if __name__ == "__main__":
+    main()

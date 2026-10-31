@@ -36,24 +36,34 @@ def npm_command() -> list[str]:
     raise RuntimeError("npm-cli.js was not found beside Node/npm; use a standard Node.js installation")
 
 
-def install_binary(source: Path, destination: Path) -> None:
-    # Create only new state directories privately; never chmod an existing
-    # checkout or a user's archive extraction.
-    state = ROOT / ".pcl-rust"
-    state.mkdir(mode=0o700, exist_ok=True)
-    destination.parent.mkdir(mode=0o700, exist_ok=True)
+def install_binary(
+    source: Path, project_root: Path = ROOT, *, windows: bool | None = None
+) -> Path:
+    windows = os.name == "nt" if windows is None else windows
+    if windows:
+        # The runtime owns its private Windows state ACL. Python's 0700 uses
+        # OWNER RIGHTS, which is not the retained filesystem's exact SID policy.
+        # Keep executables beside the archive marker; never create/repair state.
+        destination = project_root / source.name
+    else:
+        # Retain the existing Unix portable layout and permissions unchanged.
+        state = project_root / ".pcl-rust"
+        state.mkdir(mode=0o700, exist_ok=True)
+        destination = state / "bin" / source.name
+        destination.parent.mkdir(mode=0o700, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".pcl-build-", suffix=source.suffix, dir=destination.parent)
     os.close(fd)
     temporary = Path(name)
     try:
         shutil.copyfile(source, temporary)
-        if os.name != "nt":
+        if not windows:
             temporary.chmod(0o755)
         # A running Windows executable may refuse replacement. Keep the old
         # binary intact and report the error; never stop a user's application.
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+    return destination
 
 
 def main() -> int:
@@ -90,7 +100,7 @@ def main() -> int:
         if not target.is_absolute():
             target = ROOT / target
         for binary in ("pcl-desktop", "pcl-cli"):
-            install_binary(target / profile / (binary + suffix), ROOT / ".pcl-rust" / "bin" / (binary + suffix))
+            install_binary(target / profile / (binary + suffix))
     print("Build complete. Run start-native.ps1 on Windows or start-native.sh on Linux/macOS.")
     return 0
 

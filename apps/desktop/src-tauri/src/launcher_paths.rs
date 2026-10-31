@@ -20,11 +20,18 @@ pub(crate) fn resolve() -> Result<PathBuf, String> {
     let home = std::env::var_os("PCL_RH_HOME");
     let legacy = std::env::var_os("PCL_LINUX_HOME");
     let executable = std::env::current_exe().ok();
+    // A distributed executable must locate its own archive, never a source
+    // checkout that happened to exist on the build host. Debug builds retain
+    // that convenience for cargo run; explicit roots work in both profiles.
+    #[cfg(debug_assertions)]
+    let development_manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    #[cfg(not(debug_assertions))]
+    let development_manifest = Path::new("");
     resolve_from(
         home.as_deref(),
         legacy.as_deref(),
         executable.as_deref(),
-        Path::new(env!("CARGO_MANIFEST_DIR")),
+        development_manifest,
     )
 }
 

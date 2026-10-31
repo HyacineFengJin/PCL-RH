@@ -21,6 +21,9 @@ apps/desktop/public/preview.json
 !/.env.example
 /codex-clipboard-*
 /target-credential-tests
+/pcl-desktop.exe
+/pcl-cli.exe
+/.pcl-build-*
 
 # Local development notes and troubleshooting tools
 /AGENTS.md
