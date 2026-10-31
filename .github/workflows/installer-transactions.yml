@@ -47,7 +47,7 @@ jobs:
           fi
           cargo +stable test --locked -p pcl-install --lib -- --test-threads=2
       - name: Test native Java store adapters without a JVM download
-        run: cargo +stable test --locked -p pcl-install --test java_download_native --test resource_save_files -- --test-threads=2
+        run: cargo +stable test --locked -p pcl-install --test java_download_native --test resource_save_files --no-fail-fast -- --test-threads=2
       - name: Report host toolchain
         run: rustc +stable -vV
       # Native installer tests are not evidence of a complete desktop app or of

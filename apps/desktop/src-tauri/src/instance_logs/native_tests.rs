@@ -166,7 +166,11 @@ fn native_reader_redacts_complete_bounded_gzip_tail_before_no_replace_export() {
         selected.verify(&binding)
     })
     .unwrap();
-    assert!(saved.warning.is_none());
+    assert!(
+        saved.warning.is_none(),
+        "export warning: {:?}",
+        saved.warning
+    );
     assert_eq!(fs::read(&target).unwrap(), redacted.text.as_bytes());
     assert_eq!(fs::read(f.root.join("logs/older.log.gz")).unwrap(), packed);
     assert!(native_export::publish(&target, b"overwrite", || Ok(())).is_err());

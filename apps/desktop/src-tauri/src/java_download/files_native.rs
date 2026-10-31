@@ -118,9 +118,23 @@ fn create_link(_: &Dir, _: &str, _: &str) -> Result<()> {
     Err("Windows 官方 Java 清单不支持内部链接".into())
 }
 fn remove(parent: &Directory, name: &Leaf, metadata: &Metadata) -> Result<()> {
-    if parent.entry(name).map_err(|e| e.to_string())?.as_ref() != Some(metadata) {
+    // A Darwin entry snapshot intentionally has no extended-ACL evidence.
+    // Obtain complete security/change evidence from the held original instead
+    // of comparing its ACL to a pathname-only placeholder or granting it trust.
+    let held = match metadata.kind {
+        Kind::Directory => parent
+            .child(name, Traversal::SameFilesystem)
+            .and_then(|directory| directory.try_clone_file()),
+        Kind::Regular => parent.open_regular(name, Links::Single),
+        _ => return Err("Java 清理只允许已验证的普通文件或空目录".into()),
+    }
+    .map_err(|e| e.to_string())?;
+    if retained_fs::metadata(&held).map_err(|e| e.to_string())? != *metadata {
         return Err("Java 暂存项在删除前已变化，已保留目录".into());
     }
+    parent
+        .recheck(name, &metadata.identity)
+        .map_err(|e| e.to_string())?;
     // This full-stamp preflight does not make Unix unlink a content CAS. The
     // native operation additionally binds the original object identity; it must
     // never acquire cleanup authority from a replacement same-name entry.
@@ -759,14 +773,21 @@ impl Stage<'_> {
                 {
                     return Err("Java 命名暂存源重复或无效".into());
                 }
-                if let Some(stamp) = source.entry(&name).map_err(|e| e.to_string())? {
+                if let Some(visible) = source.entry(&name).map_err(|e| e.to_string())? {
                     let mut file = source
                         .open_regular(&name, Links::Single)
                         .map_err(|e| e.to_string())?;
+                    let stamp = retained_fs::metadata(&file).map_err(|e| e.to_string())?;
+                    if !visible.same_object(&stamp) || visible.reparse_tag.is_some() {
+                        return Err("Java 命名暂存源已被替换".into());
+                    }
                     source_hash(&mut file, &record.evidence, &record.stamp)?;
                     if retained_fs::metadata(&file).map_err(|e| e.to_string())? != stamp {
                         return Err("Java 命名暂存源已变化".into());
                     }
+                    source
+                        .recheck(&name, &stamp.identity)
+                        .map_err(|e| e.to_string())?;
                     sources.push((name, stamp));
                 }
             }

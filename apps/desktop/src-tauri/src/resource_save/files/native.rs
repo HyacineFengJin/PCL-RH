@@ -212,9 +212,16 @@ impl Cleanup {
         let names = native(self.workspace.names(2))?;
         if let Some(source) = &self.source {
             match native(self.workspace.entry(source))? {
-                Some(actual) => {
+                Some(visible) => {
+                    let file = native(
+                        self.workspace
+                            .open_regular(source, retained_fs::Links::Single),
+                    )?;
+                    let actual = native(retained_fs::metadata(&file))?;
                     if names.len() != 1
                         || names[0].as_os_str() != source.as_os_str()
+                        || !visible.same_object(&actual)
+                        || visible.reparse_tag.is_some()
                         || self.expected.as_ref() != Some(&actual)
                     {
                         return Err("暂存内容或目录条目变化".into());

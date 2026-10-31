@@ -107,11 +107,12 @@ pub(super) fn publish<G>(
                 (&mut file)
                     .take(bytes.len() as u64 + 1)
                     .read_to_end(&mut actual)?;
-                Ok(actual == bytes
-                    && pcl_core::retained_fs::metadata(&file)? == before
-                    && directory
-                        .entry(&leaf)?
-                        .is_some_and(|visible| visible == before))
+                // A path-relative entry probe does not carry held-FD ACL
+                // evidence on Darwin. Bind the visible name by native identity;
+                // security, timestamps and content remain checked on the held
+                // regular file before and after the read.
+                directory.recheck(&leaf, &before.identity)?;
+                Ok(actual == bytes && pcl_core::retained_fs::metadata(&file)? == before)
             })()
             .unwrap_or(false);
             let same_parent = Directory::open_absolute(parent)

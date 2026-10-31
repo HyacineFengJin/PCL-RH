@@ -17,6 +17,7 @@ const PAYLOADS: &str = "payloads";
 
 pub(super) fn document_limit(name: &str) -> u64 {
     match name {
+        "instance-metadata.json" => 8 * 1024 * 1024,
         "launcher-preferences.json" => 64 * 1024,
         "resource-favorites.json" => 4 * 1024 * 1024,
         "launcher-0.log" | "launcher-1.log" | "launcher-2.log" | "launcher-3.log" => 1024 * 1024,
@@ -34,7 +35,22 @@ pub(super) fn managed(name: &str) -> bool {
             | "launcher-3.log"
             | "launcher-preferences.json"
             | "resource-favorites.json"
+            | "instance-metadata.json"
     )
+}
+fn payload_limit(max_document_bytes: u64) -> u64 {
+    // A full-sized current document and its successor must coexist until the
+    // latter's durable commit authorizes GC. Orphans share this finite budget.
+    MAX_PAYLOADS.max(max_document_bytes.saturating_mul(2))
+}
+fn payload_limit_error(max_document_bytes: u64) -> String {
+    let bytes = payload_limit(max_document_bytes);
+    let budget = if bytes % (1024 * 1024) == 0 {
+        format!("{} MiB", bytes / (1024 * 1024))
+    } else {
+        format!("{bytes} 字节")
+    };
+    fail(format!("payload（包括孤立版本）达到 {budget} 上限"))
 }
 fn sidecar(name: &str) -> String {
     format!(".local-versions-{name}")
@@ -47,6 +63,17 @@ fn may(message: impl std::fmt::Display) -> String {
 }
 fn native<T>(value: std::io::Result<T>) -> Result<T, String> {
     value.map_err(fail)
+}
+fn phase<T>(operation: &str, value: Result<T, String>) -> Result<T, String> {
+    value.map_err(|error| format!("{operation}：{error}"))
+}
+fn native_phase<T>(operation: &str, value: std::io::Result<T>) -> Result<T, String> {
+    value.map_err(|error| {
+        fail(format!(
+            "{operation} [native={:?}]：{error}",
+            error.raw_os_error()
+        ))
+    })
 }
 fn json<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     serde_json::to_vec(value).map_err(fail)
@@ -243,8 +270,8 @@ impl Store {
             payload_bytes = payload_bytes
                 .checked_add(stamp.len)
                 .ok_or_else(|| fail("payload 大小溢出"))?;
-            if payload_bytes > MAX_PAYLOADS {
-                return Err(fail("payload（包括孤立版本）达到 8 MiB 上限"));
+            if payload_bytes > payload_limit(max) {
+                return Err(payload_limit_error(max));
             }
         }
         for (index, row) in commits.iter().enumerate() {
@@ -335,6 +362,7 @@ impl Store {
 }
 
 pub(super) fn snapshot(parent: &Dir, name: &str, max: u64) -> Result<Option<Snapshot>, String> {
+    let max = max.min(document_limit(name));
     if let Some(store) = Store::open(parent, name, max, false)? {
         // Only the ordinary READ/WRITE/DELETE-sharing snapshot survives. Strong
         // leases end here so a cached reader cannot block the next CAS/GC.
@@ -346,35 +374,66 @@ pub(super) fn snapshot(parent: &Dir, name: &str, max: u64) -> Result<Option<Snap
     }
 }
 fn initialize(parent: &Dir, name: &str, max: u64) -> Result<(), String> {
-    let base = lease(parent, name, false)?;
-    let base_snapshot = read_held(parent, name, &base, max)?;
-    let native_parent = parent.native()?;
+    let base = phase("initialize/base-lease", lease(parent, name, false))?;
+    let base_snapshot = phase(
+        "initialize/base-snapshot",
+        read_held(parent, name, &base, max),
+    )?;
+    let native_parent = phase("initialize/parent-handle", parent.native())?;
     // Prepare off-name. A crash cannot expose an empty/half-written sidecar as
     // a valid store; the unbound private workspace remains evidence.
-    let (temporary, staged) = native(native_parent.create_private_workspace())?;
-    let directory = Dir(native(staged.try_clone_file())?);
-    let payloads = directory.create(PAYLOADS)?;
-    let header = Header {
-        format: "windows-local-versions-v1".into(),
-        name: name.into(),
-        parent: parent.identity()?,
-        sidecar: directory.identity()?,
-        payloads: payloads.identity()?,
-        base: evidence(&base_snapshot)?,
+    let (temporary, staged) = native_phase(
+        "initialize/create-workspace",
+        native_parent.create_private_workspace(),
+    )?;
+    let directory = Dir(native_phase(
+        "initialize/clone-workspace",
+        staged.try_clone_file(),
+    )?);
+    let header = {
+        // NTFS may refuse renaming a directory while one of its descendants
+        // remains open, including ordinary DELETE-sharing directory handles.
+        // Keep the payload directory only through its identity capture and
+        // actual namespace flush. The staged root and its full identity stay
+        // held across publication; no child capability survives this scope.
+        let payloads = phase("initialize/create-payloads", directory.create(PAYLOADS))?;
+        let header = Header {
+            format: "windows-local-versions-v1".into(),
+            name: name.into(),
+            parent: phase("initialize/parent-identity", parent.identity())?,
+            sidecar: phase("initialize/sidecar-identity", directory.identity())?,
+            payloads: phase("initialize/payloads-identity", payloads.identity())?,
+            base: phase("initialize/base-evidence", evidence(&base_snapshot))?,
+        };
+        phase(
+            "initialize/write-header",
+            directory.write_new(HEADER, &json(&header)?),
+        )?;
+        phase("initialize/sync-payloads", payloads.sync())?;
+        phase("initialize/sync-workspace", directory.sync())?;
+        header
     };
-    directory.write_new(HEADER, &json(&header)?)?;
-    payloads.sync()?;
-    directory.sync()?;
-    native(base.recheck())?;
-    native(pcl_core::file_ops::rename_noreplace_at(
-        &parent.0,
-        temporary.as_os_str(),
-        &parent.0,
-        sidecar(name).as_ref(),
-    ))?;
+    native_phase("initialize/recheck-base", base.recheck())?;
+    native_phase(
+        "initialize/recheck-workspace",
+        native_parent.recheck(&temporary, &header.sidecar),
+    )?;
+    native_phase(
+        "initialize/publish-sidecar-no-replace",
+        pcl_core::file_ops::rename_noreplace_at(
+            &parent.0,
+            temporary.as_os_str(),
+            &parent.0,
+            sidecar(name).as_ref(),
+        ),
+    )?;
     // This changes protocol state, but does not change logical document bytes.
-    parent.sync().map_err(may)?;
-    native(native_parent.recheck(&leaf(&sidecar(name))?, &header.sidecar)).map_err(may)
+    phase("initialize/sync-parent-after-publication", parent.sync()).map_err(may)?;
+    native_phase(
+        "initialize/recheck-published-sidecar",
+        native_parent.recheck(&leaf(&sidecar(name))?, &header.sidecar),
+    )
+    .map_err(may)
 }
 
 /// Recover only already-committed historical GC before admitting new bytes.
@@ -456,6 +515,7 @@ pub(super) fn replace(
     bytes: &[u8],
     max: u64,
 ) -> Result<(), String> {
+    let max = max.min(document_limit(name));
     replace_with_hook(parent, name, expected, bytes, max, || Ok(()))
 }
 fn replace_with_hook(
@@ -466,13 +526,16 @@ fn replace_with_hook(
     max: u64,
     after_durable: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    if bytes.is_empty() || bytes.len() as u64 > max || bytes.len() as u64 > MAX_PAYLOADS {
+    if bytes.is_empty() || bytes.len() as u64 > max {
         return Err(fail("新文档为空或超过上限"));
     }
     parent.require_private()?;
-    let _writer = parent.lock(&format!(".local-versions-{name}.lock"))?;
+    let _writer = phase(
+        "replace/writer-lock",
+        parent.lock(&format!(".local-versions-{name}.lock")),
+    )?;
     let token = |snapshot: &Snapshot| (snapshot.stamp.clone(), snapshot.digest.clone());
-    let fresh = snapshot(parent, name, max)?;
+    let fresh = phase("replace/read-current", snapshot(parent, name, max))?;
     if fresh.as_ref().map(token) != expected.map(token) {
         return Err(fail("CAS 冲突；本地文件已被外部修改"));
     }
@@ -482,8 +545,9 @@ fn replace_with_hook(
     if parent.optional(&sidecar(name))?.is_none() {
         initialize(parent, name, max)?;
     }
-    let mut store = Store::open(parent, name, max, true)?.ok_or_else(|| fail("sidecar 消失"))?;
-    let fresh = store.snapshot(parent, name, max)?;
+    let mut store = phase("replace/open-store", Store::open(parent, name, max, true))?
+        .ok_or_else(|| fail("sidecar 消失"))?;
+    let fresh = phase("replace/leased-snapshot", store.snapshot(parent, name, max))?;
     if Some(token(&fresh)) != expected.map(token) {
         return Err(fail("持有原生 lease 后的 CAS 冲突"));
     }
@@ -499,9 +563,9 @@ fn replace_with_hook(
     if store
         .payload_bytes
         .checked_add(bytes.len() as u64)
-        .is_none_or(|size| size > MAX_PAYLOADS)
+        .is_none_or(|size| size > payload_limit(max))
     {
-        return Err(fail("payload（包括孤立版本）达到 8 MiB 上限"));
+        return Err(payload_limit_error(max));
     }
     let payload_name = payload_name(store.next_payload);
     // Preflight record quota before leaving a complete orphan. Actual metadata
@@ -521,10 +585,22 @@ fn replace_with_hook(
     {
         return Err(fail("版本记录达到 32 MiB 上限"));
     }
-    store.recheck(parent, name)?;
-    store.payloads.write_new(&payload_name, bytes)?;
-    let payload_lease = lease(&store.payloads, &payload_name, false)?;
-    let payload_snapshot = read_held(&store.payloads, &payload_name, &payload_lease, max)?;
+    phase(
+        "replace/recheck-before-payload",
+        store.recheck(parent, name),
+    )?;
+    phase(
+        "replace/publish-payload",
+        store.payloads.write_new(&payload_name, bytes),
+    )?;
+    let payload_lease = phase(
+        "replace/lease-new-payload",
+        lease(&store.payloads, &payload_name, false),
+    )?;
+    let payload_snapshot = phase(
+        "replace/read-new-payload",
+        read_held(&store.payloads, &payload_name, &payload_lease, max),
+    )?;
     let row = Commit {
         payload: Payload {
             name: payload_name.clone(),
@@ -697,6 +773,106 @@ mod tests {
     }
     fn store(dir: &Dir) -> Store {
         Store::open(dir, NAME, 16384, false).unwrap().unwrap()
+    }
+    #[test]
+    fn open_payload_directory_blocks_whole_workspace_rename_until_released() {
+        let fixture = Fixture::new();
+        let parent = fixture.dir();
+        let native_parent = parent.native().unwrap();
+        let (temporary, staged) = native_parent.create_private_workspace().unwrap();
+        let directory = Dir(staged.try_clone_file().unwrap());
+        let payloads = directory.create(PAYLOADS).unwrap();
+        let workspace_id = directory.identity().unwrap();
+        let payloads_id = payloads.identity().unwrap();
+        directory
+            .write_new(HEADER, b"retained prepared header")
+            .unwrap();
+        payloads.sync().unwrap();
+        directory.sync().unwrap();
+        let target = sidecar(NAME);
+        let blocked = pcl_core::file_ops::rename_noreplace_at(
+            &parent.0,
+            temporary.as_os_str(),
+            &parent.0,
+            target.as_ref(),
+        )
+        .expect_err("held-payload-directory/publish-no-replace unexpectedly succeeded");
+        assert!(
+            matches!(blocked.raw_os_error(), Some(5 | 32)),
+            "held-payload-directory/publish-no-replace unexpected failure: {blocked}"
+        );
+        native_parent.recheck(&temporary, &workspace_id).unwrap();
+        assert!(parent.optional(&target).unwrap().is_none());
+        assert_eq!(
+            directory.child(PAYLOADS).unwrap().identity().unwrap(),
+            payloads_id
+        );
+        assert_eq!(
+            fs::read(fixture.0.join(temporary.as_os_str()).join(HEADER)).unwrap(),
+            b"retained prepared header"
+        );
+        // The source workspace and its header are unchanged. Releasing this
+        // descendant, rather than weakening sharing/ACLs or retrying, makes
+        // one publication attempt on the prepared state possible.
+        drop(payloads);
+        pcl_core::file_ops::rename_noreplace_at(
+            &parent.0,
+            temporary.as_os_str(),
+            &parent.0,
+            target.as_ref(),
+        )
+        .expect("released-payload-directory/publish-no-replace");
+        parent.sync().unwrap();
+        native_parent
+            .recheck(&leaf(&target).unwrap(), &workspace_id)
+            .unwrap();
+        let published = parent.child(&target).unwrap();
+        assert_eq!(
+            published.child(PAYLOADS).unwrap().identity().unwrap(),
+            payloads_id
+        );
+        assert_eq!(
+            fs::read(fixture.0.join(&target).join(HEADER)).unwrap(),
+            b"retained prepared header"
+        );
+        assert!(native_parent.entry(&temporary).unwrap().is_none());
+    }
+    #[test]
+    fn initialized_store_reopens_with_exact_base_header_and_payload_directory() {
+        let fixture = Fixture::new();
+        let parent = fixture.dir();
+        parent.write_new(NAME, b"permanent physical base").unwrap();
+        let original = Snapshot::physical(&parent, NAME, 16384).unwrap();
+        let original_evidence = evidence(&original).unwrap();
+        initialize(&parent, NAME, 16384).unwrap();
+        let reopened = fixture.dir();
+        let checked = Store::open(&reopened, NAME, 16384, false).unwrap().unwrap();
+        assert_eq!(checked.header.base, original_evidence);
+        assert_eq!(checked.header.parent, reopened.identity().unwrap());
+        assert_eq!(
+            checked.header.sidecar,
+            checked.directory.identity().unwrap()
+        );
+        assert_eq!(
+            checked.header.payloads,
+            checked.payloads.identity().unwrap()
+        );
+        assert_eq!(
+            checked.directory_names,
+            vec![HEADER.to_owned(), PAYLOADS.to_owned()]
+        );
+        assert!(checked.payload_names.is_empty());
+        assert!(checked.commits.is_empty());
+        let mut selected = checked.snapshot(&reopened, NAME, 16384).unwrap();
+        assert_eq!(
+            selected.bytes(&reopened, NAME).unwrap(),
+            b"permanent physical base"
+        );
+        assert_eq!(evidence(&selected).unwrap(), original_evidence);
+        assert_eq!(
+            fs::read(fixture.0.join(NAME)).unwrap(),
+            b"permanent physical base"
+        );
     }
     #[test]
     fn repeated_cas_reopens_gc_only_generated_and_cached_snapshots_do_not_block_next_write() {
