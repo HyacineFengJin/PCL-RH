@@ -658,7 +658,7 @@ impl Dir {
                 Err("本地服务目标已存在，已有文件与命名暂存租约（如有）均已保留".into())
             }
             PublishOutcome::MayHavePublished { error, .. } => Err(format!(
-                "本地服务文件可能已保存，但复核或持久化失败；现存文件均已保留，请重新检查：{error}"
+                "MayHavePublished：本地服务文件可能已保存，但复核或持久化失败；现存文件均已保留，请重新检查：{error}"
             )),
         }
     }

@@ -8,6 +8,10 @@ use super::*;
 use pcl_core::retained_fs::{Metadata as NativeMetadata, ReadLease, WorkspaceRemoval};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "windows_optional.rs"]
+mod optional;
+pub(crate) use optional::{compare_owned, read_state_owned, state_owned, OwnedState, Presence};
+
 const MAX_COMMITS: usize = 8192;
 const MAX_RECORD: u64 = 64 * 1024;
 const MAX_RECORDS: u64 = 32 * 1024 * 1024;
@@ -120,12 +124,79 @@ struct Commit {
     // can never appear here; its evidence has no generated payload name.
     gc: Option<Payload>,
 }
+// Legacy Commit remains a strict, byte-compatible v1 DTO. Optional values
+// use a new strict row DTO; raw bytes (not re-encoded rows) chain both formats.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommitV2 {
+    record_version: u32,
+    sequence: usize,
+    previous_sha256: String,
+    value: ValueV2,
+    gc: Option<Payload>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum ValueV2 {
+    Present { payload: Payload },
+    Missing {},
+}
+enum Row {
+    V1(Commit),
+    V2(CommitV2),
+}
+impl Row {
+    fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let value: serde_json::Value = serde_json::from_slice(bytes).map_err(fail)?;
+        match value.get("record_version") {
+            None => serde_json::from_slice(bytes).map(Self::V1).map_err(fail),
+            Some(version) if version.as_u64() == Some(2) => {
+                serde_json::from_slice(bytes).map(Self::V2).map_err(fail)
+            }
+            _ => Err(fail("未知的文档 commit 版本")),
+        }
+    }
+    fn encode(&self) -> Result<Vec<u8>, String> {
+        match self {
+            Self::V1(row) => json(row),
+            Self::V2(row) => json(row),
+        }
+    }
+    fn sequence(&self) -> usize {
+        match self {
+            Self::V1(row) => row.sequence,
+            Self::V2(row) => row.sequence,
+        }
+    }
+    fn previous(&self) -> &str {
+        match self {
+            Self::V1(row) => &row.previous_sha256,
+            Self::V2(row) => &row.previous_sha256,
+        }
+    }
+    fn payload(&self) -> Option<&Payload> {
+        match self {
+            Self::V1(row) => Some(&row.payload),
+            Self::V2(CommitV2 {
+                value: ValueV2::Present { payload },
+                ..
+            }) => Some(payload),
+            Self::V2(_) => None,
+        }
+    }
+    fn gc(&self) -> Option<&Payload> {
+        match self {
+            Self::V1(row) => row.gc.as_ref(),
+            Self::V2(row) => row.gc.as_ref(),
+        }
+    }
+}
 struct Store {
     directory: Dir,
     payloads: Dir,
     header: Header,
     tail_sha256: String,
-    commits: Vec<Commit>,
+    commits: Vec<Row>,
     record_bytes: u64,
     payload_bytes: u64,
     next_payload: u64,
@@ -216,7 +287,7 @@ impl Store {
         let mut records = vec![header_lease];
         let mut tail_sha256 = header_snapshot.digest;
         let mut record_bytes = header_snapshot.stamp.bytes;
-        let mut commits: Vec<Commit> = Vec::new();
+        let mut commits: Vec<Row> = Vec::new();
         let mut referenced = BTreeSet::new();
         for index in 1..=record_count {
             let record_name = record_name(index);
@@ -228,13 +299,14 @@ impl Store {
             if record_bytes > MAX_RECORDS {
                 return Err(fail("记录达到 32 MiB 上限"));
             }
-            let row: Commit =
-                serde_json::from_slice(&snapshot.bytes(&directory, &record_name)?).map_err(fail)?;
-            if row.sequence != index
-                || row.previous_sha256 != tail_sha256
-                || row.gc.as_ref() != commits.last().map(|old| &old.payload)
-                || payload_index(&row.payload.name).is_none()
-                || !referenced.insert(row.payload.name.clone())
+            let row = Row::decode(&snapshot.bytes(&directory, &record_name)?)?;
+            if row.sequence() != index
+                || row.previous() != tail_sha256
+                || row.gc() != commits.last().and_then(Row::payload)
+                || row.payload().is_some_and(|payload| {
+                    payload_index(&payload.name).is_none()
+                        || !referenced.insert(payload.name.clone())
+                })
             {
                 return Err(fail("commit 链、GC 授权或 payload 名称错误"));
             }
@@ -246,6 +318,16 @@ impl Store {
         let present: BTreeSet<_> = payload_names.iter().cloned().collect();
         let mut payload_bytes = 0u64;
         let mut next_payload = 0u64;
+        // A tombstone can reclaim every physical payload. History still owns
+        // their ordinals: reactivation must not reuse a committed payload name.
+        for name in &referenced {
+            next_payload = next_payload.max(
+                payload_index(name)
+                    .ok_or_else(|| fail("历史 payload 名称错误"))?
+                    .checked_add(1)
+                    .ok_or_else(|| fail("payload 序号溢出"))?,
+            );
+        }
         let mut current = None;
         for payload_name in &payload_names {
             let index =
@@ -275,15 +357,16 @@ impl Store {
             }
         }
         for (index, row) in commits.iter().enumerate() {
-            if present.contains(&row.payload.name) {
+            let Some(payload) = row.payload() else {
+                continue;
+            };
+            if present.contains(&payload.name) {
                 let is_current = index + 1 == commits.len();
-                let held =
-                    verify_payload(&payloads, &row.payload, delete_current && is_current, max)?;
+                let held = verify_payload(&payloads, payload, delete_current && is_current, max)?;
                 if is_current {
                     current = Some(held);
                 }
-            } else if commits.get(index + 1).and_then(|next| next.gc.as_ref()) != Some(&row.payload)
-            {
+            } else if commits.get(index + 1).and_then(Row::gc) != Some(payload) {
                 return Err(fail("缺少没有后继 GC 授权的 payload"));
             }
         }
@@ -345,9 +428,12 @@ impl Store {
     }
     fn snapshot(&self, parent: &Dir, name: &str, max: u64) -> Result<Snapshot, String> {
         let snapshot = if let Some(row) = self.commits.last() {
+            let payload = row
+                .payload()
+                .ok_or_else(|| fail("文档已逻辑删除；请使用 optional-state 能力"))?;
             read_held(
                 &self.payloads,
-                &row.payload.name,
+                &payload.name,
                 self.current
                     .as_ref()
                     .ok_or_else(|| fail("当前 payload 缺失"))?,
@@ -487,11 +573,11 @@ fn recover_authorized_gc(
     name: &str,
     max: u64,
 ) -> Result<(), String> {
-    let current = store.commits.last().map(|row| &row.payload);
+    let current = store.commits.last().and_then(Row::payload);
     let authorized: BTreeMap<String, Payload> = store
         .commits
         .iter()
-        .filter_map(|row| row.gc.clone())
+        .filter_map(|row| row.gc().cloned())
         .map(|payload| (payload.name.clone(), payload))
         .collect();
     let mut held = Vec::new();
@@ -626,7 +712,7 @@ fn replace_with_hook(
             name: payload_name.clone(),
             evidence: evidence(&fresh)?,
         },
-        gc: store.commits.last().map(|row| row.payload.clone()),
+        gc: store.commits.last().and_then(Row::payload).cloned(),
     };
     let preflight_bytes = json(&prospective)?.len() as u64;
     if preflight_bytes + 1024 > MAX_RECORD
@@ -657,28 +743,75 @@ fn replace_with_hook(
         },
         ..prospective
     };
-    let encoded = json(&row)?;
+    publish_row(
+        &mut store,
+        parent,
+        name,
+        max,
+        Row::V1(row),
+        Some(payload_lease),
+        after_durable,
+    )
+}
+
+// One commit/flush/GC implementation serves both strict v1 present rows and
+// optional v2 rows. A tombstone never creates an empty payload or changes base.
+fn publish_row(
+    store: &mut Store,
+    parent: &Dir,
+    name: &str,
+    max: u64,
+    row: Row,
+    payload_lease: Option<ReadLease>,
+    after_durable: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if row.sequence() != store.commits.len() + 1
+        || row.previous() != store.tail_sha256
+        || row.gc() != store.commits.last().and_then(Row::payload)
+    {
+        return Err(fail("新文档 commit 的顺序或 GC 授权不一致"));
+    }
+    let encoded = row.encode()?;
     if encoded.len() as u64 > MAX_RECORD || store.record_bytes + encoded.len() as u64 > MAX_RECORDS
     {
-        return Err(fail("新 payload 已保留，版本记录超过上限"));
+        return Err(fail("版本记录超过上限，生成来源已保留"));
+    }
+    match (row.payload(), payload_lease.as_ref()) {
+        (Some(payload), Some(held)) => {
+            if store
+                .commits
+                .iter()
+                .any(|old| old.payload().is_some_and(|old| old.name == payload.name))
+            {
+                return Err(fail("新 payload 重用了历史名称"));
+            }
+            let snapshot = read_held(&store.payloads, &payload.name, held, max)?;
+            if evidence(&snapshot)? != payload.evidence {
+                return Err(fail("新 payload 证据变化"));
+            }
+        }
+        (None, None) => {}
+        _ => return Err(fail("新文档值与原生 payload lease 不一致")),
     }
     store.recheck_evidence(parent, name)?;
-    let mut published_payloads = store.payload_names.clone();
-    published_payloads.push(payload_name.clone());
-    published_payloads.sort();
-    if names(&store.directory, MAX_COMMITS + 2)? != store.directory_names
-        || names(&store.payloads, MAX_COMMITS + 1)? != published_payloads
-    {
-        return Err(fail("发布 commit 前版本条目变化，新 payload 已保留"));
+    let mut expected_payloads = store.payload_names.clone();
+    if let Some(payload) = row.payload() {
+        expected_payloads.push(payload.name.clone());
     }
-    // From this point a failed publication/flush may already have selected the
-    // new payload. Never report a definite non-commit or roll back by deleting.
+    expected_payloads.sort();
+    if names(&store.directory, MAX_COMMITS + 2)? != store.directory_names
+        || names(&store.payloads, MAX_COMMITS + 1)? != expected_payloads
+    {
+        return Err(fail("发布 commit 前版本条目变化，新来源已保留"));
+    }
+    // A failure from the actual publication onward may have selected the new
+    // logical value. Never downgrade it to a definite pre-commit failure.
     store
         .directory
-        .write_new(&record_name(row.sequence), &encoded)
+        .write_new(&record_name(row.sequence()), &encoded)
         .map_err(may)?;
     let after_commit = || -> Result<(), String> {
-        let committed_name = record_name(row.sequence);
+        let committed_name = record_name(row.sequence());
         let committed_lease = lease(&store.directory, &committed_name, false)?;
         let committed_snapshot = read_held(
             &store.directory,
@@ -709,45 +842,45 @@ fn replace_with_hook(
         for held in &store.records {
             native(held.recheck())?;
         }
-        native(payload_lease.recheck())?;
+        if let Some(held) = &payload_lease {
+            native(held.recheck())?;
+        }
         let mut expected_records = store.directory_names.clone();
-        expected_records.push(record_name(row.sequence));
+        expected_records.push(committed_name);
         expected_records.sort();
-        let mut expected_payloads = store.payload_names.clone();
-        expected_payloads.push(payload_name);
-        expected_payloads.sort();
         if names(&store.directory, MAX_COMMITS + 2)? != expected_records
             || names(&store.payloads, MAX_COMMITS + 1)? != expected_payloads
         {
             return Err(fail("提交时出现未知条目"));
         }
-        // Every historical deletion is explicitly authorized by a successor row.
-        // The new row is durable before any cleanup starts. Complete orphans and
-        // the permanent physical base are deliberately excluded from this map.
         after_durable()?;
         let mut authorized: BTreeMap<String, Payload> = store
             .commits
             .iter()
-            .filter_map(|row| row.gc.clone())
+            .filter_map(|old| old.gc().cloned())
             .map(|payload| (payload.name.clone(), payload))
             .collect();
-        if let Some(payload) = &row.gc {
+        if let Some(payload) = row.gc() {
             authorized.insert(payload.name.clone(), payload.clone());
         }
         let gc_names: BTreeSet<_> = authorized.keys().cloned().collect();
         for payload in authorized.into_values() {
+            if payload.evidence.metadata.identity == store.header.base.metadata.identity
+                || row.payload().is_some_and(|current| {
+                    current.name == payload.name
+                        || current.evidence.metadata.identity == payload.evidence.metadata.identity
+                })
+            {
+                return Err(fail("GC 授权指向永久 base 或当前 payload"));
+            }
             if native(store.payloads.native()?.entry(&leaf(&payload.name)?))?.is_none() {
                 continue;
             }
-            let held = if store
-                .commits
-                .last()
-                .is_some_and(|old| old.payload == payload)
-            {
+            let held = if store.commits.last().and_then(Row::payload) == Some(&payload) {
                 store
                     .current
                     .take()
-                    .ok_or_else(|| fail("GC 当前旧版本 lease 缺失"))?
+                    .ok_or_else(|| fail("旧当前版本的 GC lease 缺失"))?
             } else {
                 verify_payload(&store.payloads, &payload, true, max)?
             };
@@ -757,7 +890,9 @@ fn replace_with_hook(
             }
         }
         native(committed_lease.recheck())?;
-        native(payload_lease.recheck())?;
+        if let Some(held) = &payload_lease {
+            native(held.recheck())?;
+        }
         store.recheck_evidence(parent, name)?;
         expected_payloads.retain(|name| !gc_names.contains(name));
         if names(&store.directory, MAX_COMMITS + 2)? != expected_records
@@ -944,12 +1079,12 @@ mod tests {
         assert_eq!(checked.payload_names.len(), 1);
         assert!(checked
             .payloads
-            .file(&checked.commits[0].payload.name)
+            .file(&checked.commits[0].payload().unwrap().name)
             .unwrap()
             .is_none());
         assert_eq!(
-            checked.commits[1].gc.as_ref(),
-            Some(&checked.commits[0].payload)
+            checked.commits[1].gc(),
+            Some(checked.commits[0].payload().unwrap())
         );
     }
     #[test]
@@ -981,7 +1116,7 @@ mod tests {
     #[test]
     fn existing_generated_editor_prevents_cas_without_new_commit() {
         let (fixture, dir, expected) = ready();
-        let payload_name = { store(&dir).commits[0].payload.name.clone() };
+        let payload_name = { store(&dir).commits[0].payload().unwrap().name.clone() };
         let path = fixture
             .0
             .join(sidecar(NAME))
@@ -1008,7 +1143,7 @@ mod tests {
         let old_name = {
             let checked = store(&dir);
             assert_eq!(checked.payload_names.len(), 2);
-            checked.commits[0].payload.name.clone()
+            checked.commits[0].payload().unwrap().name.clone()
         };
         let old_path = fixture.0.join(sidecar(NAME)).join(PAYLOADS).join(old_name);
         fs::write(&old_path, b"tampered historical payload").unwrap();
@@ -1039,8 +1174,8 @@ mod tests {
         assert!(checked
             .commits
             .iter()
-            .all(|row| row.payload.name != orphan_name
-                && row.gc.as_ref().is_none_or(|gc| gc.name != orphan_name)));
+            .all(|row| row.payload().unwrap().name != orphan_name
+                && row.gc().is_none_or(|gc| gc.name != orphan_name)));
     }
     #[test]
     fn unknown_stage_gaps_current_loss_and_record_tamper_are_refused_without_cleanup() {
@@ -1051,7 +1186,7 @@ mod tests {
                 0 => fs::write(root.join("unknown-stage"), b"preserve evidence").unwrap(),
                 1 => fs::rename(root.join(record_name(1)), root.join(record_name(2))).unwrap(),
                 2 => {
-                    let name = { store(&dir).commits[0].payload.name.clone() };
+                    let name = { store(&dir).commits[0].payload().unwrap().name.clone() };
                     fs::remove_file(root.join(PAYLOADS).join(name)).unwrap();
                 }
                 _ => fs::write(root.join(record_name(1)), b"tampered commit").unwrap(),
@@ -1136,7 +1271,7 @@ mod tests {
             let checked = Store::open(&dir, name, max, false).unwrap().unwrap();
             assert_eq!(checked.payload_bytes, MAX_PAYLOADS);
             assert_eq!(checked.commits.len(), 2);
-            checked.commits[0].payload.name.clone()
+            checked.commits[0].payload().unwrap().name.clone()
         };
         let reopened = fixture.dir();
         let mut second = Snapshot::open(&reopened, name, max).unwrap();

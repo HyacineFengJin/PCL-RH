@@ -9,6 +9,27 @@ pub(crate) struct Document<'a> {
     max: u64,
 }
 
+// Optional-state CAS is implemented by the Windows immutable revision store.
+// Unix consumers retain their existing physical multi-file transaction; no
+// weaker path-existence token is exposed as an equivalent absence guarantee.
+#[cfg(windows)]
+pub(crate) use super::windows_versions::Presence as DocumentPresence;
+#[cfg(windows)]
+pub(crate) struct DocumentState {
+    inner: windows_versions::OwnedState,
+}
+#[cfg(windows)]
+impl DocumentState {
+    pub fn presence(&self) -> DocumentPresence {
+        self.inner.presence()
+    }
+    /// The sequence is informative; only the opaque state authorizes CAS.
+    /// NeverCreated and the initial physical Present both have sequence zero.
+    pub fn generation(&self) -> usize {
+        self.inner.generation()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +124,34 @@ mod tests {
             .unwrap();
         assert!(document.auxiliary_names().is_err());
     }
+    #[cfg(windows)]
+    #[test]
+    fn optional_document_facade_distinguishes_never_created_from_deleted() {
+        let (_temporary, directory) = fixture();
+        let document = Document::new(&directory, NAME, 65536).unwrap();
+        let never = document.state().unwrap();
+        assert_eq!(never.presence(), DocumentPresence::NeverCreated);
+        assert_eq!(never.generation(), 0);
+        document.compare_write(&never, Some(b"base")).unwrap();
+        let current = document.state().unwrap();
+        document.compare_write(&current, None).unwrap();
+        let mut missing = document.state().unwrap();
+        assert_eq!(missing.presence(), DocumentPresence::Tombstone);
+        assert_eq!(missing.generation(), 1);
+        assert_eq!(document.read_state(&mut missing).unwrap(), None);
+        assert!(document.compare_write(&never, Some(b"stale")).is_err());
+        document
+            .compare_write(&missing, Some(b"reactivated"))
+            .unwrap();
+        let mut current = document.state().unwrap();
+        assert_eq!(
+            document.read_state(&mut current).unwrap().unwrap(),
+            b"reactivated"
+        );
+        assert_eq!(current.generation(), 2);
+        assert!(document.read_state(&mut missing).is_err());
+        assert_eq!(document.auxiliary_names().unwrap().len(), 2);
+    }
 }
 pub(crate) struct DocumentSnapshot {
     inner: Snapshot,
@@ -139,6 +188,36 @@ impl<'a> Document<'a> {
             Some(_) => Some(Snapshot::physical(self.directory, &self.name, self.max)?),
         };
         Ok(current.map(|inner| DocumentSnapshot { inner }))
+    }
+    #[cfg(windows)]
+    pub fn state(&self) -> Result<DocumentState, String> {
+        windows_versions::state_owned(self.directory, &self.name, self.max)
+            .map(|inner| DocumentState { inner })
+    }
+    #[cfg(windows)]
+    pub fn read_state(&self, expected: &mut DocumentState) -> Result<Option<Vec<u8>>, String> {
+        windows_versions::read_state_owned(
+            self.directory,
+            &self.name,
+            self.max,
+            &mut expected.inner,
+        )
+    }
+    /// `None` selects logical absence and never removes the permanent base.
+    /// A real state token is required even when the expected value is absent.
+    #[cfg(windows)]
+    pub fn compare_write(
+        &self,
+        expected: &DocumentState,
+        bytes: Option<&[u8]>,
+    ) -> Result<(), String> {
+        windows_versions::compare_owned(
+            self.directory,
+            &self.name,
+            self.max,
+            &expected.inner,
+            bytes,
+        )
     }
     pub fn recheck(&self, expected: &DocumentSnapshot) -> Result<(), String> {
         let fresh = self.snapshot()?.ok_or("启动器文档已消失")?;

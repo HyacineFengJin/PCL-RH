@@ -1,9 +1,10 @@
 //! Launcher-owned export choices, separate from the files being exported.
 use crate::instance_export::ExportRequest;
-use crate::launcher_local::filesystem::{
-    documents::{Document, DocumentSnapshot},
-    Scope,
-};
+#[cfg(unix)]
+use crate::launcher_local::filesystem::documents::DocumentSnapshot;
+#[cfg(windows)]
+use crate::launcher_local::filesystem::documents::DocumentState;
+use crate::launcher_local::filesystem::{documents::Document, Scope};
 use pcl_core::retained_fs::{Directory, Leaf, Lock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,23 +42,60 @@ fn directory(project: &Path, create: bool) -> Result<Option<Scope>, String> {
         Ok(None)
     }
 }
-fn read_at(scope: &Scope, filename: &str) -> Result<Option<(DocumentSnapshot, Preset)>, String> {
+struct CurrentPreset {
+    #[cfg(unix)]
+    snapshot: Option<DocumentSnapshot>,
+    #[cfg(windows)]
+    state: DocumentState,
+    digest: Option<String>,
+    preset: Option<Preset>,
+}
+fn read_at(scope: &Scope, filename: &str) -> Result<CurrentPreset, String> {
     scope.recheck()?;
     let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
     let document = Document::new(dir, filename, LIMIT)?;
-    let Some(mut snapshot) = document.snapshot()? else {
-        scope.recheck()?;
-        return Ok(None);
+    #[cfg(unix)]
+    let (snapshot, bytes) = {
+        let mut snapshot = document.snapshot()?;
+        let bytes = snapshot
+            .as_mut()
+            .map(|snapshot| document.bytes(snapshot))
+            .transpose()?;
+        (snapshot, bytes)
     };
-    let bytes = document.bytes(&mut snapshot)?;
-    if format!("{:x}", Sha256::digest(&bytes)) != snapshot.digest() {
+    #[cfg(windows)]
+    let (state, bytes) = {
+        // Logical absence retains its exact generation. It cannot be treated
+        // as a never-created physical filename during a subsequent save.
+        let mut state = document.state()?;
+        let bytes = document.read_state(&mut state)?;
+        (state, bytes)
+    };
+    let digest = bytes
+        .as_ref()
+        .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+    #[cfg(unix)]
+    if digest.as_deref() != snapshot.as_ref().map(DocumentSnapshot::digest) {
         return Err("导出配置在读取期间已变化，原文件已保留".into());
     }
+    let preset = bytes
+        .as_ref()
+        .map(|bytes| {
+            serde_json::from_slice(bytes)
+                .map_err(|_| "导出配置损坏或格式不受支持，原文件已保留".to_string())
+        })
+        .transpose()?;
     scope.recheck()?;
-    let preset =
-        serde_json::from_slice(&bytes).map_err(|_| "导出配置损坏或格式不受支持，原文件已保留")?;
-    Ok(Some((snapshot, preset)))
+    Ok(CurrentPreset {
+        #[cfg(unix)]
+        snapshot,
+        #[cfg(windows)]
+        state,
+        digest,
+        preset,
+    })
 }
+
 fn check(preset: &Preset, root_id: &str, root: &Path, id: &str) -> Result<(), String> {
     if preset.schema_version != 1
         || preset.root_id != root_id
@@ -77,7 +115,7 @@ pub fn read(
     let Some(dir) = directory(project, false)? else {
         return Ok(None);
     };
-    let Some((_, preset)) = read_at(&dir, &name(root_id, id))? else {
+    let Some(preset) = read_at(&dir, &name(root_id, id))?.preset else {
         return Ok(None);
     };
     check(&preset, root_id, root, id)?;
@@ -118,7 +156,7 @@ fn save_checked(
     let _lock = lock_preset(&scope, root_id, id)?;
     crate::instance_rename_refs::ensure_project_ready(project)?;
     let current = read_at(&scope, &filename)?;
-    if let Some((_, old)) = &current {
+    if let Some(old) = &current.preset {
         check(old, root_id, root, id)?;
     }
     let data = serde_json::to_vec_pretty(&Preset {
@@ -136,13 +174,17 @@ fn save_checked(
     scope.recheck()?;
     let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
     // This explicit document capability does not alter arbitrary file readers.
-    Document::new(dir, &filename, LIMIT)?
-        .replace(current.as_ref().map(|(snapshot, _)| snapshot), &data)?;
+    let document = Document::new(dir, &filename, LIMIT)?;
+    #[cfg(unix)]
+    document.replace(current.snapshot.as_ref(), &data)?;
+    #[cfg(windows)]
+    document.compare_write(&current.state, Some(&data))?;
     scope.recheck()?;
-    let Some((after, preset)) = read_at(&scope, &filename)? else {
+    let after = read_at(&scope, &filename)?;
+    let Some(preset) = after.preset else {
         return Err("导出配置可能已保存，但发布后的文件已消失，请重新读取".into());
     };
-    if after.digest() != format!("{:x}", Sha256::digest(&data)) {
+    if after.digest != Some(format!("{:x}", Sha256::digest(&data))) {
         return Err("导出配置可能已保存，但发布后被修改，原件与证据已保留".into());
     }
     check(&preset, root_id, root, id)

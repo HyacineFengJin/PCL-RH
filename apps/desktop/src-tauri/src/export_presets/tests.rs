@@ -374,3 +374,39 @@ fn oversized_existing_preset_is_bounded_and_preserved() {
     .is_err());
     assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_logically_deleted_preset_is_absent_and_can_be_saved_again() {
+    let fixture = Fixture::new();
+    save(
+        &fixture.1,
+        "a",
+        Path::new("/game"),
+        "Example",
+        Fixture::request(),
+    )
+    .unwrap();
+    let original = fs::read(fixture.file()).unwrap();
+    {
+        let scope = directory(&fixture.1, false).unwrap().unwrap();
+        let dir = scope.folder.as_ref().unwrap();
+        let document = Document::new(dir, &name("a", "Example"), LIMIT).unwrap();
+        let state = document.state().unwrap();
+        document.compare_write(&state, None).unwrap();
+    }
+    assert!(read(&fixture.1, "a", Path::new("/game"), "Example")
+        .unwrap()
+        .is_none());
+    let mut request = Fixture::request();
+    request.version = "reactivated".into();
+    save(&fixture.1, "a", Path::new("/game"), "Example", request).unwrap();
+    assert_eq!(
+        read(&fixture.1, "a", Path::new("/game"), "Example")
+            .unwrap()
+            .unwrap()
+            .version,
+        "reactivated"
+    );
+    assert_eq!(fs::read(fixture.file()).unwrap(), original);
+}
