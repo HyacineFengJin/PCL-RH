@@ -2,9 +2,10 @@
 //! receive immutable network policies and descriptor ownership; IPC completion
 //! never controls cancellation cleanup or no-replacement publication.
 use crate::{tasks, toolbox_download::*, Shared};
+use std::sync::{atomic::Ordering, Arc};
+#[cfg(target_os = "linux")]
 use std::{
     process::{Command, Stdio},
-    sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
 };
 use tauri::State;
@@ -165,32 +166,40 @@ pub async fn toolbox_download_open_directory(
     let directory = shared.toolbox_download.held_directory(&directory_token)?;
     tauri::async_runtime::spawn_blocking(move || {
         // The command cannot open an arbitrary frontend path. Keep its captured
-        // descriptor alive while the bounded desktop opener accepts this path.
+        // descriptor alive while the desktop opener accepts this path.
         directory.recheck()?;
-        let mut child = Command::new("xdg-open")
-            .arg(directory.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| "无法打开所选下载目录")?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    return if status.success() {
-                        Ok(())
-                    } else {
-                        Err("默认文件管理器未能打开所选目录".into())
+        #[cfg(not(target_os = "linux"))]
+        {
+            pcl_desktop_platform::opener::open_path(directory.path())?;
+            return directory.recheck();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let mut child = Command::new("xdg-open")
+                .arg(directory.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| "无法打开所选下载目录")?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        return if status.success() {
+                            Ok(())
+                        } else {
+                            Err("默认文件管理器未能打开所选目录".into())
+                        }
                     }
-                }
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(40))
-                }
-                _ => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("打开所选目录超时或失败".into());
+                    Ok(None) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(40))
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err("打开所选目录超时或失败".into());
+                    }
                 }
             }
         }

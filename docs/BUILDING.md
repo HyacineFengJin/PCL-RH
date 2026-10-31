@@ -1,6 +1,6 @@
 # 构建与运行 / Build and run
 
-当前完整桌面构建支持 Linux，Windows / macOS 的适配范围见[平台说明](PLATFORMS.md)。
+桌面构建已通过 Linux、Windows 和 macOS 原生 CI；功能与发行包的适配范围见[平台说明](PLATFORMS.md)。
 
 ## 依赖
 
@@ -9,6 +9,8 @@
 - Python 3.11+。
 - C / C++ 构建工具，以及 GTK 3、WebKitGTK 4.1、OpenSSL、D-Bus 的开发依赖。
 - 安装桌面快捷入口时需要提供 `desktop-file-validate` 的软件包。
+
+Linux 中执行 RH Code 的隔离构建还需要 bubblewrap 0.8+ 和可用 JDK；普通游戏启动不预先加载该构建环境。
 
 系统依赖通过所用发行版的软件包管理器安装。文件选择器需要 XDG Desktop Portal 和适合桌面环境的后端；记住正版登录需要可用的系统凭据服务。运行游戏所需 Java 可以在启动器中下载。
 
