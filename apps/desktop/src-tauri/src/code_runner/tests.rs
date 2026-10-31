@@ -133,6 +133,16 @@ fn run(
     )
     .unwrap()
 }
+fn assert_resolved_recipe_tool(command: &Command, tool: &str) {
+    let arguments: Vec<_> = command.get_args().collect();
+    let separator = arguments
+        .iter()
+        .rposition(|arg| *arg == std::ffi::OsStr::new("--"))
+        .unwrap();
+    let expected = fs::canonicalize(tool).unwrap();
+    assert!(expected.starts_with("/usr"));
+    assert_eq!(arguments[separator + 1], expected.as_os_str());
+}
 fn descendants(pid: u32) -> Vec<u32> {
     let mut result = Vec::new();
     let mut pending = vec![pid];
@@ -238,6 +248,10 @@ fn bubblewrap_preflight_and_actual_javac_compile_private_copy() {
     fixture.java("-options.java", "class OptionName {}");
     let request = fixture.request(Recipe::Javac, Target::Classes);
     let prepared = sandbox::Prepared::new(&request).unwrap();
+    assert_resolved_recipe_tool(
+        &prepared.command(&request, false).unwrap(),
+        "/usr/bin/javac",
+    );
     let (read, _write) = pipe();
     let mut input = protocol::Input::new(read.as_raw_fd()).unwrap();
     let mut diagnostics = String::new();
@@ -285,6 +299,7 @@ fn wrapper_is_private_and_output_limit_stops_the_owned_namespace() {
     let (read, _write) = pipe();
     let mut input = protocol::Input::new(read.as_raw_fd()).unwrap();
     let mut command = prepared.command(&request, false).unwrap();
+    assert_resolved_recipe_tool(&command, "/usr/bin/java");
     command
         .env("PCL_RUNNER_SECRET", "synthetic-only")
         .env("DISPLAY", "synthetic-display");

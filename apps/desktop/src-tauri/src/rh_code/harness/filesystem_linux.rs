@@ -237,19 +237,71 @@ impl Dir {
         Ok(file)
     }
     pub(super) fn link_anonymous(&self, file: &File, name: &str) -> Result<(), String> {
+        let metadata = file.metadata().map_err(error)?;
+        if !metadata.is_file() || metadata.nlink() != 0 {
+            return Err("Harness staging requires a still-anonymous regular inode".into());
+        }
         let empty = c("")?;
-        let name = c(name)?;
-        if unsafe {
+        let target = c(name)?;
+        let result = if unsafe {
             libc::linkat(
                 file.as_raw_fd(),
                 empty.as_ptr(),
                 self.0.as_raw_fd(),
-                name.as_ptr(),
+                target.as_ptr(),
                 libc::AT_EMPTY_PATH,
             )
-        } != 0
+        } == 0
         {
-            return Err(io_error("Harness staging slot already exists or changed"));
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        self.finish_anonymous_link(file, name, result)
+    }
+    fn finish_anonymous_link(
+        &self,
+        file: &File,
+        name: &str,
+        result: std::io::Result<()>,
+    ) -> Result<(), String> {
+        if let Err(failure) = result {
+            if !matches!(
+                failure.raw_os_error(),
+                Some(libc::EPERM | libc::EINVAL | libc::ENOENT)
+            ) {
+                return Err(format!(
+                    "Harness staging slot already exists or changed: {failure}"
+                ));
+            }
+            // As in the core Stage publisher, unprivileged kernels may deny
+            // AT_EMPTY_PATH. Adapt only the still-held anonymous descriptor;
+            // the target remains no-replace and relative to this held parent.
+            let metadata = file.metadata().map_err(error)?;
+            if !metadata.is_file() || metadata.nlink() != 0 {
+                return Err("Harness anonymous source acquired a link before publication".into());
+            }
+            let source = c(&format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+            let target = c(name)?;
+            if unsafe {
+                libc::linkat(
+                    libc::AT_FDCWD,
+                    source.as_ptr(),
+                    self.0.as_raw_fd(),
+                    target.as_ptr(),
+                    libc::AT_SYMLINK_FOLLOW,
+                )
+            } != 0
+            {
+                return Err(io_error("Harness staging slot already exists or changed"));
+            }
+        }
+        let visible = self
+            .stat(name)?
+            .ok_or("Harness staging slot disappeared after linking")?;
+        let actual = file.metadata().map_err(error)?;
+        if visible.st_dev != actual.dev() || visible.st_ino != actual.ino() || actual.nlink() != 1 {
+            return Err("Harness staging slot changed after linking; retained file".into());
         }
         self.sync()
     }
@@ -316,6 +368,60 @@ impl Dir {
             return Err(io_error("Cannot remove owned Harness temporary"));
         }
         self.sync()
+    }
+}
+
+#[cfg(test)]
+mod anonymous_link_tests {
+    use super::*;
+    #[test]
+    fn unprivileged_fallback_links_the_same_held_inode_without_replacement() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = Dir::absolute(&temporary.path().canonicalize().unwrap(), false).unwrap();
+        let file = directory.anonymous(b"generated", 0o751).unwrap();
+        directory
+            .finish_anonymous_link(
+                &file,
+                "published",
+                Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+            )
+            .unwrap();
+        let (state, bytes) = directory.read("published", MAX_FILE).unwrap();
+        assert_eq!(state.identity, identity(&file).unwrap());
+        assert_eq!(state.mode, 0o751);
+        assert_eq!(bytes, b"generated");
+        let other = directory.anonymous(b"keep anonymous", 0o600).unwrap();
+        assert!(directory
+            .finish_anonymous_link(
+                &other,
+                "published",
+                Err(std::io::Error::from_raw_os_error(libc::ENOENT))
+            )
+            .is_err());
+        assert_eq!(other.metadata().unwrap().nlink(), 0);
+        assert_eq!(
+            directory.read("published", MAX_FILE).unwrap().1,
+            b"generated"
+        );
+    }
+    #[test]
+    fn fallback_refuses_a_named_source_and_preserves_both_user_names() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = Dir::absolute(&temporary.path().canonicalize().unwrap(), false).unwrap();
+        fs::write(temporary.path().join("original"), b"user original").unwrap();
+        let file = directory.open("original", false).unwrap();
+        assert!(directory
+            .finish_anonymous_link(
+                &file,
+                "other",
+                Err(std::io::Error::from_raw_os_error(libc::EPERM))
+            )
+            .is_err());
+        assert!(directory.stat("other").unwrap().is_none());
+        assert_eq!(
+            fs::read(temporary.path().join("original")).unwrap(),
+            b"user original"
+        );
     }
 }
 

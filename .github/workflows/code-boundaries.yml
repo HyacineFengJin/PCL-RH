@@ -3,9 +3,9 @@ name: Native Code boundaries
 on:
   push:
     branches: [master]
-    paths: ['apps/desktop/src-tauri/src/code_runner.rs', 'apps/desktop/src-tauri/src/code_runner/**', 'apps/desktop/src-tauri/src/rh_code/harness.rs', 'apps/desktop/src-tauri/src/rh_code/harness/**', 'apps/desktop/src-tauri/src/rh_code/harness_test_host.rs', 'apps/desktop/src-tauri/src/rh_code/identity.rs', 'apps/desktop/src-tauri/src/rh_code/models.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/experimental.rs', 'apps/desktop/src-tauri/src/experimental/host*.rs', 'apps/desktop/src-tauri/src/launcher_paths.rs', 'apps/desktop/src-tauri/src/launcher_paths/**', 'crates/install/tests/launcher_paths.rs', 'crates/install/tests/experimental_host.rs', 'pcl-rh.json', 'tools/build-native.py', 'start-native.ps1', 'start-native.sh', 'crates/install/tests/code_runner.rs', 'crates/install/tests/rh_code_harness.rs', 'crates/install/Cargo.toml', 'crates/core/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/code-boundaries.yml']
+    paths: ['apps/desktop/src-tauri/src/code_runner.rs', 'apps/desktop/src-tauri/src/code_runner/**', 'apps/desktop/src-tauri/src/rh_code/harness.rs', 'apps/desktop/src-tauri/src/rh_code/harness/**', 'apps/desktop/src-tauri/src/rh_code/harness_test_host.rs', 'apps/desktop/src-tauri/src/rh_code/identity.rs', 'apps/desktop/src-tauri/src/rh_code/models.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/experimental.rs', 'apps/desktop/src-tauri/src/experimental/host*.rs', 'apps/desktop/src-tauri/src/launcher_paths.rs', 'apps/desktop/src-tauri/src/launcher_paths/**', 'crates/install/tests/launcher_paths.rs', 'crates/install/tests/experimental_host.rs', 'pcl-rh.json', 'tools/build-native.py', 'tools/ci/setup-code-boundaries-linux.sh', 'start-native.ps1', 'start-native.sh', 'crates/install/tests/resource_token.rs', 'apps/desktop/src-tauri/src/resource_ops/token.rs', 'crates/install/tests/code_runner.rs', 'crates/install/tests/rh_code_harness.rs', 'crates/install/Cargo.toml', 'crates/core/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/code-boundaries.yml']
   pull_request:
-    paths: ['apps/desktop/src-tauri/src/code_runner.rs', 'apps/desktop/src-tauri/src/code_runner/**', 'apps/desktop/src-tauri/src/rh_code/harness.rs', 'apps/desktop/src-tauri/src/rh_code/harness/**', 'apps/desktop/src-tauri/src/rh_code/harness_test_host.rs', 'apps/desktop/src-tauri/src/rh_code/identity.rs', 'apps/desktop/src-tauri/src/rh_code/models.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/experimental.rs', 'apps/desktop/src-tauri/src/experimental/host*.rs', 'apps/desktop/src-tauri/src/launcher_paths.rs', 'apps/desktop/src-tauri/src/launcher_paths/**', 'crates/install/tests/launcher_paths.rs', 'crates/install/tests/experimental_host.rs', 'pcl-rh.json', 'tools/build-native.py', 'start-native.ps1', 'start-native.sh', 'crates/install/tests/code_runner.rs', 'crates/install/tests/rh_code_harness.rs', 'crates/install/Cargo.toml', 'crates/core/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/code-boundaries.yml']
+    paths: ['apps/desktop/src-tauri/src/code_runner.rs', 'apps/desktop/src-tauri/src/code_runner/**', 'apps/desktop/src-tauri/src/rh_code/harness.rs', 'apps/desktop/src-tauri/src/rh_code/harness/**', 'apps/desktop/src-tauri/src/rh_code/harness_test_host.rs', 'apps/desktop/src-tauri/src/rh_code/identity.rs', 'apps/desktop/src-tauri/src/rh_code/models.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/experimental.rs', 'apps/desktop/src-tauri/src/experimental/host*.rs', 'apps/desktop/src-tauri/src/launcher_paths.rs', 'apps/desktop/src-tauri/src/launcher_paths/**', 'crates/install/tests/launcher_paths.rs', 'crates/install/tests/experimental_host.rs', 'pcl-rh.json', 'tools/build-native.py', 'tools/ci/setup-code-boundaries-linux.sh', 'start-native.ps1', 'start-native.sh', 'crates/install/tests/resource_token.rs', 'apps/desktop/src-tauri/src/resource_ops/token.rs', 'crates/install/tests/code_runner.rs', 'crates/install/tests/rh_code_harness.rs', 'crates/install/Cargo.toml', 'crates/core/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/code-boundaries.yml']
   workflow_dispatch:
 
 permissions:
@@ -43,14 +43,12 @@ jobs:
           if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
       - name: Prepare Linux synthetic compiler fixtures
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap openjdk-17-jdk-headless
+        run: bash tools/ci/setup-code-boundaries-linux.sh
       - name: Test actual source capture, provenance and build protocol
         # Linux also executes the existing isolated synthetic javac/Gradle
         # fixtures. Other hosts must return explicit blocked receipts before
         # executing author code or mutating a project; no fake sandbox success.
-        run: cargo +stable test --locked -p pcl-install --test code_runner --test rh_code_harness --test launcher_paths --no-fail-fast -- --test-threads=2
+        run: cargo +stable test --locked -p pcl-install --test code_runner --test rh_code_harness --test launcher_paths --test resource_token --no-fail-fast -- --test-threads=2
       - name: Test actual trusted host lease, RPC and retirement
         if: ${{ !cancelled() }}
         # The source wrapper also compiles Code dependencies tested above.

@@ -111,7 +111,7 @@ mod tests {
                     r#"while($null -ne ($line=[Console]::ReadLine())) { [Console]::WriteLine('{"ok":true,"result":true}'); if($line.Contains('"operation":"shutdown"')) { break } }"#
                 }
                 "slow" => {
-                    r#"$line=[Console]::ReadLine(); while($true) { [Console]::Write('x'); Start-Sleep -Milliseconds 40 }"#
+                    r#"$line=[Console]::ReadLine(); [Console]::WriteLine('{"ok":true,"result":true}'); $line=[Console]::ReadLine(); while($true) { [Console]::Write('x'); Start-Sleep -Milliseconds 40 }"#
                 }
                 "large" => {
                     r#"$line=[Console]::ReadLine(); [Console]::WriteLine(('x' * 5000)); Start-Sleep -Seconds 5"#

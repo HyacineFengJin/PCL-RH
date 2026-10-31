@@ -10,7 +10,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::{fs::MetadataExt, process::CommandExt},
     },
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -271,23 +271,37 @@ impl Dir {
     }
 }
 
-fn executable(path: &str) -> Result<(), Failure> {
+fn resolved_executable(path: &Path, system_root: &Path) -> Result<PathBuf, Failure> {
     let real = fs::canonicalize(path).map_err(|_| {
         Failure::new(
             "BUILD_TOOL_UNAVAILABLE",
-            format!("Required build tool is unavailable: {path}"),
+            format!("Required build tool is unavailable: {}", path.display()),
         )
     })?;
     let metadata = real
         .metadata()
         .map_err(|e| Failure::io("Cannot inspect build tool", e))?;
-    if !real.starts_with("/usr") || !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+    if !real.starts_with(system_root) || !metadata.is_file() || metadata.mode() & 0o111 == 0 {
         return Err(Failure::new(
             "BUILD_TOOL_UNAVAILABLE",
             "Build tools must be executable system files under /usr",
         ));
     }
-    Ok(())
+    Ok(real)
+}
+fn executable(path: &str) -> Result<String, Failure> {
+    // Only these fixed system-tool names enter this boundary. Resolving a
+    // distro's /etc/alternatives link before confinement keeps the executable
+    // inside the already-admitted /usr mount, without exposing alternatives.
+    resolved_executable(Path::new(path), Path::new("/usr"))?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| {
+            Failure::new(
+                "BUILD_TOOL_UNAVAILABLE",
+                "System build tool path is not UTF-8",
+            )
+        })
 }
 fn memory_file(name: &str, bytes: &[u8]) -> Result<File, Failure> {
     let name = CString::new(name).unwrap();
@@ -324,7 +338,7 @@ impl Prepared {
         let sources = scan_source(&source)?;
         let recipe = match request.recipe {
             Recipe::Javac => {
-                executable("/usr/bin/javac")?;
+                let javac = executable("/usr/bin/javac")?;
                 if sources.is_empty() {
                     return Err(Failure::new(
                         "BUILD_SOURCE_UNAVAILABLE",
@@ -332,21 +346,23 @@ impl Prepared {
                     ));
                 }
                 source.create(".rh-build")?.create("classes")?;
-                let mut arguments: Vec<String> = [
-                    "/usr/bin/javac",
-                    "-J-Xmx512m",
-                    "-J-XX:ActiveProcessorCount=4",
-                    "-encoding",
-                    "UTF-8",
-                    "-proc:none",
-                    "-classpath",
-                    "/workspace/.rh-build/classes",
-                    "-d",
-                    "/workspace/.rh-build/classes",
-                ]
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+                let mut arguments: Vec<String> = std::iter::once(javac)
+                    .chain(
+                        [
+                            "-J-Xmx512m",
+                            "-J-XX:ActiveProcessorCount=4",
+                            "-encoding",
+                            "UTF-8",
+                            "-proc:none",
+                            "-classpath",
+                            "/workspace/.rh-build/classes",
+                            "-d",
+                            "/workspace/.rh-build/classes",
+                        ]
+                        .into_iter()
+                        .map(str::to_owned),
+                    )
+                    .collect();
                 arguments.extend(sources);
                 arguments
             }
@@ -366,19 +382,21 @@ impl Prepared {
                         .child("gradle")?
                         .child("wrapper")?
                         .regular("gradle-wrapper.jar")?;
-                    executable("/usr/bin/java")?;
-                    [
-                        "/usr/bin/java",
-                        "-Xmx512m",
-                        "-XX:ActiveProcessorCount=4",
-                        "-Duser.home=/home/build",
-                        "-cp",
-                        "/workspace/gradle/wrapper/gradle-wrapper.jar",
-                        "org.gradle.wrapper.GradleWrapperMain",
-                    ]
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
+                    let java = executable("/usr/bin/java")?;
+                    std::iter::once(java)
+                        .chain(
+                            [
+                                "-Xmx512m",
+                                "-XX:ActiveProcessorCount=4",
+                                "-Duser.home=/home/build",
+                                "-cp",
+                                "/workspace/gradle/wrapper/gradle-wrapper.jar",
+                                "org.gradle.wrapper.GradleWrapperMain",
+                            ]
+                            .into_iter()
+                            .map(str::to_owned),
+                        )
+                        .collect::<Vec<_>>()
                 } else {
                     executable("/usr/bin/gradle")?;
                     vec!["/usr/bin/gradle".to_owned()]
@@ -564,5 +582,42 @@ impl Prepared {
             });
         }
         Ok(command)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn resolver_follows_real_links_inside_system_tree_and_rejects_external_targets() {
+        // A real temporary filesystem mirror tests only resolution. These
+        // synthetic bytes are never launched or passed off as a system JDK.
+        let temporary = tempfile::tempdir().unwrap();
+        let system = temporary.path().join("system");
+        fs::create_dir_all(system.join("bin")).unwrap();
+        fs::create_dir_all(system.join("runtime/bin")).unwrap();
+        let system = system.canonicalize().unwrap();
+        let tool = system.join("runtime/bin/tool");
+        fs::write(&tool, b"synthetic resolver fixture; never executable code").unwrap();
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+        let entry = system.join("bin/tool");
+        symlink("../runtime/bin/tool", &entry).unwrap();
+        assert_eq!(
+            resolved_executable(&entry, &system).unwrap(),
+            tool.canonicalize().unwrap()
+        );
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(resolved_executable(&entry, &system).is_err());
+        fs::remove_file(&entry).unwrap();
+        let outside = temporary.path().join("system-other");
+        fs::create_dir(&outside).unwrap();
+        let external = outside.join("tool");
+        fs::write(&external, b"outside the admitted system tree").unwrap();
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&external, &entry).unwrap();
+        assert!(resolved_executable(&entry, &system).is_err());
+        assert!(resolved_executable(&system, &system).is_err());
     }
 }
