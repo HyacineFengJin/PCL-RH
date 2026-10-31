@@ -17,11 +17,11 @@ PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启�
 - **RH Code**：面向模组项目的 AI 工作区，支持多个对话、源码编辑、改动审阅、项目构建和像素资产工具。
 - **插件体系**：启动器与 RH Code 共用插件管理，支持可选官方功能和经授权的社区组件扩展。
 
-目前完整桌面应用支持 **Linux**；Windows / macOS 正在适配。项目持续开发中，具体支持范围见[平台说明](docs/PLATFORMS.md)。
+已通过 **Linux、Windows、macOS Intel / Apple Silicon** 原生构建，跨平台功能与实机验证仍在完善，具体范围见[平台说明](docs/PLATFORMS.md)。
 
 ## 开始使用
 
-目前以源码构建为主，先准备[构建依赖](docs/BUILDING.md)，然后运行：
+候选包与原生构建入口见[构建说明](docs/BUILDING.md)。以下为 Linux 源码构建示例，先准备对应依赖：
 
 ```sh
 git clone https://github.com/HyacineFengJin/PCL-RH.git

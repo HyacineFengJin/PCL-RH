@@ -17,11 +17,11 @@ PCL RH is a Minecraft: Java Edition launcher built with **Rust, Tauri, and React
 - **RH Code**: an AI workspace for mod projects with multiple conversations, source editing, change review, project builds and pixel asset tools.
 - **Plugins**: shared management for optional built-in capabilities and permission-controlled community components.
 
-The complete desktop application currently supports **Linux**. Windows and macOS adaptation is in progress. See [platform support](docs/PLATFORMS.md) for the current scope.
+Native builds pass on **Linux, Windows, macOS Intel and Apple Silicon**. Cross-platform features and interactive validation are still in progress; see [platform support](docs/PLATFORMS.md) for the current scope.
 
 ## Get started
 
-The project currently focuses on source builds. Prepare the [build dependencies](docs/BUILDING.md), then run:
+See the [build guide](docs/BUILDING.md) for candidate packages and native build entry points. For a Linux source build, install its prerequisites and run:
 
 ```sh
 git clone https://github.com/HyacineFengJin/PCL-RH.git

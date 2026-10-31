@@ -1,6 +1,6 @@
 # 发行候选与首发
 
-首发目标为 Linux x64、Windows x64、macOS Intel 与 Apple Silicon。当前已有通过原生构建与无界面检查的便携预览，标准安装包与实机验证仍在完善。
+首发目标为 Linux x64、Windows x64、macOS Intel 与 Apple Silicon。[四平台优化候选包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41196344224)已在同一提交通过原生构建、解压与无界面运行检查，标准安装包与实机验证仍在完善。
 
 ## 生成候选
 
@@ -15,7 +15,7 @@
 | 工作 | 当前情况 |
 | --- | --- |
 | 四平台编译、便携归档与基础自动化检查 | 已有流程及通过记录，见[平台说明](PLATFORMS.md) |
-| 优化配置的完整候选验证 | 使用上述工作流逐次记录实际结果 |
+| 优化配置的完整候选验证 | 四个平台已通过同一提交的候选构建与实际二进制信息核对；Actions artifact 保留 7 天 |
 | 干净系统的窗口、登录、Java、原版/Fabric、整合包和游戏测试 | 仍需在真实 Windows、macOS 与 Linux 完成，CI 无界面检查不能替代 |
 | 私有整合包的 Java 处理器 | Windows/macOS 尚缺受限执行后端，实际含客户端处理器的计划提前报告不支持 |
 | RH Code 跨平台能力 | Windows/macOS 源码写回、作者代码受限构建与部分工具生命周期仍需完成 |
