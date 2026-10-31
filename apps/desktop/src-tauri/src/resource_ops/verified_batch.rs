@@ -1,6 +1,6 @@
 //! One recoverable import for downloaded mods, resource packs and shader packs.
 //!
-//! Inputs are anonymous verified download FDs, never source paths. A single
+//! Inputs are verified generated-source capabilities, never source paths. A single
 //! root history lock covers all kinds. Preparation writes only the root's
 //! private batch store; target directories stay unchanged until `commit` has
 //! closed task cancellation admission and rechecked the application plan.
@@ -14,16 +14,18 @@ use pcl_core::content_scope::IsolationPolicy;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
+#[path = "verified_batch/archive.rs"]
 pub(super) mod archive;
+#[path = "verified_batch/filesystem.rs"]
 pub(super) mod filesystem;
 use filesystem::{Dir, Key, Owned};
 type Result<T> = std::result::Result<T, String>;
 const STORE: &str = "resource-batches";
+const SCHEMA: u32 = if cfg!(windows) { 2 } else { 1 };
 const MAX_FILES: usize = 512;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_BATCH_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -31,14 +33,37 @@ const MAX_JOURNAL_BYTES: u64 = 2 * 1024 * 1024;
 const CANCELLED: &str = "资源下载已取消";
 
 /// Kept public for the parent module's re-export; this child module is private.
-/// Ownership of the anonymous descriptor transfers from the download service.
+/// Generated-source ownership transfers from the download service.
 pub struct VerifiedImport {
     pub kind: String,
     pub file_name: String,
-    pub file: File,
+    pub file: crate::modrinth_install::source::Input,
     pub size: u64,
     pub sha512: String,
 }
+pub(crate) fn retire_sources(files: &mut [VerifiedImport]) -> Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut errors = Vec::new();
+        for input in files.iter_mut() {
+            if let Err(error) = input.file.retire() {
+                errors.push(error);
+            }
+        }
+        for input in files.iter() {
+            if let Err(error) = input.file.check_cleanup() {
+                errors.push(error);
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("；"));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    let _ = files;
+    Ok(())
+}
+
 fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -208,7 +233,28 @@ enum State {
     Staging,
     Prepared,
     Committed,
+    #[cfg(windows)]
+    Finished,
+    #[cfg(windows)]
+    RolledBack,
 }
+impl State {
+    #[cfg(windows)]
+    fn terminal(&self) -> bool {
+        matches!(self, Self::Finished | Self::RolledBack)
+    }
+    fn partial(&self) -> bool {
+        if *self == Self::Staging {
+            return true;
+        }
+        #[cfg(windows)]
+        if *self == Self::RolledBack {
+            return true;
+        }
+        false
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Item {
@@ -341,9 +387,9 @@ use journal::{
 fn setup(root: &Dir, scope: Scope, files: &[VerifiedImport]) -> Result<(Dir, Journal)> {
     let store = storage(root, true)?.ok_or("资源批次记录目录缺失")?;
     let operation_id = op_id();
-    let operation = store.mkdir(&operation_id)?;
+    let operation = store.mkdir(&operation_id)?.with_documents()?;
     let mut j = Journal {
-        schema: 1,
+        schema: SCHEMA,
         operation_id,
         operation_key: operation.key()?,
         pcl_key: root.child(".pcl-linux")?.key()?,
@@ -401,7 +447,7 @@ fn stage(
     for (index, f) in files.iter_mut().enumerate() {
         check(cancel)?;
         operation_binding(operation, j)?;
-        let mut copy = destination.anonymous()?;
+        let mut copy = destination.stage_for(&slot(index), f.size)?;
         f.file.seek(SeekFrom::Start(0)).map_err(error)?;
         let before = token_for(&f.file)?;
         let mut size = 0u64;
@@ -428,7 +474,7 @@ fn stage(
         register_owned(operation, j, index, &owned)?;
         j.items[index].owned = Some(owned);
         check(cancel)?;
-        destination.link_anonymous(&copy, &slot(index))?;
+        destination.link_anonymous(&mut copy, &slot(index))?;
     }
     recheck_sources(files, tokens)?;
     Ok(())
@@ -617,12 +663,46 @@ fn cleanup_stage(operation: &Dir, j: &Journal) -> Result<()> {
     {
         return Err("资源批次日志绑定已变化，拒绝清理".into());
     }
-    operation.unlink("journal.json", false)?;
-    let store = storage(&root, false)?.ok_or("资源批次记录目录缺失")?;
-    if store.child(&j.operation_id)?.key()? != j.operation_key || !operation.names()?.is_empty() {
-        return Err("资源批次目录已替换，拒绝清理".into());
+    #[cfg(windows)]
+    {
+        operation.check_cleanup()?;
+        let mut terminal = j.clone();
+        terminal.state = if j.state == State::Committed {
+            State::Finished
+        } else {
+            State::RolledBack
+        };
+        write_journal(operation, &terminal)?;
+        return verify_terminal(operation, &terminal);
     }
-    store.unlink(&j.operation_id, true)
+    #[cfg(not(windows))]
+    {
+        operation.unlink("journal.json", false)?;
+        let store = storage(&root, false)?.ok_or("资源批次记录目录缺失")?;
+        if store.child(&j.operation_id)?.key()? != j.operation_key || !operation.names()?.is_empty()
+        {
+            return Err("资源批次目录已替换，拒绝清理".into());
+        }
+        store.unlink(&j.operation_id, true)
+    }
+}
+#[cfg(windows)]
+fn verify_terminal(operation: &Dir, j: &Journal) -> Result<()> {
+    if !j.state.terminal() {
+        return Err("资源批次不是已退役终态".into());
+    }
+    operation_binding(operation, j)?;
+    if operation.names()? != ["journal.json"] {
+        return Err("资源批次终态包含未知内容或未清理的文件，已保留".into());
+    }
+    let current = read_journal(operation, &j.operation_id)?;
+    if current.state != j.state
+        || current.operation_key != j.operation_key
+        || current.scope.root_key != j.scope.root_key
+    {
+        return Err("资源批次终态记录已变化".into());
+    }
+    Ok(())
 }
 fn rollback(root: &Dir, operation: &Dir, j: &Journal) -> Result<()> {
     if j.state != State::Staging {
@@ -667,6 +747,8 @@ fn recover_one(operation: &Dir, j: &Journal) -> Result<()> {
             cleanup_stage(operation, j)
         }
         State::Staging | State::Prepared => rollback(&root, operation, j),
+        #[cfg(windows)]
+        State::Finished | State::RolledBack => verify_terminal(operation, j),
     }
 }
 
@@ -758,11 +840,16 @@ pub(super) fn ensure_ready(root: &Path) -> Result<()> {
         if !valid_op(&name) {
             return Err("资源批次目录包含未知记录".into());
         }
-        let operation = store.child(&name)?;
+        let operation = store.child(&name)?.with_documents()?;
         if operation.stat("journal.json")?.is_some() {
             let j = read_journal(&operation, &name)?;
             if j.scope.root != path || j.scope.root_key != root.key()? {
                 return Err("资源批次记录与当前游戏目录不匹配".into());
+            }
+            #[cfg(windows)]
+            if j.state.terminal() {
+                verify_terminal(&operation, &j)?;
+                continue;
             }
         }
         return Err("存在未完成的资源下载批次，请先恢复后再操作或启动".into());
@@ -789,7 +876,7 @@ pub(super) fn recover_root(root: &Path) -> Result<MutationResult> {
         if !valid_op(&name) {
             return Err("资源批次目录包含未知记录".into());
         }
-        let operation = store.child(&name)?;
+        let operation = store.child(&name)?.with_documents()?;
         if operation.stat("journal.json")?.is_none() {
             if operation.names()?.is_empty() {
                 let current = Dir::open(&path)?;
@@ -808,6 +895,11 @@ pub(super) fn recover_root(root: &Path) -> Result<MutationResult> {
         let j = read_journal(&operation, &name)?;
         if j.scope.root != path || j.scope.root_key != dir.key()? {
             return Err("资源批次记录与当前游戏目录不匹配".into());
+        }
+        #[cfg(windows)]
+        if j.state.terminal() {
+            verify_terminal(&operation, &j)?;
+            continue;
         }
         recover_one(&operation, &j).map_err(|e| format!("取消清理失败：{e}"))?;
         count += 1;

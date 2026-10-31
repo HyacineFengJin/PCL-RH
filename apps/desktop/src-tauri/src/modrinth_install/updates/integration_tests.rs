@@ -6,7 +6,7 @@ use super::super::{
     tests::{dependency, run, server, sha, FakeProvider},
 };
 use super::*;
-use std::{fs, io::Write, os::unix::fs::MetadataExt, time::Duration};
+use std::{fs, io::Write, time::Duration};
 
 fn archive(name: &str, bytes: &[u8]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -137,6 +137,8 @@ pub(crate) fn test_update_batch(
         .ensure(".pcl-rust")
         .unwrap()
         .ensure("resource-downloads")
+        .unwrap()
+        .with_input_sources()
         .unwrap();
     let mut files = Vec::new();
     for item in plan.transfer.files.iter().filter(|item| !item.reused) {
@@ -153,7 +155,7 @@ pub(crate) fn test_update_batch(
         .into_bytes();
         response.extend_from_slice(body);
         let (url, worker) = server(&response, Duration::ZERO);
-        let mut file = staging.anonymous().unwrap();
+        let mut file = staging.allocate(item.size).unwrap();
         run(transfer::response_into_file(
             &http,
             http.client.get(url),
@@ -165,7 +167,7 @@ pub(crate) fn test_update_batch(
         ))
         .unwrap();
         worker.join().unwrap();
-        assert_eq!(file.metadata().unwrap().nlink(), 0);
+        super::super::test_support::assert_source(&file);
         files.push(transfer::VerifiedFile {
             kind: item.kind.clone(),
             file_name: item.file_name.clone(),
@@ -214,7 +216,7 @@ fn anonymous_mixed_kind_updates_and_undo_preserve_disabled_inodes_and_unrelated_
             (
                 name,
                 fs::read(&path).unwrap(),
-                fs::metadata(&path).unwrap().ino(),
+                super::super::test_support::identity(&path),
             )
         })
         .collect();
@@ -291,7 +293,7 @@ fn anonymous_mixed_kind_updates_and_undo_preserve_disabled_inodes_and_unrelated_
     for (name, bytes, inode) in originals {
         let path = instance.join("mods").join(name);
         assert_eq!(fs::read(&path).unwrap(), bytes);
-        assert_eq!(fs::metadata(path).unwrap().ino(), inode);
+        assert_eq!(super::super::test_support::identity(path), inode);
     }
     assert!(!instance.join("mods/new.jar").exists());
     assert!(!instance.join("mods/new-disabled.jar.disabled").exists());
@@ -304,12 +306,8 @@ fn anonymous_mixed_kind_updates_and_undo_preserve_disabled_inodes_and_unrelated_
         fs::read(fixture.root.join("libraries/shared/cache.jar")).unwrap(),
         b"preserved cache"
     );
-    assert_eq!(
-        fs::read_dir(fixture.project.join(".pcl-rust/resource-downloads"))
-            .unwrap()
-            .count(),
-        0
-    );
+    resource_ops::retire_sources(&mut files).unwrap();
+    super::super::test_support::assert_staging_path(&fixture.project, 0);
     assert!(resource_ops::updates_history(&fixture.root, "sample")
         .unwrap()
         .is_empty());

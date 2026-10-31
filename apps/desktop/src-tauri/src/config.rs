@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex, MutexGuard,
@@ -401,9 +401,7 @@ fn validate_java_path(value: &str) -> Result<(), String> {
         || value.len() > 4096
         || value.chars().any(char::is_control)
         || !path.is_absolute()
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+        || pcl_core::retained_fs::validate_absolute_path(path).is_err()
         || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
     {
         return Err("Java 路径需要是规范的绝对路径，且不超过 4096 字节".into());
@@ -1401,4 +1399,5 @@ fn summarize_roots(roots: Vec<GameRoot>) -> Vec<RootSummary> {
 }
 
 #[cfg(test)]
+#[path = "config/tests.rs"]
 mod tests;

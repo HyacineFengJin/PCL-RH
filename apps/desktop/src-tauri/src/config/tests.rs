@@ -45,11 +45,11 @@ fn downloaded_java_registration_limit_failure_preserves_config_and_runtime() {
     }
     let runtime = fixture.0.join("published-java");
     fs::write(&runtime, b"published runtime").unwrap();
-    let before = fs::read(fixture.file()).unwrap();
+    let before = fixture.read();
     assert!(store
         .register_downloaded_java(runtime.display().to_string())
         .is_err());
-    assert_eq!(fs::read(fixture.file()).unwrap(), before);
+    assert_eq!(fixture.read(), before);
     assert_eq!(fs::read(runtime).unwrap(), b"published runtime");
 }
 
@@ -58,31 +58,169 @@ fn projection(mut settings: Settings) -> Settings {
     settings
 }
 
-struct Fixture(PathBuf);
+// The TempDir owns every fixture, including registered roots and aliases.
+struct Fixture(PathBuf, #[allow(dead_code)] tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/java-management-2026-10-04/config-fixtures");
-        let project = base.join(nonce());
-        fs::create_dir_all(project.join("Minecraft/.minecraft")).unwrap();
-        Self(fs::canonicalize(project).unwrap())
+        use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().canonicalize().unwrap();
+        let parent = Directory::open_absolute(&path).unwrap();
+        let project = parent
+            .create_private(&Leaf::new("project").unwrap(), Traversal::AllowMounts)
+            .unwrap();
+        let minecraft = project
+            .create_private(&Leaf::new("Minecraft").unwrap(), Traversal::AllowMounts)
+            .unwrap();
+        minecraft
+            .create_private(&Leaf::new(".minecraft").unwrap(), Traversal::AllowMounts)
+            .unwrap();
+        Self(path.join("project"), temporary)
     }
     fn file(&self) -> PathBuf {
-        self.0.join(".pcl-rust/settings.json")
+        self.0.join(".pcl-rust").join("settings.json")
     }
     fn root(&self, name: &str) -> String {
-        let path = self.0.join(name);
-        fs::create_dir_all(&path).unwrap();
-        path.to_str().unwrap().into()
+        use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+        let parent = Directory::open_absolute(&self.0).unwrap();
+        let leaf = Leaf::new(name).unwrap();
+        match parent.child(&leaf, Traversal::AllowMounts) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                parent
+                    .create_private(&leaf, Traversal::AllowMounts)
+                    .unwrap();
+            }
+            Err(error) => panic!("fixture game root: {error}"),
+        }
+        self.0.join(name).to_str().unwrap().into()
+    }
+    fn app(&self) -> pcl_core::retained_fs::Directory {
+        use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+        let parent = Directory::open_absolute(&self.0).unwrap();
+        let name = Leaf::new(".pcl-rust").unwrap();
+        match parent.child(&name, Traversal::AllowMounts) {
+            Ok(dir) => dir,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => parent
+                .create_private(&name, Traversal::AllowMounts)
+                .unwrap(),
+            Err(error) => panic!("fixture app directory: {error}"),
+        }
     }
     fn write(&self, bytes: &[u8]) {
-        fs::create_dir_all(self.file().parent().unwrap()).unwrap();
-        fs::write(self.file(), bytes).unwrap();
+        use pcl_core::retained_fs::Leaf;
+        use std::io::Write;
+        let app = self.app();
+        let name = Leaf::new("settings.json").unwrap();
+        if app.entry(&name).unwrap().is_none() {
+            // Initial fixtures are physical private originals. Subsequent
+            // updates use the actual logical document and retain that fence.
+            let mut file = app.create_file(&name).unwrap();
+            file.write_all(bytes).unwrap();
+            file.sync_all().unwrap();
+        } else {
+            let (before, _) = crate::instance_rename_refs::store_snapshot(
+                &self.0,
+                "settings.json",
+                2 * 1024 * 1024,
+            )
+            .unwrap();
+            crate::instance_rename_refs::write_store_checked(
+                &self.0,
+                "settings.json",
+                bytes,
+                &before,
+                2 * 1024 * 1024,
+            )
+            .unwrap();
+        }
+    }
+    fn read(&self) -> Vec<u8> {
+        crate::instance_rename_refs::store_snapshot(&self.0, "settings.json", 2 * 1024 * 1024)
+            .unwrap()
+            .1
+            .unwrap()
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+#[cfg(windows)]
+#[path = "../../../../../crates/core/src/file_ops/junction_fixture.rs"]
+mod junction_fixture;
+fn directory_alias(source: &Path, destination: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(source, destination).unwrap();
+    #[cfg(windows)]
+    {
+        use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+        let parent = Directory::open_absolute(destination.parent().unwrap()).unwrap();
+        parent
+            .create_private(
+                &Leaf::new(destination.file_name().unwrap()).unwrap(),
+                Traversal::AllowMounts,
+            )
+            .unwrap();
+        junction_fixture::set_existing(source, destination).unwrap();
+    }
+}
+
+#[test]
+fn native_java_paths_are_valid_and_logical_saves_keep_the_original_windows_fence() {
+    let fixture = Fixture::new();
+    let path = fixture
+        .0
+        .join("java")
+        .join("bin")
+        .join("java")
+        .display()
+        .to_string();
+    validate_java_path(&path).unwrap();
+    assert!(validate_java_path("relative/java").is_err());
+    let (store, warning) = ConfigStore::load(&fixture.0);
+    assert!(warning.is_none());
+    store.save(store.snapshot()).unwrap();
+    let before = store.snapshot();
+    let physical = fs::read(fixture.file()).unwrap();
+    let original_identity =
+        pcl_core::retained_fs::metadata(&std::fs::File::open(fixture.file()).unwrap())
+            .unwrap()
+            .identity;
+    let mut next = before.clone();
+    next.memory_gib = 12;
+    next.java = JavaSelection::Manual { path: path.clone() };
+    store.save(next).unwrap();
+    let actual = fixture.read();
+    let saved: serde_json::Value = serde_json::from_slice(&actual).unwrap();
+    assert_eq!(saved["memory_gib"], 12);
+    assert_eq!(saved["java"]["path"], path);
+    assert!(store.save(before).is_err());
+    assert_eq!(fixture.read(), actual);
+    #[cfg(windows)]
+    {
+        assert_ne!(physical, actual);
+        assert_eq!(fs::read(fixture.file()).unwrap(), physical);
+        assert_eq!(
+            pcl_core::retained_fs::metadata(&std::fs::File::open(fixture.file()).unwrap())
+                .unwrap()
+                .identity,
+            original_identity
+        );
+        let disk = crate::instance_rename_refs::store_snapshot(
+            &fixture.0,
+            "settings.json",
+            2 * 1024 * 1024,
+        )
+        .unwrap()
+        .0;
+        let fact = serde_json::to_value(disk).unwrap();
+        assert_eq!(fact["logical"]["presence"], "present");
+        assert_eq!(
+            fact["file"]["stamp"]["identity"]["format"],
+            "windows-file-id-128-v1"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let _ = (physical, original_identity);
+        assert_eq!(fs::read(fixture.file()).unwrap(), actual);
     }
 }
 
@@ -90,7 +228,11 @@ impl Drop for Fixture {
 fn legacy_migration_preserves_values_exact_path_and_original_backup_once() {
     let fixture = Fixture::new();
     let root = fixture.root("legacy");
-    let exact = format!("{root}/../legacy");
+    let exact = Path::new(&root)
+        .join("..")
+        .join("legacy")
+        .display()
+        .to_string();
     let original = json!({
         "root":exact,"player":"Old_Player","memory_gib":14,"selected":"Same Instance",
         "overrides":{"Same Instance":12,"Other":8}
@@ -130,8 +272,7 @@ fn legacy_migration_preserves_values_exact_path_and_original_backup_once() {
     let before = backups();
     assert_eq!(before.len(), 1);
     assert_eq!(fs::read(&before[0]).unwrap(), original);
-    let persisted: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture.file()).unwrap()).unwrap();
+    let persisted: serde_json::Value = serde_json::from_slice(&fixture.read()).unwrap();
     assert_eq!(persisted["schema_version"], 3);
     assert_eq!(persisted["roots"][0]["path"], exact);
     let (reloaded, warning) = ConfigStore::load(&fixture.0);
@@ -186,7 +327,7 @@ fn stale_active_root_and_changed_path_saves_leave_settings_unchanged() {
     let stale = store.snapshot();
     let second = store.register(fixture.root("second"), None).unwrap();
     store.select(&second.id).unwrap();
-    let before = fs::read(fixture.file()).unwrap();
+    let before = fixture.read();
     assert!(store.save(stale).unwrap_err().contains("设置已更新"));
     let mut changed = store.snapshot();
     changed.root = fixture.root("replacement");
@@ -194,7 +335,7 @@ fn stale_active_root_and_changed_path_saves_leave_settings_unchanged() {
     let mut missing_id = store.snapshot();
     missing_id.root_id.clear();
     assert!(store.save(missing_id).is_err());
-    assert_eq!(fs::read(fixture.file()).unwrap(), before);
+    assert_eq!(fixture.read(), before);
     assert_eq!(store.snapshot().root_id, second.id);
 }
 
@@ -233,14 +374,13 @@ fn unavailable_root_stays_registered_and_can_be_selected_then_recover() {
     assert_eq!(store.resolve(None).unwrap().id, root.id);
 }
 
-#[cfg(unix)]
 #[test]
 fn canonical_alias_registration_reuses_stable_id() {
     let fixture = Fixture::new();
     let (store, _) = ConfigStore::load(&fixture.0);
     let initial = store.snapshot();
     let alias = fixture.0.join("alias");
-    std::os::unix::fs::symlink(&initial.root, &alias).unwrap();
+    directory_alias(Path::new(&initial.root), &alias);
     let duplicate = store
         .register(alias.to_str().unwrap().into(), Some("Alias".into()))
         .unwrap();
@@ -278,7 +418,7 @@ fn malformed_or_future_settings_block_all_writes_and_preserve_original() {
         assert!(store.update(&store.snapshot().root_id, Some("Changed".into()), None).is_err());
         assert!(store.register(fixture.root("other"), None).is_err());
         assert!(store.select_installed(&store.snapshot().root_id, "Example").is_err());
-        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        assert_eq!(fixture.read(), bytes);
     }
 }
 
@@ -286,7 +426,7 @@ fn malformed_or_future_settings_block_all_writes_and_preserve_original() {
 #[test]
 fn dangling_settings_link_is_preserved_and_blocks_saves() {
     let fixture = Fixture::new();
-    fs::create_dir_all(fixture.file().parent().unwrap()).unwrap();
+    fixture.app();
     let target = fixture.0.join("unavailable-settings.json");
     std::os::unix::fs::symlink(&target, fixture.file()).unwrap();
     let (store, warning) = ConfigStore::load(&fixture.0);
@@ -381,8 +521,7 @@ fn version_two_migration_keeps_settings_and_exact_backup_once() {
     let backups = backup_paths();
     assert_eq!(backups.len(), 1);
     assert_eq!(fs::read(&backups[0]).unwrap(), original);
-    let saved: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture.file()).unwrap()).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&fixture.read()).unwrap();
     assert_eq!(saved["schema_version"], 3);
     assert_eq!(saved["java"], json!({"mode":"auto"}));
     assert_eq!(saved["java_paths"], json!([]));
@@ -468,14 +607,14 @@ fn java_save_keeps_registry_and_other_roots_and_adds_manual_choices() {
         JavaSelection::Manual { path: personal }
     );
     let before = store.snapshot();
-    let bytes = fs::read(fixture.file()).unwrap();
+    let bytes = fixture.read();
     let mut invalid = before.clone();
     invalid.java = JavaSelection::Manual {
         path: "../java".into(),
     };
     assert!(store.save(invalid).is_err());
     assert_eq!(store.snapshot(), before);
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
     let (reloaded, warning) = ConfigStore::load(&fixture.0);
     assert!(warning.is_none());
     assert_eq!(projection(reloaded.snapshot()), projection(before));
@@ -486,12 +625,14 @@ fn java_bounds_and_strict_format_reject_without_overwrites() {
     let fixture = Fixture::new();
     let valid = serde_json::to_value(defaults(&fixture.0)).unwrap();
     let mut cases = Vec::new();
+    let base = fixture.0.display().to_string();
+    let separator = std::path::MAIN_SEPARATOR;
     for path in [
-        "relative/java",
-        "/fixture/../java",
-        "/fixture//java",
-        "/fixture/java\n",
-        "/fixture/java/",
+        "relative/java".to_string(),
+        format!("{base}{separator}fixture{separator}..{separator}java"),
+        format!("{base}{separator}fixture{separator}{separator}java"),
+        format!("{base}{separator}fixture{separator}java\n"),
+        format!("{base}{separator}fixture{separator}java{separator}"),
     ] {
         let mut value = valid.clone();
         value["java"] = json!({"mode":"manual","path":path});
@@ -504,11 +645,20 @@ fn java_bounds_and_strict_format_reject_without_overwrites() {
     future["schema_version"] = json!(99);
     cases.push(future);
     let mut duplicate = valid.clone();
-    duplicate["java_paths"] = json!(["/fixture/java", "/fixture/java"]);
+    duplicate["java_paths"] = json!([
+        fixture.0.join("fixture/java").display().to_string(),
+        fixture.0.join("fixture/java").display().to_string()
+    ]);
     cases.push(duplicate);
     let mut overfull = valid.clone();
     overfull["java_paths"] = json!((0..65)
-        .map(|id| format!("/fixture/{id}/java"))
+        .map(|id| fixture
+            .0
+            .join(format!("java-{id}"))
+            .join("bin")
+            .join("java")
+            .display()
+            .to_string())
         .collect::<Vec<_>>());
     cases.push(overfull);
     let mut overrides = valid.clone();
@@ -522,11 +672,17 @@ fn java_bounds_and_strict_format_reject_without_overwrites() {
         let (store, warning) = ConfigStore::load(&fixture.0);
         assert!(warning.is_some());
         assert!(store.save(store.snapshot()).is_err());
-        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        assert_eq!(fixture.read(), bytes);
     }
     let mut full = valid;
     full["java_paths"] = json!((0..64)
-        .map(|id| format!("/fixture/{id}/java"))
+        .map(|id| fixture
+            .0
+            .join(format!("java-{id}"))
+            .join("bin")
+            .join("java")
+            .display()
+            .to_string())
         .collect::<Vec<_>>());
     fixture.write(&serde_json::to_vec(&full).unwrap());
     let (store, warning) = ConfigStore::load(&fixture.0);
@@ -534,7 +690,7 @@ fn java_bounds_and_strict_format_reject_without_overwrites() {
     let before = store.snapshot();
     assert!(store
         .register_java(
-            "/fixture/extra/java".into(),
+            fixture.0.join("extra-java").display().to_string(),
             &before.revision,
             &before.root_id
         )
@@ -602,7 +758,7 @@ fn old_version_three_defaults_isolation_without_rewriting_its_bytes() {
     assert!(settings.isolation_overrides.is_empty());
     assert!(settings.window_title_overrides.is_empty());
     assert!(settings.argument_overrides.is_empty());
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
     assert_eq!(
         store.isolation_settings(None).unwrap().policy("Example"),
         IsolationPolicy::Automatic
@@ -703,11 +859,11 @@ fn isolation_save_retires_revision_and_stale_save_cannot_restore_old_policy() {
         .insert("Example".into(), "Custom".into());
     store.save(next).unwrap();
     let before = store.snapshot();
-    let bytes = fs::read(fixture.file()).unwrap();
+    let bytes = fixture.read();
     assert_ne!(before.revision, stale.revision);
     assert!(store.save(stale).is_err());
     assert_eq!(store.snapshot(), before);
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
 }
 
 #[test]
@@ -721,13 +877,12 @@ fn isolation_capture_rejects_external_settings_edits_and_unavailable_roots() {
     fs::remove_dir(&root.path).unwrap();
     assert!(store.isolation_settings(Some(&root.id)).is_err());
     assert!(store.registered(&root.id).is_ok());
-    let mut external: serde_json::Value =
-        serde_json::from_slice(&fs::read(fixture.file()).unwrap()).unwrap();
+    let mut external: serde_json::Value = serde_json::from_slice(&fixture.read()).unwrap();
     external["isolation"] = json!("isolated");
     let bytes = serde_json::to_vec(&external).unwrap();
     fixture.write(&bytes);
     assert!(store.isolation_settings(None).is_err());
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
 }
 
 #[test]
@@ -823,7 +978,7 @@ fn retained_isolation_or_default_title_reserves_an_externally_removed_instance_n
         }
         store.save(settings).unwrap();
         let before = store.snapshot();
-        let bytes = fs::read(fixture.file()).unwrap();
+        let bytes = fixture.read();
         check_delete_dependencies(&bytes, &before.root_id, Path::new(&before.root), "Reserved")
             .unwrap();
         assert!(store
@@ -833,7 +988,7 @@ fn retained_isolation_or_default_title_reserves_an_externally_removed_instance_n
             .ensure_new_instance_name(&before.root_id, "Different")
             .is_ok());
         assert_eq!(store.snapshot(), before);
-        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        assert_eq!(fixture.read(), bytes);
     }
 }
 
@@ -875,7 +1030,7 @@ fn malformed_isolation_or_title_settings_are_preserved_and_block_writes() {
         assert!(warning.is_some());
         assert!(store.save(store.snapshot()).is_err());
         assert!(store.isolation_settings(None).is_err());
-        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        assert_eq!(fixture.read(), bytes);
     }
 }
 
@@ -890,7 +1045,7 @@ fn invalid_override_save_keeps_the_current_policy_revision_and_bytes() {
         .insert("Example".into(), "界".repeat(256));
     store.save(settings).unwrap();
     let before = store.snapshot();
-    let bytes = fs::read(fixture.file()).unwrap();
+    let bytes = fixture.read();
     for title in ["bad\0Title".to_string(), "界".repeat(257)] {
         let mut invalid = before.clone();
         invalid
@@ -898,7 +1053,7 @@ fn invalid_override_save_keeps_the_current_policy_revision_and_bytes() {
             .insert("Example".into(), title);
         assert!(store.save(invalid).is_err());
         assert_eq!(store.snapshot(), before);
-        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        assert_eq!(fixture.read(), bytes);
     }
     let mut invalid = before.clone();
     invalid
@@ -906,7 +1061,7 @@ fn invalid_override_save_keeps_the_current_policy_revision_and_bytes() {
         .insert("../Escape".into(), IsolationPolicy::Isolated);
     assert!(store.save(invalid).is_err());
     assert_eq!(store.snapshot(), before);
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
 }
 
 #[test]
@@ -942,12 +1097,11 @@ fn changing_content_selection_and_title_keeps_both_existing_save_directories() {
 
 #[test]
 fn policy_capture_preserves_registered_path_for_nofollow_consumers() {
-    use std::os::unix::fs::symlink;
     let fixture = Fixture::new();
     let mut config = defaults(&fixture.0);
     let canonical = fs::canonicalize(&config.roots[0].path).unwrap();
     let alias = fixture.0.join("registered-alias");
-    symlink(&canonical, &alias).unwrap();
+    directory_alias(&canonical, &alias);
     config.roots[0].path = alias.display().to_string();
     fixture.write(&encode(&config).unwrap());
     let (store, warning) = ConfigStore::load(&fixture.0);
@@ -978,11 +1132,11 @@ fn arguments_are_root_scoped_round_trip_empty_overrides_and_reject_stale_saves()
         .insert("Same".into(), arguments.clone());
     store.save(stale.clone()).unwrap();
     let before = store.snapshot();
-    let bytes = fs::read(fixture.file()).unwrap();
+    let bytes = fixture.read();
     stale.argument_overrides.clear();
     assert!(store.save(stale).is_err());
     assert_eq!(store.snapshot(), before);
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
 
     let mut settings = store.select(&second.id).unwrap();
     assert!(settings.argument_overrides.is_empty());
@@ -1054,10 +1208,10 @@ fn argument_rename_moves_only_the_bound_root_and_reserves_empty_records() {
     fixture.write(&encode(&config).unwrap());
     let (store, warning) = ConfigStore::load(&fixture.0);
     assert!(warning.is_none());
-    let before = fs::read(fixture.file()).unwrap();
+    let before = fixture.read();
     assert!(store.ensure_new_instance_name(&first, "New").is_err());
     assert!(store.ensure_new_instance_name(&first, "Different").is_ok());
-    assert_eq!(fs::read(fixture.file()).unwrap(), before);
+    assert_eq!(fixture.read(), before);
 }
 
 #[test]
@@ -1082,13 +1236,13 @@ fn malformed_argument_documents_and_saves_preserve_their_revision_and_bytes() {
         assert!(warning.is_some());
         assert!(store.checked_snapshot().is_err());
         assert!(store.save(store.snapshot()).is_err());
-        assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+        assert_eq!(fixture.read(), bytes);
     }
     fixture.write(&serde_json::to_vec(&valid).unwrap());
     let (store, warning) = ConfigStore::load(&fixture.0);
     assert!(warning.is_none());
     let before = store.snapshot();
-    let bytes = fs::read(fixture.file()).unwrap();
+    let bytes = fixture.read();
     let mut invalid = before.clone();
     invalid.argument_overrides.insert(
         "Example".into(),
@@ -1100,7 +1254,7 @@ fn malformed_argument_documents_and_saves_preserve_their_revision_and_bytes() {
     let error = store.save(invalid).unwrap_err();
     assert!(!error.contains("private-value"));
     assert_eq!(store.snapshot(), before);
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
 }
 
 #[test]
@@ -1133,7 +1287,7 @@ fn old_schema_three_memory_fields_default_without_rewriting_disk() {
         MemoryMode::Manual
     );
     assert_eq!(settings.overrides["Custom"], 14);
-    assert_eq!(fs::read(fixture.file()).unwrap(), original);
+    assert_eq!(fixture.read(), original);
     let entries: Vec<_> = fs::read_dir(fixture.file().parent().unwrap())
         .unwrap()
         .collect();
@@ -1313,7 +1467,7 @@ fn invalid_memory_modes_preserve_original_and_block_saves() {
         let (store, warning) = ConfigStore::load(&fixture.0);
         assert!(warning.is_some());
         assert!(store.save(store.snapshot()).is_err());
-        assert_eq!(fs::read(fixture.file()).unwrap(), original);
+        assert_eq!(fixture.read(), original);
     }
 }
 
@@ -1328,7 +1482,7 @@ fn memory_mode_map_limits_and_dormant_manual_validation_preserve_previous_state(
         .collect();
     store.save(settings).unwrap();
     let before = store.snapshot();
-    let original = fs::read(fixture.file()).unwrap();
+    let original = fixture.read();
     let mut too_many = before.clone();
     too_many
         .memory_mode_overrides
@@ -1349,7 +1503,7 @@ fn memory_mode_map_limits_and_dormant_manual_validation_preserve_previous_state(
         .insert("../outside".into(), MemoryMode::Auto);
     assert!(store.save(invalid).is_err());
     assert_eq!(store.snapshot(), before);
-    assert_eq!(fs::read(fixture.file()).unwrap(), original);
+    assert_eq!(fixture.read(), original);
 }
 
 #[test]
@@ -1366,11 +1520,11 @@ fn mode_only_deleted_instance_reference_stays_reserved_in_its_own_root() {
     let first = settings.root_id.clone();
     let root = PathBuf::from(&settings.root);
     store.save(settings).unwrap();
-    let bytes = fs::read(fixture.file()).unwrap();
+    let bytes = fixture.read();
     check_delete_dependencies(&bytes, &first, &root, "Reserved").unwrap();
     assert!(store.ensure_new_instance_name(&first, "Reserved").is_err());
     assert!(store
         .ensure_new_instance_name(&second.id, "Reserved")
         .is_ok());
-    assert_eq!(fs::read(fixture.file()).unwrap(), bytes);
+    assert_eq!(fixture.read(), bytes);
 }

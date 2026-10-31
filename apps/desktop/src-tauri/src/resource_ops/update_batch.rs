@@ -25,12 +25,16 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+#[path = "update_batch/journal.rs"]
 mod journal;
+#[path = "update_batch/recovery.rs"]
 mod recovery;
+#[path = "update_batch/scope.rs"]
 mod scope;
 use scope::{Context, Inventory, Node, Scope};
 type Result<T> = std::result::Result<T, String>;
-const HISTORY: &str = ".pcl-resource-updates";
+pub(crate) const HISTORY: &str = ".pcl-resource-updates";
+const SCHEMA: u32 = if cfg!(windows) { 2 } else { 1 };
 const MARKERS: &str = "resource-update-pending";
 const MAX_FILES: usize = 512;
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -65,10 +69,34 @@ enum State {
     UndoApplying,
     RolledBack,
     Restored,
+    #[cfg(windows)]
+    FinishedRolledBack,
+    #[cfg(windows)]
+    FinishedRestored,
 }
 impl State {
     fn pending(self) -> bool {
-        self != Self::Committed
+        self != Self::Committed && !self.terminal()
+    }
+    fn partial(self) -> bool {
+        #[cfg(windows)]
+        {
+            matches!(self, Self::Staging | Self::FinishedRolledBack)
+        }
+        #[cfg(not(windows))]
+        {
+            self == Self::Staging
+        }
+    }
+    fn terminal(self) -> bool {
+        #[cfg(windows)]
+        {
+            matches!(self, Self::FinishedRolledBack | Self::FinishedRestored)
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -151,12 +179,12 @@ fn slot(prefix: &str, index: usize) -> String {
     format!("{prefix}-{index:04}")
 }
 fn verify_owned(dir: &Dir, name: &str, owned: &Owned) -> Result<()> {
-    if dir.regular(name)?.metadata().map_err(err)?.nlink() != 1 {
+    if !filesystem::single(&dir.regular(name)?)? {
         return Err("更新文件含额外硬链接，已保留".into());
     }
     filesystem::verify_named(dir, name, owned)
 }
-use std::os::unix::fs::MetadataExt;
+
 fn validate_sources(
     files: &mut [VerifiedImport],
     replacements: &[Replacement],
@@ -172,6 +200,7 @@ fn validate_sources(
     for f in files.iter_mut() {
         check(cancel)?;
         name_ok(&f.kind, &f.file_name)?;
+        filesystem::anonymous_source(&f.file)?;
         if f.size == 0
             || f.size > MAX_FILE_BYTES
             || !valid_hash(&f.sha512)
@@ -318,7 +347,7 @@ fn finish_failure(
     }
 }
 struct StagedCopy {
-    file: File,
+    file: crate::modrinth_install::source::Input,
     owned: Owned,
 }
 fn stage(
@@ -346,8 +375,9 @@ fn stage(
             if super::token_for(&file)? != old.fingerprint {
                 return Err("旧资源文件已经变化".into());
             }
-            let staged = copy(
+            let mut staged = copy(
                 context,
+                &slot("backup", index),
                 &mut file,
                 old.owned.size,
                 &old.owned.sha512,
@@ -365,14 +395,15 @@ fn stage(
                 .operation
                 .as_ref()
                 .ok_or("更新目录缺失")?
-                .link_anonymous(&staged.file, &slot("backup", index))?;
+                .link_anonymous(&mut staged.file, &slot("backup", index))?;
         }
         let f = &mut files[index];
         if super::token_for(&f.file)? != tokens[index] {
             return Err("更新下载描述符已经变化".into());
         }
-        let staged = copy(
+        let mut staged = copy(
             context,
+            &slot("new", index),
             &mut f.file,
             f.size,
             &f.sha512,
@@ -391,12 +422,13 @@ fn stage(
             .operation
             .as_ref()
             .ok_or("更新目录缺失")?
-            .link_anonymous(&staged.file, &slot("new", index))?;
+            .link_anonymous(&mut staged.file, &slot("new", index))?;
     }
     sources_unchanged(files, tokens)
 }
 fn copy(
     context: &Context,
+    name: &str,
     source: &mut File,
     size: u64,
     hash: &str,
@@ -406,7 +438,7 @@ fn copy(
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<StagedCopy> {
     let operation = context.operation.as_ref().ok_or("更新目录缺失")?;
-    let mut target = operation.anonymous()?;
+    let mut target = operation.stage_for(name, size)?;
     source.seek(SeekFrom::Start(0)).map_err(err)?;
     let mut bytes = 0u64;
     let mut buffer = [0u8; 128 * 1024];
@@ -557,4 +589,5 @@ pub(super) fn recover_root(root: &Path) -> Result<MutationResult> {
     recovery::root(root)
 }
 #[cfg(test)]
-mod tests;
+#[path = "update_batch/tests.rs"]
+pub(crate) mod tests;

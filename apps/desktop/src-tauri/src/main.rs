@@ -3826,3 +3826,7 @@ mod integration_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "resource_ops/update_batch/desktop_integration_tests.rs"]
+mod resource_update_desktop_tests;

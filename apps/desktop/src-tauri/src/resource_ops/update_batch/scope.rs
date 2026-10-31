@@ -25,8 +25,16 @@ pub(super) struct Scope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Node {
-    File { owned: Owned },
-    Directory { key: Key, mode: u32 },
+    File {
+        owned: Owned,
+    },
+    Directory {
+        key: Key,
+        #[cfg(unix)]
+        mode: u32,
+        #[cfg(windows)]
+        security: pcl_core::retained_fs::Security,
+    },
 }
 pub(super) type Inventory = BTreeMap<String, BTreeMap<String, Node>>;
 pub(super) struct Context {
@@ -67,7 +75,11 @@ impl Context {
         }
         let mut c = Self::base(root, id)?;
         let history = c.instance.child(HISTORY)?;
-        c.operation = Some(history.child(operation)?);
+        c.operation = Some(
+            history
+                .child(operation)?
+                .with_documents_max(MAX_JOURNAL_BYTES)?,
+        );
         c.history = Some(history);
         c.operation_id = operation.into();
         Ok(c)
@@ -216,7 +228,7 @@ fn snapshot(dir: &Dir, name: &str, cancel: Option<&AtomicBool>) -> Result<Owned>
     let mut file = dir.regular(name)?;
     let m = file.metadata().map_err(err)?;
     let token = super::super::token_for(&file)?;
-    if m.nlink() != 1 || m.len() > MAX_FILE_BYTES {
+    if !filesystem::single(&file)? || m.len() > MAX_FILE_BYTES {
         return Err("本地资源不是独立普通文件或超过 2 GiB".into());
     }
     let mut digest = Sha512::new();
@@ -242,12 +254,7 @@ fn snapshot(dir: &Dir, name: &str, cancel: Option<&AtomicBool>) -> Result<Owned>
     {
         return Err("本地资源读取期间被替换或修改".into());
     }
-    Ok(Owned {
-        key: filesystem::key_file(&file)?,
-        size: count,
-        sha512: format!("{:x}", digest.finalize()),
-        mode: m.mode(),
-    })
+    Owned::from_file(&file, count, format!("{:x}", digest.finalize()))
 }
 pub(super) fn inventory(
     context: &Context,
@@ -269,20 +276,23 @@ pub(super) fn inventory(
                     return Err("资源目录条目超过更新安全上限".into());
                 }
                 let stat = dir.stat(&name)?.ok_or("资源文件读取期间消失")?;
-                let node = match stat.st_mode & libc::S_IFMT {
-                    libc::S_IFREG => {
-                        let owned = snapshot(&dir, &name, cancel)?;
-                        size = size
-                            .checked_add(owned.size)
-                            .filter(|s| *s <= 16 * 1024 * 1024 * 1024)
-                            .ok_or("本地资源总量超过 16 GiB")?;
-                        Node::File { owned }
-                    }
-                    libc::S_IFDIR => Node::Directory {
+                let node = if filesystem::stat_regular(&stat) {
+                    let owned = snapshot(&dir, &name, cancel)?;
+                    size = size
+                        .checked_add(owned.size)
+                        .filter(|s| *s <= 16 * 1024 * 1024 * 1024)
+                        .ok_or("本地资源总量超过 16 GiB")?;
+                    Node::File { owned }
+                } else if filesystem::stat_directory(&stat) {
+                    Node::Directory {
                         key: dir.child(&name)?.key()?,
-                        mode: stat.st_mode,
-                    },
-                    _ => return Err("资源目录包含链接或特殊文件，已保留".into()),
+                        #[cfg(unix)]
+                        mode: filesystem::stat_mode(&stat),
+                        #[cfg(windows)]
+                        security: filesystem::stat_security(&stat),
+                    }
+                } else {
+                    return Err("资源目录包含链接或特殊文件，已保留".into());
                 };
                 nodes.insert(name, node);
             }
@@ -408,7 +418,7 @@ pub(super) fn prepare_with_isolation(
     }
     let id = new_id();
     let mut j = Journal {
-        schema: 1,
+        schema: SCHEMA,
         id: id.clone(),
         created_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -429,7 +439,7 @@ pub(super) fn prepare_with_isolation(
     if history.names()?.len() >= MAX_HISTORIES {
         return Err("更新历史达到256条，请先处理旧历史".into());
     }
-    let operation = history.mkdir(&id)?;
+    let operation = history.mkdir(&id)?.with_documents_max(MAX_JOURNAL_BYTES)?;
     scope.history = Some(history.key()?);
     scope.operation = Some(operation.key()?);
     let pcl = context.root.ensure(".pcl-linux")?;
@@ -526,8 +536,8 @@ pub(super) fn contexts(root: &Path) -> Result<Vec<Context>> {
     };
     let mut contexts = Vec::new();
     for name in versions.names_with_limit(4096)? {
-        let mode = versions.stat(&name)?.ok_or("versions 目录变化")?.st_mode & libc::S_IFMT;
-        if mode != libc::S_IFDIR {
+        let entry = versions.stat(&name)?.ok_or("versions 目录变化")?;
+        if !filesystem::stat_directory(&entry) {
             continue;
         }
         let instance = versions.child(&name)?;
@@ -542,7 +552,9 @@ pub(super) fn contexts(root: &Path) -> Result<Vec<Context>> {
             if !valid_id(&operation_id) {
                 return Err("更新历史包含未知记录，已保留".into());
             }
-            let operation = history.child(&operation_id)?;
+            let operation = history
+                .child(&operation_id)?
+                .with_documents_max(MAX_JOURNAL_BYTES)?;
             contexts.push(Context {
                 path: path.clone(),
                 id: name.clone(),

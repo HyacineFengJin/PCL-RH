@@ -5,18 +5,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    ffi::CString,
-    fs::{self, File},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::{fd::AsRawFd, unix::ffi::OsStrExt, unix::fs::MetadataExt},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-mod update_batch;
+#[cfg(test)]
+use std::fs;
+
+#[path = "resource_ops/update_batch.rs"]
+pub(crate) mod update_batch;
+#[path = "resource_ops/verified_batch.rs"]
 mod verified_batch;
 pub use update_batch::{Replacement, UpdateHistory};
+pub(crate) use verified_batch::retire_sources;
 pub use verified_batch::VerifiedImport;
 
 /// One recoverable transaction for all downloaded resource kinds. Inputs remain
@@ -143,9 +147,11 @@ const MAX_ZIP_ENTRIES: usize = 100_000;
 // Includes JSON escaping of all permitted 255-byte names at MAX_FILES. The
 // writer and reader share this limit so every successful mutation stays usable.
 const MAX_JOURNAL_BYTES: usize = 2 * 1024 * 1024;
-const JOURNAL_VERSION: u32 = 1;
+const JOURNAL_VERSION: u32 = if cfg!(windows) { 2 } else { 1 };
 const STAGE_PREFIX: &str = ".pcl-resource-stage-";
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+thread_local! {static JOURNAL_WRITE_FAILURES: std::cell::Cell<usize> = const {std::cell::Cell::new(0)};}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,219 +218,19 @@ struct Journal {
     items: Vec<Item>,
 }
 
-struct Dir {
-    file: File,
-}
-
-fn c_name(name: &str) -> Result<CString, String> {
-    CString::new(name).map_err(|_| "文件名含有无效字符".into())
-}
-
-fn io_error(context: &str) -> String {
-    format!("{context}：{}", std::io::Error::last_os_error())
-}
-
-impl Dir {
-    fn open(path: &Path) -> Result<Self, String> {
-        let name = CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| "目录路径含有无效字符".to_string())?;
-        // O_NOFOLLOW applies to the root itself; all its children are opened
-        // relative to this descriptor with the same flag.
-        let fd = unsafe {
-            libc::open(
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(io_error("无法打开资源目录"));
-        }
-        use std::os::fd::FromRawFd;
-        Ok(Self {
-            file: unsafe { File::from_raw_fd(fd) },
-        })
-    }
-
-    fn child(&self, name: &str) -> Result<Self, String> {
-        let name = c_name(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(io_error("无法打开操作目录"));
-        }
-        use std::os::fd::FromRawFd;
-        Ok(Self {
-            file: unsafe { File::from_raw_fd(fd) },
-        })
-    }
-
-    fn optional_child(&self, name: &str) -> Result<Option<Self>, String> {
-        if self.metadata(name)?.is_none() {
-            return Ok(None);
-        }
-        self.child(name).map(Some)
-    }
-
-    fn create_child(&self, name: &str) -> Result<Self, String> {
-        let name_c = c_name(name)?;
-        if unsafe { libc::mkdirat(self.file.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
-            return Err(io_error("无法创建操作目录"));
-        }
-        self.sync()?;
-        self.child(name)
-    }
-
-    fn ensure_child(&self, name: &str) -> Result<Self, String> {
-        match self.optional_child(name)? {
-            Some(dir) => Ok(dir),
-            None => self.create_child(name),
-        }
-    }
-
-    fn metadata(&self, name: &str) -> Result<Option<libc::stat>, String> {
-        let name = c_name(name)?;
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        if unsafe {
-            libc::fstatat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                stat.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } == 0
-        {
-            return Ok(Some(unsafe { stat.assume_init() }));
-        }
-        let err = std::io::Error::last_os_error();
-        if err.kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(format!("无法检查文件：{err}"))
-        }
-    }
-
-    fn regular_file(&self, name: &str) -> Result<File, String> {
-        let name = c_name(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            return Err(io_error("无法打开资源文件"));
-        }
-        use std::os::fd::FromRawFd;
-        let file = unsafe { File::from_raw_fd(fd) };
-        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-            return Err("只允许操作普通文件".into());
-        }
-        Ok(file)
-    }
-
-    fn create_file(&self, name: &str) -> Result<File, String> {
-        let name = c_name(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(io_error("无法创建暂存文件"));
-        }
-        use std::os::fd::FromRawFd;
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-
-    fn token(&self, name: &str) -> Result<String, String> {
-        token_for(&self.regular_file(name)?)
-    }
-
-    fn absent(&self, name: &str) -> Result<(), String> {
-        if self.metadata(name)?.is_some() {
-            Err(format!("已有同名文件，无法操作：{name}"))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn sync(&self) -> Result<(), String> {
-        self.file
-            .sync_all()
-            .map_err(|e| format!("无法保存目录：{e}"))
-    }
-
-    fn names(&self) -> Result<Vec<String>, String> {
-        // /proc/self/fd follows this already opened descriptor, rather than a
-        // potentially replaced resource pathname. Entries themselves are never
-        // opened through /proc: every operation uses openat with O_NOFOLLOW.
-        let mut names = Vec::new();
-        for entry in fs::read_dir(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
-            .map_err(|e| e.to_string())?
-        {
-            let name = entry
-                .map_err(|e| e.to_string())?
-                .file_name()
-                .into_string()
-                .map_err(|_| "操作目录含有无效文件名".to_string())?;
-            names.push(name);
-        }
-        names.sort();
-        Ok(names)
-    }
-
-    fn remove_file(&self, name: &str) -> Result<(), String> {
-        let name = c_name(name)?;
-        if unsafe { libc::unlinkat(self.file.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-            return Err(io_error("无法移除暂存文件"));
-        }
-        self.sync()
-    }
-
-    fn remove_empty_dir(&self, name: &str) -> Result<(), String> {
-        let name = c_name(name)?;
-        if unsafe { libc::unlinkat(self.file.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } != 0
-        {
-            return Err(io_error("无法收起操作目录"));
-        }
-        self.sync()
-    }
-
-    fn same(&self, other: &Self) -> Result<bool, String> {
-        let a = self.file.metadata().map_err(|e| e.to_string())?;
-        let b = other.file.metadata().map_err(|e| e.to_string())?;
-        Ok(a.dev() == b.dev() && a.ino() == b.ino())
-    }
-}
-
-fn token_for(file: &File) -> Result<String, String> {
-    let stat = file.metadata().map_err(|e| e.to_string())?;
-    if !stat.is_file() {
-        return Err("只允许操作普通文件".into());
-    }
-    // Every integer is inside a string so JavaScript cannot round dev/ino or
-    // nanosecond timestamps. ctime also detects an in-place edit whose writer
-    // restores mtime; journal recovery compares the stable identity separately.
-    Ok(format!(
-        "v2:{}:{}:{}:{}:{}:{}:{}",
-        stat.len(),
-        stat.mtime(),
-        stat.mtime_nsec(),
-        stat.dev(),
-        stat.ino(),
-        stat.ctime(),
-        stat.ctime_nsec()
-    ))
-}
+#[cfg(target_os = "linux")]
+#[path = "resource_ops/filesystem_linux.rs"]
+mod filesystem;
+#[cfg(not(target_os = "linux"))]
+#[path = "resource_ops/filesystem_native.rs"]
+mod filesystem;
+#[path = "resource_ops/token.rs"]
+pub(crate) mod token;
+use filesystem::{
+    check_copy_cleanup, complete_copy, copy_guard, create_copy, file_evidence, journal_bytes,
+    open_source_parent, publish_journal, rename_new, source_identity, Dir, FileEvidence,
+};
+pub(crate) use token::{same_identity, token_for, valid_token};
 
 pub fn fingerprint(path: &Path) -> Result<String, String> {
     let name = path
@@ -445,29 +251,9 @@ fn safe_name(name: &str) -> Result<(), String> {
     {
         return Err("文件名必须是单个有效文件名".into());
     }
+    #[cfg(windows)]
+    pcl_core::retained_fs::Leaf::new(name).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn valid_token(value: &str) -> bool {
-    let parts: Vec<_> = value.split(':').collect();
-    parts.len() == 8
-        && parts[0] == "v2"
-        && parts[1].parse::<u64>().is_ok()
-        && parts[2].parse::<i64>().is_ok()
-        && parts[3]
-            .parse::<u32>()
-            .is_ok_and(|nanos| nanos < 1_000_000_000)
-        && parts[4].parse::<u64>().is_ok()
-        && parts[5].parse::<u64>().is_ok()
-        && parts[6].parse::<i64>().is_ok()
-        && parts[7]
-            .parse::<u32>()
-            .is_ok_and(|nanos| nanos < 1_000_000_000)
-        && value.len() <= 200
-}
-
-fn same_identity(left: &str, right: &str) -> bool {
-    valid_token(left) && valid_token(right) && left.split(':').take(6).eq(right.split(':').take(6))
 }
 
 fn valid_id(value: &str) -> bool {
@@ -760,6 +546,9 @@ fn content_hash_cancellable(
     file: &mut File,
     cancel: Option<&AtomicBool>,
 ) -> Result<String, String> {
+    if file.metadata().map_err(|e| e.to_string())?.len() > MAX_FILE_BYTES {
+        return Err("文件超过操作大小限制".into());
+    }
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 128 * 1024];
@@ -781,9 +570,10 @@ fn content_hash_cancellable(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn verify_item_owned(dir: &Dir, name: &str, item: &Item) -> Result<(), String> {
+fn checked_owned_file(dir: &Dir, name: &str, item: &Item) -> Result<(File, FileEvidence), String> {
     let mut file = dir.regular_file(name)?;
     let before = token_for(&file)?;
+    let evidence = file_evidence(&file)?;
     if !same_identity(&before, &item.fingerprint) {
         return Err(format!("待恢复文件已变化，已保留文件：{name}"));
     }
@@ -795,26 +585,15 @@ fn verify_item_owned(dir: &Dir, name: &str, item: &Item) -> Result<(), String> {
         // replacement. The open descriptor and directory entry must still agree.
         verify(dir, name, &before)?;
     }
-    Ok(())
+    Ok((file, evidence))
 }
 
-fn rename_new(from: &Dir, source: &str, to: &Dir, target: &str) -> Result<(), String> {
-    let source = c_name(source)?;
-    let target = c_name(target)?;
-    if unsafe {
-        libc::renameat2(
-            from.file.as_raw_fd(),
-            source.as_ptr(),
-            to.file.as_raw_fd(),
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(io_error("无法移动资源文件"));
-    }
-    from.sync()?;
-    to.sync()
+fn verify_item_owned(dir: &Dir, name: &str, item: &Item) -> Result<(), String> {
+    checked_owned_file(dir, name, item).map(drop)
+}
+fn remove_item_owned(dir: &Dir, name: &str, item: &Item) -> Result<(), String> {
+    let (file, evidence) = checked_owned_file(dir, name, item)?;
+    dir.remove_file(name, &file, &evidence)
 }
 
 fn validate_journal(journal: &Journal, name: &str) -> Result<(), String> {
@@ -897,60 +676,35 @@ fn validate_journal(journal: &Journal, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_journal(dir: &Dir, name: &str) -> Result<Journal, String> {
-    let file = dir.regular_file("journal.json")?;
-    if file.metadata().map_err(|e| e.to_string())?.len() > MAX_JOURNAL_BYTES as u64 {
-        return Err("资源恢复记录过大".into());
-    }
-    let mut data = Vec::new();
-    file.take(MAX_JOURNAL_BYTES as u64 + 1)
-        .read_to_end(&mut data)
-        .map_err(|e| e.to_string())?;
-    if data.len() > MAX_JOURNAL_BYTES {
-        return Err("资源恢复记录过大".into());
-    }
+fn read_journal_optional(dir: &Dir, name: &str) -> Result<Option<Journal>, String> {
+    let Some(data) = journal_bytes(dir)? else {
+        return Ok(None);
+    };
     let journal: Journal = serde_json::from_slice(&data)
         .map_err(|_| "资源恢复记录无法读取，已保留原文件".to_string())?;
     validate_journal(&journal, name)?;
-    Ok(journal)
+    Ok(Some(journal))
+}
+fn read_journal(dir: &Dir, name: &str) -> Result<Journal, String> {
+    read_journal_optional(dir, name)?.ok_or("资源恢复记录缺失".into())
 }
 
 fn write_journal(dir: &Dir, journal: &Journal) -> Result<(), String> {
     validate_journal(journal, &journal.operation_id)?;
+    #[cfg(test)]
+    if JOURNAL_WRITE_FAILURES.with(|remaining| {
+        let count = remaining.get();
+        if count == 0 {
+            false
+        } else {
+            remaining.set(count - 1);
+            true
+        }
+    }) {
+        return Err("injected resource journal write failure".into());
+    }
     let data = serde_json::to_vec(journal).map_err(|e| e.to_string())?;
     publish_journal(dir, &data)
-}
-
-fn publish_journal(dir: &Dir, data: &[u8]) -> Result<(), String> {
-    // Refuse before creating the next file or replacing a readable old record.
-    if data.len() > MAX_JOURNAL_BYTES {
-        return Err("资源恢复记录过大".into());
-    }
-    let next = format!("journal-{}.next", new_id());
-    let mut file = dir.create_file(&next)?;
-    file.write_all(data).map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    let next_c = c_name(&next)?;
-    let journal_c = c_name("journal.json")?;
-    if let Some(stat) = dir.metadata("journal.json")? {
-        if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
-            return Err("资源恢复记录不是普通文件".into());
-        }
-    }
-    // Only the service's fixed journal filename is atomically replaced. User
-    // resources always use RENAME_NOREPLACE above.
-    if unsafe {
-        libc::renameat(
-            dir.file.as_raw_fd(),
-            next_c.as_ptr(),
-            dir.file.as_raw_fd(),
-            journal_c.as_ptr(),
-        )
-    } != 0
-    {
-        return Err(io_error("无法保存资源恢复记录"));
-    }
-    dir.sync()
 }
 
 fn operation_dirs(context: &Context, journal: &Journal) -> Result<(Dir, Dir), String> {
@@ -1069,15 +823,13 @@ fn rollback(context: &Context, journal: &Journal, stage: Option<&Dir>) -> Result
         match slot {
             Slot::Stage if journal.action == Action::Import => {
                 let stage = stage.ok_or("暂存目录缺失")?;
-                verify_item_owned(stage, &item.stage_name, item)?;
-                stage.remove_file(&item.stage_name)?;
+                remove_item_owned(stage, &item.stage_name, item)?;
             }
             Slot::Target if journal.action == Action::Import => {
                 let stage = stage.ok_or("暂存目录缺失")?;
                 verify_item_owned(&target, &item.target_name, item)?;
                 rename_new(&target, &item.target_name, stage, &item.stage_name)?;
-                verify_item_owned(stage, &item.stage_name, item)?;
-                stage.remove_file(&item.stage_name)?;
+                remove_item_owned(stage, &item.stage_name, item)?;
             }
             Slot::Stage => {
                 let stage = stage.ok_or("暂存目录缺失")?;
@@ -1104,7 +856,9 @@ fn remove_stage(context: &Context, journal: &Journal, stage: Option<&Dir>) -> Re
         if !stage.same(&current)? {
             return Err("暂存目录已变化，已保留文件".into());
         }
-        context.resources.remove_empty_dir(&stage_name(journal))?;
+        context
+            .resources
+            .remove_empty_dir(&stage_name(journal), stage)?;
     }
     Ok(())
 }
@@ -1161,10 +915,9 @@ fn recover(context: &Context) -> Result<(), String> {
         let operation = storage.child(&name)?;
         // An interruption before the first journal publication can only leave
         // service-owned empty directories/copies, never moved user resources.
-        if operation.metadata("journal.json")?.is_none() {
+        let Some(journal) = read_journal_optional(&operation, &name)? else {
             continue;
-        }
-        let journal = read_journal(&operation, &name)?;
+        };
         if journal.resource_relative == context.relative && journal.kind == context.kind {
             journals.push((operation, journal));
         }
@@ -1289,8 +1042,14 @@ fn transaction(
             // If publication happened but fsync failed, explicitly return to
             // Prepared before attempting rollback; recovery must see our intent.
             journal.state = JournalState::Prepared;
-            write_journal(&operation, &journal)
-                .map_err(|repair| format!("{error}；无法保存回滚记录：{repair}"))?;
+            if let Err(repair) = write_journal(&operation, &journal) {
+                // Neither error proves the durable logical state. Keep every
+                // moved file and let reopening select Prepared rollback or
+                // Committed completion from the actual journal, rather than
+                // rolling back beneath a possibly durable commit.
+                journal.state = JournalState::Committed;
+                return Err(format!("{error}；无法保存回滚记录：{repair}"));
+            }
             return Err(error);
         }
         Ok(())
@@ -1562,22 +1321,12 @@ pub fn import_files_with_isolation(
             return Err("导入文件名重复".into());
         }
         context.resources.absent(&name)?;
-        // Open each parent component without following a directory symlink.
-        let absolute = Dir::open(Path::new("/"))?;
-        let parent_path = path.parent().ok_or("导入路径无效")?;
-        let parent = if parent_path == Path::new("/") {
-            absolute
-        } else {
-            descend(
-                &absolute,
-                &relative_string(parent_path.strip_prefix("/").map_err(|e| e.to_string())?)?,
-                false,
-            )?
-        };
+        // The platform backend opens the absolute ancestor graph without links.
+        let parent = open_source_parent(path.parent().ok_or("导入路径无效")?)?;
         let mut file = parent.regular_file(&name)?;
         let token = token_for(&file)?;
         let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if !identities.insert((metadata.dev(), metadata.ino())) {
+        if !identities.insert(source_identity(&file)?) {
             return Err("导入来源重复".into());
         }
         let size = metadata.len();
@@ -1600,6 +1349,7 @@ pub fn import_files_with_isolation(
     }
     // Staging copies have no authority to change resource files until every
     // copy is complete and its Prepared journal is durably published.
+    let copy_guard = copy_guard(&context.root)?;
     let mut journal = context.new_journal(Action::Import, None, Vec::new());
     let operation = context.storage()?.create_child(&journal.operation_id)?;
     operation.create_child("files")?;
@@ -1611,7 +1361,7 @@ pub fn import_files_with_isolation(
             cancellation(cancel)?;
             context.check()?;
             let item_name = format!("item-{index:04}");
-            let mut destination = stage.create_file(&item_name)?;
+            let mut destination = create_copy(&copy_guard, &stage, &item_name, source.size)?;
             source
                 .file
                 .seek(SeekFrom::Start(0))
@@ -1641,11 +1391,12 @@ pub fn import_files_with_isolation(
             verify(&source.parent, &source.name, &source.token)?;
             destination.sync_all().map_err(|e| e.to_string())?;
             validate_zip(&mut destination, cancel)?;
+            let fingerprint = complete_copy(destination, &stage, &item_name)?;
             journal.items.push(Item {
                 source_name: source.name.clone(),
                 target_name: source.name.clone(),
                 stage_name: item_name,
-                fingerprint: token_for(&destination)?,
+                fingerprint,
                 content_hash: Some(format!("{:x}", hasher.finalize())),
             });
         }
@@ -1663,15 +1414,19 @@ pub fn import_files_with_isolation(
         // No resource has moved. Incomplete service-owned copies remain in a
         // private stage if cleanup cannot be proven safe; sources are untouched.
         for item in &journal.items {
-            if verify_item_owned(&stage, &item.stage_name, item).is_ok() {
-                let _ = stage.remove_file(&item.stage_name);
-            }
+            let _ = remove_item_owned(&stage, &item.stage_name, item);
         }
         if stage.names().is_ok_and(|names| names.is_empty()) {
-            let _ = context.resources.remove_empty_dir(&stage_name(&journal));
+            let _ = context
+                .resources
+                .remove_empty_dir(&stage_name(&journal), &stage);
         }
-        return Err(error);
+        return Err(match check_copy_cleanup(&copy_guard) {
+            Ok(()) => error,
+            Err(cleanup) => format!("{error}；来源退役失败，已保留证据：{cleanup}"),
+        });
     }
+    check_copy_cleanup(&copy_guard)?;
     let mut checked_commit = || {
         for source in &imports {
             if token_for(&source.file)? != source.token {
@@ -1791,10 +1546,9 @@ pub fn removed_with_isolation(
             return Err("资源操作目录含有未知记录".into());
         }
         let operation = storage.child(&name)?;
-        if operation.metadata("journal.json")?.is_none() {
+        let Some(journal) = read_journal_optional(&operation, &name)? else {
             continue;
-        }
-        let journal = read_journal(&operation, &name)?;
+        };
         if journal.kind == kind && journal.resource_relative == context.relative {
             if journal.state == JournalState::Prepared {
                 return Err("存在未完成的资源操作，请重试恢复后再操作".into());
@@ -1860,10 +1614,9 @@ pub fn ensure_local_resources_ready(root: &Path) -> Result<(), String> {
             return Err("资源操作目录含有未知记录".into());
         }
         let operation = storage.child(&name)?;
-        if operation.metadata("journal.json")?.is_none() {
+        let Some(journal) = read_journal_optional(&operation, &name)? else {
             continue;
-        }
-        let journal = read_journal(&operation, &name)?;
+        };
         if journal.state == JournalState::Prepared {
             return Err("存在未完成的资源操作，请在资源管理中重试恢复后再启动".into());
         }
@@ -1886,10 +1639,9 @@ pub fn ensure_new_instance_name(root: &Path, id: &str) -> Result<(), String> {
             return Err("资源操作目录含有未知记录".into());
         }
         let operation = storage.child(&name)?;
-        if operation.metadata("journal.json")?.is_none() {
+        let Some(journal) = read_journal_optional(&operation, &name)? else {
             continue;
-        }
-        let journal = read_journal(&operation, &name)?;
+        };
         if journal.instance_id == id {
             return Err("此名称仍有资源操作记录，请使用新的实例名称".into());
         }
@@ -1917,10 +1669,9 @@ pub fn recover_pending(root: &Path, id: &str, kind: &str) -> Result<(), String> 
             return Err("资源操作目录含有未知记录".into());
         }
         let operation = storage.child(&name)?;
-        if operation.metadata("journal.json")?.is_none() {
+        let Some(journal) = read_journal_optional(&operation, &name)? else {
             continue;
-        }
-        let journal = read_journal(&operation, &name)?;
+        };
         if journal.kind == kind
             && (journal.instance_id == id || journal.resource_relative == kind)
             && matches!(
@@ -1950,19 +1701,35 @@ pub fn recover_pending(root: &Path, id: &str, kind: &str) -> Result<(), String> 
     Ok(())
 }
 
+#[cfg(all(test, windows))]
+#[path = "../../../../crates/core/src/file_ops/junction_fixture.rs"]
+mod junction_fixture;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::Cursor, os::unix::fs::symlink};
+    use std::io::Cursor;
+    #[cfg(unix)]
+    use std::{
+        ffi::CString,
+        os::unix::{
+            ffi::OsStrExt,
+            fs::{symlink, MetadataExt},
+        },
+    };
 
-    struct Fixture(PathBuf);
+    struct Fixture {
+        root: PathBuf,
+        _temporary: tempfile::TempDir,
+    }
 
     impl Fixture {
         fn new() -> Self {
-            let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-            let path = project.join("work/resource-operation-tests").join(new_id());
-            fs::create_dir_all(&path).unwrap();
-            let fixture = Self(path.canonicalize().unwrap());
+            let temporary = tempfile::tempdir().unwrap();
+            let fixture = Self {
+                root: temporary.path().canonicalize().unwrap(),
+                _temporary: temporary,
+            };
             fixture.instance("shared", false);
             fixture.instance("shared-two", false);
             fixture.instance("isolated", true);
@@ -1974,7 +1741,7 @@ mod tests {
         }
 
         fn root(&self) -> &Path {
-            &self.0
+            &self.root
         }
 
         fn instance(&self, id: &str, isolated: bool) {
@@ -2015,12 +1782,6 @@ mod tests {
             let path = folder.join(name);
             fs::write(&path, data).unwrap();
             path
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
         }
     }
 
@@ -2125,6 +1886,40 @@ mod tests {
         assert!(removed(fixture.root(), "shared", "mods")
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn failed_commit_and_failed_rollback_record_keep_files_for_durable_reconciliation() {
+        let fixture = Fixture::new();
+        let selected = fixture.put("shared", "mods", "a.jar", b"original");
+        let result = set_enabled(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[selected],
+            false,
+            &flag(),
+            &mut || {
+                JOURNAL_WRITE_FAILURES.with(|remaining| remaining.set(2));
+                Ok(())
+            },
+            &mut progress,
+        );
+        JOURNAL_WRITE_FAILURES.with(|remaining| remaining.set(0));
+        assert!(result.unwrap_err().contains("无法保存回滚记录"));
+        let folder = fixture.folder("shared", "mods");
+        // The physical commit was attempted; no rollback is authorized until
+        // the durable logical journal is read again.
+        assert!(!folder.join("a.jar").exists());
+        assert_eq!(
+            fs::read(folder.join("a.jar.disabled")).unwrap(),
+            b"original"
+        );
+        assert!(ensure_ready(fixture.root()).is_err());
+        recover_pending(fixture.root(), "shared", "mods").unwrap();
+        assert_eq!(fs::read(folder.join("a.jar")).unwrap(), b"original");
+        assert!(!folder.join("a.jar.disabled").exists());
+        ensure_ready(fixture.root()).unwrap();
     }
 
     #[test]
@@ -2546,6 +2341,7 @@ mod tests {
         assert_eq!(fs::read(path).unwrap(), b"after!");
     }
 
+    #[cfg(unix)]
     fn preserve_mtime(path: &Path, metadata: &fs::Metadata) {
         let times = [
             libc::timespec {
@@ -2569,6 +2365,31 @@ mod tests {
             },
             0
         );
+    }
+
+    #[cfg(windows)]
+    fn preserve_mtime(path: &Path, metadata: &fs::Metadata) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(metadata.modified().unwrap()))
+            .unwrap();
+    }
+    fn directory_alias(source: &Path, destination: &Path) {
+        #[cfg(unix)]
+        symlink(source, destination).unwrap();
+        #[cfg(windows)]
+        {
+            fs::create_dir(destination).unwrap();
+            junction_fixture::set_existing(source, destination).unwrap();
+        }
+    }
+    fn remove_directory_alias(path: &Path) {
+        #[cfg(unix)]
+        fs::remove_file(path).unwrap();
+        #[cfg(windows)]
+        fs::remove_dir(path).unwrap();
     }
 
     #[test]
@@ -2733,6 +2554,7 @@ mod tests {
         ensure_ready(fixture.root()).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn resource_links_source_links_and_operation_parent_links_cannot_cross_boundary() {
         let fixture = Fixture::new();
@@ -2804,6 +2626,66 @@ mod tests {
         assert!(!outside.join("resource-operations").exists());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn native_junction_resource_source_and_history_ancestors_are_rejected() {
+        let fixture = Fixture::new();
+        let good = fixture.archive("good.jar", b"valid source");
+        let outside = fixture.root().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), b"unchanged").unwrap();
+        let resources = fixture.folder("shared", "mods");
+        fs::remove_dir(&resources).unwrap();
+        directory_alias(&outside, &resources);
+        assert!(import_files(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[good.clone()],
+            &flag(),
+            &mut commit,
+            &mut progress
+        )
+        .is_err());
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"unchanged");
+        assert!(!outside.join("good.jar").exists());
+        remove_directory_alias(&resources);
+        fs::create_dir(&resources).unwrap();
+        let sources = fixture.root().join("sources");
+        let original = fixture.root().join("original-sources");
+        fs::rename(&sources, &original).unwrap();
+        directory_alias(&original, &sources);
+        assert!(import_files(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[good.clone()],
+            &flag(),
+            &mut commit,
+            &mut progress
+        )
+        .is_err());
+        assert!(zip::ZipArchive::new(File::open(original.join("good.jar")).unwrap()).is_ok());
+        remove_directory_alias(&sources);
+        fs::rename(&original, &sources).unwrap();
+        let private = fixture.root().join(".pcl-linux");
+        fs::remove_dir_all(&private).unwrap();
+        directory_alias(&outside, &private);
+        assert!(import_files(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[good],
+            &flag(),
+            &mut commit,
+            &mut progress
+        )
+        .is_err());
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"unchanged");
+        assert!(!outside.join("resource-operations").exists());
+        remove_directory_alias(&private);
+    }
+
     #[test]
     fn directory_swap_during_commit_is_detected_before_any_resource_move() {
         let fixture = Fixture::new();
@@ -2812,6 +2694,7 @@ mod tests {
         let moved = fixture.root().join("moved-mods");
         let outside = fixture.root().join("outside");
         fs::create_dir(&outside).unwrap();
+        let did_rename = std::cell::Cell::new(false);
         assert!(set_enabled(
             fixture.root(),
             "shared",
@@ -2820,17 +2703,34 @@ mod tests {
             false,
             &flag(),
             &mut || {
-                fs::rename(&folder, &moved).unwrap();
-                symlink(&outside, &folder).unwrap();
+                match fs::rename(&folder, &moved) {
+                    Ok(()) => did_rename.set(true),
+                    #[cfg(windows)]
+                    Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) => {
+                        // The transaction retains its generated stage child;
+                        // NTFS blocks renaming this ancestor while it is open.
+                        assert!(folder.is_dir() && !moved.exists());
+                        return Err("held native descendant blocked ancestor replacement".into());
+                    }
+                    Err(error) => panic!("unexpected rename result: {error}"),
+                }
+                directory_alias(&outside, &folder);
                 Ok(())
             },
             &mut progress
         )
         .is_err());
+        if !did_rename.get() {
+            assert_eq!(fs::read(folder.join("a.jar")).unwrap(), b"protected");
+            assert!(!folder.join("a.jar.disabled").exists());
+            assert!(fs::read_dir(outside).unwrap().next().is_none());
+            ensure_ready(fixture.root()).unwrap();
+            return;
+        }
         assert_eq!(fs::read(moved.join("a.jar")).unwrap(), b"protected");
         assert!(!moved.join("a.jar.disabled").exists());
         assert!(fs::read_dir(outside).unwrap().next().is_none());
-        fs::remove_file(&folder).unwrap();
+        remove_directory_alias(&folder);
         fs::rename(moved, folder).unwrap();
         recover_pending(fixture.root(), "shared", "mods").unwrap();
         ensure_ready(fixture.root()).unwrap();
@@ -2921,12 +2821,14 @@ mod tests {
             let mut file = stage.create_file(&format!("item-{index:04}")).unwrap();
             file.write_all(&fs::read(path).unwrap()).unwrap();
             file.sync_all().unwrap();
+            let hash = content_hash(&mut file).unwrap();
+            drop(file);
             journal.items.push(Item {
                 source_name: name.clone(),
                 target_name: name,
                 stage_name: format!("item-{index:04}"),
-                fingerprint: token_for(&file).unwrap(),
-                content_hash: Some(content_hash(&mut file).unwrap()),
+                fingerprint: stage.token(&format!("item-{index:04}")).unwrap(),
+                content_hash: Some(hash),
             });
         }
         write_journal(&operation, &journal).unwrap();
@@ -2968,12 +2870,14 @@ mod tests {
         let mut file = stage.create_file("item-0000").unwrap();
         file.write_all(b"before").unwrap();
         file.sync_all().unwrap();
+        let hash = content_hash(&mut file).unwrap();
+        drop(file);
         journal.items.push(Item {
             source_name: "a.jar".into(),
             target_name: "a.jar".into(),
             stage_name: "item-0000".into(),
-            fingerprint: token_for(&file).unwrap(),
-            content_hash: Some(content_hash(&mut file).unwrap()),
+            fingerprint: stage.token("item-0000").unwrap(),
+            content_hash: Some(hash),
         });
         write_journal(&operation, &journal).unwrap();
         rename_new(&stage, "item-0000", &context.resources, "a.jar").unwrap();
@@ -3006,12 +2910,7 @@ mod tests {
                 "content_hash" => value["items"][0][field] = "1234".into(),
                 _ => unreachable!(),
             }
-            let path = fixture
-                .root()
-                .join(".pcl-linux/resource-operations")
-                .join(&journal.operation_id)
-                .join("journal.json");
-            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            publish_journal(&operation, &serde_json::to_vec(&value).unwrap()).unwrap();
             assert!(recover_pending(fixture.root(), "shared", "mods").is_err());
             assert_eq!(
                 fs::read(fixture.folder("shared", "mods").join("a.jar.disabled")).unwrap(),
@@ -3026,17 +2925,21 @@ mod tests {
     fn maximum_batch_with_long_escaped_names_has_readable_journal() {
         let fixture = Fixture::new();
         let context = Context::new(fixture.root(), "shared", "mods", true).unwrap();
+        let sample_token = fixture
+            .put("shared", "mods", "token-fixture.jar", b"a")
+            .fingerprint;
         let items = (0..MAX_FILES)
             .map(|index| {
                 // Legal names with the largest JSON expansion: ASCII quotes take
                 // two bytes each in JSON while occupying only one on the filesystem.
-                let name = format!("{}{index:04}.jar", "\"".repeat(247));
+                let fill = if cfg!(windows) { "a" } else { "\"" };
+                let name = format!("{}{index:04}.jar", fill.repeat(247));
                 assert_eq!(name.len(), 255);
                 Item {
                     source_name: name.clone(),
                     target_name: name,
                     stage_name: format!("item-{index:04}"),
-                    fingerprint: "v2:1:1:1:1:1:1:1".into(),
+                    fingerprint: sample_token.clone(),
                     content_hash: Some("a".repeat(64)),
                 }
             })
@@ -3048,13 +2951,15 @@ mod tests {
             .create_child(&journal.operation_id)
             .unwrap();
         write_journal(&operation, &journal).unwrap();
-        let length = operation
-            .regular_file("journal.json")
-            .unwrap()
-            .metadata()
-            .unwrap()
-            .len();
-        assert!(length > 512 * 1024);
+        let length = journal_bytes(&operation).unwrap().unwrap().len() as u64;
+        assert!(
+            length
+                > if cfg!(windows) {
+                    128 * 1024
+                } else {
+                    512 * 1024
+                }
+        );
         assert!(length <= MAX_JOURNAL_BYTES as u64);
         let loaded = read_journal(&operation, &journal.operation_id).unwrap();
         assert_eq!(loaded.items.len(), MAX_FILES);

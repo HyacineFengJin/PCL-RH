@@ -31,107 +31,21 @@
 //! `instance_rename_refs/tests.rs`.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    ffi::{CStr, CString},
-    fs::{File, Metadata},
-    io::{Read, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
-    path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    path::{Path, PathBuf},
 };
+#[path = "instance_rename_refs/filesystem.rs"]
+mod filesystem;
+use filesystem::{absolute, hash, nonce, Dir, MARKER, MAX_HISTORY, PRESET_LIMIT};
+pub(crate) use filesystem::{DiskSnapshot, Identity, ReferenceLock};
 
 const SETTINGS_LIMIT: usize = 2 * 1024 * 1024;
 const METADATA_LIMIT: usize = 8 * 1024 * 1024;
-const PRESET_LIMIT: usize = 64 * 1024;
 const RESOURCE_LIMIT: usize = 2 * 1024 * 1024;
 const PAYLOAD_LIMIT: usize = 32 * 1024 * 1024;
-const MAX_HISTORY: usize = 8192;
-const MARKER: &str = "instance-rename-pending.json";
 const PENDING_ERROR: &str = "存在未完成的实例重命名，请先恢复后再操作或启动";
-static NEXT: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Identity {
-    device: u64,
-    inode: u64,
-}
-impl Identity {
-    fn of(metadata: &Metadata) -> Self {
-        Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Stamp {
-    identity: Identity,
-    bytes: u64,
-    mode: u32,
-    links: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-impl Stamp {
-    fn of(metadata: &Metadata) -> Self {
-        Self {
-            identity: Identity::of(metadata),
-            bytes: metadata.len(),
-            mode: metadata.mode(),
-            links: metadata.nlink(),
-            modified: (metadata.mtime(), metadata.mtime_nsec()),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        }
-    }
-    // rename/exchange can change ctime. Retain every other stamp property;
-    // callers separately compare the content hash to reject a replaced temp.
-    fn moved_matches(&self, other: &Self) -> bool {
-        self.identity == other.identity
-            && self.bytes == other.bytes
-            && self.mode == other.mode
-            && self.links == other.links
-            && self.modified == other.modified
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Token {
-    stamp: Stamp,
-    hash: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct DiskSnapshot {
-    directory: Option<Identity>,
-    file: Option<Token>,
-}
-impl DiskSnapshot {
-    pub(crate) fn file_exists(&self) -> bool {
-        self.file.is_some()
-    }
-    pub(crate) fn compatible(&self, current: &Self) -> bool {
-        self == current
-            || (self.directory.is_none() && self.file.is_none() && current.file.is_none())
-    }
-}
-
-struct Dir(File);
-fn c(value: &str) -> Result<CString, String> {
-    CString::new(value).map_err(|_| "引用路径含有无效字符".into())
-}
-fn error(context: &str) -> String {
-    format!("{context}：{}", std::io::Error::last_os_error())
-}
 fn id(value: &str) -> Result<(), String> {
     pcl_core::identifier(value)?;
     if value.len() > 255 || value.chars().any(char::is_control) {
@@ -139,392 +53,12 @@ fn id(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn absolute(path: &Path) -> Result<(), String> {
-    if !path.is_absolute()
-        || path.as_os_str().len() > 4096
-        || path
-            .components()
-            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
-        || path
-            .to_str()
-            .is_none_or(|text| text.chars().any(char::is_control))
-    {
-        return Err("引用迁移需要规范的绝对路径".into());
-    }
-    Ok(())
-}
-fn hash(data: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(data))
-}
-fn nonce() -> String {
-    format!(
-        "{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
-}
 
-impl Dir {
-    fn open(path: &Path) -> Result<Self, String> {
-        absolute(path)?;
-        let fd = unsafe {
-            libc::open(
-                c("/")?.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法打开引用目录"));
-        }
-        let mut dir = Self(unsafe { File::from_raw_fd(fd) });
-        for part in path.components() {
-            if let Component::Normal(part) = part {
-                dir = dir.child(part.to_str().ok_or("引用目录不是 UTF-8")?)?;
-            }
-        }
-        Ok(dir)
-    }
-    fn identity(&self) -> Result<Identity, String> {
-        self.0
-            .metadata()
-            .map(|metadata| Identity::of(&metadata))
-            .map_err(|e| e.to_string())
-    }
-    fn child(&self, name: &str) -> Result<Self, String> {
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c(name)?.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法打开引用目录（不允许符号链接）"));
-        }
-        Ok(Self(unsafe { File::from_raw_fd(fd) }))
-    }
-    fn optional(&self, name: &str) -> Result<Option<Self>, String> {
-        if self.stat(name)?.is_none() {
-            Ok(None)
-        } else {
-            self.child(name).map(Some)
-        }
-    }
-    fn ensure(&self, name: &str) -> Result<Self, String> {
-        if let Some(dir) = self.optional(name)? {
-            return Ok(dir);
-        }
-        if unsafe { libc::mkdirat(self.0.as_raw_fd(), c(name)?.as_ptr(), 0o700) } != 0
-            && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
-        {
-            return Err(error("无法创建引用目录"));
-        }
-        self.sync()?;
-        self.child(name)
-    }
-    fn stat(&self, name: &str) -> Result<Option<libc::stat>, String> {
-        let mut stat = std::mem::MaybeUninit::uninit();
-        if unsafe {
-            libc::fstatat(
-                self.0.as_raw_fd(),
-                c(name)?.as_ptr(),
-                stat.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } == 0
-        {
-            return Ok(Some(unsafe { stat.assume_init() }));
-        }
-        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(error("无法读取引用文件信息"))
-        }
-    }
-    fn read(&self, name: &str, limit: usize) -> Result<Option<(Token, Vec<u8>)>, String> {
-        let Some(expected) = self.stat(name)? else {
-            return Ok(None);
-        };
-        if expected.st_mode & libc::S_IFMT != libc::S_IFREG || expected.st_nlink != 1 {
-            return Err(
-                "引用文件不是独立的普通文件（不允许符号链接或硬链接），原文件已保留".into(),
-            );
-        }
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c(name)?.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法读取引用文件"));
-        }
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if !metadata.is_file()
-            || metadata.nlink() != 1
-            || metadata.len() > limit as u64
-            || metadata.dev() != expected.st_dev
-            || metadata.ino() != expected.st_ino
-        {
-            return Err("引用文件过大或读取期间已变化，原文件已保留".into());
-        }
-        let stamp = Stamp::of(&metadata);
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut file)
-            .take(limit as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        let final_stat = self.stat(name)?.ok_or("引用文件在读取期间消失")?;
-        if bytes.len() > limit
-            || Stamp::of(&file.metadata().map_err(|e| e.to_string())?) != stamp
-            || final_stat.st_dev != stamp.identity.device
-            || final_stat.st_ino != stamp.identity.inode
-            || final_stat.st_size.max(0) as u64 != stamp.bytes
-            || (final_stat.st_mtime, final_stat.st_mtime_nsec) != stamp.modified
-            || (final_stat.st_ctime, final_stat.st_ctime_nsec) != stamp.changed
-        {
-            return Err("引用文件在读取期间已变化，原文件已保留".into());
-        }
-        Ok(Some((
-            Token {
-                stamp,
-                hash: hash(&bytes),
-            },
-            bytes,
-        )))
-    }
-    fn create(&self, name: &str) -> Result<File, String> {
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c(name)?.as_ptr(),
-                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法创建引用暂存文件"));
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-    fn sync(&self) -> Result<(), String> {
-        self.0
-            .sync_all()
-            .map_err(|e| format!("引用目录同步失败：{e}"))
-    }
-    fn unlink(&self, name: &str) -> Result<(), String> {
-        if unsafe { libc::unlinkat(self.0.as_raw_fd(), c(name)?.as_ptr(), 0) } != 0 {
-            return Err(error("无法删除引用文件"));
-        }
-        self.sync()
-    }
-    fn rename(&self, from: &str, to: &str, flags: u32) -> Result<(), String> {
-        if unsafe {
-            libc::renameat2(
-                self.0.as_raw_fd(),
-                c(from)?.as_ptr(),
-                self.0.as_raw_fd(),
-                c(to)?.as_ptr(),
-                flags,
-            )
-        } != 0
-        {
-            return Err(error("无法原子迁移引用文件"));
-        }
-        Ok(())
-    }
-    fn names(&self) -> Result<Vec<String>, String> {
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c(".")?.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法扫描资源历史"));
-        }
-        let stream = unsafe { libc::fdopendir(fd) };
-        if stream.is_null() {
-            let error = error("无法扫描资源历史");
-            unsafe {
-                libc::close(fd);
-            }
-            return Err(error);
-        }
-        struct Stream(*mut libc::DIR);
-        impl Drop for Stream {
-            fn drop(&mut self) {
-                unsafe { libc::closedir(self.0) };
-            }
-        }
-        let stream = Stream(stream);
-        let mut names = Vec::new();
-        loop {
-            unsafe {
-                *libc::__errno_location() = 0;
-            }
-            let entry = unsafe { libc::readdir(stream.0) };
-            if entry.is_null() {
-                if std::io::Error::last_os_error().raw_os_error() != Some(0) {
-                    return Err(error("资源历史读取失败"));
-                }
-                break;
-            }
-            let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-            if bytes == b"." || bytes == b".." {
-                continue;
-            }
-            names.push(
-                std::str::from_utf8(bytes)
-                    .map_err(|_| "资源历史名称无效")?
-                    .into(),
-            );
-            if names.len() > MAX_HISTORY {
-                return Err("历史资源记录过多，请先整理后再重命名".into());
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
-    fn lock(&self, name: &str) -> Result<ReferenceLock, String> {
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                c(name)?.as_ptr(),
-                libc::O_RDWR
-                    | libc::O_CREAT
-                    | libc::O_CLOEXEC
-                    | libc::O_NOFOLLOW
-                    | libc::O_NONBLOCK,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(error("无法打开引用写锁"));
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        let metadata = file.metadata().map_err(|e| e.to_string())?;
-        if !metadata.is_file() || metadata.nlink() != 1 {
-            return Err("引用写锁不是独立的普通文件".into());
-        }
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err("另一个启动器正在修改引用资料，请稍后重试".into());
-        }
-        let guard = ReferenceLock(file);
-        let stat = self.stat(name)?.ok_or("引用写锁已消失")?;
-        if stat.st_dev != metadata.dev() || stat.st_ino != metadata.ino() {
-            return Err("引用写锁已被外部替换".into());
-        }
-        Ok(guard)
-    }
-    fn update(
-        &self,
-        name: &str,
-        before: Option<&Token>,
-        after: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<(), String> {
-        let now = self.read(name, limit)?.map(|(token, _)| token);
-        if now.as_ref() != before {
-            return Err("引用文件已被外部修改，未覆盖原文件；重命名仍等待恢复".into());
-        }
-        let temporary = format!(".rename-reference-{}.tmp", nonce());
-        if let Some(bytes) = after {
-            if bytes.len() > limit {
-                return Err("迁移后的引用文件过大".into());
-            }
-            let mut file = self.create(&temporary)?;
-            let result = (|| {
-                file.write_all(bytes)
-                    .and_then(|_| file.sync_all())
-                    .map_err(|e| e.to_string())?;
-                let staged = self.read(&temporary, limit)?.ok_or("引用暂存文件已消失")?.0;
-                if staged.stamp != Stamp::of(&file.metadata().map_err(|e| e.to_string())?)
-                    || staged.hash != hash(bytes)
-                {
-                    return Err("引用暂存文件已被外部修改，原文件已保留".into());
-                }
-                if self.read(name, limit)?.map(|(token, _)| token).as_ref() != before {
-                    return Err("引用文件已被外部修改，未覆盖原文件".into());
-                }
-                if let Some(before) = before {
-                    self.rename(&temporary, name, libc::RENAME_EXCHANGE)?;
-                    let replaced = self
-                        .read(&temporary, limit)?
-                        .ok_or("被替换的引用文件已消失")?
-                        .0;
-                    let published = self.read(name, limit)?.ok_or("迁移后的引用文件已消失")?.0;
-                    if !staged.stamp.moved_matches(&published.stamp)
-                        || staged.hash != published.hash
-                    {
-                        return Err(format!("发布后的引用文件已被外部修改，旧资料已保留（{temporary}），请检查后恢复"));
-                    }
-                    if !before.stamp.moved_matches(&replaced.stamp) || before.hash != replaced.hash
-                    {
-                        if staged.stamp.moved_matches(&published.stamp)
-                            && staged.hash == published.hash
-                        {
-                            self.rename(&temporary, name, libc::RENAME_EXCHANGE)?;
-                            let _ = self.unlink(&temporary);
-                            return Err("引用文件在替换期间被外部修改，已还原并保留原文件".into());
-                        }
-                        return Err(format!(
-                            "引用文件并发冲突，已保留双方内容（{temporary}），请检查后恢复"
-                        ));
-                    }
-                    self.unlink(&temporary)?;
-                } else {
-                    self.rename(&temporary, name, libc::RENAME_NOREPLACE)?;
-                    let published = self.read(name, limit)?.ok_or("迁移后的引用文件已消失")?.0;
-                    if !staged.stamp.moved_matches(&published.stamp)
-                        || staged.hash != published.hash
-                    {
-                        return Err("发布后的引用文件已被外部修改，原文件已保留".into());
-                    }
-                }
-                self.sync()
-            })();
-            if result.is_err() {
-                // Only clean an owned staged replacement; a swapped-out file
-                // may contain external user edits and must remain preserved.
-                if self
-                    .read(&temporary, limit)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(token, data)| {
-                        file.metadata()
-                            .is_ok_and(|metadata| token.stamp.identity == Identity::of(&metadata))
-                            && data == bytes
-                    })
-                {
-                    let _ = self.unlink(&temporary);
-                }
-            }
-            result
-        } else if let Some(before) = before {
-            self.rename(name, &temporary, libc::RENAME_NOREPLACE)?;
-            let moved = self
-                .read(&temporary, limit)?
-                .ok_or("待删除引用文件已消失")?
-                .0;
-            if !before.stamp.moved_matches(&moved.stamp) || before.hash != moved.hash {
-                self.rename(&temporary, name, libc::RENAME_NOREPLACE)?;
-                return Err("引用文件在删除期间被外部修改，已保留原文件".into());
-            }
-            self.unlink(&temporary)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-pub(crate) struct ReferenceLock(File);
-impl Drop for ReferenceLock {
-    fn drop(&mut self) {
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+fn wire_version() -> u32 {
+    if cfg!(windows) {
+        2
+    } else {
+        1
     }
 }
 
@@ -549,7 +83,7 @@ pub(crate) fn store_snapshot(
         return Ok((DiskSnapshot::default(), None));
     };
     let identity = dir.identity()?;
-    let value = dir.read(filename, limit)?;
+    let (snapshot, bytes) = dir.snapshot(filename, limit)?;
     if app_directory(project, false)?
         .map(|dir| dir.identity())
         .transpose()?
@@ -557,13 +91,7 @@ pub(crate) fn store_snapshot(
     {
         return Err("引用资料目录已被外部替换".into());
     }
-    Ok((
-        DiskSnapshot {
-            directory: Some(identity),
-            file: value.as_ref().map(|(token, _)| token.clone()),
-        },
-        value.map(|(_, bytes)| bytes),
-    ))
+    Ok((snapshot, bytes))
 }
 
 pub(crate) fn with_settings_lock<T>(
@@ -605,15 +133,7 @@ pub(crate) fn backup_settings_checked(
         return Err("旧设置在备份前已变化，原文件已保留".into());
     }
     let name = format!("settings.v{source_version}-backup-{}.json", nonce());
-    let mut file = dir.create(&name)?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|e| e.to_string())?;
-    let (token, saved) = dir.read(&name, SETTINGS_LIMIT)?.ok_or("旧设置备份已消失")?;
-    if token.stamp != Stamp::of(&file.metadata().map_err(|e| e.to_string())?) || saved != bytes {
-        return Err("旧设置备份已被外部修改，原设置已保留".into());
-    }
-    dir.sync()
+    dir.write_backup(&name, bytes, SETTINGS_LIMIT)
 }
 
 pub(crate) fn write_store_checked(
@@ -634,7 +154,7 @@ pub(crate) fn write_store_checked(
     if !expected.compatible(&now) {
         return Err("设置文件已被外部修改，未覆盖原文件，请重新打开启动器".into());
     }
-    let saved = dir.update(filename, now.file.as_ref(), Some(bytes), limit);
+    let saved = dir.update_checked(filename, &now, Some(bytes), limit);
     let (disk, current) = store_snapshot(project, filename, limit)?;
     if disk.directory == Some(dir.identity()?) && current.as_deref() == Some(bytes) {
         Ok(disk)
@@ -644,11 +164,7 @@ pub(crate) fn write_store_checked(
     }
 }
 
-pub(crate) fn root_history_lock(root: &Path) -> Result<ReferenceLock, String> {
-    Dir::open(root)?
-        .ensure(".pcl-linux")?
-        .lock(".resource-operations.lock")
-}
+pub(crate) use filesystem::root_history_lock;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -810,21 +326,18 @@ impl RenameReferences {
         after: Option<Vec<u8>>,
     ) -> Result<(), String> {
         let (dir, name) = self.location(project, root, &target)?;
-        let current = dir.read(&name, Self::limit(&target))?;
+        let (snapshot, current) = dir.snapshot(&name, Self::limit(&target))?;
         self.changes.push(Delta {
             target,
-            snapshot: DiskSnapshot {
-                directory: Some(dir.identity()?),
-                file: current.as_ref().map(|(token, _)| token.clone()),
-            },
-            before: current.map(|(_, bytes)| STANDARD.encode(bytes)),
+            snapshot,
+            before: current.map(|bytes| STANDARD.encode(bytes)),
             after_hash: after.as_ref().map(|bytes| hash(bytes)),
             after: after.map(|bytes| STANDARD.encode(bytes)),
         });
         Ok(())
     }
     fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 1
+        if self.schema_version != wire_version()
             || self.root_id.is_empty()
             || self.root_id.len() > 128
             || !self
@@ -861,6 +374,10 @@ impl RenameReferences {
                     before.as_ref().map_or(0, Vec::len) + after.as_ref().map_or(0, Vec::len),
                 )
                 .ok_or("重命名引用载荷过大")?;
+            #[cfg(windows)]
+            if !change.snapshot.valid_logical() {
+                return Err("引用逻辑快照格式无效".into());
+            }
             if total > PAYLOAD_LIMIT
                 || before.as_ref().map(|bytes| hash(bytes))
                     != change
@@ -1017,14 +534,12 @@ impl RenameReferences {
             if Some(dir.identity()?) != change.snapshot.directory {
                 return Err("引用资料目录已被外部替换，原文件已保留".into());
             }
-            let current = dir
-                .read(&name, Self::limit(&change.target))?
-                .map(|(token, _)| token);
-            if current == change.snapshot.file {
+            let current = dir.snapshot(&name, Self::limit(&change.target))?.0;
+            if current == change.snapshot {
                 continue;
             }
             if allow_after
-                && current.as_ref().map(|token| &token.hash) == change.after_hash.as_ref()
+                && current.file.as_ref().map(|token| &token.hash) == change.after_hash.as_ref()
             {
                 continue;
             }
@@ -1053,19 +568,17 @@ impl RenameReferences {
         });
         for change in changes {
             let (dir, name) = self.location(project, root, &change.target)?;
-            let current = dir
-                .read(&name, Self::limit(&change.target))?
-                .map(|(token, _)| token);
-            if current.as_ref().map(|token| &token.hash) == change.after_hash.as_ref() {
+            let current = dir.snapshot(&name, Self::limit(&change.target))?.0;
+            if current.file.as_ref().map(|token| &token.hash) == change.after_hash.as_ref() {
                 continue;
             }
-            if current != change.snapshot.file {
+            if current != change.snapshot {
                 return Err("引用文件已被外部修改，重命名仍等待恢复".into());
             }
             let after = decoded(&change.after, Self::limit(&change.target))?;
-            dir.update(
+            dir.update_checked(
                 &name,
-                current.as_ref(),
+                &current,
                 after.as_deref(),
                 Self::limit(&change.target),
             )?;
@@ -1077,7 +590,7 @@ impl RenameReferences {
             return Err("重命名事务标识无效".into());
         }
         Ok(Pending {
-            schema_version: 1,
+            schema_version: wire_version(),
             root_path: self.root_path.clone(),
             root_id: self.root_id.clone(),
             root_identity: self.root_identity.clone(),
@@ -1109,35 +622,11 @@ impl RenameReferences {
             return Err("存在其他或已被外部修改的重命名标记，原文件已保留".into());
         }
         self.check_changes(project, root, false)?;
-        let temporary = format!(".rename-reference-{}.tmp", nonce());
-        let mut file = dir.create(&temporary)?;
-        let identity = Identity::of(&file.metadata().map_err(|e| e.to_string())?);
-        let result = (|| {
-            let bytes = serde_json::to_vec(&self.marker(operation_id, identity.clone())?)
-                .map_err(|e| e.to_string())?;
-            file.write_all(&bytes)
-                .and_then(|_| file.sync_all())
-                .map_err(|e| e.to_string())?;
-            let (token, staged) = dir
-                .read(&temporary, PRESET_LIMIT)?
-                .ok_or("重命名标记暂存文件已消失")?;
-            if token.stamp.identity != identity || staged != bytes {
-                return Err("重命名标记暂存文件已被外部修改，原文件已保留".into());
-            }
-            dir.rename(&temporary, MARKER, libc::RENAME_NOREPLACE)?;
-            dir.sync()
-        })();
-        if result.is_err()
-            && dir
-                .stat(&temporary)
-                .ok()
-                .flatten()
-                .is_some_and(|stat| stat.st_dev == identity.device && stat.st_ino == identity.inode)
-        {
-            let _ = dir.unlink(&temporary);
-        }
-        result
+        dir.publish_marker(|identity| {
+            serde_json::to_vec(&self.marker(operation_id, identity)?).map_err(|e| e.to_string())
+        })
     }
+
     pub fn clear_pending(
         &self,
         project: &Path,
@@ -1156,7 +645,7 @@ impl RenameReferences {
         if current != expected {
             return Err("重命名标记已被外部修改，原文件已保留".into());
         }
-        dir.update(MARKER, Some(&token), None, PRESET_LIMIT)
+        dir.clear_marker(&token, &current)
     }
 }
 
@@ -1171,7 +660,7 @@ pub fn prepare(
     id(old)?;
     id(new)?;
     let mut refs = RenameReferences {
-        schema_version: 1,
+        schema_version: wire_version(),
         root_id: root_id.into(),
         root_path: root.to_str().ok_or("游戏目录不是 UTF-8")?.into(),
         old_id: old.into(),
@@ -1199,8 +688,9 @@ pub fn prepare(
     ] {
         let data = app_directory(project, false)?
             .ok_or("引用目录不可用")?
-            .read(name, RenameReferences::limit(&target))?
-            .map(|(_, bytes)| transform(&bytes, root_id, root, old, new))
+            .snapshot(name, RenameReferences::limit(&target))?
+            .1
+            .map(|bytes| transform(&bytes, root_id, root, old, new))
             .transpose()?;
         let data = if target == Target::Metadata && data.is_none() {
             Some(crate::instance_meta::rename_optional_bytes(
@@ -1213,14 +703,16 @@ pub fn prepare(
     }
     let presets = preset_directory(project, false)?.ok_or("导出配置目录不可用")?;
     if presets
-        .read(&crate::export_presets::name(root_id, new), PRESET_LIMIT)?
+        .snapshot(&crate::export_presets::name(root_id, new), PRESET_LIMIT)?
+        .1
         .is_some()
     {
         return Err("目标名称已有导出配置，请选择其他名称".into());
     }
     let new_preset = presets
-        .read(&crate::export_presets::name(root_id, old), PRESET_LIMIT)?
-        .map(|(_, bytes)| crate::export_presets::rename_bytes(&bytes, root_id, root, old, new))
+        .snapshot(&crate::export_presets::name(root_id, old), PRESET_LIMIT)?
+        .1
+        .map(|bytes| crate::export_presets::rename_bytes(&bytes, root_id, root, old, new))
         .transpose()?;
     refs.capture(project, root, Target::PresetOld, None)?;
     refs.capture(project, root, Target::PresetNew, new_preset)?;
@@ -1233,8 +725,9 @@ pub fn prepare(
             }
             let data = history
                 .child(&operation)?
-                .read("journal.json", RESOURCE_LIMIT)?
-                .map(|(_, bytes)| {
+                .snapshot("journal.json", RESOURCE_LIMIT)?
+                .1
+                .map(|bytes| {
                     crate::resource_ops::rename_journal_bytes(&bytes, &operation, old, new)
                         .map(|after| after.unwrap_or(bytes))
                 })
@@ -1296,7 +789,7 @@ fn read_pending(project: &Path) -> Result<Option<Pending>, String> {
     };
     let marker: Pending = serde_json::from_slice(&bytes)
         .map_err(|_| "重命名待恢复标记损坏或格式不受支持，原文件已保留".to_string())?;
-    if marker.schema_version != 1
+    if marker.schema_version != wire_version()
         || !valid_rename_operation(&marker.operation_id)
         || marker.revision.len() != 64
         || !marker.revision.bytes().all(|c| c.is_ascii_hexdigit())
@@ -1325,5 +818,11 @@ pub fn ensure_project_ready(project: &Path) -> Result<(), String> {
     }
 }
 
+// This original suite exercises Linux physical files and Unix Java aliases.
+// Portable replay tests below use native private fixtures and logical readers.
 #[cfg(test)]
+#[path = "instance_rename_refs/portable_tests.rs"]
+mod portable_tests;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "instance_rename_refs/tests.rs"]
 mod tests;

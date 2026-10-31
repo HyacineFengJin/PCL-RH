@@ -298,11 +298,11 @@ fn install_with_policy(
         // Reused resources still need the commit-time scope and compatibility
         // check, but must never create an empty batch or enable a disabled mod.
         commit()?;
-        resource_ops::MutationResult {
+        Ok(resource_ops::MutationResult {
             changed: 0,
             undo_id: None,
             message: "所需资源文件已存在并通过校验".into(),
-        }
+        })
     } else {
         resource_ops::import_verified_batch_with_isolation(
             Path::new(&root.path),
@@ -312,10 +312,15 @@ fn install_with_policy(
             &mut commit,
             &mut |_, _| {},
             modrinth_install::install_isolation(&plan).0,
-        )?
+        )
     };
+    let result = retire_after_publication(result, &mut files)?;
     let mut done = publication_progress(&plan, network_bytes);
-    done.message = "资源文件已安装，暂存文件已清理".into();
+    done.message = if result.message.contains("下载来源清理未确认") {
+        result.message.clone()
+    } else {
+        "资源文件已安装，暂存文件已清理".into()
+    };
     done.steps = steps(3, None);
     task.update(done);
     Ok(json!({
@@ -323,6 +328,22 @@ fn install_with_policy(
         "reused":plan.files.iter().filter(|file|file.reused).count(),
         "warnings":plan.warnings,"message":result.message,
     }))
+}
+
+pub(super) fn retire_after_publication(
+    result: Result<resource_ops::MutationResult>,
+    files: &mut [resource_ops::VerifiedImport],
+) -> Result<resource_ops::MutationResult> {
+    match (result, resource_ops::retire_sources(files)) {
+        (Ok(mut result), Err(error)) => {
+            result.message.push_str(&format!(
+                "；资源已提交，但下载来源清理未确认，证据已保留：{error}"
+            ));
+            Ok(result)
+        }
+        (Err(error), Err(cleanup)) => Err(format!("{error}；下载来源清理未确认：{cleanup}")),
+        (result, Ok(())) => result,
+    }
 }
 
 fn steps(current: usize, progress: Option<f64>) -> Vec<InstallStep> {

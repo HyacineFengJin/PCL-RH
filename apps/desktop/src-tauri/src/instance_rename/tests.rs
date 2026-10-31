@@ -1,6 +1,38 @@
 use super::*;
-use std::{os::unix::fs::symlink, sync::Mutex};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::sync::Mutex;
+fn identity(path: impl AsRef<Path>) -> pcl_core::retained_fs::Identity {
+    let path = path.as_ref();
+    if path.is_dir() {
+        pcl_core::retained_fs::Directory::open_absolute(path)
+            .unwrap()
+            .identity()
+            .unwrap()
+    } else {
+        pcl_core::retained_fs::metadata(&File::open(path).unwrap())
+            .unwrap()
+            .identity
+    }
+}
+#[cfg(windows)]
+fn directory_alias(source: &Path, target: &Path) {
+    #[cfg(unix)]
+    symlink(source, target).unwrap();
+    #[cfg(windows)]
+    {
+        fs::create_dir(target).unwrap();
+        super::junction_fixture::set_existing(source, target).unwrap();
+    }
+}
+fn remove_alias(path: &Path) {
+    #[cfg(unix)]
+    fs::remove_file(path).unwrap();
+    #[cfg(windows)]
+    fs::remove_dir(path).unwrap();
+}
 
+#[cfg(target_os = "linux")]
 #[test]
 fn rename_lock_owner_drop_releases_lock_even_with_a_duplicate_descriptor() {
     let fixture = Fixture::new();
@@ -24,17 +56,22 @@ struct Fixture {
     path: PathBuf,
     root: PathBuf,
     project: PathBuf,
-    content: Vec<(String, Vec<u8>, u64)>,
+    content: Vec<(String, Vec<u8>, pcl_core::retained_fs::Identity)>,
+    _temporary: tempfile::TempDir,
 }
 impl Fixture {
     fn new() -> Self {
-        let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let path = project
-            .join("work/instance-rename-2026-10-04/tests")
-            .join(operation_id());
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().canonicalize().unwrap();
         fs::create_dir_all(path.join("game/versions/old")).unwrap();
-        fs::create_dir_all(path.join("project/.pcl-rust")).unwrap();
-        let path = path.canonicalize().unwrap();
+        fs::create_dir(path.join("project")).unwrap();
+        pcl_core::retained_fs::Directory::open_absolute(&path.join("project"))
+            .unwrap()
+            .create_private(
+                &pcl_core::retained_fs::Leaf::new(".pcl-rust").unwrap(),
+                pcl_core::retained_fs::Traversal::AllowMounts,
+            )
+            .unwrap();
         let root = path.join("game");
         let project = path.join("project");
         let mut fixture = Self {
@@ -42,6 +79,7 @@ impl Fixture {
             root,
             project,
             content: Vec::new(),
+            _temporary: temporary,
         };
         fixture.profile("old",json!({"id":"old","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","jar":"old","libraries":[]}));
         fs::write(fixture.instance("old").join("old.jar"), b"client jar").unwrap();
@@ -60,11 +98,9 @@ impl Fixture {
             let file = fixture.instance("old").join(name);
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(&file, name.as_bytes()).unwrap();
-            fixture.content.push((
-                name.into(),
-                name.as_bytes().to_vec(),
-                fs::metadata(file).unwrap().ino(),
-            ));
+            fixture
+                .content
+                .push((name.into(), name.as_bytes().to_vec(), identity(file)));
         }
         fixture.settings();
         fixture
@@ -81,10 +117,22 @@ impl Fixture {
         .unwrap();
     }
     fn settings(&self) {
-        fs::write(self.project.join(".pcl-rust/settings.json"),serde_json::to_vec(&json!({
+        let directory =
+            pcl_core::retained_fs::Directory::open_absolute(&self.project.join(".pcl-rust"))
+                .unwrap();
+        let mut file = directory
+            .create_file(&pcl_core::retained_fs::Leaf::new("settings.json").unwrap())
+            .unwrap();
+        file.write_all(&serde_json::to_vec(&json!({
             "schema_version":2,"active_root_id":"root-fixture","player":"Player","memory_gib":6,
             "roots":[{"id":"root-fixture","name":"Game","path":self.root,"selected":"old","overrides":{"old":8}}]
         })).unwrap()).unwrap();
+    }
+    fn settings_bytes(&self) -> Vec<u8> {
+        crate::instance_rename_refs::store_snapshot(&self.project, "settings.json", 2 * 1024 * 1024)
+            .unwrap()
+            .1
+            .unwrap()
     }
     fn plan(&self) -> RenamePlan {
         prepare(&self.root, "old", "renamed").unwrap()
@@ -118,7 +166,7 @@ impl Fixture {
         for (name, bytes, ino) in &self.content {
             let path = self.instance(id).join(name);
             assert_eq!(fs::read(&path).unwrap(), *bytes);
-            assert_eq!(fs::metadata(path).unwrap().ino(), *ino);
+            assert_eq!(identity(path), *ino);
         }
     }
     fn assert_original(&self, j: &Journal) {
@@ -174,21 +222,14 @@ impl Fixture {
         rename_new(&versions, &j.id, &versions, &j.new_name).unwrap();
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
 
 #[test]
 fn rename_preserves_minecraft_inheritance_resource_bytes_and_inodes() {
     let f = Fixture::new();
     let plan = f.plan();
     assert_eq!(plan.dependent_instances, vec!["child", "jar-user"]);
-    let dir_inode = fs::metadata(f.instance("old")).unwrap().ino();
-    let jar_inode = fs::metadata(f.instance("old").join("old.jar"))
-        .unwrap()
-        .ino();
+    let dir_inode = identity(f.instance("old"));
+    let jar_inode = identity(f.instance("old").join("old.jar"));
     let before = pcl_core::scan_instances(&f.root).unwrap();
     let progress = Mutex::new(Vec::new());
     let result = execute(
@@ -201,14 +242,9 @@ fn rename_preserves_minecraft_inheritance_resource_bytes_and_inodes() {
     )
     .unwrap();
     assert_eq!(result["id"], "renamed");
+    assert_eq!(identity(f.instance("renamed")), dir_inode);
     assert_eq!(
-        fs::metadata(f.instance("renamed")).unwrap().ino(),
-        dir_inode
-    );
-    assert_eq!(
-        fs::metadata(f.instance("renamed").join("renamed.jar"))
-            .unwrap()
-            .ino(),
+        identity(f.instance("renamed").join("renamed.jar")),
         jar_inode
     );
     f.assert_content("renamed");
@@ -225,9 +261,7 @@ fn rename_preserves_minecraft_inheritance_resource_bytes_and_inodes() {
         assert_eq!(renamed.minecraft_version, old.minecraft_version);
         assert_eq!(renamed.isolated, old.isolated);
     }
-    let settings: Value =
-        serde_json::from_slice(&fs::read(f.project.join(".pcl-rust/settings.json")).unwrap())
-            .unwrap();
+    let settings: Value = serde_json::from_slice(&f.settings_bytes()).unwrap();
     assert_eq!(settings["roots"][0]["selected"], "renamed");
     assert_eq!(settings["roots"][0]["overrides"]["renamed"], 8);
     let events = progress.into_inner().unwrap();
@@ -289,9 +323,7 @@ fn vanilla_without_client_version_keeps_original_version_and_external_jar_is_ret
     f.profile("old",json!({"id":"old","mainClass":"net.minecraft.client.main.Main","inheritsFrom":"base","jar":"base","libraries":[]}));
     fs::remove_file(f.instance("old").join("old.jar")).unwrap();
     let base_bytes = fs::read(f.instance("base").join("base.json")).unwrap();
-    let base_inode = fs::metadata(f.instance("base").join("base.jar"))
-        .unwrap()
-        .ino();
+    let base_inode = identity(f.instance("base").join("base.jar"));
     execute(
         &f.root,
         &f.project,
@@ -311,12 +343,7 @@ fn vanilla_without_client_version_keeps_original_version_and_external_jar_is_ret
         fs::read(f.instance("base").join("base.json")).unwrap(),
         base_bytes
     );
-    assert_eq!(
-        fs::metadata(f.instance("base").join("base.jar"))
-            .unwrap()
-            .ino(),
-        base_inode
-    );
+    assert_eq!(identity(f.instance("base").join("base.jar")), base_inode);
     assert!(!f.instance("renamed").join("renamed.jar").exists());
     f.assert_content("renamed");
 }
@@ -469,7 +496,10 @@ fn post_files_reference_store_failure_recovers_after_store_is_restored() {
         |p| {
             if p.phase == "references" {
                 fs::rename(&app, &detached).unwrap();
+                #[cfg(unix)]
                 symlink(&f.root, &app).unwrap();
+                #[cfg(windows)]
+                directory_alias(&f.root, &app);
             }
         },
     );
@@ -479,7 +509,7 @@ fn post_files_reference_store_failure_recovers_after_store_is_restored() {
     f.assert_content("renamed");
     assert_eq!(ensure_ready(&f.root).unwrap_err(), READY);
     assert!(recover_pending(&f.root, &f.project).is_err());
-    fs::remove_file(&app).unwrap();
+    remove_alias(&app);
     fs::rename(&detached, &app).unwrap();
     assert_eq!(
         recover_pending(&f.root, &f.project).unwrap()["recovered"],
@@ -487,8 +517,7 @@ fn post_files_reference_store_failure_recovers_after_store_is_restored() {
     );
     ensure_ready(&f.root).unwrap();
     crate::instance_rename_refs::ensure_project_ready(&f.project).unwrap();
-    let settings: Value =
-        serde_json::from_slice(&fs::read(app.join("settings.json")).unwrap()).unwrap();
+    let settings: Value = serde_json::from_slice(&f.settings_bytes()).unwrap();
     assert_eq!(settings["roots"][0]["selected"], "renamed");
 }
 #[test]
@@ -528,18 +557,21 @@ fn occupied_targets_stale_plans_links_and_unknown_paths_never_change_instances()
     fs::create_dir(f.instance("renamed")).unwrap();
     assert!(f.plan_error().contains("占用"));
     fs::remove_dir(f.instance("renamed")).unwrap();
-    symlink(&f.project, f.instance("renamed")).unwrap();
-    assert!(f.plan_error().contains("占用"));
-    fs::remove_file(f.instance("renamed")).unwrap();
-    fs::remove_file(f.instance("old").join("old.jar")).unwrap();
-    symlink(
-        f.project.join(".pcl-rust/settings.json"),
-        f.instance("old").join("old.jar"),
-    )
-    .unwrap();
-    assert!(prepare(&f.root, "old", "renamed").is_err());
-    fs::remove_file(f.instance("old").join("old.jar")).unwrap();
-    fs::write(f.instance("old").join("old.jar"), b"client jar").unwrap();
+    #[cfg(unix)]
+    {
+        symlink(&f.project, f.instance("renamed")).unwrap();
+        assert!(f.plan_error().contains("占用"));
+        fs::remove_file(f.instance("renamed")).unwrap();
+        fs::remove_file(f.instance("old").join("old.jar")).unwrap();
+        symlink(
+            f.project.join(".pcl-rust/settings.json"),
+            f.instance("old").join("old.jar"),
+        )
+        .unwrap();
+        assert!(prepare(&f.root, "old", "renamed").is_err());
+        fs::remove_file(f.instance("old").join("old.jar")).unwrap();
+        fs::write(f.instance("old").join("old.jar"), b"client jar").unwrap();
+    }
     f.profile("old",json!({"id":"old","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","jar":"old","libraries":[],"customPath":f.instance("old").join("options.txt")}));
     assert!(f.plan_error().contains("路径引用"));
     f.profile("old",json!({"id":"old","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","jar":"old","libraries":[],"customPath":"C:\\game\\versions\\old\\options.txt"}));
@@ -672,6 +704,7 @@ fn original_long_name_can_be_shortened_and_selected_cycle_is_rejected() {
         .unwrap_err()
         .contains("继承循环"));
 }
+#[cfg(target_os = "linux")]
 #[test]
 fn anonymous_json_registered_without_name_recovers_and_does_not_touch_user_data() {
     let f = Fixture::new();
@@ -691,6 +724,7 @@ fn anonymous_json_registered_without_name_recovers_and_does_not_touch_user_data(
     recover_pending(&f.root, &f.project).unwrap();
     f.assert_original(&j);
 }
+#[cfg(unix)]
 #[test]
 fn absolute_relative_and_nested_content_symlinks_are_retained_and_rejected() {
     for relative in [false, true] {
@@ -731,6 +765,7 @@ fn absolute_relative_and_nested_content_symlinks_are_retained_and_rejected() {
     assert_eq!(fs::read_link(nested.join("external")).unwrap(), f.project);
     f.assert_content("old");
 }
+#[cfg(unix)]
 #[test]
 fn late_inserted_content_links_before_commit_and_publish_cancel_the_transaction_safely() {
     for after_move in [0, 1, 8] {
@@ -772,6 +807,7 @@ fn late_inserted_content_links_before_commit_and_publish_cancel_the_transaction_
         crate::instance_rename_refs::ensure_project_ready(&f.project).unwrap();
     }
 }
+#[cfg(target_os = "linux")]
 #[test]
 fn interrupted_initial_anonymous_journal_leaves_an_empty_recoverable_orphan() {
     let f = Fixture::new();
@@ -813,6 +849,7 @@ fn fully_registered_initial_staging_recovers_and_unknown_orphan_content_is_prese
     let mut file = orphan.create_file("user.txt").unwrap();
     file.write_all(b"unknown user content").unwrap();
     file.sync_all().unwrap();
+    drop(file);
     let before = snapshot(orphan.regular("user.txt").unwrap(), MAX_JSON, None).unwrap();
     assert!(recover_pending(&f.root, &f.project)
         .unwrap_err()
@@ -823,6 +860,7 @@ fn fully_registered_initial_staging_recovers_and_unknown_orphan_content_is_prese
     );
     f.assert_content("old");
 }
+#[cfg(target_os = "linux")]
 #[test]
 fn completed_journal_update_leftover_is_verified_and_cleaned_during_recovery() {
     let f = Fixture::new();
@@ -854,4 +892,129 @@ fn detached_record_store_is_retained_and_recovery_requires_restoring_its_binding
     f.assert_original(&j);
     ensure_ready(&f.root).unwrap();
     crate::instance_rename_refs::ensure_project_ready(&f.project).unwrap();
+}
+
+#[test]
+fn uncertain_commit_barrier_never_rewrites_prepared_and_recovers_from_actual_record() {
+    for after_publication in [false, true] {
+        let f = Fixture::new();
+        let (root, operation, mut journal) = f.prepared();
+        COMMIT_JOURNAL_FAULT.with(|fault| fault.set(if after_publication { 2 } else { 1 }));
+        let error = commit_files(&root, &operation, &mut journal, &|_| Ok(())).unwrap_err();
+        COMMIT_JOURNAL_FAULT.with(|fault| fault.set(0));
+        assert!(error.contains("无法确认提交状态"), "{error}");
+        assert_eq!(journal.state, State::FilesCommitted);
+        f.assert_content("renamed");
+        assert!(!f.instance("old").exists());
+        assert_eq!(
+            read_journal(&operation, &journal.operation_id)
+                .unwrap()
+                .state,
+            if after_publication {
+                State::FilesCommitted
+            } else {
+                State::Prepared
+            }
+        );
+        assert!(crate::instance_rename_refs::ensure_project_ready(&f.project).is_err());
+        recover_pending(&f.root, &f.project).unwrap();
+        if after_publication {
+            f.assert_content("renamed");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&f.settings_bytes()).unwrap()["roots"][0]
+                    ["selected"],
+                "renamed"
+            );
+        } else {
+            f.assert_original(&journal);
+        }
+        ensure_ready(&f.root).unwrap();
+        crate::instance_rename_refs::ensure_project_ready(&f.project).unwrap();
+    }
+}
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn equivalent_destination_alias_is_rejected_before_any_control_or_game_mutation() {
+    let f = Fixture::new();
+    let root = Dir::open(&f.root).unwrap();
+    let versions = root.child("versions").unwrap();
+    if versions.stat("OLD").unwrap().is_some() {
+        let before = fs::read(f.instance("old").join("old.json")).unwrap();
+        assert!(prepare(&f.root, "old", "OLD")
+            .unwrap_err()
+            .contains("等价别名"));
+        assert!(storage(&root, false).unwrap().is_none());
+        assert_eq!(
+            fs::read(f.instance("old").join("old.json")).unwrap(),
+            before
+        );
+        f.assert_content("old");
+    } else {
+        // Case-sensitive native filesystems have genuinely distinct slots.
+        assert!(prepare(&f.root, "old", "OLD").is_ok());
+    }
+}
+#[cfg(windows)]
+#[test]
+fn held_native_descendant_refuses_directory_move_without_stopping_owner_and_retry_succeeds() {
+    let f = Fixture::new();
+    let held =
+        pcl_core::retained_fs::Directory::open_absolute(&f.instance("old").join("saves/world"))
+            .unwrap();
+    let (root, operation, mut journal) = f.prepared();
+    let error = commit_files(&root, &operation, &mut journal, &|_| Ok(())).unwrap_err();
+    assert!(error.contains("无覆盖重命名"), "{error}");
+    assert_eq!(journal.state, State::RolledBack);
+    f.assert_original(&journal);
+    assert!(held.metadata().is_ok());
+    drop(held);
+    execute(
+        &f.root,
+        &f.project,
+        f.plan(),
+        f.refs(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    f.assert_content("renamed");
+}
+#[cfg(windows)]
+#[test]
+fn native_junction_content_is_preserved_and_rejected_before_staging() {
+    let f = Fixture::new();
+    let outside = f.path.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"unchanged").unwrap();
+    let alias = f.instance("old").join("saves/world/external");
+    directory_alias(&outside, &alias);
+    let error = prepare(&f.root, "old", "renamed").unwrap_err();
+    assert!(
+        error.contains("saves/world/external") && error.contains("重解析"),
+        "{error}"
+    );
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"unchanged");
+    assert!(!f.root.join(".pcl-linux").exists());
+    f.assert_content("old");
+    remove_alias(&alias);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_snapshot_and_directory_key_keep_schema_one_field_order_and_integer_values() {
+    use std::os::unix::fs::MetadataExt;
+    let f = Fixture::new();
+    let path = f.instance("old").join("old.json");
+    let m = fs::metadata(&path).unwrap();
+    let snap = snapshot(File::open(&path).unwrap(), MAX_JSON, None).unwrap();
+    let expected=format!("{{\"size\":{},\"hash\":\"{}\",\"dev\":{},\"ino\":{},\"mtime\":{},\"mtime_nsec\":{},\"ctime\":{},\"ctime_nsec\":{}}}",m.len(),snap.hash,m.dev(),m.ino(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec());
+    assert_eq!(serde_json::to_string(&snap).unwrap(), expected);
+    let root = Dir::open(&f.root).unwrap();
+    let m = fs::metadata(&f.root).unwrap();
+    assert_eq!(
+        serde_json::to_string(&root.key().unwrap()).unwrap(),
+        format!("{{\"dev\":{},\"ino\":{}}}", m.dev(), m.ino())
+    );
+    assert_eq!(SCHEMA, 1);
+    assert_eq!(REVISION_PREFIX, "rename-v1-");
 }

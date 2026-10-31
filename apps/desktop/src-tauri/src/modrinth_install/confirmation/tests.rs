@@ -2,33 +2,19 @@
 //! provider facts are fake official records, never frontend plan JSON.
 use super::*;
 use crate::modrinth_install::tests::{dependency, run, sha, FakeProvider};
-use std::{
-    fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
-static NEXT: AtomicU64 = AtomicU64::new(0);
+use std::{fs, path::PathBuf, sync::atomic::Ordering};
 struct Fixture {
+    _temporary: tempfile::TempDir,
     path: PathBuf,
     root: PathBuf,
     project: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/multi-task-2026-10-05/confirmation-reuse/services/fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(path.join("game/versions/sample/mods")).unwrap();
-        fs::create_dir_all(path.join("project/.pcl-rust")).unwrap();
-        let path = path.canonicalize().unwrap();
-        let root = path.join("game");
-        let project = path.join("project");
+        let (temporary, path, root, project) = super::super::test_support::tree();
         fs::write(root.join("versions/sample/sample.json"), br#"{"id":"sample","clientVersion":"1.20.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.0"}]}"#).unwrap();
         Self {
+            _temporary: temporary,
             path,
             root,
             project,
@@ -78,11 +64,7 @@ impl Fixture {
         p.hashes.insert(sha(bytes), p.versions[v].clone());
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+
 fn request(project: &str, version: &str) -> InstallRequest {
     InstallRequest {
         project_id: project.into(),
@@ -518,7 +500,6 @@ fn stage(
     plan: &InstallPlan,
     bodies: &std::collections::BTreeMap<String, Vec<u8>>,
 ) -> Vec<crate::resource_ops::VerifiedImport> {
-    use std::os::unix::fs::MetadataExt;
     let cancel = AtomicBool::new(false);
     let mut http = provider::HttpProvider::new(&cancel)
         .unwrap()
@@ -535,6 +516,8 @@ fn stage(
         .ensure(".pcl-rust")
         .unwrap()
         .ensure("resource-downloads")
+        .unwrap()
+        .with_input_sources()
         .unwrap();
     let mut inputs = Vec::new();
     for item in plan.files.iter().filter(|f| !f.reused) {
@@ -546,7 +529,7 @@ fn stage(
         .into_bytes();
         response.extend(body);
         let (url, worker) = crate::modrinth_install::tests::server(&response, Duration::ZERO);
-        let mut file = stage.anonymous().unwrap();
+        let mut file = stage.allocate(item.size).unwrap();
         run(transfer::response_into_file(
             &http,
             http.client.get(url),
@@ -558,7 +541,7 @@ fn stage(
         ))
         .unwrap();
         worker.join().unwrap();
-        assert_eq!(file.metadata().unwrap().nlink(), 0);
+        super::super::test_support::assert_source(&file);
         inputs.push(crate::resource_ops::VerifiedImport {
             kind: item.kind.clone(),
             file_name: item.file_name.clone(),
@@ -571,12 +554,7 @@ fn stage(
         http.network_bytes.load(Ordering::Relaxed),
         plan.download_bytes
     );
-    assert_eq!(
-        fs::read_dir(plan.target.project.join(".pcl-rust/resource-downloads"))
-            .unwrap()
-            .count(),
-        0
-    );
+    super::super::test_support::assert_staging(&stage, inputs.len());
     inputs
 }
 fn publish(plan: &InstallPlan, mut inputs: Vec<crate::resource_ops::VerifiedImport>) {
@@ -590,6 +568,7 @@ fn publish(plan: &InstallPlan, mut inputs: Vec<crate::resource_ops::VerifiedImpo
         &mut |_, _| {},
     )
     .unwrap();
+    crate::resource_ops::retire_sources(&mut inputs).unwrap();
     assert_eq!(
         result.changed as usize,
         plan.files.iter().filter(|f| !f.reused).count()
@@ -745,11 +724,6 @@ fn same_instance_claimed_workers_replan_then_stream_and_publish_without_new_auth
                 bodies["shared.jar"]
             );
         }
-        assert_eq!(
-            fs::read_dir(f.project.join(".pcl-rust/resource-downloads"))
-                .unwrap()
-                .count(),
-            0
-        );
+        super::super::test_support::assert_staging_path(&f.project, 0);
     }
 }

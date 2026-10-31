@@ -13,10 +13,12 @@ use super::{
 };
 use std::{
     collections::{BTreeSet, VecDeque},
-    io::Read,
     sync::Mutex,
     time::{Duration, Instant},
 };
+
+#[cfg(target_os = "linux")]
+use std::io::Read;
 
 const TTL: Duration = Duration::from_secs(600);
 const MAX_ENTRIES: usize = 64;
@@ -47,9 +49,33 @@ impl ConfirmationCache {
         request.validate()?;
         let bytes = footprint(&request, &plan)?;
         let mut random = [0; 24];
+        #[cfg(target_os = "linux")]
         std::fs::File::open("/dev/urandom")
             .and_then(|mut file| file.read_exact(&mut random))
             .map_err(|_| "无法生成资源方案确认标识")?;
+        #[cfg(target_os = "macos")]
+        if unsafe { libc::getentropy(random.as_mut_ptr().cast(), random.len()) } != 0 {
+            return Err("无法生成资源方案确认标识".into());
+        }
+        #[cfg(windows)]
+        {
+            use std::{ffi::c_void, ptr};
+            #[link(name = "bcrypt")]
+            extern "system" {
+                fn BCryptGenRandom(
+                    provider: *mut c_void,
+                    bytes: *mut u8,
+                    length: u32,
+                    flags: u32,
+                ) -> i32;
+            }
+            if unsafe {
+                BCryptGenRandom(ptr::null_mut(), random.as_mut_ptr(), random.len() as u32, 2)
+            } != 0
+            {
+                return Err("无法生成资源方案确认标识".into());
+            }
+        }
         let token = format!(
             "modrinth-confirm-v1:{}",
             random
@@ -163,34 +189,8 @@ fn footprint(request: &InstallRequest, plan: &InstallPlan) -> Result<usize> {
 }
 
 pub(super) mod allocation {
+    pub use super::super::allocation::{local, map, optional, text, vector};
     use super::*;
-    use std::collections::BTreeMap;
-    pub fn text(value: &String) -> usize {
-        value.capacity()
-    }
-    pub fn optional(value: &Option<String>) -> usize {
-        value.as_ref().map_or(0, text)
-    }
-    pub fn vector<T>(values: &Vec<T>, heap: impl Fn(&T) -> usize) -> usize {
-        values.capacity() * std::mem::size_of::<T>() + values.iter().map(heap).sum::<usize>()
-    }
-    pub fn map<K, V>(
-        values: &BTreeMap<K, V>,
-        key: impl Fn(&K) -> usize,
-        value: impl Fn(&V) -> usize,
-    ) -> usize {
-        // A node holds at most 11 key/value slots and its header/edges. Charging
-        // a full node per live entry safely covers sparse leaf/internal nodes.
-        values.len() * (11 * std::mem::size_of::<(K, V)>() + 256)
-            + values.iter().map(|(k, v)| key(k) + value(v)).sum::<usize>()
-    }
-    pub fn local(file: &LocalFile) -> usize {
-        text(&file.kind)
-            + text(&file.file_name)
-            + text(&file.sha512)
-            + text(&file.fingerprint)
-            + text(&file.resource_fingerprint)
-    }
     pub fn version(version: &Version) -> usize {
         text(&version.id)
             + text(&version.project_id)

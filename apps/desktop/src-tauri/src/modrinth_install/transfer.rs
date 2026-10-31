@@ -1,5 +1,6 @@
-//! Anonymous network files live only as owned descriptors until resource batch
-//! publication. Any error/cancellation drops them; no named partial file exists.
+//! Download writers retain their real generated-source ownership through batch
+//! publication. Linux keeps anonymous FDs; native cancellation records durable
+//! discard, while unknown/unconfirmed evidence is preserved and reported.
 use super::{provider::HttpProvider, target::Dir, *};
 use std::{
     collections::VecDeque,
@@ -44,7 +45,7 @@ pub struct VerifiedFile {
     pub file_name: String,
     pub size: u64,
     pub sha512: String,
-    pub file: File,
+    pub file: source::Input,
 }
 pub struct VerifiedBatch {
     pub plan: InstallPlan,
@@ -123,6 +124,9 @@ pub(crate) async fn response_into_file_digest(
     )
     .await?
     .map_err(|_| "资源文件请求失败")?;
+    if response.status().is_redirection() {
+        return Err("资源文件返回了重定向，未继续请求".into());
+    }
     if !response.status().is_success() {
         return Err(format!("资源文件HTTP {}", response.status().as_u16()));
     }
@@ -207,7 +211,10 @@ pub(super) async fn download(
     if project.key() != Ok(plan.target.project_key.clone()) {
         return Err("应用目录已被替换，资源目标未改动".into());
     }
-    let staging = project.ensure(".pcl-rust")?.ensure("resource-downloads")?;
+    let staging = project
+        .ensure(".pcl-rust")?
+        .ensure("resource-downloads")?
+        .with_input_sources()?;
     let stage_key = staging.key()?;
     let mut completed = 0u64;
     for file in &plan.files {
@@ -249,7 +256,7 @@ pub(super) async fn download(
             Box::pin(async move {
                 target::cancelled(cancel)?;
                 let url = provider::cdn_url(&file.url)?;
-                let mut destination = staging.anonymous()?;
+                let mut destination = staging.allocate(file.size)?;
                 response_into_file(
                     provider,
                     provider
@@ -308,15 +315,30 @@ pub(super) async fn download(
             }) as QueuedTransfer<'_, (usize, VerifiedFile)>
         })
         .collect();
-    let mut ordered = collect_bounded(
+    let collected = collect_bounded(
         jobs,
         usize::from(provider.downloads.policy().max_concurrent_transfers),
     )
-    .await?;
+    .await;
+    let mut ordered = match collected {
+        Ok(ordered) => ordered,
+        Err(error) => {
+            return match staging.check_cleanup() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}；来源退役未确认：{cleanup}")),
+            }
+        }
+    };
     ordered.sort_by_key(|(index, _)| *index);
     let files = ordered.into_iter().map(|(_, file)| file).collect();
     let (completed, bytes_done) = counters.into_inner().map_err(|_| "资源下载进度锁异常")?;
-    target::check(&plan.target, cancel)?;
+    if let Err(error) = target::check(&plan.target, cancel) {
+        drop(files);
+        return match staging.check_cleanup() {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(format!("{error}；来源退役未确认：{cleanup}")),
+        };
+    }
     progress(
         provider,
         &plan,

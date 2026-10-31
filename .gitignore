@@ -31,3 +31,8 @@ apps/desktop/public/preview.json
 /docs/REWRITE_PLAN.md
 /docs/UI_SPEC.md
 /PCL-Linux/AUTHENTICATION.md
+
+# This directory contains Rust source, rather than Cargo build output.
+!apps/desktop/src-tauri/src/modrinth_install/target/
+apps/desktop/src-tauri/src/modrinth_install/target/*
+!apps/desktop/src-tauri/src/modrinth_install/target/*.rs

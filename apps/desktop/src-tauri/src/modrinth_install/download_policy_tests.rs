@@ -5,51 +5,48 @@ use super::{provider::HttpProvider, target::Dir, tests, transfer, Result, CANCEL
 use pcl_network::{DownloadPolicy, DownloadScheduler};
 use std::{
     collections::VecDeque,
-    fs::{self, File},
     future::Future,
     io::{Read, Write},
     net::TcpListener,
-    path::PathBuf,
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     },
     thread,
     time::{Duration, Instant},
 };
-static NEXT: AtomicU64 = AtomicU64::new(0);
 type Job<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 struct Fixture {
-    path: PathBuf,
+    _temporary: tempfile::TempDir,
     dir: Dir,
 }
 impl Fixture {
     fn new() -> Self {
-        let repository = option_env!("PCL_MODRINTH_TEST_REPOSITORY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-        let path = repository
-            .join("work/launcher-options-2026-10-05/download-policy-fixtures")
-            .join(format!(
-                "modrinth-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(&path).unwrap();
-        let path = path.canonicalize().unwrap();
-        let dir = Dir::open(&path).unwrap();
-        Self { path, dir }
+        let temporary = tempfile::tempdir().unwrap();
+        let root = pcl_core::retained_fs::Directory::open_absolute(
+            &temporary.path().canonicalize().unwrap(),
+        )
+        .unwrap();
+        root.create_private(
+            &pcl_core::retained_fs::Leaf::new("staging").unwrap(),
+            pcl_core::retained_fs::Traversal::SameFilesystem,
+        )
+        .unwrap();
+        let dir = Dir::open(&temporary.path().join("staging").canonicalize().unwrap())
+            .unwrap()
+            .with_input_sources()
+            .unwrap();
+        Self {
+            _temporary: temporary,
+            dir,
+        }
     }
     fn assert_no_named_partial(&self) {
-        assert_eq!(fs::read_dir(&self.path).unwrap().count(), 0);
+        super::test_support::assert_staging(&self.dir, 0);
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+
 struct LocalServer {
     url: String,
     stop: Arc<AtomicBool>,
@@ -138,11 +135,11 @@ fn jobs<'a>(
     url: &'a str,
     body: &'a [u8],
     count: usize,
-) -> VecDeque<Job<'a, File>> {
+) -> VecDeque<Job<'a, super::source::Input>> {
     (0..count)
         .map(|_| {
             Box::pin(async move {
-                let mut file = fixture.dir.anonymous()?;
+                let mut file = fixture.dir.allocate(body.len() as u64)?;
                 transfer::response_into_file(
                     provider,
                     provider.client.get(url),
@@ -154,7 +151,7 @@ fn jobs<'a>(
                 )
                 .await?;
                 Ok(file)
-            }) as Job<'a, File>
+            }) as Job<'a, super::source::Input>
         })
         .collect()
 }
@@ -219,7 +216,7 @@ fn concurrent_http_files_consume_one_total_payload_budget() {
     fixture.assert_no_named_partial();
 }
 struct OwnedAnonymous {
-    file: File,
+    file: super::source::Input,
     live: Arc<AtomicUsize>,
 }
 impl Drop for OwnedAnonymous {
@@ -253,7 +250,7 @@ fn one_bad_hash_drops_ready_and_stalled_files_before_queue_returns() {
         let fixture = &fixture;
         let cancel = &cancel;
         jobs.push_back(Box::pin(async move {
-            let file = fixture.dir.anonymous()?;
+            let file = fixture.dir.allocate(4)?;
             live.fetch_add(1, Ordering::Relaxed);
             let mut owned = OwnedAnonymous { file, live };
             transfer::response_into_file(

@@ -22,7 +22,7 @@
   "inputs": [
     {
       "path": "Cargo.lock",
-      "sha256": "030a76d1cc36fdbc68b00f674c303c9882661dccf14c0e09b83326ba420a7e72"
+      "sha256": "db6ff8c0ef703de5d31259f00be8ab4b87fc8138e95806c7815ff8ce4c52f0dd"
     },
     {
       "path": "Cargo.toml",
@@ -58,7 +58,7 @@
     },
     {
       "path": "crates/install/Cargo.toml",
-      "sha256": "28bb174a06185d8c5d12023494313dc5d445126808efa72a7ae68c7088b09776"
+      "sha256": "b9f6e164b9fd4b9b69c7b3ce0eb854113cde4869651969fa2c8cdebf46f801d6"
     },
     {
       "path": "crates/network/Cargo.toml",
@@ -5950,6 +5950,11 @@
             "workspace": "pcl-desktop",
             "kind": "normal",
             "target": null
+          },
+          {
+            "workspace": "pcl-install",
+            "kind": "dev",
+            "target": null
           }
         ],
         "features": [
@@ -6520,6 +6525,11 @@
           {
             "workspace": "pcl-desktop",
             "kind": "normal",
+            "target": null
+          },
+          {
+            "workspace": "pcl-install",
+            "kind": "dev",
             "target": null
           }
         ],

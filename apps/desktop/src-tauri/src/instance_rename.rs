@@ -38,17 +38,19 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
-    fs::{self, File},
-    io::{Read, Seek, SeekFrom, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt},
-    },
+    io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(test)]
+use std::{
+    fs::{self, File},
+    io::Write,
+};
+
+#[cfg(all(test, target_os = "linux"))]
+use std::io::{Seek, SeekFrom};
 const STORE: &str = "instance-renames";
 const MAX_JSON: u64 = 8 * 1024 * 1024;
 const MAX_JAR: u64 = 2 * 1024 * 1024 * 1024;
@@ -59,54 +61,30 @@ const MAX_JOURNAL: u64 = 64 * 1024 * 1024;
 const MAX_TOTAL_JSON: u64 = 64 * 1024 * 1024;
 const READY: &str = "存在未完成的实例重命名，请先恢复后再操作或启动";
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+thread_local! {static COMMIT_JOURNAL_FAULT:std::cell::Cell<u8>=const {std::cell::Cell::new(0)};}
 type Result<T> = std::result::Result<T, String>;
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct DirKey {
-    dev: u64,
-    ino: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct Snapshot {
-    size: u64,
-    hash: String,
-    dev: u64,
-    ino: u64,
-    mtime: i64,
-    mtime_nsec: i64,
-    ctime: i64,
-    ctime_nsec: i64,
-}
-impl Snapshot {
-    fn stable_matches(&self, other: &Self) -> bool {
-        self.size == other.size
-            && self.hash == other.hash
-            && self.dev == other.dev
-            && self.ino == other.ino
-    }
-}
-
-struct Dir {
-    file: File,
-}
+#[cfg(target_os = "linux")]
+#[path = "instance_rename/filesystem_linux.rs"]
+mod filesystem;
+#[cfg(not(target_os = "linux"))]
+#[path = "instance_rename/filesystem_native.rs"]
+mod filesystem;
+use filesystem::{
+    cleanup_journal_temps, content_revision, lock, remove_directory, remove_registered, rename_new,
+    snapshot, stage_file, stat_is_key, Dir, DirKey, Snapshot, REVISION_PREFIX, SCHEMA,
+};
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
-}
-fn os_error(context: &str) -> String {
-    format!("{context}：{}", std::io::Error::last_os_error())
 }
 fn name_ok(name: &str) -> Result<()> {
     pcl_core::identifier(name)?;
     if name.len() > 255 || name.chars().any(char::is_control) {
         return Err("文件名称无效".into());
     }
+    #[cfg(not(target_os = "linux"))]
+    pcl_core::retained_fs::Leaf::new(name).map_err(err)?;
     Ok(())
-}
-fn c_name(name: &str) -> Result<CString> {
-    name_ok(name)?;
-    CString::new(name).map_err(err)
 }
 fn operation_id() -> String {
     format!(
@@ -136,261 +114,6 @@ fn check(cancel: &AtomicBool) -> Result<()> {
     } else {
         Ok(())
     }
-}
-impl Dir {
-    fn open(path: &Path) -> Result<Self> {
-        if !path.is_absolute() {
-            return Err("游戏目录必须是绝对路径".into());
-        }
-        let slash = CString::new("/").map_err(err)?;
-        let fd = unsafe {
-            libc::open(
-                slash.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(os_error("无法打开实例重命名目录"));
-        }
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        for component in path.components() {
-            match component {
-                std::path::Component::RootDir => continue,
-                std::path::Component::Normal(name) => {
-                    let name = CString::new(name.as_bytes()).map_err(err)?;
-                    let fd = unsafe {
-                        libc::openat(
-                            file.as_raw_fd(),
-                            name.as_ptr(),
-                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                        )
-                    };
-                    if fd < 0 {
-                        return Err(os_error("游戏目录祖先已变化或包含符号链接"));
-                    }
-                    file = unsafe { File::from_raw_fd(fd) };
-                }
-                _ => return Err("游戏目录路径包含不安全的分量".into()),
-            }
-        }
-        Ok(Self { file })
-    }
-    fn child(&self, name: &str) -> Result<Self> {
-        let name = c_name(name)?;
-        #[repr(C)]
-        struct OpenHow {
-            flags: u64,
-            mode: u64,
-            resolve: u64,
-        }
-        let how = OpenHow {
-            flags: (libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64,
-            mode: 0,
-            resolve: 0x01 | 0x02 | 0x04 | 0x08,
-        };
-        // NO_XDEV also rejects bind mounts, so temporary-tree cleanup cannot
-        // descend into a mounted user directory even on the same filesystem.
-        let fd = unsafe {
-            libc::syscall(
-                libc::SYS_openat2,
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                &how as *const OpenHow,
-                std::mem::size_of::<OpenHow>(),
-            ) as i32
-        };
-        if fd < 0 {
-            return Err(os_error(
-                "目录不存在、已变化、包含符号链接或跨挂载点（需要 Linux 5.6 以上）",
-            ));
-        }
-        Ok(Self {
-            file: unsafe { File::from_raw_fd(fd) },
-        })
-    }
-    fn optional(&self, name: &str) -> Result<Option<Self>> {
-        if self.stat(name)?.is_none() {
-            Ok(None)
-        } else {
-            self.child(name).map(Some)
-        }
-    }
-    fn create_dir(&self, name: &str) -> Result<Self> {
-        let name_c = c_name(name)?;
-        if unsafe { libc::mkdirat(self.file.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
-            return Err(os_error("无法创建实例重命名目录"));
-        }
-        self.sync()?;
-        self.child(name)
-    }
-    fn ensure(&self, name: &str) -> Result<Self> {
-        match self.optional(name)? {
-            Some(dir) => Ok(dir),
-            None => self.create_dir(name),
-        }
-    }
-    fn stat(&self, name: &str) -> Result<Option<libc::stat>> {
-        let name = c_name(name)?;
-        let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
-        if unsafe {
-            libc::fstatat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                st.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } == 0
-        {
-            return Ok(Some(unsafe { st.assume_init() }));
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(err(error))
-        }
-    }
-    fn regular(&self, name: &str) -> Result<File> {
-        let name = c_name(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            return Err(os_error("无法读取核心文件"));
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        let metadata = file.metadata().map_err(err)?;
-        if !metadata.is_file() || metadata.nlink() != 1 {
-            return Err("核心文件必须是独立普通文件，不能是符号链接或硬链接".into());
-        }
-        Ok(file)
-    }
-    fn create_file(&self, name: &str) -> Result<File> {
-        let name = c_name(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(os_error("无法创建暂存文件"));
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-    fn anonymous_file(&self) -> Result<File> {
-        // O_TMPFILE takes a directory name. Use the pinned directory itself so
-        // neither a partial nor an unregistered completed copy has a pathname.
-        let path = CString::new(".").map_err(err)?;
-        let fd = unsafe {
-            libc::openat(
-                self.file.as_raw_fd(),
-                path.as_ptr(),
-                libc::O_RDWR | libc::O_TMPFILE | libc::O_CLOEXEC,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(os_error(
-                "此文件系统不支持安全的匿名核心暂存文件，原实例未改动",
-            ));
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-    fn names(&self) -> Result<Vec<String>> {
-        let mut names = Vec::new();
-        for entry in fs::read_dir(self.fd_path()).map_err(err)? {
-            let name = entry
-                .map_err(err)?
-                .file_name()
-                .into_string()
-                .map_err(|_| "目录包含无效文件名")?;
-            name_ok(&name)?;
-            names.push(name);
-            if names.len() > MAX_FILES {
-                return Err("目录文件数量超过重命名安全上限".into());
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
-    fn fd_path(&self) -> PathBuf {
-        PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
-    }
-    fn key(&self) -> Result<DirKey> {
-        let st = self.file.metadata().map_err(err)?;
-        Ok(DirKey {
-            dev: st.dev(),
-            ino: st.ino(),
-        })
-    }
-    fn sync(&self) -> Result<()> {
-        self.file.sync_all().map_err(err)
-    }
-    fn unlink(&self, name: &str, directory: bool) -> Result<()> {
-        let name = c_name(name)?;
-        if unsafe {
-            libc::unlinkat(
-                self.file.as_raw_fd(),
-                name.as_ptr(),
-                if directory { libc::AT_REMOVEDIR } else { 0 },
-            )
-        } != 0
-        {
-            return Err(os_error("无法清理重命名暂存文件"));
-        }
-        self.sync()
-    }
-}
-
-fn snapshot(mut file: File, limit: u64, cancel: Option<&AtomicBool>) -> Result<Snapshot> {
-    let st = file.metadata().map_err(err)?;
-    if !st.is_file() || st.len() > limit {
-        return Err("核心文件类型无效或大小超过安全上限".into());
-    }
-    let mut digest = Sha256::new();
-    let mut size = 0u64;
-    let mut buf = [0u8; 65536];
-    loop {
-        if let Some(cancel) = cancel {
-            check(cancel)?;
-        }
-        let n = file.read(&mut buf).map_err(err)?;
-        if n == 0 {
-            break;
-        }
-        size = size.checked_add(n as u64).ok_or("核心文件过大")?;
-        if size > limit {
-            return Err("核心文件大小超过安全上限".into());
-        }
-        digest.update(&buf[..n]);
-    }
-    let after = file.metadata().map_err(err)?;
-    if size != st.len()
-        || st.len() != after.len()
-        || st.mtime() != after.mtime()
-        || st.mtime_nsec() != after.mtime_nsec()
-        || st.ctime() != after.ctime()
-        || st.ctime_nsec() != after.ctime_nsec()
-    {
-        return Err("读取期间文件发生变化，请刷新后重试".into());
-    }
-    Ok(Snapshot {
-        size,
-        hash: format!("{:x}", digest.finalize()),
-        dev: st.dev(),
-        ino: st.ino(),
-        mtime: st.mtime(),
-        mtime_nsec: st.mtime_nsec(),
-        ctime: st.ctime(),
-        ctime_nsec: st.ctime_nsec(),
-    })
 }
 fn read_json(dir: &Dir, name: &str) -> Result<(Value, Snapshot)> {
     let mut file = dir.regular(name)?;
@@ -503,74 +226,6 @@ struct Profile {
     snapshot: Snapshot,
     data: Value,
 }
-fn content_revision(dir: &Dir, old: &str, new: &str) -> Result<String> {
-    let mut digest = Sha256::new();
-    let mut count = 0usize;
-    inspect_contents(dir, "", old, new, &mut digest, &mut count, 0)?;
-    Ok(format!("{:x}", digest.finalize()))
-}
-fn inspect_contents(
-    dir: &Dir,
-    relative: &str,
-    old: &str,
-    new: &str,
-    digest: &mut Sha256,
-    count: &mut usize,
-    depth: usize,
-) -> Result<()> {
-    if depth > MAX_DEPTH {
-        return Err("实例内容目录深度超过重命名安全上限".into());
-    }
-    let before = dir.file.metadata().map_err(err)?;
-    digest.update(serde_json::to_vec(&(relative, dir.key()?, before.mode())).map_err(err)?);
-    for name in dir.names()? {
-        if relative.is_empty()
-            && [
-                format!("{old}.json"),
-                format!("{old}.jar"),
-                format!("{new}.json"),
-                format!("{new}.jar"),
-            ]
-            .contains(&name)
-        {
-            continue;
-        }
-        *count += 1;
-        if *count > MAX_FILES {
-            return Err("实例内容数量超过重命名安全上限".into());
-        }
-        let path = if relative.is_empty() {
-            name.clone()
-        } else {
-            format!("{relative}/{name}")
-        };
-        let stat = dir.stat(&name)?.ok_or("检查期间实例内容已变化")?;
-        match stat.st_mode&libc::S_IFMT {
-            libc::S_IFDIR=>{
-                let child=dir.child(&name)?; let key=child.key()?;
-                inspect_contents(&child,&path,old,new,digest,count,depth+1)?;
-                let current=dir.child(&name)?;
-                if current.key()?!=key { return Err("检查期间实例内容目录已变化".into()); }
-            }
-            libc::S_IFREG=>digest.update(serde_json::to_vec(&(&path,stat.st_dev,stat.st_ino,stat.st_mode,stat.st_nlink,
-                stat.st_size,stat.st_mtime,stat.st_mtime_nsec,stat.st_ctime,stat.st_ctime_nsec)).map_err(err)?),
-            libc::S_IFLNK=>return Err(format!("实例内容 {path} 含符号链接，改名后可能改变隔离目录或路径绑定；请先处理链接后再重命名")),
-            _=>return Err(format!("实例内容 {path} 含特殊文件，无法安全重命名")),
-        }
-    }
-    let after = dir.file.metadata().map_err(err)?;
-    if before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || before.ctime() != after.ctime()
-        || before.ctime_nsec() != after.ctime_nsec()
-    {
-        return Err("检查期间实例内容已变化，请重新读取重命名计划".into());
-    }
-    Ok(())
-}
-
 fn new_name_ok(name: &str) -> Result<()> {
     name_ok(name)?;
     if name.len() > 120 || name.trim() != name || name.starts_with(".install-") {
@@ -680,7 +335,13 @@ fn prepare_bound(
     let path = root.canonicalize().map_err(err)?;
     let root_dir = Dir::open(&path)?;
     let versions = root_dir.child("versions")?;
-    if versions.stat(new_name)?.is_some() {
+    if let Some(existing) = versions.stat(new_name)? {
+        if stat_is_key(&existing, &versions.child(id)?.key()?) {
+            return Err(
+                "当前文件系统将新旧名称视为同一目录，暂不支持仅大小写或等价别名改名；原实例未改动"
+                    .into(),
+            );
+        }
         return Err("目标实例名称已被占用，请换一个名称".into());
     }
     let instance = versions.child(id)?;
@@ -835,7 +496,7 @@ fn prepare_bound(
         }
     }
     Ok(RenamePlan {
-        revision: format!("rename-v1-{:x}", digest.finalize()),
+        revision: format!("{REVISION_PREFIX}{:x}", digest.finalize()),
         id: id.into(),
         new_name: new_name.into(),
         minecraft: mc,
@@ -868,27 +529,8 @@ fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
         }
     }
 }
-struct RenameLock(File);
-impl Drop for RenameLock {
-    fn drop(&mut self) {
-        // A concurrent fork can retain this open-file description until exec.
-        // Closing our fd alone would let that child prolong a finished writer's
-        // lock. Explicitly unlock at the owner's lifetime boundary.
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-fn lock(store: &Dir) -> Result<RenameLock> {
-    let file = match store.stat(".lock")? {
-        Some(_) => store.regular(".lock")?,
-        None => store.create_file(".lock")?,
-    };
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("其他进程正在重命名或恢复实例，请稍后重试".into());
-    }
-    Ok(RenameLock(file))
-}
 fn validate(j: &Journal, name: &str) -> Result<()> {
-    if j.schema != 1
+    if j.schema != SCHEMA
         || j.operation_id != name
         || !operation_ok(name)
         || !j.root.is_absolute()
@@ -943,28 +585,23 @@ fn valid_snapshot(snapshot: &Snapshot, limit: u64) -> Result<()> {
     {
         Err("重命名文件快照无效".into())
     } else {
-        Ok(())
+        filesystem::valid_snapshot(snapshot, limit)
     }
 }
 // Journals are persisted input, not trusted in-memory plans. Validate schema,
 // identities and allowed names before deriving any recovery filesystem action.
-fn read_journal(operation: &Dir, name: &str) -> Result<Journal> {
-    let mut file = operation.regular("journal.json")?;
-    if file.metadata().map_err(err)?.len() > MAX_JOURNAL {
-        return Err("重命名记录超过安全上限".into());
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(MAX_JOURNAL + 1)
-        .read_to_end(&mut bytes)
-        .map_err(err)?;
-    if bytes.len() as u64 > MAX_JOURNAL {
-        return Err("重命名记录超过安全上限".into());
-    }
+fn read_journal_optional(operation: &Dir, name: &str) -> Result<Option<Journal>> {
+    let Some(bytes) = filesystem::journal_bytes(operation)? else {
+        return Ok(None);
+    };
     let j: Journal =
         serde_json::from_slice(&bytes).map_err(|_| "重命名记录损坏，已保留原文件与备份")?;
     validate(&j, name)?;
-    Ok(j)
+    Ok(Some(j))
+}
+#[cfg(test)]
+fn read_journal(operation: &Dir, name: &str) -> Result<Journal> {
+    read_journal_optional(operation, name)?.ok_or("重命名记录缺失".into())
 }
 fn write_journal(operation: &Dir, j: &Journal) -> Result<()> {
     validate(j, &j.operation_id)?;
@@ -973,128 +610,22 @@ fn write_journal(operation: &Dir, j: &Journal) -> Result<()> {
     if bytes.len() as u64 > MAX_JOURNAL {
         return Err("重命名记录超过安全上限".into());
     }
-    let mut file = operation.anonymous_file()?;
-    file.write_all(&bytes).map_err(err)?;
-    file.sync_all().map_err(err)?;
-    let pinned = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(err)?;
-    if operation.stat("journal.json")?.is_none() {
-        let name = c_name("journal.json")?;
-        if unsafe {
-            libc::linkat(
-                libc::AT_FDCWD,
-                pinned.as_ptr(),
-                operation.file.as_raw_fd(),
-                name.as_ptr(),
-                libc::AT_SYMLINK_FOLLOW,
-            )
-        } != 0
-        {
-            return Err(os_error("无法发布完整的初始重命名记录"));
-        }
-        return operation.sync();
+    #[cfg(test)]
+    let fault = if j.state == State::FilesCommitted {
+        COMMIT_JOURNAL_FAULT.with(|fault| fault.replace(0))
+    } else {
+        0
+    };
+    #[cfg(test)]
+    if fault == 1 {
+        return Err("injected commit journal failure before publication".into());
     }
-    operation.regular("journal.json")?;
-    let name = format!("journal-{}.next", operation_id());
-    let linked = c_name(&name)?;
-    if unsafe {
-        libc::linkat(
-            libc::AT_FDCWD,
-            pinned.as_ptr(),
-            operation.file.as_raw_fd(),
-            linked.as_ptr(),
-            libc::AT_SYMLINK_FOLLOW,
-        )
-    } != 0
-    {
-        return Err(os_error("无法暂存完整的重命名记录"));
-    }
-    let result = (|| {
-        if operation.stat("journal.json")?.is_some() {
-            operation.regular("journal.json")?;
-        }
-        let source = c_name(&name)?;
-        let target = c_name("journal.json")?;
-        if unsafe {
-            libc::renameat(
-                operation.file.as_raw_fd(),
-                source.as_ptr(),
-                operation.file.as_raw_fd(),
-                target.as_ptr(),
-            )
-        } != 0
-        {
-            return Err(os_error("无法保存重命名记录"));
-        }
-        operation.sync()
-    })();
-    if let Err(error) = result {
-        if operation.stat(&name)?.is_some() {
-            operation
-                .unlink(&name, false)
-                .map_err(|cleanup| format!("取消清理失败：{cleanup}；原错误：{error}"))?;
-        }
-        return Err(error);
+    filesystem::publish_journal(operation, &bytes)?;
+    #[cfg(test)]
+    if fault == 2 {
+        return Err("MayHaveCommitted: injected commit journal failure after publication".into());
     }
     Ok(())
-}
-fn cleanup_journal_temps(operation: &Dir, j: &Journal) -> Result<()> {
-    for name in operation.names()? {
-        let Some(id) = name
-            .strip_prefix("journal-")
-            .and_then(|name| name.strip_suffix(".next"))
-        else {
-            continue;
-        };
-        if !operation_ok(id) {
-            return Err("重命名记录目录含未知暂存文件，已保留内容".into());
-        }
-        let mut file = operation.regular(&name)?;
-        if file.metadata().map_err(err)?.len() > MAX_JOURNAL {
-            return Err("重命名暂存记录过大，已保留内容".into());
-        }
-        let mut bytes = Vec::new();
-        (&mut file)
-            .take(MAX_JOURNAL + 1)
-            .read_to_end(&mut bytes)
-            .map_err(err)?;
-        if bytes.len() as u64 > MAX_JOURNAL {
-            return Err("重命名暂存记录过大，已保留内容".into());
-        }
-        let next: Journal =
-            serde_json::from_slice(&bytes).map_err(|_| "重命名暂存记录含未知内容，已保留文件")?;
-        validate(&next, &j.operation_id)?;
-        if next.root != j.root
-            || next.project != j.project
-            || next.id != j.id
-            || next.new_name != j.new_name
-            || next.operation_key != j.operation_key
-            || next.root_key != j.root_key
-            || next.storage_key != j.storage_key
-            || next.refs.revision()? != j.refs.revision()?
-        {
-            return Err("重命名暂存记录范围不符，已保留文件".into());
-        }
-        operation.unlink(&name, false)?;
-    }
-    Ok(())
-}
-fn rename_new(source: &Dir, old: &str, target: &Dir, new: &str) -> Result<()> {
-    let old = c_name(old)?;
-    let new = c_name(new)?;
-    if unsafe {
-        libc::renameat2(
-            source.file.as_raw_fd(),
-            old.as_ptr(),
-            target.file.as_raw_fd(),
-            new.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(os_error("无法无覆盖重命名实例文件或目录"));
-    }
-    source.sync()?;
-    target.sync()
 }
 fn bound_versions(root: &Dir, j: &Journal) -> Result<Dir> {
     if root.key()? != j.root_key || Dir::open(&j.root)?.key()? != j.root_key {
@@ -1123,9 +654,10 @@ fn bound_operation(operation: &Dir, j: &Journal) -> Result<()> {
 fn selected(versions: &Dir, j: &Journal) -> Result<(Dir, bool)> {
     if let Some(old) = versions.optional(&j.id)? {
         if old.key()? == j.instance_key {
-            if versions.stat(&j.new_name)?.is_some_and(|st| {
-                st.st_dev == j.instance_key.dev && st.st_ino == j.instance_key.ino
-            }) {
+            if versions
+                .stat(&j.new_name)?
+                .is_some_and(|st| stat_is_key(&st, &j.instance_key))
+            {
                 return Err("原实例与目标实例目录身份冲突".into());
             }
             return Ok((old, false));
@@ -1344,15 +876,15 @@ fn finish_rollback(operation: &Dir, j: &mut Journal) -> Result<()> {
             if !matches(&incoming, &name, expected, MAX_JSON)? {
                 return Err("替换文件被外部修改，已保留内容".into());
             }
-            incoming.unlink(&name, false)?;
+            remove_registered(&incoming, &name, expected, MAX_JSON)?;
         }
-        operation.unlink("incoming", true)?;
+        remove_directory(operation, "incoming", &incoming)?;
     }
     if let Some(backup) = owned(operation, "backup", &j.backup_key)? {
         if !backup.names()?.is_empty() {
             return Err("回滚后的备份目录非空，已保留内容".into());
         }
-        operation.unlink("backup", true)?;
+        remove_directory(operation, "backup", &backup)?;
     }
     j.state = State::RolledBack;
     write_journal(operation, j)?;
@@ -1408,7 +940,7 @@ fn finish_files(
         if !incoming.names()?.is_empty() {
             return Err("已提交的替换目录含未知文件".into());
         }
-        operation.unlink("incoming", true)?;
+        remove_directory(operation, "incoming", &incoming)?;
     }
     j.state = State::Finished;
     write_journal(operation, j)?;
@@ -1437,10 +969,7 @@ fn ensure_ready_except(root: &Path, active: Option<&str>) -> Result<()> {
             return Err("实例重命名目录含未知记录，已保留文件".into());
         }
         let operation = store.child(&name)?;
-        if operation.stat("journal.json")?.is_none() {
-            return Err(READY.into());
-        }
-        let j = read_journal(&operation, &name)?;
+        let j = read_journal_optional(&operation, &name)?.ok_or(READY)?;
         if j.root != path
             || j.root_key != root.key()?
             || j.operation_key != operation.key()?
@@ -1478,15 +1007,16 @@ pub fn recover_pending(root: &Path, project: &Path) -> Result<Value> {
             return Err("重命名目录含未知记录".into());
         }
         let operation = store.child(&name)?;
-        if operation.stat("journal.json")?.is_none() {
+        let journal = read_journal_optional(&operation, &name)?;
+        if journal.is_none() {
             if operation.names()?.is_empty() {
-                store.unlink(&name, true)?;
+                remove_directory(&store, &name, &operation)?;
                 recovered += 1;
                 continue;
             }
             return Err("未登记的重命名目录含有文件，已保留待检查内容".into());
         }
-        let mut j = read_journal(&operation, &name)?;
+        let mut j = journal.ok_or(READY)?;
         if j.root != path
             || j.root_key != root.key()?
             || j.operation_key != operation.key()?
@@ -1531,7 +1061,7 @@ fn setup(
     let name = operation_id();
     let operation = store.create_dir(&name)?;
     let mut j = Journal {
-        schema: 1,
+        schema: SCHEMA,
         operation_id: name,
         root: plan.root.clone(),
         project: project.clone(),
@@ -1581,45 +1111,6 @@ fn setup(
         };
     }
     Ok((operation, j))
-}
-fn stage_file(
-    operation: &Dir,
-    j: &mut Journal,
-    index: usize,
-    bytes: &[u8],
-    cancel: &AtomicBool,
-) -> Result<()> {
-    check(cancel)?;
-    let incoming = owned(operation, "incoming", &j.incoming_key)?.ok_or("替换目录缺失")?;
-    let mut file = incoming.anonymous_file()?;
-    for chunk in bytes.chunks(65536) {
-        check(cancel)?;
-        file.write_all(chunk).map_err(err)?;
-    }
-    file.sync_all().map_err(err)?;
-    file.seek(SeekFrom::Start(0)).map_err(err)?;
-    j.files[index].replacement = Some(snapshot(
-        file.try_clone().map_err(err)?,
-        MAX_JSON,
-        Some(cancel),
-    )?);
-    write_journal(operation, j)?;
-    check(cancel)?;
-    let source = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(err)?;
-    let name = c_name(&slot(index))?;
-    if unsafe {
-        libc::linkat(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            incoming.file.as_raw_fd(),
-            name.as_ptr(),
-            libc::AT_SYMLINK_FOLLOW,
-        )
-    } != 0
-    {
-        return Err(os_error("无法发布已登记的重命名 JSON 暂存文件"));
-    }
-    incoming.sync()
 }
 fn commit_files(
     root: &Dir,
@@ -1734,14 +1225,9 @@ fn commit_files(
         }
         verify_committed(root, operation, j)?;
         j.state = State::FilesCommitted;
-        if let Err(error) = write_journal(operation, j) {
-            j.state = State::Prepared;
-            if let Err(record) = write_journal(operation, j) {
-                j.state = State::FilesCommitted;
-                return Err(format!("取消清理失败：无法确认提交状态，已保留完整实例和原始备份：{record}；原错误：{error}"));
-            }
-            return Err(error);
-        }
+        write_journal(operation, j).map_err(|error| {
+            format!("取消清理失败：无法确认提交状态，已保留完整实例和原始备份：{error}")
+        })?;
         Ok(())
     })();
     if let Err(error) = result {
@@ -1851,5 +1337,9 @@ pub fn execute(
     )
 }
 
+#[cfg(all(test, windows))]
+#[path = "../../../../crates/core/src/file_ops/junction_fixture.rs"]
+mod junction_fixture;
 #[cfg(test)]
+#[path = "instance_rename/tests.rs"]
 mod tests;

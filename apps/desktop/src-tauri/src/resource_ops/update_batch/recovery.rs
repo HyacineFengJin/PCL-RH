@@ -336,29 +336,69 @@ fn discard(context: &Context, j: &Journal) -> Result<()> {
     // between receipt deletion and marker unlink would strand root recovery.
     journal::remove_marker(context, j)?;
     for name in names {
-        if matches!(name.as_str(), "journal.json" | "status.json") {
+        if matches!(name.as_str(), "journal.json" | "status.json")
+            || (cfg!(windows) && name == "owned-marker.json")
+        {
             continue;
         }
         context.check(j)?;
         journal::validate_private_name(context, j, &name)?;
         op.unlink(&name, false)?;
     }
-    for name in ["status.json", "journal.json"] {
-        if op.stat(name)?.is_some() {
-            context.check(j)?;
-            journal::validate_private_name(context, j, name)?;
-            op.unlink(name, false)?;
+    #[cfg(windows)]
+    {
+        op.check_cleanup()?;
+        let mut terminal = j.clone();
+        terminal.state = if j.state == State::Restored {
+            State::FinishedRestored
+        } else {
+            State::FinishedRolledBack
+        };
+        journal::write(context, &terminal)?;
+        journal::status(context, &terminal)?;
+        return verify_terminal(context, &terminal);
+    }
+    #[cfg(not(windows))]
+    {
+        for name in ["status.json", "journal.json"] {
+            if op.stat(name)?.is_some() {
+                context.check(j)?;
+                journal::validate_private_name(context, j, name)?;
+                op.unlink(name, false)?;
+            }
         }
+        context.check(j)?;
+        if !op.names_with_limit(MAX_FILES * 5 + 16)?.is_empty() {
+            return Err("更新记录清理时出现未知文件".into());
+        }
+        let history = context.history.as_ref().ok_or("历史目录缺失")?;
+        if history.child(&j.id)?.key()? != op.key()? {
+            return Err("更新记录清理前被替换".into());
+        }
+        history.unlink(&j.id, true)
+    }
+}
+#[cfg(windows)]
+pub(super) fn verify_terminal(context: &Context, j: &Journal) -> Result<()> {
+    if !j.state.terminal() {
+        return Err("更新事务尚未到达清理终态".into());
     }
     context.check(j)?;
-    if !op.names_with_limit(MAX_FILES * 5 + 16)?.is_empty() {
-        return Err("更新记录清理时出现未知文件".into());
+    let op = operation(context)?;
+    for name in op.names_with_limit(16)? {
+        if !matches!(
+            name.as_str(),
+            "journal.json" | "status.json" | "owned-marker.json"
+        ) {
+            return Err("已清理更新终态仍有未知或原件文件，已保留".into());
+        }
+        journal::validate_private_name(context, j, &name)?;
     }
-    let history = context.history.as_ref().ok_or("历史目录缺失")?;
-    if history.child(&j.id)?.key()? != op.key()? {
-        return Err("更新记录清理前被替换".into());
+    let actual = journal::read(context)?;
+    if actual.state != j.state || actual.id != j.id || actual.scope.operation != j.scope.operation {
+        return Err("更新终态日志已经变化".into());
     }
-    history.unlink(&j.id, true)
+    Ok(())
 }
 pub(super) fn cleanup_restored(context: &Context, j: &Journal) -> Result<()> {
     verify_rolled_back(context, j)?;
@@ -367,6 +407,10 @@ pub(super) fn cleanup_restored(context: &Context, j: &Journal) -> Result<()> {
 }
 pub(super) fn one(context: &Context, j: &Journal) -> Result<()> {
     context.check(j)?;
+    #[cfg(windows)]
+    if j.state.terminal() {
+        return verify_terminal(context, j);
+    }
     // Even precommit cleanup must retain its record when a bound namespace was
     // replaced. The error is actionable evidence; silently dropping the record
     // would conceal which captured scope the failed transaction actually owned.
@@ -392,6 +436,8 @@ pub(super) fn one(context: &Context, j: &Journal) -> Result<()> {
         }
         State::UndoApplying => rollback_undo(context, j),
         State::RolledBack | State::Restored => cleanup_restored(context, j),
+        #[cfg(windows)]
+        State::FinishedRolledBack | State::FinishedRestored => verify_terminal(context, j),
     }
 }
 pub(super) fn setup_failed(context: &Context, j: &Journal) -> Result<()> {

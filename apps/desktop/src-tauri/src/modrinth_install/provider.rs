@@ -22,13 +22,9 @@ pub(crate) fn id(value: &str) -> Result<()> {
     }
     Ok(())
 }
-pub(crate) fn file_name(value: &str) -> Result<()> {
-    pcl_core::identifier(value)?;
-    if value.len() > 255 || value.trim() != value || value.chars().any(char::is_control) {
-        return Err("Modrinth文件名无效".into());
-    }
-    Ok(())
-}
+#[path = "provider/identity.rs"]
+mod identity;
+pub(crate) use identity::file_name;
 pub(crate) fn cdn_url(value: &str) -> Result<reqwest::Url> {
     let url = reqwest::Url::parse(value).map_err(|_| "Modrinth文件链接无效")?;
     if value.len() > 4096

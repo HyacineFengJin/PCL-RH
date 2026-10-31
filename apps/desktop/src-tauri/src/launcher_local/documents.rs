@@ -20,6 +20,10 @@ pub(crate) struct DocumentState {
 }
 #[cfg(windows)]
 impl DocumentState {
+    /// Stable journal evidence only; it cannot construct or authorize a CAS.
+    pub fn fact_digest(&self) -> String {
+        self.inner.fact_digest()
+    }
     pub fn presence(&self) -> DocumentPresence {
         self.inner.presence()
     }

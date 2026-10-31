@@ -1,10 +1,17 @@
 //! Force the shared-stage creation race rather than depending on scheduling.
 use super::*;
-use std::{io::Write, sync::Arc, sync::Barrier, thread};
+use std::{fs, io::Write, sync::Arc, sync::Barrier, thread};
+struct Fixture(std::path::PathBuf, tempfile::TempDir);
+impl Fixture {
+    fn new() -> Self {
+        let temporary = tempfile::tempdir().unwrap();
+        Self(temporary.path().canonicalize().unwrap(), temporary)
+    }
+}
 
 #[test]
 fn shared_anonymous_stage_accepts_two_creators_after_both_observe_missing() {
-    let fixture = crate::integration_tests::Fixture::new();
+    let fixture = Fixture::new();
     let barrier = Arc::new(Barrier::new(2));
     let jobs = (0..2)
         .map(|number| {
@@ -37,7 +44,7 @@ fn shared_anonymous_stage_accepts_two_creators_after_both_observe_missing() {
 
 #[test]
 fn raced_shared_stage_refuses_links_and_regular_files() {
-    let fixture = crate::integration_tests::Fixture::new();
+    let fixture = Fixture::new();
     let parent = Dir::open(&fixture.0).unwrap();
     fs::create_dir(fixture.0.join("other")).unwrap();
     std::os::unix::fs::symlink("other", fixture.0.join("symlink-stage")).unwrap();

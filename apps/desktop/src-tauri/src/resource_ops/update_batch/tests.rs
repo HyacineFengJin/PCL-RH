@@ -1,21 +1,30 @@
 use super::*;
 use sha2::{Digest, Sha512};
-use std::{fs, os::unix::fs::symlink};
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_dir as symlink;
 
-struct Fixture {
-    root: PathBuf,
-    source: PathBuf,
+pub(crate) struct Fixture {
+    pub(crate) root: PathBuf,
+    pub(crate) source: PathBuf,
+    _temporary: tempfile::TempDir,
 }
 impl Fixture {
-    fn new(isolated: bool, dirs: bool) -> Self {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("work/autonomous-2026-10-04/mod-updates/transaction/fixtures")
-            .join(new_id());
+    pub(crate) fn new(isolated: bool, dirs: bool) -> Self {
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path();
         let root = base.join("root");
         let source = base.join("source");
         fs::create_dir_all(root.join("versions/test")).unwrap();
-        fs::create_dir_all(&source).unwrap();
+        pcl_core::retained_fs::Directory::open_absolute(&base.canonicalize().unwrap())
+            .unwrap()
+            .create_private(
+                &pcl_core::retained_fs::Leaf::new("source").unwrap(),
+                pcl_core::retained_fs::Traversal::SameFilesystem,
+            )
+            .unwrap();
         fs::write(
             root.join("versions/test/test.json"),
             br#"{"id":"test","libraries":[]}"#,
@@ -37,22 +46,26 @@ impl Fixture {
         Self {
             root: root.canonicalize().unwrap(),
             source: source.canonicalize().unwrap(),
+            _temporary: temporary,
         }
     }
     fn folder(&self, kind: &str) -> PathBuf {
         crate::ui_data::resource_dir(&self.root, "test", kind).unwrap()
     }
-    fn file(&self, kind: &str, name: &str, payload: &[u8]) -> VerifiedImport {
-        let file = Dir::open(&self.source).unwrap().anonymous().unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        zip.start_file("payload.txt", zip::write::SimpleFileOptions::default())
+    pub(crate) fn file(&self, kind: &str, name: &str, payload: &[u8]) -> VerifiedImport {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file("payload.txt", zip::write::SimpleFileOptions::default())
             .unwrap();
-        zip.write_all(payload).unwrap();
-        let mut file = zip.finish().unwrap();
+        writer.write_all(payload).unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let size = bytes.len() as u64;
+        let mut file = Dir::open(&self.source)
+            .unwrap()
+            .stage_for("verified-download-input", size)
+            .unwrap();
+        file.write_all(&bytes).unwrap();
         file.sync_all().unwrap();
-        file.seek(SeekFrom::Start(0)).unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
         VerifiedImport {
             kind: kind.into(),
             file_name: name.into(),
@@ -61,7 +74,7 @@ impl Fixture {
             file,
         }
     }
-    fn old(&self, kind: &str, name: &str, payload: &[u8]) -> Replacement {
+    pub(crate) fn old(&self, kind: &str, name: &str, payload: &[u8]) -> Replacement {
         fs::create_dir_all(self.folder(kind)).unwrap();
         let mut input = self.file(kind, name, payload);
         let mut bytes = Vec::new();
@@ -87,7 +100,11 @@ impl Fixture {
             new_file_name: format!("next-{name}"),
         }
     }
-    fn run(&self, files: &mut [VerifiedImport], replacements: &[Replacement]) -> MutationResult {
+    pub(crate) fn run(
+        &self,
+        files: &mut [VerifiedImport],
+        replacements: &[Replacement],
+    ) -> MutationResult {
         update_verified_batch(
             &self.root,
             "test",
@@ -99,7 +116,7 @@ impl Fixture {
         )
         .unwrap()
     }
-    fn clean(&self) {
+    pub(crate) fn clean(&self) {
         super::super::ensure_ready(&self.root).unwrap();
         assert!(scope::marker_store(&self.root)
             .unwrap()
@@ -109,11 +126,7 @@ impl Fixture {
             .is_empty());
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(self.root.parent().unwrap()).unwrap();
-    }
-}
+
 fn prepared(
     f: &Fixture,
     files: &mut [VerifiedImport],
@@ -166,9 +179,7 @@ fn mixed_updates_keep_disabled_and_original_inodes() {
         let f = Fixture::new(isolated, true);
         let mut r = f.old("mods", "old.jar.disabled", b"old");
         r.new_file_name = "new.jar.disabled".into();
-        let old_inode = fs::metadata(f.folder("mods").join("old.jar.disabled"))
-            .unwrap()
-            .ino();
+        let old_inode = identity(f.folder("mods").join("old.jar.disabled"));
         let mut files = vec![
             f.file("mods", "new.jar.disabled", b"new"),
             f.file("resourcepacks", "new.zip", b"pack"),
@@ -201,12 +212,7 @@ fn mixed_updates_keep_disabled_and_original_inodes() {
         let id = result.undo_id.unwrap();
         assert_eq!(result.changed, 3);
         for input in &files {
-            assert_eq!(
-                fs::metadata(f.folder(&input.kind).join(&input.file_name))
-                    .unwrap()
-                    .nlink(),
-                1
-            );
+            assert_eq!(links(f.folder(&input.kind).join(&input.file_name)), 1);
         }
         let history = updates_history(&f.root, "test").unwrap();
         assert_eq!(history[0].id, id);
@@ -220,9 +226,7 @@ fn mixed_updates_keep_disabled_and_original_inodes() {
         )
         .unwrap();
         assert_eq!(
-            fs::metadata(f.folder("mods").join("old.jar.disabled"))
-                .unwrap()
-                .ino(),
+            identity(f.folder("mods").join("old.jar.disabled")),
             old_inode
         );
         assert!(updates_history(&f.root, "test").unwrap().is_empty());
@@ -300,7 +304,7 @@ fn applying_crash_rolls_back_original_inode() {
     let f = Fixture::new(false, true);
     let a = f.old("mods", "a.jar", b"a");
     let b = f.old("mods", "b.jar", b"b");
-    let inode = fs::metadata(f.folder("mods").join("a.jar")).unwrap().ino();
+    let inode = identity(f.folder("mods").join("a.jar"));
     let mut files = vec![
         f.file("mods", &a.new_file_name, b"a2"),
         f.file("mods", &b.new_file_name, b"b2"),
@@ -310,10 +314,7 @@ fn applying_crash_rolls_back_original_inode() {
     move_one(&c, &j, 0);
     assert!(ensure_ready(&f.root).is_err());
     recover_root(&f.root).unwrap();
-    assert_eq!(
-        fs::metadata(f.folder("mods").join("a.jar")).unwrap().ino(),
-        inode
-    );
+    assert_eq!(identity(f.folder("mods").join("a.jar")), inode);
     assert!(f.folder("mods").join("b.jar").exists());
     f.clean();
 }
@@ -536,9 +537,7 @@ fn unknown_private_file_blocks_guard_and_safe_recovery() {
 fn consecutive_updates_restore_original_inode_chain() {
     let f = Fixture::new(true, true);
     let a = f.old("mods", "old.jar", b"old");
-    let inode = fs::metadata(f.folder("mods").join("old.jar"))
-        .unwrap()
-        .ino();
+    let inode = identity(f.folder("mods").join("old.jar"));
     let mut first = vec![f.file("mods", &a.new_file_name, b"first")];
     let first_id = f.run(&mut first, &[a]).undo_id.unwrap();
     let b = f.replacement("next-old.jar");
@@ -568,12 +567,7 @@ fn consecutive_updates_restore_original_inode_chain() {
         &mut || Ok(()),
     )
     .unwrap();
-    assert_eq!(
-        fs::metadata(f.folder("mods").join("old.jar"))
-            .unwrap()
-            .ino(),
-        inode
-    );
+    assert_eq!(identity(f.folder("mods").join("old.jar")), inode);
     f.clean();
 }
 #[test]
@@ -778,117 +772,6 @@ fn undo_external_original_slot_conflict_retains_history() {
 }
 
 #[test]
-fn actual_rename_delete_and_restore_services_carry_update_history() {
-    let f = Fixture::new(true, true);
-    let r = f.old("mods", "old.jar", b"old");
-    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
-    let update_id = f.run(&mut files, &[r]).undo_id.unwrap();
-    fs::write(f.root.join("versions/test/test.json"),br#"{"id":"test","jar":"test","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","libraries":[]}"#).unwrap();
-    fs::write(f.root.join("versions/test/test.jar"), b"client jar").unwrap();
-    let project = f.source.join("project");
-    fs::create_dir_all(project.join(".pcl-rust")).unwrap();
-    fs::write(project.join(".pcl-rust/settings.json"),serde_json::to_vec(&serde_json::json!({"schema_version":3,"active_root_id":"root-fixture","player":"Player","memory_gib":6,"java":{"mode":"auto"},"java_paths":[],"roots":[{"id":"root-fixture","name":"Game","path":f.root,"selected":"test","overrides":{},"java_overrides":{}}]})).unwrap()).unwrap();
-    super::super::ensure_ready(&f.root).unwrap();
-    let rename = crate::instance_rename::prepare(&f.root, "test", "renamed").unwrap();
-    let refs =
-        crate::instance_rename_refs::prepare(&project, "root-fixture", &f.root, "test", "renamed")
-            .unwrap();
-    crate::instance_rename::execute(
-        &f.root,
-        &project,
-        rename,
-        refs,
-        &AtomicBool::new(false),
-        |_| {},
-    )
-    .unwrap();
-    assert_eq!(
-        updates_history(&f.root, "renamed").unwrap()[0].id,
-        update_id
-    );
-    let deletion =
-        crate::instance_delete::prepare(&f.root, &project, "root-fixture", "renamed").unwrap();
-    crate::instance_delete::execute(&f.root, &project, deletion, &AtomicBool::new(false), |_| {})
-        .unwrap();
-    assert!(!f.root.join("versions/renamed").exists());
-    let entry = crate::instance_delete::history(&f.root, &project, "root-fixture")
-        .unwrap()
-        .remove(0);
-    crate::instance_delete::undo(
-        &f.root,
-        &project,
-        "root-fixture",
-        &entry.operation_id,
-        entry.revision.as_ref().unwrap(),
-        &AtomicBool::new(false),
-        |_| {},
-    )
-    .unwrap();
-    assert_eq!(
-        updates_history(&f.root, "renamed").unwrap()[0].id,
-        update_id
-    );
-    restore_update(
-        &f.root,
-        "renamed",
-        &update_id,
-        &AtomicBool::new(false),
-        &mut || Ok(()),
-    )
-    .unwrap();
-    assert!(f.root.join("versions/renamed/mods/old.jar").exists());
-    f.clean();
-}
-#[test]
-fn actual_export_omits_private_history_and_reset_prepare_keeps_it() {
-    let f = Fixture::new(true, true);
-    let r = f.old("mods", "old.jar", b"old");
-    let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
-    let id = f.run(&mut files, &[r]).undo_id.unwrap();
-    fs::write(f.root.join("versions/test/test.json"),br#"{"id":"test","jar":"test","mainClass":"net.minecraft.client.main.Main","clientVersion":"1.20.1","libraries":[]}"#).unwrap();
-    fs::write(f.root.join("versions/test/test.jar"), b"client jar").unwrap();
-    let history_path = f
-        .root
-        .join("versions/test")
-        .join(HISTORY)
-        .join(&id)
-        .join("journal.json");
-    let before = fs::read(&history_path).unwrap();
-    let request = crate::instance_export::ExportRequest {
-        name: "Fixture".into(),
-        version: "1".into(),
-        checks: crate::instance_export::ExportChecks {
-            other: true,
-            ..Default::default()
-        },
-        excluded: BTreeMap::new(),
-    };
-    let plan = crate::instance_export::prepare(&f.root, "test", request).unwrap();
-    let destination = f.source.join("export.zip");
-    crate::instance_export::execute(plan, &destination, &AtomicBool::new(false), |_| {}).unwrap();
-    let mut zip = zip::ZipArchive::new(File::open(destination).unwrap()).unwrap();
-    let mut has_mod = false;
-    for index in 0..zip.len() {
-        let item = zip.by_index(index).unwrap();
-        assert!(!item.name().contains(HISTORY));
-        if item.name().ends_with("mods/next-old.jar") {
-            has_mod = true;
-        }
-    }
-    assert!(has_mod);
-    crate::instance_reset::prepare(&f.root, "test", vec![]).unwrap();
-    assert_eq!(fs::read(history_path).unwrap(), before);
-    restore_update(
-        &f.root,
-        "test",
-        &id,
-        &AtomicBool::new(false),
-        &mut || Ok(()),
-    )
-    .unwrap();
-    f.clean();
-}
-#[test]
 fn maximum_replacements_have_bounded_phase_writes_and_readable_inventory() {
     let f = Fixture::new(false, true);
     let mut replacements = Vec::new();
@@ -980,9 +863,7 @@ fn late_cancel_after_first_move_keeps_the_committed_batch() {
 fn cancellation_winning_at_the_commit_gate_preserves_old_inode() {
     let f = Fixture::new(false, true);
     let r = f.old("mods", "old.jar", b"old");
-    let inode = fs::metadata(f.folder("mods").join("old.jar"))
-        .unwrap()
-        .ino();
+    let inode = identity(f.folder("mods").join("old.jar"));
     let mut files = vec![f.file("mods", &r.new_file_name, b"new")];
     let cancel = AtomicBool::new(false);
     let result = update_verified_batch(
@@ -998,12 +879,7 @@ fn cancellation_winning_at_the_commit_gate_preserves_old_inode() {
         &mut |_, _| {},
     );
     assert_eq!(result.unwrap_err(), CANCELLED);
-    assert_eq!(
-        fs::metadata(f.folder("mods").join("old.jar"))
-            .unwrap()
-            .ino(),
-        inode
-    );
+    assert_eq!(identity(f.folder("mods").join("old.jar")), inode);
     f.clean();
 }
 #[test]
@@ -1057,4 +933,93 @@ fn explicit_shared_update_and_undo_keep_journal_paths_despite_automatic_isolated
     assert!(!f.root.join("versions/test/mods").exists());
     assert!(f.root.join("versions/test/config").is_dir());
     f.clean();
+}
+
+fn identity(path: impl AsRef<Path>) -> Key {
+    filesystem::key_file(&File::open(path).unwrap()).unwrap()
+}
+fn links(path: impl AsRef<Path>) -> u64 {
+    pcl_core::retained_fs::metadata(&File::open(path).unwrap())
+        .unwrap()
+        .links
+}
+
+#[cfg(windows)]
+#[test]
+fn restored_native_history_releases_current_files_and_retains_unexpected_private_names() {
+    let f = Fixture::new(false, true);
+    let replacement = f.old("mods", "old.jar", b"old");
+    let mut files = vec![f.file("mods", &replacement.new_file_name, b"new")];
+    let id = f.run(&mut files, &[replacement]).undo_id.unwrap();
+    super::super::retire_sources(&mut files).unwrap();
+    restore_update(
+        &f.root,
+        "test",
+        &id,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    let context = Context::existing(&f.root, "test", &id).unwrap();
+    let journal = journal::read(&context).unwrap();
+    assert_eq!(journal.schema, 2);
+    assert_eq!(journal.state, State::FinishedRestored);
+    fs::write(f.folder("mods").join("old.jar"), b"later user edit").unwrap();
+    ensure_ready(&f.root).unwrap();
+    assert_eq!(recover_root(&f.root).unwrap().changed, 0);
+    let unknown = f
+        .root
+        .join("versions/test")
+        .join(HISTORY)
+        .join(&id)
+        .join("old-0000");
+    fs::write(&unknown, b"unowned evidence").unwrap();
+    assert!(ensure_ready(&f.root).is_err());
+    assert!(recover_root(&f.root).is_err());
+    assert_eq!(fs::read(&unknown).unwrap(), b"unowned evidence");
+    fs::remove_file(unknown).unwrap();
+    ensure_ready(&f.root).unwrap();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn malformed_native_logical_documents_are_preserved_before_business_replacement() {
+    for name in ["journal.json", "status.json", "owned-marker.json"] {
+        let f = Fixture::new(false, true);
+        let replacement = f.old("mods", "old.jar", b"old");
+        let original = fs::read(f.folder("mods").join("old.jar")).unwrap();
+        let mut files = vec![f.file("mods", &replacement.new_file_name, b"new")];
+        let (context, journal) = prepared(&f, &mut files, &[replacement]);
+        let operation = context.operation.as_ref().unwrap();
+        let limit = if name == "journal.json" {
+            MAX_JOURNAL_BYTES
+        } else {
+            16 * 1024
+        };
+        let state = operation.document_state(name, limit).unwrap();
+        operation
+            .compare_document(name, limit, &state, Some(b"{retained unknown bytes"))
+            .unwrap();
+        let result = match name {
+            "journal.json" => journal::write(&context, &journal),
+            "status.json" => journal::status(&context, &journal),
+            _ => {
+                let mut journal = journal.clone();
+                journal::create_marker(&context, &mut journal)
+            }
+        };
+        assert!(result.is_err(), "{name} unexpectedly overwritten");
+        let mut state = operation.document_state(name, limit).unwrap();
+        assert_eq!(
+            operation
+                .read_document(name, limit, &mut state)
+                .unwrap()
+                .unwrap(),
+            b"{retained unknown bytes"
+        );
+        assert_eq!(
+            fs::read(f.folder("mods").join("old.jar")).unwrap(),
+            original
+        );
+    }
 }

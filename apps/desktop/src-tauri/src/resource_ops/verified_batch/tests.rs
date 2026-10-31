@@ -1,20 +1,29 @@
 use super::*;
 use sha2::{Digest, Sha512};
-use std::{fs, io::Write, os::unix::fs::symlink};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::symlink_dir as symlink;
+use std::{fs, fs::File, io::Write};
 struct Fixture {
     root: PathBuf,
     source: PathBuf,
+    _temporary: tempfile::TempDir,
 }
 impl Fixture {
     fn new(isolated: bool, dirs: bool) -> Self {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("work/autonomous-2026-10-04/modrinth/batch/fixtures")
-            .join(op_id());
+        let temporary = tempfile::tempdir().unwrap();
+        let base = temporary.path();
         let root = base.join("root");
         let source = base.join("source");
         fs::create_dir_all(root.join("versions/test")).unwrap();
-        fs::create_dir_all(&source).unwrap();
+        pcl_core::retained_fs::Directory::open_absolute(&base.canonicalize().unwrap())
+            .unwrap()
+            .create_private(
+                &pcl_core::retained_fs::Leaf::new("source").unwrap(),
+                pcl_core::retained_fs::Traversal::SameFilesystem,
+            )
+            .unwrap();
         fs::write(
             root.join("versions/test/test.json"),
             br#"{"id":"test","libraries":[]}"#,
@@ -36,6 +45,7 @@ impl Fixture {
         Self {
             root: root.canonicalize().unwrap(),
             source: source.canonicalize().unwrap(),
+            _temporary: temporary,
         }
     }
     fn files(&self) -> Vec<VerifiedImport> {
@@ -54,18 +64,19 @@ impl Fixture {
             .collect()
     }
     fn file(&self, kind: &str, name: &str) -> VerifiedImport {
-        let file = Dir::open(&self.source).unwrap().anonymous().unwrap();
-        let mut writer = zip::ZipWriter::new(file);
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         writer
             .start_file("payload.txt", zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(b"generic resource fixture").unwrap();
-        let mut file = writer.finish().unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let size = bytes.len() as u64;
+        let mut file = Dir::open(&self.source)
+            .unwrap()
+            .stage_for("verified-download-input", size)
+            .unwrap();
+        file.write_all(&bytes).unwrap();
         file.sync_all().unwrap();
-        let size = file.metadata().unwrap().len();
-        file.seek(SeekFrom::Start(0)).unwrap();
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).unwrap();
         VerifiedImport {
             kind: kind.into(),
             file_name: name.into(),
@@ -79,16 +90,13 @@ impl Fixture {
     }
     fn clean(&self) {
         ensure_ready(&self.root).unwrap();
+        #[cfg(not(windows))]
         if let Some(store) = storage(&Dir::open(&self.root).unwrap(), false).unwrap() {
             assert!(store.names().unwrap().is_empty());
         }
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(self.root.parent().unwrap()).unwrap();
-    }
-}
+
 fn run(
     f: &Fixture,
     files: &mut [VerifiedImport],
@@ -172,20 +180,33 @@ fn wrong_hash_and_named_source_reject_before_target_mutation() {
             .contains("SHA512")
     );
     f.clean();
-    let mut files = f.files();
-    files[0].file = File::open(f.root.join("versions/test/test.json")).unwrap();
-    assert!(
-        run(&f, &mut files, &c, &mut || panic!("commit"), &mut |_, _| {})
-            .unwrap_err()
-            .contains("匿名")
-    );
-    f.clean();
+    #[cfg(target_os = "linux")]
+    {
+        let mut files = f.files();
+        files[0].file = File::open(f.root.join("versions/test/test.json")).unwrap();
+        assert!(
+            run(&f, &mut files, &c, &mut || panic!("commit"), &mut |_, _| {})
+                .unwrap_err()
+                .contains("匿名")
+        );
+        f.clean();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut files = f.files();
+        files[0].file.retire().unwrap();
+        assert!(run(&f, &mut files, &c, &mut || panic!("commit"), &mut |_, _| {}).is_err());
+        f.clean();
+    }
 }
 #[test]
 fn invalid_archive_rejects_with_correct_hash() {
     let f = Fixture::new(false, false);
     let c = AtomicBool::new(false);
-    let mut file = Dir::open(&f.source).unwrap().anonymous().unwrap();
+    let mut file = Dir::open(&f.source)
+        .unwrap()
+        .stage_for("verified-download-input", MAX_FILE_BYTES)
+        .unwrap();
     file.write_all(b"not an archive").unwrap();
     let mut files = vec![VerifiedImport {
         kind: "mods".into(),
@@ -371,8 +392,8 @@ fn unknown_stage_and_external_content_are_preserved_for_retry() {
     let mut files = f.files();
     let (op, _) = prepared(&f, &mut files);
     let stage = op.child("files").unwrap();
-    let foreign = stage.anonymous().unwrap();
-    stage.link_anonymous(&foreign, "unknown").unwrap();
+    let mut foreign = stage.stage_for("unknown", 0).unwrap();
+    stage.link_anonymous(&mut foreign, "unknown").unwrap();
     assert!(recover_root(&f.root).is_err());
     stage.unlink("unknown", false).unwrap();
     recover_root(&f.root).unwrap();
@@ -427,6 +448,9 @@ fn linked_resource_directory_is_not_followed() {
     let c = AtomicBool::new(false);
     let mut files = f.files();
     assert!(run(&f, &mut files, &c, &mut || panic!("commit"), &mut |_, _| {}).is_err());
+    assert!(!f.source.join("sample.jar").exists());
+    assert!(!f.source.join("sample.zip").exists());
+    #[cfg(target_os = "linux")]
     assert!(f.source.read_dir().unwrap().next().is_none());
     f.clean();
 }
@@ -481,7 +505,7 @@ fn ownership_receipt_before_first_path_and_staging_crash_are_recoverable() {
     .unwrap();
     let (op, j) = setup(&root, scope, &files).unwrap();
     let stage = op.child("files").unwrap();
-    let mut anonymous = stage.anonymous().unwrap();
+    let mut anonymous = stage.stage_for(&slot(0), files[0].size).unwrap();
     files[0].file.seek(SeekFrom::Start(0)).unwrap();
     std::io::copy(&mut files[0].file, &mut anonymous).unwrap();
     anonymous.sync_all().unwrap();
@@ -694,4 +718,44 @@ fn explicit_shared_interrupted_batch_recovers_its_recorded_paths_with_isolated_m
     assert!(f.root.join("versions/test/config").is_dir());
     assert!(!f.root.join("versions/test/mods").exists());
     f.clean();
+}
+
+#[cfg(windows)]
+#[test]
+fn completed_native_batch_releases_target_ownership_but_retains_unknown_evidence() {
+    let f = Fixture::new(false, true);
+    let mut files = f.files();
+    run(
+        &f,
+        &mut files,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    retire_sources(&mut files).unwrap();
+    let store = storage(&Dir::open(&f.root).unwrap(), false)
+        .unwrap()
+        .unwrap();
+    let names = store.names().unwrap();
+    assert_eq!(names.len(), 1);
+    let operation = store.child(&names[0]).unwrap().with_documents().unwrap();
+    let journal = read_journal(&operation, &names[0]).unwrap();
+    assert_eq!(journal.schema, 2);
+    assert_eq!(journal.state, State::Finished);
+    fs::write(f.folder("mods").join("sample.jar"), b"later user edit").unwrap();
+    ensure_ready(&f.root).unwrap();
+    assert_eq!(recover_root(&f.root).unwrap().changed, 0);
+    let unknown = f
+        .root
+        .join(".pcl-linux")
+        .join(STORE)
+        .join(&names[0])
+        .join("unknown");
+    fs::write(&unknown, b"preserve unknown evidence").unwrap();
+    assert!(ensure_ready(&f.root).is_err());
+    assert!(recover_root(&f.root).is_err());
+    assert_eq!(fs::read(&unknown).unwrap(), b"preserve unknown evidence");
+    fs::remove_file(unknown).unwrap();
+    ensure_ready(&f.root).unwrap();
 }

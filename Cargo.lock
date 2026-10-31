@@ -2969,6 +2969,8 @@ dependencies = [
 name = "pcl-install"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "libc",
  "pcl-core",
  "pcl-network",

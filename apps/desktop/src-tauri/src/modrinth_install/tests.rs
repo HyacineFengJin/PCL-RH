@@ -9,47 +9,36 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::{atomic::Ordering, Arc},
     thread,
     time::{Duration, Instant},
 };
-static NEXT: AtomicU64 = AtomicU64::new(0);
 pub(super) fn run<F: std::future::Future>(future: F) -> F::Output {
-    tauri::async_runtime::block_on(future)
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+        })
+        .block_on(future)
 }
 pub(super) fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha512::digest(bytes))
 }
 struct Fixture {
-    path: PathBuf,
+    _temporary: tempfile::TempDir,
     root: PathBuf,
     project: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
-        // The standalone harness supplies its project root explicitly; normal
-        // desktop tests derive it from the desktop package manifest location.
-        let repository = option_env!("PCL_MODRINTH_TEST_REPOSITORY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-        let path = repository
-            .join("work/autonomous-2026-10-04/modrinth/tests")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(path.join("game/versions/sample/mods")).unwrap();
-        fs::create_dir_all(path.join("project/.pcl-rust")).unwrap();
-        let path = path.canonicalize().unwrap();
-        let root = path.join("game");
-        let project = path.join("project");
+        let (temporary, _path, root, project) = super::test_support::tree();
         fs::write(root.join("versions/sample/sample.json"),br#"{"id":"sample","clientVersion":"1.20.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.0"}]}"#).unwrap();
         Self {
-            path,
+            _temporary: temporary,
             root,
             project,
         }
@@ -70,11 +59,7 @@ impl Fixture {
         fs::write(path, bytes).unwrap();
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+
 #[derive(Default)]
 pub(super) struct FakeProvider {
     pub projects: BTreeMap<String, Project>,
@@ -350,7 +335,6 @@ fn selected_nonprimary_runtime_file_and_required_resource_pack_are_planned_toget
 #[test]
 fn authoritative_plan_anonymous_download_and_mixed_kind_publication_work_together() {
     use crate::resource_ops::{import_verified_batch, VerifiedImport};
-    use std::os::unix::fs::MetadataExt;
 
     fn archive(name: &str, bytes: &[u8]) -> Vec<u8> {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -424,7 +408,7 @@ fn authoritative_plan_anonymous_download_and_mixed_kind_publication_work_togethe
         .into_bytes();
         response.extend_from_slice(body);
         let (url, worker) = server(&response, Duration::ZERO);
-        let mut file = staging.anonymous().unwrap();
+        let mut file = staging.allocate(item.size).unwrap();
         run(transfer::response_into_file(
             &http,
             http.client.get(url),
@@ -436,7 +420,7 @@ fn authoritative_plan_anonymous_download_and_mixed_kind_publication_work_togethe
         ))
         .unwrap();
         worker.join().unwrap();
-        assert_eq!(file.metadata().unwrap().nlink(), 0);
+        super::test_support::assert_source(&file);
         verified.push(transfer::VerifiedFile {
             kind: item.kind.clone(),
             file_name: item.file_name.clone(),
@@ -494,12 +478,8 @@ fn authoritative_plan_anonymous_download_and_mixed_kind_publication_work_togethe
         fs::read(f.root.join("libraries/shared/cache.jar")).unwrap(),
         b"preserved cache"
     );
-    assert_eq!(
-        fs::read_dir(f.project.join(".pcl-rust/resource-downloads"))
-            .unwrap()
-            .count(),
-        0
-    );
+    crate::resource_ops::retire_sources(&mut inputs).unwrap();
+    super::test_support::assert_staging_path(&f.project, 0);
     crate::resource_ops::ensure_verified_batches_ready(&f.root).unwrap();
 }
 #[test]
@@ -600,7 +580,7 @@ fn unsafe_isolation_marker_returns_its_error_and_scope_changes_retire_the_target
     let fixture = Fixture::new();
     let before = fixture.target();
     let marker = fixture.root.join("versions/sample/options.txt");
-    std::os::unix::fs::symlink("missing", &marker).unwrap();
+    super::test_support::symlink_file("missing", &marker).unwrap();
     let error = target::capture(
         &fixture.root,
         &fixture.project,
@@ -709,14 +689,16 @@ pub(super) fn server(response: &[u8], delay: Duration) -> (String, thread::JoinH
     });
     (format!("http://{address}/fixture"), worker)
 }
-fn temporary(f: &Fixture) -> (target::Dir, File) {
+fn temporary(f: &Fixture) -> (target::Dir, source::Input) {
     let dir = target::Dir::open(&f.project)
         .unwrap()
         .ensure(".pcl-rust")
         .unwrap()
         .ensure("resource-downloads")
+        .unwrap()
+        .with_input_sources()
         .unwrap();
-    let file = dir.anonymous().unwrap();
+    let file = dir.allocate(MAX_FILE_BYTES).unwrap();
     (dir, file)
 }
 #[test]
@@ -741,20 +723,12 @@ fn transfer_checks_size_hash_and_counts_only_received_bytes() {
     .unwrap();
     worker.join().unwrap();
     assert_eq!(provider.network_bytes.load(Ordering::Relaxed), 4);
-    assert_eq!(
-        fs::read_dir(format!(
-            "/proc/self/fd/{}",
-            std::os::fd::AsRawFd::as_raw_fd(&dir.0)
-        ))
-        .unwrap()
-        .count(),
-        0
-    );
+    super::test_support::assert_staging(&dir, 1);
     let (url, worker) = server(
         b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbad!",
         Duration::ZERO,
     );
-    let mut bad = dir.anonymous().unwrap();
+    let mut bad = dir.allocate(MAX_FILE_BYTES).unwrap();
     assert!(run(transfer::response_into_file(
         &provider,
         provider.client.get(url),
@@ -789,7 +763,7 @@ fn transfer_rejects_redirects_and_bodies_larger_than_the_authoritative_size() {
     .contains("重定向"));
     worker.join().unwrap();
     let(url,worker)=server(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nlarge\r\n0\r\n\r\n",Duration::ZERO);
-    let mut oversized = dir.anonymous().unwrap();
+    let mut oversized = dir.allocate(MAX_FILE_BYTES).unwrap();
     assert!(run(transfer::response_into_file(
         &provider,
         provider.client.get(url),
@@ -836,15 +810,7 @@ fn cancellation_during_response_headers_returns_promptly_and_leaves_no_named_par
     drop(file);
     trigger.join().unwrap();
     worker.join().unwrap();
-    assert_eq!(
-        fs::read_dir(format!(
-            "/proc/self/fd/{}",
-            std::os::fd::AsRawFd::as_raw_fd(&dir.0)
-        ))
-        .unwrap()
-        .count(),
-        0
-    );
+    super::test_support::assert_staging(&dir, 0);
     assert_eq!(provider.network_bytes.load(Ordering::Relaxed), 0);
 }
 
@@ -889,15 +855,7 @@ fn cancellation_during_stalled_response_body_drops_transfer_before_named_publica
     drop(file);
     trigger.join().unwrap();
     worker.join().unwrap();
-    assert_eq!(
-        fs::read_dir(format!(
-            "/proc/self/fd/{}",
-            std::os::fd::AsRawFd::as_raw_fd(&dir.0)
-        ))
-        .unwrap()
-        .count(),
-        0
-    );
+    super::test_support::assert_staging(&dir, 0);
 }
 
 #[test]
@@ -987,7 +945,7 @@ fn explicit_isolation_binds_modrinth_inventory_and_configuration_generation() {
         serde_json::to_vec(&shared).unwrap(),
         serde_json::to_vec(&roundtrip).unwrap()
     );
-    std::os::unix::fs::symlink("missing", f.root.join("versions/sample/config")).unwrap();
+    super::test_support::symlink_dir("missing", f.root.join("versions/sample/config")).unwrap();
     assert!(target::capture_with_isolation(
         &f.root,
         &f.project,

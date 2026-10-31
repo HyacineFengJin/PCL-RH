@@ -37,32 +37,21 @@ use std::{
 };
 
 mod filesystem;
+pub(crate) mod project_gate;
 use filesystem::{
     absolute, anonymous_key, canonical, hash, lock, name_ok, read_bytes, rename_new, scan, Dir,
     FileToken, Key, Tree, MAX_DEPTH, MAX_FILES,
 };
+use project_gate::{app, operation_ok, read_marker, scope_ok, Marker, MARKER, READY};
 
 const STORE: &str = "instance-deletions";
-const MARKER: &str = "instance-delete-pending.json";
 const MAX_INSTANCES: usize = 4096;
 const MAX_JOURNAL: usize = 64 * 1024 * 1024;
 const MAX_JSON: usize = 8 * 1024 * 1024;
-const READY: &str = "存在未完成的实例删除或恢复，请先恢复未完成操作";
 const CANCELLED: &str = "实例删除已取消";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 type Result<T> = std::result::Result<T, String>;
 
-fn scope_ok(root_id: &str) -> Result<()> {
-    if root_id.is_empty()
-        || root_id.len() > 128
-        || !root_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-    {
-        return Err("游戏目录标识无效".into());
-    }
-    Ok(())
-}
 fn nonce() -> String {
     format!(
         "d-{:x}-{:x}-{:x}",
@@ -73,16 +62,6 @@ fn nonce() -> String {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
-}
-fn operation_ok(name: &str) -> bool {
-    name.len() <= 80
-        && name.strip_prefix("d-").is_some_and(|tail| {
-            let parts: Vec<_> = tail.split('-').collect();
-            parts.len() == 3
-                && parts
-                    .iter()
-                    .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_hexdigit()))
-        })
 }
 fn cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
     if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -335,21 +314,6 @@ struct Record {
     journal: Journal,
     token: Option<FileToken>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Marker {
-    schema: u32,
-    operation_id: String,
-    root_id: String,
-    id: String,
-    root: PathBuf,
-    project: PathBuf,
-    root_key: Key,
-    project_key: Key,
-    storage_key: Key,
-    operation_key: Key,
-    file_key: Key,
-}
 fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
     let app = if create {
         Some(root.ensure(".pcl-rust")?)
@@ -361,14 +325,6 @@ fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
         app.ensure(STORE).map(Some)
     } else {
         app.optional(STORE)
-    }
-}
-fn app(project: &Path, create: bool) -> Result<Option<Dir>> {
-    let directory = Dir::open(project)?;
-    if create {
-        directory.ensure(".pcl-rust").map(Some)
-    } else {
-        directory.optional(".pcl-rust")
     }
 }
 fn validate(j: &Journal, name: &str) -> Result<()> {
@@ -576,30 +532,6 @@ fn cleanup_journal_temps(
     }
     Ok(())
 }
-fn read_marker(project: &Path) -> Result<Option<(Marker, FileToken)>> {
-    let Some(app) = app(project, false)? else {
-        return Ok(None);
-    };
-    if app.stat(MARKER)?.is_none() {
-        return Ok(None);
-    }
-    let (token, bytes) = read_bytes(&app, MARKER, 64 * 1024)?;
-    let marker: Marker =
-        serde_json::from_slice(&bytes).map_err(|_| "实例删除待恢复标记损坏，已保留")?;
-    name_ok(&marker.id)?;
-    scope_ok(&marker.root_id)?;
-    absolute(&marker.root)?;
-    absolute(&marker.project)?;
-    if marker.schema != 1
-        || !operation_ok(&marker.operation_id)
-        || marker.project != project
-        || marker.project_key != Dir::open(project)?.key()?
-        || marker.file_key != token.stamp.key
-    {
-        return Err("实例删除待恢复标记范围或身份无效，已保留".into());
-    }
-    Ok(Some((marker, token)))
-}
 fn marker_matches(marker: &Marker, j: &Journal) -> bool {
     marker.operation_id == j.operation_id
         && marker.root_id == j.root_id
@@ -652,16 +584,12 @@ fn clear_marker(operation: &Dir, record: &mut Record) -> Result<()> {
     record.journal.marker_cleared = true;
     write_record(operation, record)
 }
+
 pub fn pending_root(project: &Path) -> Result<Option<PathBuf>> {
-    let project = canonical(project)?;
-    read_marker(&project).map(|m| m.map(|(m, _)| m.root))
+    project_gate::pending_root(project)
 }
 pub fn ensure_project_ready(project: &Path) -> Result<()> {
-    if pending_root(project)?.is_some() {
-        Err(READY.into())
-    } else {
-        Ok(())
-    }
+    project_gate::ensure_project_ready(project)
 }
 
 fn bind(root: &Dir, store: &Dir, operation: &Dir, j: &Journal, project: &Path) -> Result<Dir> {

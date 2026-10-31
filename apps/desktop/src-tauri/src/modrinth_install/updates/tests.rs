@@ -5,38 +5,18 @@ use super::super::{
     tests::{dependency, run, sha, FakeProvider},
 };
 use super::*;
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, AtomicUsize},
-};
-static NEXT: AtomicU64 = AtomicU64::new(0);
+use std::{collections::BTreeMap, fs, path::PathBuf, sync::atomic::AtomicUsize};
 pub(super) struct Fixture {
-    path: PathBuf,
+    _temporary: tempfile::TempDir,
     pub(super) root: PathBuf,
     pub(super) project: PathBuf,
 }
 impl Fixture {
     pub(super) fn new() -> Self {
-        let repository = option_env!("PCL_MODRINTH_TEST_REPOSITORY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-        let path = repository
-            .join("work/autonomous-2026-10-04/mod-updates/provider")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(path.join("game/versions/sample/mods")).unwrap();
-        fs::create_dir_all(path.join("project/.pcl-rust")).unwrap();
-        let path = path.canonicalize().unwrap();
-        let root = path.join("game");
-        let project = path.join("project");
+        let (temporary, _path, root, project) = super::super::test_support::tree();
         fs::write(root.join("versions/sample/sample.json"),br#"{"id":"sample","clientVersion":"1.20.1","libraries":[{"name":"net.fabricmc:fabric-loader:0.16.0"}]}"#).unwrap();
         Self {
-            path,
+            _temporary: temporary,
             root,
             project,
         }
@@ -75,11 +55,7 @@ impl Fixture {
         ))
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+
 fn pair(
     provider: &mut FakeProvider,
     fixture: &Fixture,

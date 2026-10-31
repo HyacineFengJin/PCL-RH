@@ -7,17 +7,15 @@ use serde_json::{json, Value};
 use std::{fs, sync::atomic::AtomicBool};
 
 struct Fixture {
+    _temporary: tempfile::TempDir,
     project: PathBuf,
     root: PathBuf,
     other: PathBuf,
 }
 impl Fixture {
     fn new(isolated: bool) -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/java-management-2026-10-04/rename-ref-fixtures")
-            .join(nonce());
-        fs::create_dir_all(&path).unwrap();
-        let project = path.canonicalize().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let project = temporary.path().canonicalize().unwrap();
         let root = project.join("game");
         let other = project.join("other-game");
         fs::create_dir_all(root.join("versions/Old")).unwrap();
@@ -35,6 +33,7 @@ impl Fixture {
         }
         fs::create_dir(project.join(".pcl-rust")).unwrap();
         let fixture = Self {
+            _temporary: temporary,
             project,
             root,
             other,
@@ -109,11 +108,6 @@ impl Fixture {
         .unwrap()
         .undo_id
         .unwrap()
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.project);
     }
 }
 

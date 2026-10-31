@@ -68,9 +68,16 @@ enum Receipt {
 #[cfg(test)]
 thread_local! {pub(super) static FAIL_COMMITTED_WRITE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};pub(super) static FULL_WRITES:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
 fn bytes(dir: &Dir, name: &str, limit: u64) -> Result<Vec<u8>> {
+    #[cfg(not(target_os = "linux"))]
+    if matches!(name, "journal.json" | "status.json" | "owned-marker.json") {
+        let mut state = dir.document_state(name, limit)?;
+        return dir
+            .read_document(name, limit, &mut state)?
+            .ok_or("资源业务文档缺失".into());
+    }
     let mut file = dir.regular(name)?;
     let token = super::super::token_for(&file)?;
-    if file.metadata().map_err(err)?.len() > limit || file.metadata().map_err(err)?.nlink() != 1 {
+    if file.metadata().map_err(err)?.len() > limit || !filesystem::single(&file)? {
         return Err("更新记录过大或含额外硬链接".into());
     }
     let mut bytes = Vec::new();
@@ -87,9 +94,7 @@ fn bytes(dir: &Dir, name: &str, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 fn owned_ok(owned: &Owned) -> bool {
-    owned.size <= MAX_FILE_BYTES
-        && valid_hash(&owned.sha512)
-        && owned.mode & libc::S_IFMT == libc::S_IFREG
+    owned.size <= MAX_FILE_BYTES && valid_hash(&owned.sha512) && owned.regular()
 }
 fn validate_inventory(value: &Inventory) -> Result<()> {
     if value.keys().map(String::as_str).collect::<BTreeSet<_>>() != KINDS.into_iter().collect() {
@@ -125,7 +130,7 @@ fn validate_inventory(value: &Inventory) -> Result<()> {
     Ok(())
 }
 fn validate(j: &Journal, id: &str) -> Result<()> {
-    if j.schema != 1
+    if j.schema != SCHEMA
         || j.id != id
         || !valid_id(id)
         || j.items.is_empty()
@@ -135,7 +140,7 @@ fn validate(j: &Journal, id: &str) -> Result<()> {
     }
     Binding::of(j)?;
     validate_inventory(&j.before)?;
-    if j.state != State::Staging {
+    if !j.state.partial() {
         validate_inventory(&j.after)?;
     } else if !j.after.is_empty() {
         validate_inventory(&j.after)?;
@@ -175,7 +180,7 @@ fn validate(j: &Journal, id: &str) -> Result<()> {
             if !owned_ok(owned) || owned.size != item.size || owned.sha512 != item.sha512 {
                 return Err("更新新文件所有权无效".into());
             }
-        } else if j.state != State::Staging {
+        } else if !j.state.partial() {
             return Err("更新新文件缺少持久所有权".into());
         }
         if let Some(old) = &item.old {
@@ -200,12 +205,12 @@ fn validate(j: &Journal, id: &str) -> Result<()> {
                 {
                     return Err("更新旧备份所有权无效".into());
                 }
-            } else if j.state != State::Staging {
+            } else if !j.state.partial() {
                 return Err("旧备份缺少持久所有权".into());
             }
         }
     }
-    if j.state != State::Staging && scope::expected_after(j)? != j.after {
+    if !j.state.partial() && scope::expected_after(j)? != j.after {
         return Err("更新提交 inventory 与映射不一致".into());
     }
     Ok(())
@@ -333,7 +338,7 @@ fn publish(dir: &Dir, name: &str, value: &impl Serialize, limit: u64) -> Result<
     if bytes.len() as u64 > limit {
         return Err("更新记录过大".into());
     }
-    let mut file = dir.anonymous()?;
+    let mut file = dir.stage_for(name, bytes.len() as u64)?;
     file.write_all(&bytes).map_err(err)?;
     file.sync_all().map_err(err)?;
     let owned = filesystem::verify_file(
@@ -343,7 +348,7 @@ fn publish(dir: &Dir, name: &str, value: &impl Serialize, limit: u64) -> Result<
         &format!("{:x}", sha2::Sha512::digest(&bytes)),
         None,
     )?;
-    dir.link_anonymous(&file, name)?;
+    dir.link_anonymous(&mut file, name)?;
     Ok(owned)
 }
 use sha2::Digest;
@@ -357,26 +362,72 @@ fn replace(
 ) -> Result<()> {
     let operation = context.operation.as_ref().ok_or("更新目录缺失")?;
     context.check(j)?;
-    if operation.stat(name)?.is_none() {
-        publish(operation, name, value, limit)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut expected = operation.document_state(name, limit)?;
+        if let Some(previous) = operation.read_document(name, limit, &mut expected)? {
+            validate_previous(j, name, &previous)?;
+        }
+        let bytes = serde_json::to_vec(value).map_err(err)?;
+        context.check(j)?;
+        operation.compare_document(name, limit, &expected, Some(&bytes))?;
         return Ok(());
     }
-    let before = super::super::token_for(&operation.regular(name)?)?;
-    if operation.stat(next)?.is_some() {
-        let token = super::super::token_for(&operation.regular(next)?)?;
-        validate_private_name(context, j, next)?;
-        context.check(j)?;
-        if super::super::token_for(&operation.regular(next)?)? != token {
-            return Err("更新临时状态记录已被替换".into());
+    #[cfg(target_os = "linux")]
+    {
+        if operation.stat(name)?.is_none() {
+            publish(operation, name, value, limit)?;
+            return Ok(());
         }
-        operation.unlink(next, false)?;
+        let before = super::super::token_for(&operation.regular(name)?)?;
+        if operation.stat(next)?.is_some() {
+            let token = super::super::token_for(&operation.regular(next)?)?;
+            validate_private_name(context, j, next)?;
+            context.check(j)?;
+            if super::super::token_for(&operation.regular(next)?)? != token {
+                return Err("更新临时状态记录已被替换".into());
+            }
+            operation.unlink(next, false)?;
+        }
+        publish(operation, next, value, limit)?;
+        context.check(j)?;
+        if super::super::token_for(&operation.regular(name)?)? != before {
+            return Err("更新状态记录被外部替换".into());
+        }
+        operation.replace_journal(next, name)
     }
-    publish(operation, next, value, limit)?;
-    context.check(j)?;
-    if super::super::token_for(&operation.regular(name)?)? != before {
-        return Err("更新状态记录被外部替换".into());
+}
+#[cfg(not(target_os = "linux"))]
+fn validate_previous(j: &Journal, name: &str, bytes: &[u8]) -> Result<()> {
+    match name {
+        "journal.json" => {
+            let previous: Journal = serde_json::from_slice(bytes).map_err(err)?;
+            validate(&previous, &j.id)?;
+            if Binding::of(&previous)? != Binding::of(j)?
+                || previous.items.len() != j.items.len()
+                || previous.items.iter().zip(&j.items).any(|(a, b)| {
+                    a.kind != b.kind || a.name != b.name || a.size != b.size || a.sha512 != b.sha512
+                })
+            {
+                return Err("原生更新日志业务绑定已经变化，原文档已保留".into());
+            }
+        }
+        "status.json" => {
+            let previous: Status = serde_json::from_slice(bytes).map_err(err)?;
+            if previous.schema != 1 || previous.id != j.id || previous.binding != Binding::of(j)? {
+                return Err("原生更新状态业务绑定已经变化，原文档已保留".into());
+            }
+        }
+        "owned-marker.json" => {
+            let previous: Receipt = serde_json::from_slice(bytes).map_err(err)?;
+            if !matches!(previous, Receipt::Marker { schema:1, ref operation, ref owned } if Some(operation) == j.scope.operation.as_ref() && owned_ok(owned) && owned.size <= SMALL)
+            {
+                return Err("原生更新标记业务绑定已经变化，原文档已保留".into());
+            }
+        }
+        _ => return Err("此记录没有原生文档所有权".into()),
     }
-    operation.replace_journal(next, name)
+    Ok(())
 }
 pub(super) fn write(context: &Context, j: &Journal) -> Result<()> {
     validate(j, &j.id)?;
@@ -453,6 +504,14 @@ pub(super) fn status_ready(context: &Context) -> Result<bool> {
     for name in operation.names_with_limit(MAX_FILES * 5 + 16)? {
         if !known_private_name(&name) {
             return Err("资源更新历史含未知文件，已保留".into());
+        }
+    }
+    #[cfg(windows)]
+    if operation.stat("journal.json")?.is_some() {
+        let journal = read(context)?;
+        if journal.state.terminal() {
+            super::recovery::verify_terminal(context, &journal)?;
+            return Ok(true);
         }
     }
     if operation.stat("status.json")?.is_none() || operation.stat("journal.json")?.is_none() {
@@ -534,7 +593,7 @@ pub(super) fn create_marker(context: &Context, j: &mut Journal) -> Result<()> {
     let value = marker_value(j)?;
     let name = format!("{}.json", j.id);
     let bytes = serde_json::to_vec(&value).map_err(err)?;
-    let mut file = store.anonymous()?;
+    let mut file = store.stage_for(&name, bytes.len() as u64)?;
     file.write_all(&bytes).map_err(err)?;
     file.sync_all().map_err(err)?;
     let owned = filesystem::verify_file(
@@ -562,7 +621,7 @@ pub(super) fn create_marker(context: &Context, j: &mut Journal) -> Result<()> {
     )?;
     j.marker = Some(owned);
     context.check(j)?;
-    store.link_anonymous(&file, &name)
+    store.link_anonymous(&mut file, &name)
 }
 pub(super) fn read_marker(store: &Dir, name: &str) -> Result<Marker> {
     let value: Marker = serde_json::from_slice(&bytes(store, name, SMALL)?).map_err(err)?;

@@ -2,13 +2,13 @@
 //! payload or `None` CAS expectation. The physical base remains the same fence.
 use super::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum Presence {
     NeverCreated,
     Present,
     Tombstone,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Token {
     parent: Identity,
     name: String,
@@ -28,6 +28,14 @@ pub(crate) struct OwnedState {
     snapshot: Option<Snapshot>,
 }
 impl OwnedState {
+    pub fn fact_digest(&self) -> String {
+        // Every field is a fixed serializable native fact. This digest is
+        // journal evidence, never a deserializable CAS capability.
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&self.token).expect("native state facts serialize"))
+        )
+    }
     pub fn presence(&self) -> Presence {
         self.token.presence
     }

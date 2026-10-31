@@ -293,7 +293,8 @@ pub(super) fn publish_batch(
         &mut commit,
         &mut |_, _| {},
         modrinth_install::update_isolation(&plan).0,
-    )?;
+    );
+    let result = resource_install_commands::retire_after_publication(result, &mut files)?;
     task.update(progress(
         3,
         plan.download_bytes,
