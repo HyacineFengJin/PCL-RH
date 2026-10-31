@@ -103,11 +103,9 @@ def run(directory: Path, portable: Path) -> dict:
         setup(executable, root, directory / "install.log")
         require(registered() and shortcut.is_file(), "Installer did not register the per-user app and shortcut")
         env = {**os.environ, "PCL_SETUP_ROOT": str(root), "PCL_SETUP_LINK": str(shortcut)}
-        shortcut_raw = subprocess.check_output(["pwsh", "-NoProfile", "-NonInteractive", "-Command",
-                        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
-                        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:PCL_SETUP_LINK); "
-                        "@{targetPath=$s.TargetPath;workingDirectory=$s.WorkingDirectory;arguments=$s.Arguments} "
-                        "| ConvertTo-Json -Compress"], env=env, text=True, encoding="utf-8", timeout=20)
+        shortcut_raw = subprocess.check_output(["pwsh", "-NoProfile", "-NonInteractive", "-File",
+                        str(Path(__file__).with_name("read-shortcut.ps1"))],
+                        env=env, text=True, encoding="utf-8", timeout=20)
         shortcut_metadata = json.loads(shortcut_raw)
         (directory / "shortcut-verification.json").write_text(json.dumps(shortcut_metadata, indent=2) + "\n")
         verify_shortcut(shortcut_metadata, root)
