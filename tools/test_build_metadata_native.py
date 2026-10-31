@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
@@ -107,9 +106,11 @@ fn main() {{
         self.assertEqual(self.probe(), new_commit)
 
     def test_archive_inside_another_repository_has_no_parent_identity(self) -> None:
-        # Remove this checkout's metadata, and create a separate parent repo.
+        # Move this checkout's metadata outside the archive, and create a
+        # separate parent repo. Git objects can be read-only on Windows; their
+        # contents and permissions need not change to test upward discovery.
         # Git's normal upward discovery must not authenticate the archive.
-        shutil.rmtree(self.root / ".git")
+        (self.root / ".git").rename(self.base / "retained-fixture-git")
         self.command(["git", "-C", str(self.base), "init", "-q"])
         self.command(["git", "-C", str(self.base), "-c", "user.name=Parent fixture",
                       "-c", "user.email=parent@example.invalid", "commit", "--allow-empty",

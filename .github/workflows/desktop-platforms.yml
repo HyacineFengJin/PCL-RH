@@ -134,17 +134,17 @@ jobs:
 
           output = pathlib.Path('platform-build-report')
           output.mkdir(exist_ok=True)
-          host = subprocess.check_output(['rustc', '+stable', '-vV'], text=True)
+          environment = os.environ.copy()
+          key = environment.pop('OFFICIAL_CURSEFORGE_KEY', '')
+          environment.pop('PCL_RH_CURSEFORGE_API_KEY', None)
+          environment.pop('PCL_RH_CURSEFORGE_API_KEY_FILE', None)
+          host = subprocess.check_output(['rustc', '+stable', '-vV'], text=True, env=environment)
           (output / 'toolchain.txt').write_text(host, encoding='utf-8')
           print(host, flush=True)
           command = ['cargo', '+stable', 'build', '--locked', '-p', 'pcl-desktop',
                      '-p', 'pcl-cli', '--features', 'pcl-desktop/custom-protocol', '-j', '2']
           if os.environ['BUILD_PROFILE'] == 'release':
               command.append('--release')
-          environment = os.environ.copy()
-          key = environment.pop('OFFICIAL_CURSEFORGE_KEY', '')
-          environment.pop('PCL_RH_CURSEFORGE_API_KEY', None)
-          environment.pop('PCL_RH_CURSEFORGE_API_KEY_FILE', None)
           if os.environ['OFFICIAL_BUILD'] == 'true':
               if not key or len(key) > 4096 or not all(33 <= ord(c) <= 126 for c in key):
                   raise SystemExit('Missing or invalid official CurseForge build secret')
