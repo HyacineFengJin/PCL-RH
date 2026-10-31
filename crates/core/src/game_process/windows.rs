@@ -2,6 +2,9 @@
 //! suspended image is assigned before it runs; monitor death closes the private
 //! non-inherited Job and cleans only this game tree.
 use super::Identity;
+#[path = "windows/cwd.rs"]
+mod cwd;
+use cwd::CwdLease;
 use std::{
     cell::UnsafeCell,
     ffi::OsString,
@@ -571,6 +574,7 @@ pub(super) struct Owner {
     stderr: Option<Output>,
     assigned: bool,
     result: Option<ExitStatus>,
+    cwd: Option<CwdLease>,
 }
 // Win32 kernel handles may be used on another thread. They are private and not
 // inherited; the owner keeps every handle alive through all calls.
@@ -609,6 +613,9 @@ impl Owner {
                 } != 0
                     && accounting.ActiveProcesses == 0;
             if process_gone && job_empty {
+                // The monitor owns this lease, and the entire private Job is
+                // empty before cwd graph/anchor protection can be released.
+                self.cwd.take();
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -656,7 +663,16 @@ impl Owner {
 }
 impl Drop for Owner {
     fn drop(&mut self) {
-        let _ = self.terminate();
+        if self.terminate().is_err() {
+            // Closing the Job requests kill-on-close, but does not prove that
+            // kernel cleanup has finished. Keep exceptional cwd capabilities
+            // until monitor process exit rather than unlock beneath a child.
+            // This bounded-per-owner fallback does no IO, waiting, or guessed
+            // pathname deletion, and never affects an unrelated process.
+            if let Some(cwd) = self.cwd.take() {
+                std::mem::forget(cwd);
+            }
+        }
     }
 }
 
@@ -692,6 +708,23 @@ fn argument(output: &mut Vec<u16>, units: &[u16]) {
     output.push(b'"' as u16);
 }
 pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Owner> {
+    spawn_owned(program, args, cwd, None)
+}
+pub(super) fn spawn_in_directory(
+    program: &Path,
+    args: &[OsString],
+    cwd: &std::fs::File,
+) -> Result<Owner> {
+    let lease = CwdLease::new(cwd).map_err(|error| format!("无法固定游戏工作目录：{error}"))?;
+    let path = lease.path().to_owned();
+    spawn_owned(program, args, &path, Some(lease))
+}
+fn spawn_owned(
+    program: &Path,
+    args: &[OsString],
+    cwd: &Path,
+    cwd_lease: Option<CwdLease>,
+) -> Result<Owner> {
     if !program.is_absolute() || !cwd.is_absolute() || args.len() > 4096 {
         return Err("游戏启动映像或工作目录无效".into());
     }
@@ -762,6 +795,11 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Own
     startup.StartupInfo.hStdError = err_writer.0;
     startup.lpAttributeList = attributes.pointer();
     let mut information = PROCESS_INFORMATION::default();
+    if let Some(lease) = &cwd_lease {
+        lease
+            .recheck()
+            .map_err(|error| format!("游戏工作目录固定后发生变化：{error}"))?;
+    }
     if unsafe {
         CreateProcessW(
             image.as_ptr(),
@@ -788,6 +826,7 @@ pub(super) fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Own
         stderr: Some(stderr),
         assigned: false,
         result: None,
+        cwd: cwd_lease,
     };
     drop(attributes);
     drop(input);

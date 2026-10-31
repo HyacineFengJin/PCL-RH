@@ -81,11 +81,17 @@ impl io::Read for GameOutput {
 impl GameChild {
     /// Execute the exact image without an implicit command interpreter. The
     /// cwd here is a conventional path, not a directory capability; privileged
-    /// callers requiring a pinned cwd must use `spawn_in_directory` on Unix.
+    /// callers requiring a pinned cwd must use `spawn_in_directory`.
     pub fn spawn(program: &Path, args: &[OsString], cwd: &Path) -> Result<Self, String> {
         owned::spawn(program, args, cwd).map(Self)
     }
-    #[cfg(unix)]
+    /// Start from a retained literal directory. On Windows this requires a
+    /// local NTFS volume with a native volume-GUID path and keeps a NoDelete
+    /// ancestor graph plus a small private anchor while the owning monitor is
+    /// alive. Normal wait/stop releases leases only after its Job is empty.
+    /// The anchor may remain afterward. Abrupt monitor death closes Job and
+    /// leases together; their cleanup order is not a cwd-safety guarantee.
+    /// This owner-live guard is not an executable or filesystem sandbox.
     pub fn spawn_in_directory(
         program: &Path,
         args: &[OsString],
