@@ -8,7 +8,7 @@ mod junction_fixture;
 
 use pcl_core::{
     game_process::{self, GameChild},
-    retained_fs::{self, Directory, Identity, Kind, Leaf},
+    retained_fs::{self, Directory, Identity, Kind},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -400,6 +400,10 @@ fn pinned_relative_io_normal_exit_and_mutation_rejection() {
     // after GameChild confirms leader exit and the entire Job is empty.
     let anchor = fixture.anchor();
     fs::remove_file(anchor).unwrap();
+    // The API borrows the caller's input; it must not close that caller-owned
+    // handle. Windows also refuses moving an ancestor of this open directory.
+    // Retire the independent fixture input before testing released graph locks.
+    drop(fixture.input);
     fs::rename(&fixture.tree, fixture.tree.with_file_name("completed-tree")).unwrap();
 }
 
@@ -417,6 +421,7 @@ fn pinned_stop_keeps_graph_until_owned_job_is_empty() {
     fixture.assert_io();
     assert_eq!(fixture.outside_hash(), before);
     fs::remove_file(fixture.anchor()).unwrap();
+    drop(fixture.input);
     fs::rename(&fixture.tree, fixture.tree.with_file_name("stopped-tree")).unwrap();
 }
 
