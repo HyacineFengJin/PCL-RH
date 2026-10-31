@@ -22,6 +22,58 @@ pub(super) struct Node {
     stamp: Metadata,
     fixed_path: std::ffi::OsString,
 }
+pub(super) const NODE_MISSING: &str = "PCL_NODE_MISSING:";
+pub(super) const NODE_UNSUPPORTED: &str = "PCL_NODE_UNSUPPORTED:";
+
+fn definitely_missing(candidate: &Path) -> io::Result<bool> {
+    let mut ancestor = candidate;
+    loop {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                // A dangling final link or ancestor is an existing, broken
+                // installation, not proof that Node was never installed.
+                if metadata.file_type().is_symlink() || cfg!(windows) && reparse(&metadata) {
+                    ancestor.canonicalize().map_err(|error| {
+                        io::Error::other(format!(
+                            "Existing Node installation link cannot be resolved: {error}"
+                        ))
+                    })?;
+                }
+                if ancestor != candidate {
+                    let resolved = ancestor.canonicalize().map_err(|error| {
+                        io::Error::other(format!(
+                            "Existing Node installation path changed: {error}"
+                        ))
+                    })?;
+                    let projected =
+                        resolved.join(candidate.strip_prefix(ancestor).map_err(io::Error::other)?);
+                    if !permitted_resolution(candidate, &projected) {
+                        return Err(io::Error::other(
+                            "System Node installation path resolves outside its prefix",
+                        ));
+                    }
+                }
+                return Ok(ancestor != candidate);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().ok_or(error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+fn reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
+}
 #[cfg(windows)]
 fn known_folder(id: &windows_sys::core::GUID) -> io::Result<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
@@ -96,8 +148,23 @@ fn permitted_resolution(candidate: &Path, resolved: &Path) -> bool {
 impl Node {
     pub(super) fn discover() -> io::Result<Self> {
         let (candidates, fixed_path) = candidates()?;
-        let mut last = None;
+        Self::discover_from(candidates, fixed_path)
+    }
+    fn discover_from(candidates: Vec<PathBuf>, fixed_path: std::ffi::OsString) -> io::Result<Self> {
+        let mut first_error = None;
+        let mut missing = 0;
         for candidate in candidates {
+            match definitely_missing(&candidate) {
+                Ok(true) => {
+                    missing += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            }
             let result = (|| {
                 #[cfg(windows)]
                 let path = candidate.clone();
@@ -121,6 +188,14 @@ impl Node {
                 if stamp.kind != Kind::Regular || stamp.reparse_tag.is_some() {
                     return Err(io::Error::other("System Node is not a regular executable"));
                 }
+                #[cfg(unix)]
+                if matches!(&stamp.security, retained_fs::Security::Unix { mode, .. } if mode & 0o111 == 0)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "System Node is not executable",
+                    ));
+                }
                 parent.recheck(&name, &stamp.identity)?;
                 Ok(Self {
                     path,
@@ -133,11 +208,33 @@ impl Node {
             })();
             match result {
                 Ok(node) => return Ok(node),
-                Err(error) => last = Some(error),
+                Err(error) => {
+                    // This candidate was observed to exist. A subsequent
+                    // NotFound is a discovery race/broken installation, never
+                    // an all-candidates-missing result.
+                    first_error.get_or_insert_with(|| {
+                        if error.kind() == io::ErrorKind::NotFound {
+                            io::Error::other(format!(
+                                "Existing Node candidate changed during discovery: {error}"
+                            ))
+                        } else {
+                            error
+                        }
+                    });
+                }
             }
         }
-        Err(last.unwrap_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "System Node is not installed")
+        Err(first_error.unwrap_or_else(|| {
+            if missing == 0 {
+                return io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "No supported system Node locations are configured",
+                );
+            }
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{NODE_MISSING} System Node is not installed at a supported location"),
+            )
         }))
     }
     pub(super) fn recheck(&self) -> io::Result<()> {
@@ -396,20 +493,97 @@ pub(super) fn wait_retired(completed: &AtomicBool, deadline: Instant) -> bool {
     }
     true
 }
-pub(super) fn supported_version(bytes: &[u8]) -> bool {
-    let Ok(version) = std::str::from_utf8(bytes) else {
-        return false;
-    };
-    let Some(version) = version.trim().strip_prefix('v') else {
-        return false;
-    };
+pub(super) fn parse_version(bytes: &[u8]) -> Option<(u32, u32, u32)> {
+    let version = std::str::from_utf8(bytes).ok()?.trim().strip_prefix('v')?;
     let mut numbers = version.split('.');
-    let (Some(major), Some(minor), Some(patch)) = (numbers.next(), numbers.next(), numbers.next())
-    else {
-        return false;
+    let mut number = || {
+        let text = numbers.next()?;
+        (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| text.parse::<u32>().ok())
+            .flatten()
     };
-    if numbers.next().is_some() || patch.parse::<u32>().is_err() {
-        return false;
+    let result = (number()?, number()?, number()?);
+    if numbers.next().is_some() {
+        return None;
     }
-    matches!((major.parse::<u32>(), minor.parse::<u32>()), (Ok(major), Ok(minor)) if major > 22 || (major == 22 && minor >= 19))
+    Some(result)
+}
+pub(super) fn supported_version(bytes: &[u8]) -> bool {
+    matches!(parse_version(bytes), Some((major, minor, _)) if major > 22 || (major == 22 && minor >= 19))
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    #[test]
+    fn only_all_confirmed_missing_candidates_have_the_missing_prefix() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let missing = root.join("missing/node");
+        let empty = Node::discover_from(vec![], "fixed".into()).err().unwrap();
+        assert_eq!(empty.kind(), io::ErrorKind::Unsupported);
+        assert!(!empty.to_string().starts_with(NODE_MISSING));
+        let error = Node::discover_from(vec![missing.clone()], "synthetic fixed path".into())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().starts_with(NODE_MISSING));
+        let unsafe_path = root.join("not-a-file");
+        std::fs::create_dir(&unsafe_path).unwrap();
+        let error = Node::discover_from(vec![unsafe_path, missing], "synthetic fixed path".into())
+            .err()
+            .unwrap();
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!error.to_string().starts_with(NODE_MISSING));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn broken_links_and_nonexecutables_are_not_overwritten_by_a_later_missing_candidate() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let missing = root.join("missing");
+        let broken = root.join("broken");
+        symlink(&missing, &broken).unwrap();
+        let broken_parent = root.join("broken-parent");
+        symlink(root.join("missing-directory"), &broken_parent).unwrap();
+        for candidate in [broken, broken_parent.join("node")] {
+            let error = Node::discover_from(vec![candidate, missing.clone()], "fixed".into())
+                .err()
+                .unwrap();
+            assert_ne!(error.kind(), io::ErrorKind::NotFound);
+            assert!(!error.to_string().starts_with(NODE_MISSING));
+        }
+        let noexec = root.join("node-noexec");
+        std::fs::write(&noexec, b"synthetic bytes, never executed").unwrap();
+        std::fs::set_permissions(&noexec, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let error = Node::discover_from(vec![noexec, missing], "fixed".into())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(!error.to_string().starts_with(NODE_MISSING));
+    }
+    #[test]
+    fn retained_candidate_rejects_actual_file_change_without_execution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let path = root.join("node");
+        std::fs::write(&path, b"synthetic bytes, never executed").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let node = Node::discover_from(vec![path.clone()], "fixed".into()).unwrap();
+        node.recheck().unwrap();
+        // In-place metadata/content changes are valid on Windows even when the
+        // held file prevents deleting/replacing its directory entry.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(1)
+            .unwrap();
+        assert!(node.recheck().is_err());
+    }
 }

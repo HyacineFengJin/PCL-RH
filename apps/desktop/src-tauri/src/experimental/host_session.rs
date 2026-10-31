@@ -22,8 +22,16 @@ impl Session {
         let lease = Arc::new(
             Lease::open(project).map_err(|error| format!("无法取得实验功能宿主锁：{error}"))?,
         );
-        let node =
-            Node::discover().map_err(|error| format!("无法定位系统 Node.js 22.19+：{error}"))?;
+        let node = Node::discover().map_err(|error| {
+            let message = error.to_string();
+            if error.kind() == std::io::ErrorKind::NotFound
+                && message.starts_with(host_process::NODE_MISSING)
+            {
+                message
+            } else {
+                format!("无法定位系统 Node.js 22.19+：{message}")
+            }
+        })?;
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut probe = Process::spawn(
             node.version_command().map_err(|e| e.to_string())?,
@@ -35,9 +43,7 @@ impl Session {
             node.recheck()?;
             let bytes = host_io::version(&mut probe, deadline)?;
             let status = probe.wait_exit(deadline)?;
-            if !status.success() || !host_process::supported_version(&bytes) {
-                return Err(std::io::Error::other("需要系统 Node.js 22.19 或更高版本"));
-            }
+            check_version(status.success(), &bytes)?;
             node.recheck()?;
             lease.recheck()
         })();
@@ -45,14 +51,22 @@ impl Session {
         drop(probe);
         let retired =
             host_process::wait_retired(&completed, Instant::now() + Duration::from_millis(500));
-        checked.map_err(|error| format!("无法使用系统 Node.js 22.19+：{error}"))?;
+        checked.map_err(|error| {
+            let message = error.to_string();
+            if error.kind() == std::io::ErrorKind::Unsupported
+                && message.starts_with(host_process::NODE_UNSUPPORTED)
+            {
+                message
+            } else {
+                format!("无法使用系统 Node.js 22.19+：{message}")
+            }
+        })?;
         if !retired {
             return Err("Node.js 版本探测进程尚未完成退役，请稍后重试".into());
         }
         let command = node.host_command(&lease).map_err(|e| e.to_string())?;
-        let child = Process::spawn(command, lease.clone(), lifecycle.clone()).map_err(|error| {
-            format!("无法启动实验功能引擎（需要 Node.js 22.19+ 和 Python 3.11+）：{error}")
-        })?;
+        let child = Process::spawn(command, lease.clone(), lifecycle.clone())
+            .map_err(|error| format!("无法启动实验功能引擎（需要 Node.js 22.19+）：{error}"))?;
         node.recheck()
             .and_then(|_| lease.recheck())
             .map_err(|e| e.to_string())?;
@@ -123,6 +137,57 @@ impl Session {
         drop(self.channel.take());
         drop(self);
         host_process::wait_retired(&completed, Instant::now() + Duration::from_millis(500))
+    }
+}
+
+fn check_version(success: bool, bytes: &[u8]) -> std::io::Result<()> {
+    if !success {
+        return Err(std::io::Error::other("系统 Node.js 版本探测进程执行失败"));
+    }
+    if host_process::parse_version(bytes).is_none() {
+        return Err(std::io::Error::other(
+            "系统 Node.js 版本探测返回了无效版本信息",
+        ));
+    }
+    if !host_process::supported_version(bytes) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "{} 需要系统 Node.js 22.19 或更高版本",
+                host_process::NODE_UNSUPPORTED
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_successfully_parsed_old_versions_are_unsupported() {
+        for bytes in [b"v22.18.9\n".as_slice(), b"v20.1.0"] {
+            let error = check_version(true, bytes).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+            assert!(error
+                .to_string()
+                .starts_with(host_process::NODE_UNSUPPORTED));
+        }
+        for (success, bytes) in [
+            (false, b"v20.1.0".as_slice()),
+            (false, b"v24.0.0"),
+            (true, b"not a version"),
+            (true, b"\xff"),
+            (true, b"v22.19.+1"),
+        ] {
+            let error = check_version(success, bytes).unwrap_err();
+            assert!(!error
+                .to_string()
+                .starts_with(host_process::NODE_UNSUPPORTED));
+            assert!(!error.to_string().starts_with(host_process::NODE_MISSING));
+        }
+        assert!(check_version(true, b"v22.19.0\n").is_ok());
+        assert!(check_version(true, b"v24.0.0\n").is_ok());
     }
 }
 impl Drop for Session {

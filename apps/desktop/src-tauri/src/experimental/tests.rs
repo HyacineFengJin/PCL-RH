@@ -65,6 +65,138 @@ fn never_used_suspend_does_not_start_or_create_data() {
     assert!(!fixture.0.join(".pcl-rust").exists());
     assert!(host.is_stopped());
 }
+
+#[test]
+fn absent_passive_projections_have_no_session_store_lock_or_authority_token() {
+    let fixture = Fixture::new();
+    let host = Host::new(fixture.0.clone());
+    for slot in [
+        "home.secondary",
+        "tools.cards",
+        "rh-code.cards",
+        "settings.cards",
+        "home.banner",
+        "home.quick-actions",
+        "settings.launch",
+        "settings.java",
+        "settings.manage",
+        "settings.language",
+        "settings.misc",
+    ] {
+        assert_eq!(
+            host.call("extensions_cards", json!({"slot":slot})).unwrap(),
+            json!([])
+        );
+    }
+    assert_eq!(
+        host.call("extensions_catalog", json!({})).unwrap(),
+        json!({"panels":[],"actions":[]})
+    );
+    let operations = Mutex::new(());
+    let result = host.call_with_effect("extensions_cards", json!({"slot":"rh-code.cards", "context":{
+        "rootId":"synthetic-root", "instanceId":"synthetic-instance", "revision":"fixture",
+        "summary":{"minecraftVersion":"1.21", "loader":"Fabric", "modCount":0, "isolated":true}
+    }}), Some(&operations), |result, guard| {
+        assert!(guard.is_some());
+        assert!(operations.try_lock().is_err());
+        assert!(host.session.try_lock().is_err());
+        assert_eq!(host.callers.load(Ordering::SeqCst), 1);
+        Ok(result)
+    }).unwrap();
+    assert_eq!(result, json!([]));
+    assert!(host.session.lock().unwrap().is_none());
+    assert!(!fixture.0.join(".pcl-rust").exists());
+    assert_eq!(host.retiring.load(Ordering::Acquire), 0);
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert!(host.resume_preset.lock().unwrap().is_none());
+    assert!(host.is_stopped());
+}
+
+#[test]
+fn passive_fastpath_preserves_filters_management_close_and_retirement_routes() {
+    for (operation, args) in [
+        (
+            "extensions_cards",
+            json!({"slot":"rh-code.cards", "filter":null}),
+        ),
+        (
+            "extensions_cards",
+            json!({"slot":"rh-code.cards", "filter":{"extensionId":"x","cardId":"y"}}),
+        ),
+        ("extensions_cards", json!({"slot":"unknown"})),
+        (
+            "extensions_cards",
+            json!({"slot":"rh-code.cards", "context":false}),
+        ),
+        ("extensions_catalog", json!({"filter":null})),
+        ("extensions_list", json!({})),
+        ("extensions_confirm", json!({})),
+        ("extensions_action", json!({})),
+        ("source_import", json!({})),
+        ("status", json!({})),
+        ("rh_code_run", json!({})),
+    ] {
+        assert!(passive_empty_projection(operation, &args).is_none());
+    }
+    let fixture = Fixture::new();
+    let host = Host::new(fixture.0.clone());
+    host.retiring.store(1, Ordering::SeqCst);
+    assert!(host
+        .call("extensions_cards", json!({"slot":"home.secondary"}))
+        .unwrap_err()
+        .contains("退役"));
+    host.retiring.store(0, Ordering::SeqCst);
+    host.closing.store(true, Ordering::SeqCst);
+    assert_eq!(
+        host.call("extensions_catalog", json!({})).unwrap_err(),
+        "启动器正在关闭"
+    );
+    assert!(host.session.lock().unwrap().is_none());
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert!(!fixture.0.join(".pcl-rust").exists());
+}
+
+#[test]
+fn live_sessions_and_existing_even_invalid_store_bytes_keep_the_real_node_route() {
+    let fixture = Fixture::new();
+    let host = Host::new(fixture.0.clone());
+    host.call("status", json!({})).unwrap();
+    let pid = host.session.lock().unwrap().as_ref().unwrap().child.id();
+    assert!(host
+        .call("extensions_cards", json!({"slot":"home.secondary"}))
+        .unwrap()
+        .is_object());
+    assert_eq!(
+        host.session.lock().unwrap().as_ref().unwrap().child.id(),
+        pid
+    );
+    assert!(host.suspend().unwrap().released);
+    assert_eq!(
+        host.call("extensions_cards", json!({"slot":"home.secondary"}))
+            .unwrap(),
+        json!([])
+    );
+    assert!(host.session.lock().unwrap().is_none());
+    let data =
+        pcl_core::retained_fs::Directory::open_absolute(&fixture.0.join(".pcl-rust/experimental"))
+            .unwrap();
+    use std::io::Write;
+    data.create_file(&pcl_core::retained_fs::Leaf::new("extensions.json").unwrap())
+        .unwrap()
+        .write_all(b"not valid JSON; only the real host may interpret it")
+        .unwrap();
+    assert!(host
+        .call("extensions_catalog", json!({}))
+        .unwrap()
+        .get("preset")
+        .is_some());
+    assert!(host.session.lock().unwrap().is_some());
+    assert_eq!(
+        fs::read(fixture.0.join(".pcl-rust/experimental/extensions.json")).unwrap(),
+        b"not valid JSON; only the real host may interpret it"
+    );
+    assert!(host.suspend().unwrap().released);
+}
 #[test]
 fn source_release_without_a_session_never_starts_or_creates_data() {
     let fixture = Fixture::new();

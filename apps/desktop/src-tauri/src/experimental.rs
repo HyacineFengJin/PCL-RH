@@ -233,6 +233,23 @@ impl Host {
         if self.closing.load(Ordering::SeqCst) {
             return Err("启动器正在关闭".into());
         }
+        // Only never-started passive projections can avoid owning Node. An
+        // existing/broken session or pending retirement keeps the old route.
+        if owner.is_none() && self.retiring.load(Ordering::Acquire) == 0 {
+            if let Some(empty) = passive_empty_projection(operation, &args) {
+                if host_files::extensions_absent(&self.project)
+                    .map_err(|error| format!("无法检查实验功能扩展存储：{error}"))?
+                {
+                    if self.closing.load(Ordering::SeqCst) {
+                        return Err("启动器正在关闭".into());
+                    }
+                    if self.retiring.load(Ordering::Acquire) != 0 {
+                        return Err("实验功能引擎正在退役，请稍后重试".into());
+                    }
+                    return effect(empty, operation_guard);
+                }
+            }
+        }
         // A failed idle probe leaves ownership intact until an ordinary call or
         // app exit requests recovery. Its unread stdio reply cannot be consumed
         // as the next operation's result.
@@ -384,6 +401,45 @@ impl Host {
                 host.stopped.store(true, Ordering::SeqCst);
             }
         });
+    }
+}
+
+fn passive_empty_projection(operation: &str, args: &Value) -> Option<Value> {
+    let fields = args.as_object()?;
+    if fields
+        .get("context")
+        .is_some_and(|context| !context.is_null() && !context.is_object())
+    {
+        return None;
+    }
+    match operation {
+        "extensions_cards"
+            if fields
+                .keys()
+                .all(|key| matches!(key.as_str(), "slot" | "context"))
+                && matches!(
+                    fields.get("slot").and_then(Value::as_str),
+                    Some(
+                        "home.secondary"
+                            | "tools.cards"
+                            | "rh-code.cards"
+                            | "settings.cards"
+                            | "home.banner"
+                            | "home.quick-actions"
+                            | "settings.launch"
+                            | "settings.java"
+                            | "settings.manage"
+                            | "settings.language"
+                            | "settings.misc"
+                    )
+                ) =>
+        {
+            Some(json!([]))
+        }
+        "extensions_catalog" if fields.keys().all(|key| key == "context") => {
+            Some(json!({"panels":[],"actions":[]}))
+        }
+        _ => None,
     }
 }
 #[tauri::command]

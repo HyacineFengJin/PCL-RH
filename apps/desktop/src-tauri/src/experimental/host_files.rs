@@ -58,6 +58,115 @@ fn data_security(directory: &Directory) -> io::Result<()> {
     metadata.require_private()?;
     Ok(())
 }
+
+/// A read-only proof for the passive empty projection. Existing store entries
+/// (including links, invalid kinds and invalid JSON) always belong to Node.
+pub(super) fn extensions_absent(project_path: &Path) -> io::Result<bool> {
+    match ExtensionAbsence::capture(project_path)? {
+        Some(proof) => proof.recheck(),
+        None => Ok(false),
+    }
+}
+struct ExtensionAbsence {
+    path: PathBuf,
+    project: Directory,
+    app: Option<Directory>,
+    data: Option<Directory>,
+}
+impl ExtensionAbsence {
+    fn capture(path: &Path) -> io::Result<Option<Self>> {
+        let project = Directory::open_absolute(path)?;
+        let mut proof = Self {
+            path: path.to_owned(),
+            project,
+            app: None,
+            data: None,
+        };
+        let name = leaf(".pcl-rust")?;
+        if proof.project.entry(&name)?.is_none() {
+            return Ok(Some(proof));
+        }
+        let app = proof.project.child(&name, Traversal::SameFilesystem)?;
+        app_security(&app)?;
+        proof.project.recheck(&name, &app.identity()?)?;
+        proof.app = Some(app);
+        let app = proof.app.as_ref().unwrap();
+        let name = leaf("experimental")?;
+        if app.entry(&name)?.is_none() {
+            return Ok(Some(proof));
+        }
+        let data = app.child(&name, Traversal::SameFilesystem)?;
+        data_security(&data)?;
+        app.recheck(&name, &data.identity()?)?;
+        proof.data = Some(data);
+        if proof
+            .data
+            .as_ref()
+            .unwrap()
+            .entry(&leaf("extensions.json")?)?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(proof))
+    }
+    fn carriers(&self) -> io::Result<()> {
+        if Directory::open_absolute(&self.path)?.identity()? != self.project.identity()? {
+            return Err(io::Error::other("Experimental project directory changed"));
+        }
+        if let Some(app) = &self.app {
+            self.project
+                .recheck(&leaf(".pcl-rust")?, &app.identity()?)?;
+            app_security(app)?;
+            if let Some(data) = &self.data {
+                app.recheck(&leaf("experimental")?, &data.identity()?)?;
+                data_security(data)?;
+            }
+        }
+        Ok(())
+    }
+    fn missing(&self) -> io::Result<bool> {
+        if let Some(data) = &self.data {
+            return Ok(data.entry(&leaf("extensions.json")?)?.is_none());
+        }
+        if let Some(app) = &self.app {
+            return Ok(app.entry(&leaf("experimental")?)?.is_none());
+        }
+        Ok(self.project.entry(&leaf(".pcl-rust")?)?.is_none())
+    }
+    fn recheck(&self) -> io::Result<bool> {
+        self.carriers()?;
+        if !self.missing()? {
+            return Ok(false);
+        }
+        if let Some(data) = &self.data {
+            let name = leaf("host.lock")?;
+            if let Some(before) = data.entry(&name)? {
+                // Match Lease::recheck explicitly, including legacy Linux data
+                // directories whose own policy is owned rather than private.
+                before.require_private()?;
+                let file = data.open_regular(&name, Links::Single)?;
+                if retained_fs::metadata(&file)? != before {
+                    return Err(io::Error::other("Experimental host lock changed"));
+                }
+                let held = retained_fs::shared_lock_is_held(&file)?;
+                data.recheck(&name, &before.identity)?;
+                if retained_fs::metadata(&file)? != before {
+                    return Err(io::Error::other("Experimental host lock changed"));
+                }
+                if held {
+                    return Ok(false);
+                }
+            }
+        }
+        // Every missing level shares the same posterior graph/security check;
+        // a nofollow ENOENT alone never proves a rebound project/app absent.
+        self.carriers()?;
+        let absent = self.missing()?;
+        self.carriers()?;
+        Ok(absent)
+    }
+}
 fn ensure(
     parent: &Directory,
     name: &str,
@@ -143,5 +252,163 @@ impl Lease {
         }
         self.resources
             .recheck(&leaf("host.mjs")?, &self.script_stamp.identity)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, io::Write};
+
+    fn fixture() -> (tempfile::TempDir, PathBuf) {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("project");
+        fs::create_dir(&path).unwrap();
+        (temporary, path.canonicalize().unwrap())
+    }
+    fn data(path: &Path) -> (Directory, Directory, Directory) {
+        let project = Directory::open_absolute(path).unwrap();
+        let app = project
+            .create_private(&leaf(".pcl-rust").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        let data = app
+            .create_private(&leaf("experimental").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        (project, app, data)
+    }
+
+    #[test]
+    fn passive_absence_is_readonly_at_each_missing_level_and_existing_bytes_are_not_parsed() {
+        let (_temporary, path) = fixture();
+        assert!(extensions_absent(&path).unwrap());
+        assert!(!path.join(".pcl-rust").exists());
+        let project = Directory::open_absolute(&path).unwrap();
+        let app = project
+            .create_private(&leaf(".pcl-rust").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        assert!(extensions_absent(&path).unwrap());
+        assert!(!path.join(".pcl-rust/experimental").exists());
+        let data = app
+            .create_private(&leaf("experimental").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        assert!(extensions_absent(&path).unwrap());
+        assert!(data.names(1).unwrap().is_empty());
+        let mut file = data.create_file(&leaf("extensions.json").unwrap()).unwrap();
+        assert!(
+            !extensions_absent(&path).unwrap(),
+            "an existing empty file still belongs to Node"
+        );
+        file.write_all(b"not valid JSON or a permission schema")
+            .unwrap();
+        assert!(!extensions_absent(&path).unwrap());
+        assert_eq!(
+            fs::read(path.join(".pcl-rust/experimental/extensions.json")).unwrap(),
+            b"not valid JSON or a permission schema"
+        );
+        assert!(!path.join(".pcl-rust/experimental/host.lock").exists());
+    }
+
+    #[test]
+    fn absent_proofs_reject_project_app_and_data_path_substitution() {
+        for missing in ["app", "data", "store"] {
+            let (_temporary, path) = fixture();
+            let project = Directory::open_absolute(&path).unwrap();
+            if missing != "app" {
+                let app = project
+                    .create_private(&leaf(".pcl-rust").unwrap(), Traversal::SameFilesystem)
+                    .unwrap();
+                if missing == "store" {
+                    app.create_private(&leaf("experimental").unwrap(), Traversal::SameFilesystem)
+                        .unwrap();
+                }
+            }
+            let proof = ExtensionAbsence::capture(&path).unwrap().unwrap();
+            let target = match missing {
+                "app" => path.clone(),
+                "data" => path.join(".pcl-rust"),
+                _ => path.join(".pcl-rust/experimental"),
+            };
+            let retained = target.with_file_name(format!("retained-{missing}"));
+            fs::rename(&target, &retained).unwrap();
+            fs::create_dir(&target).unwrap();
+            assert!(
+                proof.recheck().is_err(),
+                "rebound {missing} was treated as empty"
+            );
+            assert!(!target.join("host.lock").exists());
+        }
+    }
+
+    #[test]
+    fn appearing_store_or_a_live_existing_lease_cannot_be_reported_empty() {
+        let (_temporary, path) = fixture();
+        let project = Directory::open_absolute(&path).unwrap();
+        let resources = project
+            .create_private(&leaf("experimental").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        resources
+            .create_file(&leaf("host.mjs").unwrap())
+            .unwrap()
+            .write_all(b"// never executed")
+            .unwrap();
+        let lease = Lease::open(&path).unwrap();
+        assert!(
+            !extensions_absent(&path).unwrap(),
+            "a different live native lease was hidden"
+        );
+        drop(lease);
+        assert!(
+            extensions_absent(&path).unwrap(),
+            "an unlocked existing lock is not a live session"
+        );
+        let proof = ExtensionAbsence::capture(&path).unwrap().unwrap();
+        let app = project
+            .child(&leaf(".pcl-rust").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        let data = app
+            .child(&leaf("experimental").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        data.create_file(&leaf("extensions.json").unwrap()).unwrap();
+        assert!(!proof.recheck().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_carriers_and_foreign_writable_app_are_not_absence() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (_temporary, path) = fixture();
+        symlink(path.join("missing-target"), path.join(".pcl-rust")).unwrap();
+        assert!(extensions_absent(&path).is_err());
+        fs::remove_file(path.join(".pcl-rust")).unwrap();
+        let (_project, _app, data) = data(&path);
+        symlink(
+            path.join("missing-store"),
+            path.join(".pcl-rust/experimental/extensions.json"),
+        )
+        .unwrap();
+        assert!(!extensions_absent(&path).unwrap());
+        fs::remove_file(path.join(".pcl-rust/experimental/extensions.json")).unwrap();
+        fs::set_permissions(path.join(".pcl-rust"), fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(extensions_absent(&path).is_err());
+        assert!(data.names(1).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_weak_host_lock_cannot_be_hidden_by_an_absent_store() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temporary, path) = fixture();
+        let (_project, _app, data) = data(&path);
+        data.create_file(&leaf("host.lock").unwrap()).unwrap();
+        let lock = path.join(".pcl-rust/experimental/host.lock");
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = extensions_absent(&path).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            fs::metadata(&lock).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(fs::read(&lock).unwrap(), b"");
+        assert!(!path.join(".pcl-rust/experimental/extensions.json").exists());
     }
 }
