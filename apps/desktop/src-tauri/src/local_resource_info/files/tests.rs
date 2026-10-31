@@ -193,7 +193,12 @@ fn hardlinked_resource_and_outside_directory_alias_are_refused() {
 fn game_metadata_uses_physical_bytes_even_for_a_launcher_document_basename() {
     use crate::launcher_local::filesystem::Snapshot;
     let temporary = tempfile::tempdir().unwrap();
-    let path = temporary.path().canonicalize().unwrap();
+    let parent = temporary.path().canonicalize().unwrap();
+    Directory::open_absolute(&parent)
+        .unwrap()
+        .create_private(&Leaf::new("game").unwrap(), Traversal::SameFilesystem)
+        .unwrap();
+    let path = parent.join("game");
     let directory = Dir::absolute(&path).unwrap();
     let base = br#"{"id":"active","source":"physical"}"#;
     directory.write_new("active.json", base).unwrap();
