@@ -10,3 +10,7 @@ apps/desktop/src/assets/game-icons/FABRIC-CC0.md -text -whitespace
 apps/desktop/src/assets/game-icons/NEOFORGE-CC-BY.txt -text -whitespace
 apps/desktop/src/assets/game-icons/MINECRAFT-LICENSE.md -text -whitespace
 apps/desktop/src/assets/game-icons/HMCL-GPL.txt -text -whitespace
+
+# Pinned installer translation and verbatim upstream license tail.
+tools/installer-languages/ChineseSimplified.isl -text -whitespace
+tools/installer-languages/NOTICE -text -whitespace

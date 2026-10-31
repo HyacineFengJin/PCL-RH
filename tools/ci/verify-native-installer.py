@@ -84,6 +84,7 @@ def run(directory: Path, portable: Path) -> dict:
     with executable.open("rb") as source:
         require(hashlib.file_digest(source, "sha256").hexdigest() == report["sha256"], "Installer hash mismatch")
     manifest = json.loads((portable / "package-manifest.json").read_text())
+    resources = {**manifest, "files": [*manifest["files"], *report["installer_resources"]]}
     with tempfile.TemporaryDirectory(prefix="installed space & 项目-", dir=directory) as temporary:
         scratch = Path(temporary).resolve()
         root = scratch / "PCL RH"
@@ -94,7 +95,7 @@ def run(directory: Path, portable: Path) -> dict:
                         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:PCL_SETUP_LINK); "
                         "if ($s.TargetPath -ne (Join-Path $env:PCL_SETUP_ROOT 'pcl-desktop.exe') "
                         "-or $s.WorkingDirectory -ne $env:PCL_SETUP_ROOT) { exit 1 }"], env=env, check=True)
-        hashes(root, manifest)
+        hashes(root, resources)
         build = VERIFY.smoke(root, scratch, manifest)
         VERIFY.verify_windows_entry(root, scratch, build)
         window_result = subprocess.run([sys.executable, str(Path(__file__).with_name("windows-window-smoke.py")),
@@ -129,7 +130,7 @@ def run(directory: Path, portable: Path) -> dict:
             require(image.read_bytes() == previous and early.read_bytes() == b"previous synthetic adapter\n",
                     "Locked desktop did not reject before changing program resources")
         setup(executable, root, directory / "upgrade.log")
-        hashes(root, manifest)
+        hashes(root, resources)
         # A late resource lock is deliberately distinct: this is not an atomic
         # generation upgrade. Verify explicit failure and successful repair,
         # without ever starting the potentially mixed intermediate application.
@@ -140,7 +141,7 @@ def run(directory: Path, portable: Path) -> dict:
             for name, data in canaries.items():
                 require((root / name).read_bytes() == data, "Failed upgrade changed user data")
         setup(executable, root, directory / "repaired-upgrade.log")
-        hashes(root, manifest)
+        hashes(root, resources)
         for name, data in canaries.items():
             require((root / name).read_bytes() == data, "Upgrade changed user data")
         uninstaller = root / "unins000.exe"
@@ -152,7 +153,7 @@ def run(directory: Path, portable: Path) -> dict:
             time.sleep(0.1)
         require(not registered() and not shortcut.exists() and not uninstaller.exists(),
                 "Uninstaller did not retire its registration and shortcut")
-        for entry in manifest["files"]:
+        for entry in resources["files"]:
             require(not (root / entry["path"]).exists(), "Uninstall retained a registered program file")
         require(not (root / "package-manifest.json").exists(), "Uninstall retained its package manifest")
         for name, data in canaries.items():

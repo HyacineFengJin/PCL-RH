@@ -34,7 +34,25 @@ PACKAGE = load("pcl_installer_package", ROOT / "package-native.py")
 LEGAL = load("pcl_installer_legal", ROOT / "licenses/release.py")
 APP_ID = "dev.pcl-rh.desktop"
 ROOT_FILES = {"pcl-rh.json", "pcl-desktop.exe", "pcl-cli.exe", "start-native.ps1",
-              "README-native.txt", "package-manifest.json", "pcl-rh-license-notices.zip"}
+              "README-native.txt", "package-manifest.json", "pcl-rh-license-notices.zip",
+              "LICENSES/INNO-SETUP.txt"}
+
+
+def language_inputs() -> tuple[bytes, bytes]:
+    folder = ROOT / "installer-languages"
+    metadata = json.loads((folder / "SOURCES.json").read_bytes())
+    item, = metadata["files"]
+    PACKAGE.require(item["path"] == "ChineseSimplified.isl", "Unknown installer language input")
+    language = (folder / "ChineseSimplified.isl").read_bytes()
+    notice = (folder / "NOTICE").read_bytes()
+    PACKAGE.require(len(language) == item["bytes"]
+                    and hashlib.sha256(language).hexdigest() == item["sha256"],
+                    "Pinned installer translation differs from its source record")
+    license = metadata["license"]
+    PACKAGE.require(license["local_path"] == "NOTICE"
+                    and hashlib.sha256(notice[-license["bytes"]:]).hexdigest() == license["sha256"],
+                    "Verbatim installer license differs from its source record")
+    return language, notice
 
 
 def member(name: str) -> str:
@@ -53,12 +71,14 @@ def member(name: str) -> str:
     return name.replace("/", "\\")
 
 
-def inno_script(root: Path, manifest: dict) -> str:
+def inno_script(root: Path, manifest: dict, notice: bytes | None = None) -> str:
     PACKAGE.require(manifest["platform"] == "windows" and manifest["arch"] == "x86_64",
                     "Only native Windows x64 installers are currently supported")
     version = PACKAGE.checked_version(manifest["version"])
     PACKAGE.require(manifest["profile"] in ("debug", "release"), "Unknown profile")
     entries = list(manifest["files"])
+    if notice is None:
+        _, notice = language_inputs()
     # Inno does not restore every overwritten old file on failure. Replace the
     # desktop first so a running image rejects the upgrade before JS/resources
     # change. Other late failures still require unlocking and rerunning setup.
@@ -82,6 +102,9 @@ def inno_script(root: Path, manifest: dict) -> str:
         # validation. No external/download flag or executable script is emitted.
         files.append(f'Source: "PCL-RH\\{name}"; DestDir: "{destination}"; '
                      f'Flags: ignoreversion; Hash: "{digest}"')
+    files.append('Source: "installer-languages\\NOTICE"; DestDir: "{app}\\LICENSES"; '
+                 'DestName: "INNO-SETUP.txt"; Flags: ignoreversion; Hash: "'
+                 + hashlib.sha256(notice).hexdigest() + '"')
     return f'''[Setup]
 AppId={APP_ID}
 AppName=PCL RH
@@ -109,7 +132,7 @@ DisableWelcomePage=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimp"; MessagesFile: "compiler:Languages\\ChineseSimplified.isl"
+Name: "chinesesimp"; MessagesFile: "installer-languages\\ChineseSimplified.isl"
 
 [Files]
 ''' + "\n".join(files) + '''
@@ -146,7 +169,12 @@ def build(directory: Path, output: Path) -> dict:
         scratch = Path(temporary).resolve()
         root = VERIFY.unpack(archive, scratch)
         manifest = VERIFY.verify_manifest(root, directory / "package-manifest.json")
-        script = inno_script(root, manifest)
+        language, notice = language_inputs()
+        inputs = scratch / "installer-languages"
+        inputs.mkdir()
+        (inputs / "ChineseSimplified.isl").write_bytes(language)
+        (inputs / "NOTICE").write_bytes(notice)
+        script = inno_script(root, manifest, notice)
         base = f'pcl-rh-{manifest["version"]}-windows-x86_64-{manifest["profile"]}-setup'
         target = output.resolve() / (base + ".exe")
         PACKAGE.require(not any(os.path.lexists(path) for path in
@@ -160,7 +188,9 @@ def build(directory: Path, output: Path) -> dict:
         target.with_suffix(".exe.sha256").write_text(installer_hash + "  " + target.name + "\n")
         report = {"schema_version": 1, "installer": target.name, "sha256": installer_hash,
                   "source_archive_sha256": digest, "commit": manifest["commit"],
-                  "per_user": True, "signed": False, "user_data_included": False}
+                  "per_user": True, "signed": False, "user_data_included": False,
+                  "installer_resources": [{"path": "LICENSES/INNO-SETUP.txt", "bytes": len(notice),
+                                            "sha256": hashlib.sha256(notice).hexdigest()}]}
         (output / "installer-manifest.json").write_text(json.dumps(report, indent=2) + "\n")
         return report
 

@@ -178,6 +178,14 @@ jobs:
         # Only private synthetic data, CLI scanning and declarative host RPC.
         # Never opens a GUI, contacts a model or accesses accounts/game roots.
         run: python tools/ci/verify-native-package.py --directory target/native-packages
+      - name: Save portable preview
+        uses: actions/upload-artifact@v7
+        with:
+          name: portable-preview-${{ matrix.os }}-${{ inputs.profile }}
+          path: target/native-packages/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Build a per-user Windows installer
         if: runner.os == 'Windows'
         run: python tools/installer-native.py --directory target/native-packages --output target/native-installers
@@ -221,14 +229,6 @@ jobs:
             target/native-installers/*.exe
             target/native-installers/*.sha256
             target/native-installers/*.json
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-      - name: Save portable preview
-        uses: actions/upload-artifact@v7
-        with:
-          name: portable-preview-${{ matrix.os }}-${{ inputs.profile }}
-          path: target/native-packages/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
