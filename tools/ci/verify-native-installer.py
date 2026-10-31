@@ -3,7 +3,8 @@
 
 This intentionally changes the runner's per-user app registration/shortcut.
 It refuses local invocation and an existing registration; never use it to
-replace a person's installation. Only build-info and blocked helper modes run.
+replace a person's installation. Its fresh GUI window and read-only/blocked
+helper modes run without any existing account, game or AI session.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -95,6 +97,16 @@ def run(directory: Path, portable: Path) -> dict:
         hashes(root, manifest)
         build = VERIFY.smoke(root, scratch, manifest)
         VERIFY.verify_windows_entry(root, scratch, build)
+        window_result = subprocess.run([sys.executable, str(Path(__file__).with_name("windows-window-smoke.py")),
+                                        "--executable", str(root / "pcl-desktop.exe"),
+                                        "--root", str(root), "--output", str(directory / "window-smoke")],
+                                       capture_output=True, text=True, encoding="utf-8", timeout=35)
+        require(len(window_result.stdout) <= 64 * 1024 and len(window_result.stderr) <= 64 * 1024,
+                "Window check exceeded the result bound")
+        window = json.loads(window_result.stdout)
+        (directory / "window-verification.json").write_text(json.dumps(window, indent=2) + "\n")
+        require(window_result.returncode == 0 and window.get("ok") is True,
+                "Actual installed window check failed: " + str(window.get("error")))
         canaries = {".pcl-rust/synthetic-settings.json": b"private fixture settings\n",
                     "Minecraft/.minecraft/saves/synthetic/level.dat": b"private fixture world\n",
                     "custom-project/hand-written.java": b"private handwritten fixture\n",
@@ -146,9 +158,11 @@ def run(directory: Path, portable: Path) -> dict:
         for name, data in canaries.items():
             require((root / name).read_bytes() == data, "Uninstall changed user data")
     return {"installed": True, "shortcut_target_verified": True, "installed_build": build,
+            "native_window": window,
             "locked_exe_rejected_before_resources_changed": True, "upgrade_verified": True,
             "late_resource_failure_reported_and_repaired": True,
-            "uninstalled": True, "user_data_preserved": True, "desktop_or_game_started": False}
+            "uninstalled": True, "user_data_preserved": True,
+            "desktop_window_started": True, "game_or_ai_started": False}
 
 
 if __name__ == "__main__":

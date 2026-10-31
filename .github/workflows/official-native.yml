@@ -1,7 +1,8 @@
 name: Official native candidates
 
 # Optimized, unsigned candidates for manual verification. This workflow has no
-# release-write permission and never creates a tag, publishes or installs.
+# release-write permission and never creates a tag, publishes or installs on
+# a user's computer. Windows installation is tested in disposable CI storage.
 on:
   workflow_dispatch:
     inputs:

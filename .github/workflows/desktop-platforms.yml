@@ -181,10 +181,36 @@ jobs:
       - name: Build a per-user Windows installer
         if: runner.os == 'Windows'
         run: python tools/installer-native.py --directory target/native-packages --output target/native-installers
+      - name: Prepare WebView2 for the disposable Windows GUI check
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # This installs a system prerequisite on the disposable runner only.
+        # Distributed installers do not silently download or install runtimes.
+        run: |
+          $clients = @(
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+            'HKCU:\Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          )
+          foreach ($client in $clients) {
+            $version = (Get-ItemProperty -LiteralPath $client -ErrorAction SilentlyContinue).pv
+            if ($version -match '^\d+\.\d+\.\d+\.\d+$' -and [version]$version -gt [version]'0.0.0.0') {
+              Write-Output "Using installed WebView2 $version"
+              exit 0
+            }
+          }
+          $bootstrap = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebview2Setup.exe'
+          Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $bootstrap
+          $signature = Get-AuthenticodeSignature -LiteralPath $bootstrap
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw 'WebView2 bootstrapper must have a valid Microsoft signature'
+          }
+          $runtime = Start-Process -FilePath $bootstrap -ArgumentList '/silent', '/install' -PassThru
+          if (-not $runtime.WaitForExit(180000)) { throw 'WebView2 preparation exceeded its deadline' }
+          if ($runtime.ExitCode -ne 0) { throw "WebView2 preparation failed: $($runtime.ExitCode)" }
       - name: Verify installation, occupied files and data-preserving uninstall
         if: runner.os == 'Windows'
         # Only this disposable runner's new registration and temporary files.
-        # It never opens a launcher window, game, account or AI session.
+        # It observes only its own new launcher window, never games or accounts.
         run: python tools/ci/verify-native-installer.py --directory target/native-installers --portable target/native-packages
       - name: Save verified Windows installer
         if: runner.os == 'Windows'
@@ -214,5 +240,7 @@ jobs:
           path: |
             platform-build-report/
             target/native-installers/*.log
+            target/native-installers/window-smoke/*.log
+            target/native-installers/window-verification.json
           if-no-files-found: ignore
           retention-days: 7

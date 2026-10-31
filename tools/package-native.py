@@ -398,13 +398,15 @@ def package(root: Path, binaries: Path, output: Path, profile: str, *,
             if curseforge_embedded else
             "No CurseForge service credential is declared for this package.\n")
         readme = (f"PCL RH {version} portable {system}/{arch} ({profile})\n\n"
-                  f"Start with {startup} from this extracted folder. Keep its resources together.\n"
+                  + ("Double-click pcl-desktop.exe. Keep the extracted resources together.\n"
+                   if system == "windows" else
+                   f"Start with {startup} from this extracted folder. Keep its resources together.\n")
                   + prerequisites[system] + "\n"
                   "RH Code and community declarative plugin services need external Node.js >=22.19\n"
                   "at a supported standard installation location.\n"
                   "The archive includes runtime dependencies, not a Node.js or Java installation.\n"
                   "Game Java can be downloaded by the launcher; author builds need an external supported JDK.\n"
-                  "Native author-code builds and Forge processor execution remain platform restricted.\n"
+                  "Native author-code builds and private-pack Java processors remain platform restricted.\n"
                   "This unsigned development/test archive uses manual replacement for updates.\n"
                   + credential_notice)
         stage.add_bytes("README-native.txt", readme.encode("utf-8"))
