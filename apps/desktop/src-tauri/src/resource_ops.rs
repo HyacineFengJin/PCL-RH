@@ -142,7 +142,7 @@ pub fn recover_updates(root: &Path) -> Result<MutationResult, String> {
 }
 
 const MAX_FILES: usize = 512;
-const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = token::MAX_FINGERPRINT_FILE_BYTES;
 const MAX_BATCH_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ZIP_ENTRIES: usize = 100_000;
 // Includes JSON escaping of all permitted 255-byte names at MAX_FILES. The
@@ -231,7 +231,9 @@ use filesystem::{
     check_copy_cleanup, complete_copy, copy_guard, create_copy, file_evidence, journal_bytes,
     open_source_parent, publish_journal, rename_new, source_identity, Dir, FileEvidence,
 };
-pub(crate) use token::{same_identity, token_for, valid_token};
+#[cfg(windows)]
+pub(crate) use token::for_verified_snapshot;
+pub(crate) use token::{same_identity, token_for, token_for_cancellable, valid_token};
 
 pub fn fingerprint(path: &Path) -> Result<String, String> {
     let name = path
@@ -240,7 +242,7 @@ pub fn fingerprint(path: &Path) -> Result<String, String> {
         .ok_or("文件名无效")?;
     let parent = path.parent().ok_or("文件路径无效")?;
     let dir = Dir::open(parent)?;
-    dir.token(name)
+    directory_token(&dir, name, None)
 }
 
 fn safe_name(name: &str) -> Result<(), String> {
@@ -523,8 +525,31 @@ fn check_count(count: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn directory_token(dir: &Dir, name: &str, cancel: Option<&AtomicBool>) -> Result<String, String> {
+    let file = dir.regular_file(name)?;
+    #[cfg(windows)]
+    let before = pcl_core::retained_fs::metadata(&file).map_err(|e| e.to_string())?;
+    let value = token_for_cancellable(&file, cancel)?;
+    #[cfg(windows)]
+    if pcl_core::retained_fs::metadata(&file).map_err(|e| e.to_string())? != before
+        || dir.metadata(name)?.as_ref() != Some(&before)
+    {
+        return Err(format!(
+            "文件在读取内容指纹期间已变化，请重新读取列表：{name}"
+        ));
+    }
+    Ok(value)
+}
 fn verify(dir: &Dir, name: &str, expected: &str) -> Result<(), String> {
-    if dir.token(name)? != expected {
+    verify_cancellable(dir, name, expected, None)
+}
+fn verify_cancellable(
+    dir: &Dir,
+    name: &str,
+    expected: &str,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
+    if directory_token(dir, name, cancel)? != expected {
         Err(format!("文件已变化，请重新读取列表：{name}"))
     } else {
         Ok(())
@@ -532,13 +557,16 @@ fn verify(dir: &Dir, name: &str, expected: &str) -> Result<(), String> {
 }
 
 fn verify_owned(dir: &Dir, name: &str, expected: &str) -> Result<(), String> {
-    if same_identity(&dir.token(name)?, expected) {
+    if same_identity(&directory_token(dir, name, None)?, expected) {
         Ok(())
     } else {
-        Err(format!("待恢复文件已变化，已保留文件：{name}"))
+        Err(format!(
+            "待恢复文件身份、内容或指纹版本无法确认，已保留文件：{name}"
+        ))
     }
 }
 
+#[cfg(test)]
 fn content_hash(file: &mut File) -> Result<String, String> {
     content_hash_cancellable(file, None)
 }
@@ -572,19 +600,31 @@ fn content_hash_cancellable(
 }
 
 fn checked_owned_file(dir: &Dir, name: &str, item: &Item) -> Result<(File, FileEvidence), String> {
+    checked_owned_file_cancellable(dir, name, item, None)
+}
+fn checked_owned_file_cancellable(
+    dir: &Dir,
+    name: &str,
+    item: &Item,
+    cancel: Option<&AtomicBool>,
+) -> Result<(File, FileEvidence), String> {
     let mut file = dir.regular_file(name)?;
-    let before = token_for(&file)?;
+    let before = token_for_cancellable(&file, cancel)?;
     let evidence = file_evidence(&file)?;
     if !same_identity(&before, &item.fingerprint) {
-        return Err(format!("待恢复文件已变化，已保留文件：{name}"));
+        return Err(format!(
+            "待恢复文件身份、内容或指纹版本无法确认，已保留文件：{name}"
+        ));
     }
     if let Some(expected) = &item.content_hash {
-        if content_hash(&mut file)? != *expected || token_for(&file)? != before {
+        if content_hash_cancellable(&mut file, cancel)? != *expected
+            || token_for_cancellable(&file, cancel)? != before
+        {
             return Err(format!("待恢复文件内容已变化，已保留文件：{name}"));
         }
         // A path replacement during hashing must never cause unlink of that
         // replacement. The open descriptor and directory entry must still agree.
-        verify(dir, name, &before)?;
+        verify_cancellable(dir, name, &before, cancel)?;
     }
     Ok((file, evidence))
 }
@@ -816,7 +856,7 @@ fn rollback(context: &Context, journal: &Journal, stage: Option<&Dir>) -> Result
         } else if journal.action == Action::Import && !final_file {
             slots.push(Slot::MissingImport);
         } else {
-            return Err("待恢复文件缺失，已保留其余文件".into());
+            return Err("待恢复文件缺失或身份、内容版本无法确认，已保留全部文件和恢复记录".into());
         }
     }
     for (item, slot) in journal.items.iter().zip(slots).rev() {
@@ -950,7 +990,11 @@ fn recover(context: &Context) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_selection(context: &Context, files: &[ResourceFile]) -> Result<Vec<Item>, String> {
+fn checked_selection(
+    context: &Context,
+    files: &[ResourceFile],
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<Item>, String> {
     check_count(files.len())?;
     let mut seen = BTreeSet::new();
     let mut items = Vec::new();
@@ -960,7 +1004,6 @@ fn checked_selection(context: &Context, files: &[ResourceFile]) -> Result<Vec<It
         if !seen.insert(&file.file_name) || !valid_token(&file.fingerprint) {
             return Err("所选文件重复或文件标识无效".into());
         }
-        verify(&context.resources, &file.file_name, &file.fingerprint)?;
         let size = context
             .resources
             .regular_file(&file.file_name)?
@@ -971,6 +1014,12 @@ fn checked_selection(context: &Context, files: &[ResourceFile]) -> Result<Vec<It
         if size > MAX_FILE_BYTES || total > MAX_BATCH_BYTES {
             return Err("所选文件超过操作大小限制".into());
         }
+        verify_cancellable(
+            &context.resources,
+            &file.file_name,
+            &file.fingerprint,
+            cancel,
+        )?;
         items.push(Item {
             source_name: file.file_name.clone(),
             target_name: file.file_name.clone(),
@@ -995,7 +1044,7 @@ fn transaction(
     let outcome = (|| {
         context.check_scope()?;
         cancellation(cancel)?;
-        let verify_batch = || -> Result<(), String> {
+        let verify_batch = |cancellation: Option<&AtomicBool>| -> Result<(), String> {
             context.check_scope()?;
             check_operation_dirs(context, &journal, Some(&stage), &source, &target)?;
             if !operation.same(&context.operation(&journal.operation_id)?)? {
@@ -1003,20 +1052,25 @@ fn transaction(
             }
             for item in &journal.items {
                 if journal.action == Action::Import {
-                    verify(&stage, &item.stage_name, &item.fingerprint)?;
+                    verify_cancellable(&stage, &item.stage_name, &item.fingerprint, cancellation)?;
                 } else {
-                    verify(&source, &item.source_name, &item.fingerprint)?;
+                    verify_cancellable(
+                        &source,
+                        &item.source_name,
+                        &item.fingerprint,
+                        cancellation,
+                    )?;
                     stage.absent(&item.stage_name)?;
                 }
                 target.absent(&item.target_name)?;
             }
             Ok(())
         };
-        verify_batch()?;
+        verify_batch(Some(cancel))?;
         commit()?;
         // The final admission check may run user code. Check every token and
         // destination again before moving the first selected resource.
-        verify_batch()?;
+        verify_batch(None)?;
         if journal.action != Action::Import {
             for item in &journal.items {
                 check_operation_dirs(context, &journal, Some(&stage), &source, &target)?;
@@ -1134,7 +1188,7 @@ pub fn set_enabled_with_isolation(
     cancellation(cancel)?;
     let context = Context::new_with_isolation(root, id, kind, true, policy)?;
     recover(&context)?;
-    let mut items = checked_selection(&context, files)?;
+    let mut items = checked_selection(&context, files, Some(cancel))?;
     items.retain(|item| item.source_name.ends_with(".disabled") == enabled);
     if items.is_empty() {
         return Ok(MutationResult {
@@ -1210,15 +1264,20 @@ pub fn remove_with_isolation(
     cancellation(cancel)?;
     let context = Context::new_with_isolation(root, id, kind, true, policy)?;
     recover(&context)?;
-    let mut items = checked_selection(&context, files)?;
+    let mut items = checked_selection(&context, files, Some(cancel))?;
     for item in &mut items {
         cancellation(cancel)?;
         let mut file = context.resources.regular_file(&item.source_name)?;
         item.content_hash = Some(content_hash_cancellable(&mut file, Some(cancel))?);
-        if token_for(&file)? != item.fingerprint {
+        if token_for_cancellable(&file, Some(cancel))? != item.fingerprint {
             return Err(format!("文件已变化，请重新读取列表：{}", item.source_name));
         }
-        verify(&context.resources, &item.source_name, &item.fingerprint)?;
+        verify_cancellable(
+            &context.resources,
+            &item.source_name,
+            &item.fingerprint,
+            Some(cancel),
+        )?;
     }
     let journal = context.new_journal(Action::Remove, None, items);
     let (operation, stage) = prepare(&context, &journal)?;
@@ -1325,7 +1384,7 @@ pub fn import_files_with_isolation(
         // The platform backend opens the absolute ancestor graph without links.
         let parent = open_source_parent(path.parent().ok_or("导入路径无效")?)?;
         let mut file = parent.regular_file(&name)?;
-        let token = token_for(&file)?;
+        let token = token_for_cancellable(&file, Some(cancel))?;
         let metadata = file.metadata().map_err(|e| e.to_string())?;
         if !identities.insert(source_identity(&file)?) {
             return Err("导入来源重复".into());
@@ -1336,10 +1395,10 @@ pub fn import_files_with_isolation(
             return Err("导入文件超过大小限制".into());
         }
         validate_zip(&mut file, cancel)?;
-        if token_for(&file)? != token {
+        if token_for_cancellable(&file, Some(cancel))? != token {
             return Err(format!("导入来源已变化：{name}"));
         }
-        verify(&parent, &name, &token)?;
+        verify_cancellable(&parent, &name, &token, Some(cancel))?;
         imports.push(ImportSource {
             file,
             parent,
@@ -1386,10 +1445,12 @@ pub fn import_files_with_isolation(
                 done += length as u64;
                 progress(done, total);
             }
-            if copied != source.size || token_for(&source.file)? != source.token {
+            if copied != source.size
+                || token_for_cancellable(&source.file, Some(cancel))? != source.token
+            {
                 return Err(format!("导入来源已变化：{}", source.name));
             }
-            verify(&source.parent, &source.name, &source.token)?;
+            verify_cancellable(&source.parent, &source.name, &source.token, Some(cancel))?;
             destination.sync_all().map_err(|e| e.to_string())?;
             validate_zip(&mut destination, cancel)?;
             let fingerprint = complete_copy(destination, &stage, &item_name)?;
@@ -1403,10 +1464,10 @@ pub fn import_files_with_isolation(
         }
         stage.sync()?;
         for source in &imports {
-            if token_for(&source.file)? != source.token {
+            if token_for_cancellable(&source.file, Some(cancel))? != source.token {
                 return Err(format!("导入来源已变化：{}", source.name));
             }
-            verify(&source.parent, &source.name, &source.token)?;
+            verify_cancellable(&source.parent, &source.name, &source.token, Some(cancel))?;
         }
         write_journal(&operation, &journal)?;
         Ok(())
@@ -1430,10 +1491,10 @@ pub fn import_files_with_isolation(
     check_copy_cleanup(&copy_guard)?;
     let mut checked_commit = || {
         for source in &imports {
-            if token_for(&source.file)? != source.token {
+            if token_for_cancellable(&source.file, Some(cancel))? != source.token {
                 return Err(format!("导入来源已变化：{}", source.name));
             }
-            verify(&source.parent, &source.name, &source.token)?;
+            verify_cancellable(&source.parent, &source.name, &source.token, Some(cancel))?;
         }
         commit()?;
         for source in &imports {
@@ -1504,13 +1565,13 @@ pub fn restore_with_isolation(
     let retained = undo_dir.child("files")?;
     let mut items = Vec::new();
     for (index, old) in undo.items.iter().enumerate() {
-        verify_item_owned(&retained, &old.target_name, old)?;
+        checked_owned_file_cancellable(&retained, &old.target_name, old, Some(cancel)).map(drop)?;
         context.resources.absent(&old.source_name)?;
         items.push(Item {
             source_name: old.target_name.clone(),
             target_name: old.source_name.clone(),
             stage_name: format!("item-{index:04}"),
-            fingerprint: retained.token(&old.target_name)?,
+            fingerprint: directory_token(&retained, &old.target_name, Some(cancel))?,
             content_hash: old.content_hash.clone(),
         });
     }
@@ -2321,25 +2382,199 @@ mod tests {
     }
 
     #[test]
-    fn selection_ctime_detects_same_size_edit_with_preserved_mtime() {
+    fn selection_fingerprint_detects_same_size_edit_with_preserved_mtime() {
         let fixture = Fixture::new();
         let selected = fixture.put("shared", "mods", "a.jar", b"before");
         let path = fixture.folder("shared", "mods").join("a.jar");
         let metadata = fs::metadata(&path).unwrap();
         fs::write(&path, b"after!").unwrap();
         preserve_mtime(&path, &metadata);
-        assert_ne!(fingerprint(&path).unwrap(), selected.fingerprint);
+        assert_eq!(fs::read(&path).unwrap(), b"after!");
+        let after = fingerprint(&path).unwrap();
+        assert_ne!(after, selected.fingerprint);
+        #[cfg(windows)]
+        {
+            assert!(after.starts_with("w2:"));
+            assert_eq!(
+                after.split(':').last().unwrap(),
+                format!("{:x}", Sha256::digest(b"after!"))
+            );
+        }
+        let mut committed = false;
         assert!(remove(
             fixture.root(),
             "shared",
             "mods",
             &[selected],
             &flag(),
-            &mut commit,
+            &mut || {
+                committed = true;
+                Ok(())
+            },
             &mut progress
         )
         .is_err());
+        assert!(!committed);
         assert_eq!(fs::read(path).unwrap(), b"after!");
+    }
+
+    #[test]
+    fn cancel_after_the_closed_commit_gate_keeps_atomic_resource_moves_running() {
+        let fixture = Fixture::new();
+        let selected = fixture.put("shared", "mods", "a.jar", b"original");
+        let cancel = AtomicBool::new(false);
+        let result = set_enabled(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[selected],
+            false,
+            &cancel,
+            &mut || {
+                cancel.store(true, Ordering::Release);
+                Ok(())
+            },
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(result.changed, 1);
+        let folder = fixture.folder("shared", "mods");
+        assert!(!folder.join("a.jar").exists());
+        assert_eq!(
+            fs::read(folder.join("a.jar.disabled")).unwrap(),
+            b"original"
+        );
+        ensure_ready(fixture.root()).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn legacy_w1(value: &str) -> String {
+        let mut parts: Vec<_> = value.split(':').collect();
+        assert_eq!(parts[0], "w2");
+        assert_eq!(parts.len(), 11);
+        parts.truncate(10);
+        parts[0] = "w1";
+        let legacy = parts.join(":");
+        assert!(valid_token(&legacy));
+        legacy
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_w1_selection_requires_refresh_and_cannot_authorize_a_new_move() {
+        let fixture = Fixture::new();
+        let mut selected = fixture.put("shared", "mods", "a.jar", b"preserved");
+        selected.fingerprint = legacy_w1(&selected.fingerprint);
+        let mut committed = false;
+        assert!(remove(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[selected],
+            &flag(),
+            &mut || {
+                committed = true;
+                Ok(())
+            },
+            &mut progress
+        )
+        .is_err());
+        assert!(!committed);
+        assert_eq!(
+            fs::read(fixture.folder("shared", "mods").join("a.jar")).unwrap(),
+            b"preserved"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_w1_prepared_history_is_readable_but_preserved_without_guessing_contents() {
+        let fixture = Fixture::new();
+        let (context, mut journal, operation, stage) = interrupted_disable(&fixture);
+        for item in &mut journal.items {
+            item.fingerprint = legacy_w1(&item.fingerprint);
+        }
+        write_journal(&operation, &journal).unwrap();
+        let old_bytes = journal_bytes(&operation).unwrap().unwrap();
+        assert_eq!(
+            read_journal(&operation, &journal.operation_id)
+                .unwrap()
+                .items
+                .len(),
+            2
+        );
+        let folder = fixture.folder("shared", "mods");
+        let final_before = fs::read(folder.join("a.jar.disabled")).unwrap();
+        let mut retained = stage.regular_file("item-0001").unwrap();
+        let mut staged_before = Vec::new();
+        retained.read_to_end(&mut staged_before).unwrap();
+        drop(retained);
+        let error = recover(&context).unwrap_err();
+        assert!(
+            error.contains("内容版本") || error.contains("指纹版本"),
+            "{error}"
+        );
+        assert_eq!(journal_bytes(&operation).unwrap().unwrap(), old_bytes);
+        assert_eq!(
+            fs::read(folder.join("a.jar.disabled")).unwrap(),
+            final_before
+        );
+        let mut retained = stage.regular_file("item-0001").unwrap();
+        let mut staged_after = Vec::new();
+        retained.read_to_end(&mut staged_after).unwrap();
+        assert_eq!(staged_after, staged_before);
+        assert!(!folder.join("a.jar").exists() && !folder.join("b.jar").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_w1_undo_retains_original_and_journal_without_a_w2_content_witness() {
+        let fixture = Fixture::new();
+        let selected = fixture.put("shared", "mods", "a.jar", b"original retained");
+        let undo = remove(
+            fixture.root(),
+            "shared",
+            "mods",
+            &[selected],
+            &flag(),
+            &mut commit,
+            &mut progress,
+        )
+        .unwrap()
+        .undo_id
+        .unwrap();
+        let context = Context::new(fixture.root(), "shared", "mods", true).unwrap();
+        let operation = context.operation(&undo).unwrap();
+        let mut journal = read_journal(&operation, &undo).unwrap();
+        for item in &mut journal.items {
+            item.fingerprint = legacy_w1(&item.fingerprint);
+        }
+        write_journal(&operation, &journal).unwrap();
+        let bytes = journal_bytes(&operation).unwrap().unwrap();
+        let retained = operation.child("files").unwrap();
+        let name = journal.items[0].target_name.clone();
+        let identity = source_identity(&retained.regular_file(&name).unwrap()).unwrap();
+        let error = restore(
+            fixture.root(),
+            "shared",
+            "mods",
+            &undo,
+            &flag(),
+            &mut commit,
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(error.contains("指纹版本"), "{error}");
+        assert_eq!(
+            source_identity(&retained.regular_file(&name).unwrap()).unwrap(),
+            identity
+        );
+        let mut file = retained.regular_file(&name).unwrap();
+        let mut content = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+        assert_eq!(content, b"original retained");
+        assert_eq!(journal_bytes(&operation).unwrap().unwrap(), bytes);
+        assert!(!fixture.folder("shared", "mods").join("a.jar").exists());
     }
 
     #[cfg(unix)]
@@ -2741,7 +2976,7 @@ mod tests {
         let a = fixture.put("shared", "mods", "a.jar", b"original a");
         let b = fixture.put("shared", "mods", "b.jar", b"original b");
         let context = Context::new(fixture.root(), "shared", "mods", true).unwrap();
-        let mut items = checked_selection(&context, &[a, b]).unwrap();
+        let mut items = checked_selection(&context, &[a, b], None).unwrap();
         for item in &mut items {
             item.target_name = format!("{}.disabled", item.source_name);
         }

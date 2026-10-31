@@ -21,6 +21,8 @@ mod provider {
 #[path = "../../../apps/desktop/src-tauri/src/resource_ops/token.rs"]
 mod resource_token;
 mod resource_ops {
+    #[cfg(windows)]
+    pub(crate) use crate::resource_token::for_verified_snapshot;
     pub(crate) use crate::resource_token::token_for;
 }
 #[path = "../../../apps/desktop/src-tauri/src/modrinth_install/target.rs"]

@@ -115,7 +115,9 @@ pub fn prepare_with_isolation(
     let mut unavailable = 0;
     for choice in selected {
         budget.check(closing)?;
-        if !seen.insert(choice.file_name.as_str()) || choice.fingerprint.len() > 256 {
+        if !seen.insert(choice.file_name.as_str())
+            || choice.fingerprint.len() > crate::resource_ops::token::MAX_TOKEN_BYTES
+        {
             return Err("资源选择重复或指纹无效，请刷新列表".into());
         }
         let mut pinned = Pinned::read(

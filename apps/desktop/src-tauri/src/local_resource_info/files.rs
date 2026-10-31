@@ -3,6 +3,7 @@
 //! chooser or writer admission is held during bulk reads. Fingerprints match the
 //! resource row format, while SHA256 detects content edits between confirmation.
 use crate::launcher_local::filesystem::{check_physical_file as check_file, component, Dir, Stamp};
+#[cfg(unix)]
 use crate::resource_ops::token_for as token;
 use pcl_core::content_scope::{resolve_scope, ContentScope, IsolationPolicy, MarkerState};
 use sha2::{Digest, Sha256};
@@ -73,7 +74,10 @@ impl Pinned {
         if stamp.bytes > budget.remaining {
             return Err("资源信息读取超过总计 512 MiB 上限，请减少选择".into());
         }
+        #[cfg(unix)]
         let before = token(&file)?;
+        #[cfg(windows)]
+        let before = pcl_core::retained_fs::metadata(&file).map_err(|_| "无法检查资源内容指纹")?;
         let mut hash = Sha256::new();
         let mut bytes = 0u64;
         let mut buffer = [0; 64 * 1024];
@@ -91,14 +95,24 @@ impl Pinned {
             hash.update(&buffer[..read]);
         }
         check_file(&file, &stamp, folder, name)?;
-        if bytes != stamp.bytes || before != token(&file)? {
+        #[cfg(unix)]
+        let changed = before != token(&file)?;
+        #[cfg(windows)]
+        let changed =
+            pcl_core::retained_fs::metadata(&file).map_err(|_| "无法检查资源内容指纹")? != before;
+        if bytes != stamp.bytes || changed {
             return Err("资源文件在读取期间已变化，请刷新列表".into());
         }
+        let digest = format!("{:x}", hash.finalize());
+        #[cfg(unix)]
+        let token = before;
+        #[cfg(windows)]
+        let token = crate::resource_ops::for_verified_snapshot(&before, &digest)?;
         Ok(Self {
             file,
             stamp,
-            digest: format!("{:x}", hash.finalize()),
-            token: before,
+            digest,
+            token,
         })
     }
     pub fn check(&self, folder: &Dir, name: &str) -> Result<(), String> {

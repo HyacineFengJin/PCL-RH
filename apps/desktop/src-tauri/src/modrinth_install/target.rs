@@ -111,6 +111,7 @@ pub(super) fn fingerprint(
     }
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut hash = Sha512::new();
+    let mut contents = sha2::Sha256::new();
     let mut size = 0u64;
     let mut buf = [0u8; 128 * 1024];
     loop {
@@ -124,6 +125,7 @@ pub(super) fn fingerprint(
             .filter(|n| *n <= before.len)
             .ok_or("资源文件读取期间变化")?;
         hash.update(&buf[..n]);
+        contents.update(&buf[..n]);
     }
     if size != before.len
         || pcl_core::retained_fs::metadata(file).map_err(|e| e.to_string())? != before
@@ -136,7 +138,7 @@ pub(super) fn fingerprint(
         size,
         sha512,
         format!("{:x}", Sha512::digest(strong)),
-        crate::resource_ops::token_for(file)?,
+        crate::resource_ops::for_verified_snapshot(&before, &format!("{:x}", contents.finalize()))?,
     ))
 }
 

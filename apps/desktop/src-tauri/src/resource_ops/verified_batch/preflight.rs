@@ -89,6 +89,7 @@ impl<'a> AllocationPermit<'a> {
         self.index
     }
 
+    #[cfg(test)]
     pub(crate) fn allocate_with<T>(
         self,
         allocate: impl FnOnce(SourceSpec<'a>) -> Result<T>,
