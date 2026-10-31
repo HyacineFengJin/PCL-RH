@@ -1,4 +1,22 @@
 //! Verified installation of versions from Mojang's official catalog.
+// The unit-test bundle includes the actual desktop reset service to exercise
+// resolved installation authority through its bound private stage end to end.
+#[cfg(test)]
+extern crate self as pcl_install;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../apps/desktop/src-tauri/src/launcher_local/filesystem.rs"]
+pub(crate) mod reset_local_filesystem;
+#[cfg(test)]
+mod launcher_local {
+    #[allow(unused_imports)]
+    pub(crate) use crate::reset_local_filesystem as filesystem;
+}
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../../apps/desktop/src-tauri/src/instance_reset.rs"]
+mod desktop_instance_reset;
+
 use reqwest::{Client, Url};
 mod bound_root;
 use bound_root::{InstallDir, InstallTemporary};

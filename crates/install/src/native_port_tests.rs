@@ -51,6 +51,13 @@ impl Fixture {
         Self::with_archives(fabric, vec![native_archive])
     }
     fn with_archives(fabric: bool, native_archives: Vec<Vec<u8>>) -> Self {
+        Self::with_archives_and_main(fabric, native_archives, "fixture.Main")
+    }
+    fn with_archives_and_main(
+        fabric: bool,
+        native_archives: Vec<Vec<u8>>,
+        main_class: &str,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -73,7 +80,7 @@ impl Fixture {
         let mut logging = descriptor("/logging", b"fixture logging");
         logging["id"] = json!("fixture.xml");
         let metadata = serde_json::to_vec(&json!({
-            "id":"fixture", "mainClass":"fixture.Main", "javaVersion":{"majorVersion":21},
+            "id":"fixture", "mainClass":main_class, "javaVersion":{"majorVersion":21},
             "downloads":{"client":descriptor("/client", b"fixture client")},
             "assetIndex":index_descriptor, "arguments":{"jvm":[],"game":[]},
             "logging":{"client":{"file":logging}},
@@ -201,6 +208,146 @@ impl Fixture {
         assert_eq!(resolved.processor_java_requirement().unwrap(), None);
         resolved
     }
+}
+
+#[test]
+fn actual_reset_installs_resolved_loopback_metadata_into_bound_stage_merges_cache_and_commits_core()
+{
+    use crate::desktop_instance_reset as reset;
+    use pcl_core::retained_fs::{Leaf, Traversal};
+    let mut provider = Fixture::with_archives_and_main(
+        false,
+        vec![archive(&[(native_name(), b"synthetic native bytes")])],
+        "net.minecraft.client.main.Main",
+    );
+    let resolved = provider.resolved();
+    let temporary = tempfile::tempdir().unwrap();
+    let parent_path = temporary.path().canonicalize().unwrap();
+    let parent = Directory::open_absolute(&parent_path).unwrap();
+    let root = parent
+        .create_private(&Leaf::new("game").unwrap(), Traversal::SameFilesystem)
+        .unwrap();
+    let project = parent
+        .create_private(&Leaf::new("project").unwrap(), Traversal::SameFilesystem)
+        .unwrap();
+    let versions = root
+        .create_private(&Leaf::new("versions").unwrap(), Traversal::SameFilesystem)
+        .unwrap();
+    let instance = versions
+        .create_private(
+            &Leaf::new("native-instance").unwrap(),
+            Traversal::SameFilesystem,
+        )
+        .unwrap();
+    let put = |directory: &Directory, name: &str, bytes: &[u8]| {
+        let mut file = directory.create_file(&Leaf::new(name).unwrap()).unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    };
+    let original_json =
+        serde_json::to_vec(&json!({"id":"native-instance","clientVersion":"fixture",
+        "mainClass":"net.minecraft.client.main.Main","libraries":[],"arguments":{"game":[]}}))
+        .unwrap();
+    put(&instance, "native-instance.json", &original_json);
+    put(&instance, "native-instance.jar", b"original core jar");
+    for name in ["mods", "config", "saves"] {
+        let directory = instance
+            .create_private(&Leaf::new(name).unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        put(&directory, "user-data", name.as_bytes());
+    }
+    let original_identity = instance.identity().unwrap();
+    let root_path = parent_path.join("game");
+    let project_path = parent_path.join("project");
+    // Release fixture descendant handles before the native installer exercises
+    // its own private namespace; all recorded IDs are still verified by reset.
+    drop(instance);
+    drop(versions);
+    drop(root);
+    drop(project);
+    drop(parent);
+    let plan = reset::prepare(&root_path, "native-instance", vec![]).unwrap();
+    let installer = std::mem::replace(&mut provider.installer, Installer::new().unwrap())
+        .with_project(&project_path)
+        .with_cache_source(&root_path)
+        .unwrap();
+    let before_commit = std::sync::atomic::AtomicUsize::new(0);
+    let result = reset::execute_prepared(
+        &root_path,
+        plan,
+        installer,
+        resolved,
+        &AtomicBool::new(false),
+        |_| {},
+        || {
+            before_commit.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(before_commit.load(Ordering::Relaxed), 1);
+    assert_eq!(result["id"], "native-instance");
+    assert!(result["backup_id"].as_str().unwrap().starts_with("r-"));
+    let instance_path = root_path.join("versions").join("native-instance");
+    assert_eq!(
+        Directory::open_absolute(&instance_path)
+            .unwrap()
+            .identity()
+            .unwrap(),
+        original_identity
+    );
+    assert_eq!(
+        fs::read(instance_path.join("native-instance.jar")).unwrap(),
+        b"fixture client"
+    );
+    let profile: Value =
+        serde_json::from_slice(&fs::read(instance_path.join("native-instance.json")).unwrap())
+            .unwrap();
+    assert_eq!(profile["clientVersion"], "fixture");
+    assert_eq!(profile["mainClass"], "net.minecraft.client.main.Main");
+    for name in ["mods", "config", "saves"] {
+        assert_eq!(
+            fs::read(instance_path.join(name).join("user-data")).unwrap(),
+            name.as_bytes()
+        );
+    }
+    assert!(root_path
+        .join("libraries/fixture/native0/1/native0-1.jar")
+        .is_file());
+    assert!(root_path
+        .join("assets/indexes/native-fixture.json")
+        .is_file());
+    let store = root_path.join(".pcl-linux").join("instance-resets");
+    let operation = fs::read_dir(&store)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("r-")
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read(operation.join("backup/native-instance.json")).unwrap(),
+        original_json
+    );
+    assert_eq!(
+        fs::read(operation.join("backup/native-instance.jar")).unwrap(),
+        b"original core jar"
+    );
+    assert!(!operation.join("stage").exists());
+    reset::ensure_ready(&root_path).unwrap();
+    reset::recover_pending(&root_path).unwrap();
+    assert_eq!(
+        fs::read(instance_path.join("native-instance.jar")).unwrap(),
+        b"fixture client"
+    );
+    let hits = provider.hits.lock().unwrap();
+    assert!(hits.iter().any(|path| path == "GET /catalog"));
+    assert!(hits.iter().any(|path| path == "GET /metadata"));
+    assert!(hits.iter().any(|path| path == "GET /client"));
+    assert!(hits.iter().any(|path| path == "GET /native0"));
 }
 
 #[test]
