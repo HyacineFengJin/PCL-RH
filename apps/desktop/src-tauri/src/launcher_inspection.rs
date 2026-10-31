@@ -14,11 +14,17 @@ use crate::{
 use pcl_core::{inspection::LaunchInspection, java::JavaSelection};
 use serde::Serialize;
 use std::{
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+};
+
+#[cfg(not(target_os = "linux"))]
+use crate::launcher_node::BoundNode;
+#[cfg(target_os = "linux")]
+use std::{
     fs::{self, File, Metadata, OpenOptions},
     io::ErrorKind,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::{Path, PathBuf},
-    sync::atomic::Ordering,
 };
 
 const CHANGED: &str = "检查期间实例、游戏目录或设置已变化，请重新检查启动环境";
@@ -45,12 +51,14 @@ struct CapturedInspection {
     nodes: Vec<BoundNode>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct NodeIdentity {
     device: u64,
     inode: u64,
     mode: u32,
 }
+#[cfg(target_os = "linux")]
 impl NodeIdentity {
     fn of(metadata: &Metadata) -> Self {
         Self {
@@ -64,11 +72,13 @@ impl NodeIdentity {
 /// Open directories remain owned throughout the probe, preventing inode reuse
 /// from making a replacement look like the original target. Other node types
 /// are recorded without following them, so the core can report invalid layout.
+#[cfg(target_os = "linux")]
 struct BoundNode {
     path: PathBuf,
     identity: Option<NodeIdentity>,
     directory: Option<File>,
 }
+#[cfg(target_os = "linux")]
 impl BoundNode {
     fn capture(path: PathBuf) -> Result<Self, String> {
         let metadata = match fs::symlink_metadata(&path) {

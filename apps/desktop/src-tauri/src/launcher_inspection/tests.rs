@@ -3,6 +3,7 @@ use crate::{
     integration_tests::Fixture,
     tasks::{TaskKind, TaskOutcome, TaskTarget},
 };
+use std::fs;
 use std::{collections::BTreeMap, sync::Arc};
 
 fn instance(root: &GameRoot, id: &str) -> PathBuf {
@@ -177,8 +178,23 @@ fn replacing_root_versions_or_instance_directory_during_probe_is_rejected() {
         };
         let result = inspect_with(&shared, "fixture", Some(&root.id), |captured| {
             let moved = path.with_file_name(format!("{component}-retained"));
-            fs::rename(&path, moved).unwrap();
-            fs::create_dir(&path).unwrap();
+            match fs::rename(&path, &moved) {
+                Ok(()) => fs::create_dir(&path).unwrap(),
+                #[cfg(windows)]
+                Err(error)
+                    if matches!(component, "root" | "versions")
+                        && matches!(error.raw_os_error(), Some(5 | 32)) =>
+                {
+                    // A held descendant blocks this ancestor rename on Windows.
+                    // Verify that protection, then substitute the instance leaf
+                    // so the same report still exercises identity rejection.
+                    assert!(path.is_dir() && !moved.exists());
+                    let leaf = Path::new(&root.path).join("versions/fixture");
+                    fs::rename(&leaf, leaf.with_file_name("fixture-retained")).unwrap();
+                    fs::create_dir(&leaf).unwrap();
+                }
+                Err(error) => panic!("unexpected directory rename result: {error}"),
+            }
             Ok(report(captured))
         });
         assert!(matches!(result, Err(error) if error == CHANGED));

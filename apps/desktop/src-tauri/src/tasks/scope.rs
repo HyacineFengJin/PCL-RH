@@ -5,15 +5,27 @@
 //! Managed Java additionally reserves a fixed future subtree without creating
 //! it. Every claim is final at admission; workers cannot widen their footprint.
 
+#[cfg(any(target_os = "linux", test))]
+use std::fs;
+#[cfg(target_os = "linux")]
+use std::path::Component;
+#[cfg(target_os = "linux")]
 use std::{
     ffi::{CStr, CString},
-    fs::{self, File},
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{ffi::OsStrExt, fs::MetadataExt},
     },
-    path::{Component, Path, PathBuf},
 };
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
+#[cfg(not(target_os = "linux"))]
+#[path = "scope_native.rs"]
+mod native;
+#[cfg(not(target_os = "linux"))]
+use pcl_core::retained_fs::Identity as Key;
 
 type Result<T> = std::result::Result<T, String>;
 const MAX_PATH_BYTES: usize = 4096;
@@ -21,10 +33,12 @@ const MAX_ANCESTORS: usize = 128;
 const MAX_FILES: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(target_os = "linux")]
 struct Key {
     device: u64,
     inode: u64,
 }
+#[cfg(target_os = "linux")]
 impl Key {
     fn of(metadata: &fs::Metadata) -> Self {
         Self {
@@ -133,11 +147,11 @@ impl TaskScope {
         validate_path(&path)?;
         let mut directory = open_directory(project)?;
         let mut anchor_path = project.to_path_buf();
-        for name in [c".pcl-rust", c"java"] {
-            match directory_child(&directory, name) {
+        for name in [".pcl-rust", "java"] {
+            match managed_child(&directory, name) {
                 Ok(child) => {
                     directory = child;
-                    anchor_path.push(name.to_str().expect("fixed Java store component"));
+                    anchor_path.push(name);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
                 Err(_) => return Err("托管 Java 目录不可用或包含符号链接".into()),
@@ -145,9 +159,7 @@ impl TaskScope {
         }
         let mut anchor = Location::capture(&anchor_path, true)?;
         anchor.nofollow = true;
-        if anchor.ancestors.first().map(|a| &a.key)
-            != Some(&Key::of(&directory.metadata().map_err(|e| e.to_string())?))
-        {
+        if anchor.ancestors.first().map(|a| &a.key) != Some(&directory_key(&directory)?) {
             return Err("托管 Java 目录身份已变化".into());
         }
         anchor.recheck()?;
@@ -199,6 +211,11 @@ impl TaskScope {
 }
 
 impl Location {
+    #[cfg(not(target_os = "linux"))]
+    fn capture(path: &Path, directory: bool) -> Result<Self> {
+        native::capture(path, directory)
+    }
+    #[cfg(target_os = "linux")]
     fn capture(path: &Path, directory: bool) -> Result<Self> {
         validate_path(path)?;
         let parent = if directory {
@@ -268,8 +285,7 @@ impl Location {
         if let Some(future) = &self.future {
             future.anchor.recheck()?;
             let directory = open_directory(&future.anchor.submitted)?;
-            if future.anchor.ancestors.first().map(|a| &a.key)
-                != Some(&Key::of(&directory.metadata().map_err(|e| e.to_string())?))
+            if future.anchor.ancestors.first().map(|a| &a.key) != Some(&directory_key(&directory)?)
             {
                 return Err("排队任务的托管 Java 祖先目录身份已变化".into());
             }
@@ -278,9 +294,7 @@ impl Location {
         let mut current = Self::capture(&self.submitted, self.directory)?;
         if self.nofollow {
             let directory = open_directory(&self.submitted)?;
-            if current.ancestors.first().map(|a| &a.key)
-                != Some(&Key::of(&directory.metadata().map_err(|e| e.to_string())?))
-            {
+            if current.ancestors.first().map(|a| &a.key) != Some(&directory_key(&directory)?) {
                 return Err("排队任务的托管 Java 目录身份已变化".into());
             }
             current.nofollow = true;
@@ -304,18 +318,22 @@ impl Location {
                 a.key == b.key
                     && match (self.directory, other.directory) {
                         (true, true) => {
-                            a.relative.starts_with(&b.relative)
-                                || b.relative.starts_with(&a.relative)
+                            path_starts_with(&a.relative, &b.relative)
+                                || path_starts_with(&b.relative, &a.relative)
                         }
-                        (true, false) => b.relative.starts_with(&a.relative),
-                        (false, true) => a.relative.starts_with(&b.relative),
-                        (false, false) => a.relative == b.relative,
+                        (true, false) => path_starts_with(&b.relative, &a.relative),
+                        (false, true) => path_starts_with(&a.relative, &b.relative),
+                        (false, false) => {
+                            path_starts_with(&a.relative, &b.relative)
+                                && path_starts_with(&b.relative, &a.relative)
+                        }
                     }
             })
         })
     }
 }
 
+#[cfg(target_os = "linux")]
 fn validate_path(path: &Path) -> Result<()> {
     if !path.is_absolute()
         || path.as_os_str().as_bytes().len() > MAX_PATH_BYTES
@@ -330,6 +348,7 @@ fn validate_path(path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn directory_child(parent: &File, name: &CStr) -> std::io::Result<File> {
     let fd = unsafe {
         libc::openat(
@@ -345,6 +364,7 @@ fn directory_child(parent: &File, name: &CStr) -> std::io::Result<File> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn open_directory(path: &Path) -> Result<File> {
     validate_path(path)?;
     let mut directory = File::open("/").map_err(|e| e.to_string())?;
@@ -361,6 +381,7 @@ fn open_directory(path: &Path) -> Result<File> {
 /// A newly appeared bind mount could alias another running task even though
 /// that inode did not exist in our captured ancestry. Refuse mounts only below
 /// the originally missing suffix; existing project mounts remain supported.
+#[cfg(target_os = "linux")]
 fn check_future_directory(anchor: &File, relative: &Path) -> Result<()> {
     // An unchanged absence needs no openat2 capability. Once any reserved
     // suffix appeared, inspect the full descent with mount rejection below.
@@ -409,6 +430,58 @@ fn check_future_directory(anchor: &File, relative: &Path) -> Result<()> {
     }
 }
 
+fn directory_key(file: &File) -> Result<Key> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Key::of(&file.metadata().map_err(|e| e.to_string())?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        native::directory_key(file).map_err(|e| e.to_string())
+    }
+}
+fn managed_child(parent: &File, name: &str) -> std::io::Result<File> {
+    #[cfg(target_os = "linux")]
+    {
+        directory_child(
+            parent,
+            &CString::new(name).expect("fixed Java store component"),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        native::directory_child(parent, std::ffi::OsStr::new(name))
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn validate_path(path: &Path) -> Result<()> {
+    native::validate_path(path)
+}
+#[cfg(not(target_os = "linux"))]
+fn open_directory(path: &Path) -> Result<File> {
+    native::open_directory(path)
+}
+#[cfg(not(target_os = "linux"))]
+fn check_future_directory(anchor: &File, relative: &Path) -> Result<()> {
+    native::check_future_directory(anchor, relative)
+}
+fn path_starts_with(path: &Path, prefix: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        native::path_starts_with(path, prefix)
+    }
+    #[cfg(unix)]
+    {
+        path.starts_with(prefix)
+    }
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+#[path = "scope_native_tests.rs"]
+mod native_tests;
 #[cfg(test)]
 #[path = "runtime_scope_tests.rs"]
 mod runtime_scope_tests;
+#[cfg(all(test, windows))]
+#[path = "scope_links.rs"]
+pub(super) mod test_links;

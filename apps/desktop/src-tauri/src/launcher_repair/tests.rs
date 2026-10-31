@@ -1,6 +1,7 @@
 use super::*;
 use crate::{integration_tests::Fixture, tasks::TaskStage};
 use pcl_install::RepairUnsupported;
+use std::fs;
 use std::{path::PathBuf, sync::mpsc, time::Duration};
 
 fn instance(root: &GameRoot, id: &str) -> PathBuf {

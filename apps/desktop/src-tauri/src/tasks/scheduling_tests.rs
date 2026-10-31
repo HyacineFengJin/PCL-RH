@@ -1,33 +1,32 @@
 //! Isolated scheduler/descriptor-identity tests. Barriers acknowledge the exact
 //! cleanup boundary; no sleep is used as evidence that a queued worker stopped.
+#[cfg(windows)]
+use super::scope::test_links::symlink;
 use super::*;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::{
     fs,
-    os::unix::fs::symlink,
     path::PathBuf,
     sync::{mpsc, Barrier},
     thread,
     time::Duration,
 };
 
-static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
-
-struct Fixture(PathBuf);
+struct Fixture {
+    path: PathBuf,
+    _temporary: tempfile::TempDir,
+}
 impl Fixture {
     fn new() -> Self {
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let path = repository
-            .join("work/multi-task-2026-10-05/backend/fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        let temporary = tempfile::tempdir().unwrap();
+        Self {
+            path: temporary.path().canonicalize().unwrap(),
+            _temporary: temporary,
+        }
     }
     fn root(&self, name: &str) -> PathBuf {
-        let path = self.0.join(name);
+        let path = self.path.join(name);
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -40,11 +39,6 @@ impl Fixture {
                 TaskScope::root(&root).unwrap(),
             )
             .unwrap()
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
     }
 }
 fn target(id: &str, path: &Path) -> TaskTarget {
@@ -88,7 +82,7 @@ fn disjoint_roots_run_together_but_alias_and_nested_root_keep_fifo() {
     let other = f.task(&tasks, "b");
     first.wait_turn().unwrap();
     other.wait_turn().unwrap();
-    let alias = f.0.join("alias-a");
+    let alias = f.path.join("alias-a");
     symlink(f.root("a"), &alias).unwrap();
     let alias_task = tasks
         .admit_queued(
@@ -118,7 +112,7 @@ fn final_files_share_a_folder_but_same_file_and_enclosing_root_queue() {
     let f = Fixture::new();
     let tasks = Arc::new(Tasks::new());
     let folder = f.root("outputs");
-    let alias = f.0.join("output-alias");
+    let alias = f.path.join("output-alias");
     symlink(&folder, &alias).unwrap();
     let admit = |_name: &str, path: PathBuf| {
         tasks
@@ -280,7 +274,7 @@ fn changed_directory_and_final_file_binding_are_refused_after_queue_wait() {
         .admit(target("legacy", &root), TaskKind::InstanceReset)
         .unwrap();
     let queued = f.task(&tasks, "a");
-    fs::rename(&root, f.0.join("old-a")).unwrap();
+    fs::rename(&root, f.path.join("old-a")).unwrap();
     fs::create_dir(&root).unwrap();
     complete(&legacy);
     assert!(queued.wait_turn().unwrap_err().contains("身份已变化"));
@@ -341,9 +335,9 @@ fn collection_revision_and_physical_blocked_roots_are_atomic_with_offline_fallba
             TaskScope::files(&[output]).unwrap(),
         )
         .unwrap();
-    let alias = f.0.join("alias");
+    let alias = f.path.join("alias");
     symlink(&root, &alias).unwrap();
-    let offline = f.0.join("offline");
+    let offline = f.path.join("offline");
     let roots = vec![
         ("game-a".into(), root.clone()),
         ("game-alias".into(), alias),
@@ -362,7 +356,7 @@ fn collection_revision_and_physical_blocked_roots_are_atomic_with_offline_fallba
     assert_eq!(after.tasks[0].stage, TaskStage::Complete);
     let offline_owner = f.task(&tasks, "temporarily-offline");
     let path = f.root("temporarily-offline");
-    fs::rename(&path, f.0.join("offline-kept")).unwrap();
+    fs::rename(&path, f.path.join("offline-kept")).unwrap();
     let (_, blocked) = tasks
         .list_snapshot_with_roots(&[("temporarily-offline".into(), path)])
         .unwrap();

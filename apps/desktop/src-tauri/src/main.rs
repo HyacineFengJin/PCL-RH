@@ -55,6 +55,8 @@ mod launcher_memory;
 mod launcher_minecraft_update_commands;
 mod launcher_minecraft_updates;
 mod launcher_monitor_runtime;
+#[cfg(not(target_os = "linux"))]
+mod launcher_node;
 mod launcher_prefs;
 mod launcher_preparation;
 mod launcher_repair;

@@ -1,39 +1,29 @@
 //! Synthetic scheduling probes for combined game/runtime ownership. Scope
 //! capture is observational; only fixture code below creates directories.
+#[cfg(windows)]
+use super::test_links::symlink;
 use super::*;
 use crate::tasks::{TaskHandle, TaskKind, TaskOutcome, TaskStage, TaskTarget, Tasks, CANCELLED};
-use std::{
-    os::unix::fs::symlink,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::sync::Arc;
 
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-struct Fixture(PathBuf);
+struct Fixture {
+    path: PathBuf,
+    _temporary: tempfile::TempDir,
+}
 impl Fixture {
     fn new() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/launch-readiness-2026-10-18/runtime-scopes")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        let temporary = tempfile::tempdir().unwrap();
+        Self {
+            path: temporary.path().canonicalize().unwrap(),
+            _temporary: temporary,
+        }
     }
     fn directory(&self, name: &str) -> PathBuf {
-        let path = self.0.join(name);
+        let path = self.path.join(name);
         fs::create_dir_all(&path).unwrap();
         path
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
     }
 }
 
@@ -251,7 +241,7 @@ fn a_missing_runtime_store_retains_its_existing_ancestor_binding() {
         TaskKind::JavaInstall,
         TaskScope::managed_runtime_store(&project).unwrap(),
     );
-    fs::rename(&project, f.0.join("original-project")).unwrap();
+    fs::rename(&project, f.path.join("original-project")).unwrap();
     fs::create_dir(&project).unwrap();
     complete(&blocker);
     assert!(waiting.wait_turn().unwrap_err().contains("身份已变化"));
@@ -300,7 +290,7 @@ fn existing_store_aliases_conflict_with_the_combined_physical_footprint() {
     let f = Fixture::new();
     let project = f.directory("project");
     let store = f.directory("project/.pcl-rust/java");
-    let alias = f.0.join("runtime-alias");
+    let alias = f.path.join("runtime-alias");
     symlink(&store, &alias).unwrap();
     let game = f.directory("game");
     let tasks = Arc::new(Tasks::new());
@@ -345,7 +335,7 @@ fn union_deduplicates_bounds_and_preserves_global_ownership() {
 fn managed_store_capture_rejects_unsafe_paths_without_creating_anything() {
     let f = Fixture::new();
     let project = f.directory("project");
-    let alias = f.0.join("project-alias");
+    let alias = f.path.join("project-alias");
     symlink(&project, &alias).unwrap();
     assert!(TaskScope::managed_runtime_store(&alias).is_err());
     assert!(TaskScope::managed_runtime_store(&project.join("../project")).is_err());

@@ -3,9 +3,9 @@ name: Installer transactions
 on:
   push:
     branches: [master]
-    paths: ['crates/install/**', 'apps/desktop/src-tauri/src/java_download.rs', 'apps/desktop/src-tauri/src/java_download/**', 'apps/desktop/src-tauri/src/resource_save.rs', 'apps/desktop/src-tauri/src/resource_save/**', 'apps/desktop/src-tauri/src/resource_digest.rs', 'apps/desktop/src-tauri/src/instance_export.rs', 'apps/desktop/src-tauri/src/instance_export/**', 'apps/desktop/src-tauri/src/export_presets.rs', 'apps/desktop/src-tauri/src/export_presets/**', 'apps/desktop/src-tauri/src/instance_import.rs', 'apps/desktop/src-tauri/src/instance_import/**', 'apps/desktop/src-tauri/src/launcher_local/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
+    paths: ['crates/install/**', 'apps/desktop/src-tauri/src/java_download.rs', 'apps/desktop/src-tauri/src/java_download/**', 'apps/desktop/src-tauri/src/resource_save.rs', 'apps/desktop/src-tauri/src/resource_save/**', 'apps/desktop/src-tauri/src/resource_digest.rs', 'apps/desktop/src-tauri/src/tasks.rs', 'apps/desktop/src-tauri/src/tasks/**', 'apps/desktop/src-tauri/src/toolbox_download.rs', 'apps/desktop/src-tauri/src/toolbox_download/**', 'apps/desktop/src-tauri/src/instance_export.rs', 'apps/desktop/src-tauri/src/instance_export/**', 'apps/desktop/src-tauri/src/export_presets.rs', 'apps/desktop/src-tauri/src/export_presets/**', 'apps/desktop/src-tauri/src/instance_import.rs', 'apps/desktop/src-tauri/src/instance_import/**', 'apps/desktop/src-tauri/src/launcher_local/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
   pull_request:
-    paths: ['crates/install/**', 'apps/desktop/src-tauri/src/java_download.rs', 'apps/desktop/src-tauri/src/java_download/**', 'apps/desktop/src-tauri/src/resource_save.rs', 'apps/desktop/src-tauri/src/resource_save/**', 'apps/desktop/src-tauri/src/resource_digest.rs', 'apps/desktop/src-tauri/src/instance_export.rs', 'apps/desktop/src-tauri/src/instance_export/**', 'apps/desktop/src-tauri/src/export_presets.rs', 'apps/desktop/src-tauri/src/export_presets/**', 'apps/desktop/src-tauri/src/instance_import.rs', 'apps/desktop/src-tauri/src/instance_import/**', 'apps/desktop/src-tauri/src/launcher_local/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
+    paths: ['crates/install/**', 'apps/desktop/src-tauri/src/java_download.rs', 'apps/desktop/src-tauri/src/java_download/**', 'apps/desktop/src-tauri/src/resource_save.rs', 'apps/desktop/src-tauri/src/resource_save/**', 'apps/desktop/src-tauri/src/resource_digest.rs', 'apps/desktop/src-tauri/src/tasks.rs', 'apps/desktop/src-tauri/src/tasks/**', 'apps/desktop/src-tauri/src/toolbox_download.rs', 'apps/desktop/src-tauri/src/toolbox_download/**', 'apps/desktop/src-tauri/src/instance_export.rs', 'apps/desktop/src-tauri/src/instance_export/**', 'apps/desktop/src-tauri/src/export_presets.rs', 'apps/desktop/src-tauri/src/export_presets/**', 'apps/desktop/src-tauri/src/instance_import.rs', 'apps/desktop/src-tauri/src/instance_import/**', 'apps/desktop/src-tauri/src/launcher_local/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
   workflow_dispatch:
 
 permissions:
@@ -52,6 +52,9 @@ jobs:
         # The import target covers actual native files, durable staging and ZIP
         # parsing. It does not stand in for full pack-service orchestration.
         run: cargo +stable test --locked -p pcl-install --test instance_export --test instance_import_files --no-fail-fast -- --test-threads=2
+      - name: Test native task coordination and toolbox download service
+        # Real scheduling/session/HTTP/publication code, private synthetic files.
+        run: cargo +stable test --locked -p pcl-install --test tasks_scope --test toolbox_download --no-fail-fast -- --test-threads=2
       - name: Report host toolchain
         run: rustc +stable -vV
       # Native installer tests are not evidence of a complete desktop app or of

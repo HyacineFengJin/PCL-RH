@@ -3,7 +3,6 @@
 //! worker. Session tokens never carry arbitrary frontend filesystem paths.
 use super::*;
 use std::{
-    io::Read,
     sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
 };
@@ -18,14 +17,14 @@ struct Session {
 }
 pub struct ChosenDirectory {
     token: String,
-    pub(super) directory: files::Directory,
+    pub(crate) directory: files::Directory,
 }
 pub struct PreparedDownload {
-    pub(super) preview: DownloadPreview,
+    pub(crate) preview: DownloadPreview,
     // Preserve the exact supplied URL only in native memory. Never Debug/log or
     // serialize it; the display version removes every query value.
-    pub(super) url: reqwest::Url,
-    pub(super) directory: Arc<ChosenDirectory>,
+    pub(crate) url: reqwest::Url,
+    pub(crate) directory: Arc<ChosenDirectory>,
     prepared: Instant,
 }
 impl ChosenDirectory {
@@ -39,9 +38,42 @@ impl ChosenDirectory {
 
 fn token(prefix: &str) -> Result<String> {
     let mut bytes = [0u8; 24];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut bytes))
-        .map_err(|_| "无法生成目录下载确认标识")?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Read;
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut bytes))
+            .map_err(|_| "无法生成目录下载确认标识")?;
+    }
+    #[cfg(target_os = "macos")]
+    if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
+        return Err("无法生成目录下载确认标识".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::{ffi::c_void, ptr};
+        #[link(name = "bcrypt")]
+        extern "system" {
+            fn BCryptGenRandom(
+                provider: *mut c_void,
+                bytes: *mut u8,
+                length: u32,
+                flags: u32,
+            ) -> i32;
+        }
+        const USE_SYSTEM_PREFERRED_RNG: u32 = 2;
+        if unsafe {
+            BCryptGenRandom(
+                ptr::null_mut(),
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                USE_SYSTEM_PREFERRED_RNG,
+            )
+        } != 0
+        {
+            return Err("无法生成目录下载确认标识".into());
+        }
+    }
     Ok(format!(
         "{prefix}:{}",
         bytes
@@ -178,7 +210,7 @@ impl DownloadSession {
         Ok(StartGuard { session })
     }
     #[cfg(test)]
-    pub(super) fn expire_pending(&self) {
+    pub(crate) fn expire_pending(&self) {
         self.0.lock().unwrap().pending.as_mut().unwrap().prepared =
             Instant::now() - PREVIEW_LIFETIME - Duration::from_secs(1);
     }
@@ -199,7 +231,7 @@ fn check_pending(session: &Session, token: &str, preferences_revision: &str) -> 
         .directory
         .absent(&pending.preview.file_name)
 }
-pub(super) fn validate_url(value: &str) -> Result<reqwest::Url> {
+pub(crate) fn validate_url(value: &str) -> Result<reqwest::Url> {
     if value.is_empty()
         || value.len() > 8192
         || value.trim() != value
@@ -221,7 +253,7 @@ pub(super) fn validate_url(value: &str) -> Result<reqwest::Url> {
     }
     Ok(url)
 }
-pub(super) fn display_url(url: &reqwest::Url) -> String {
+pub(crate) fn display_url(url: &reqwest::Url) -> String {
     let mut display = url.clone();
     if display.query().is_some() {
         display.set_query(None);

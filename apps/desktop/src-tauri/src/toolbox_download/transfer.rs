@@ -4,13 +4,12 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
     future::Future,
     io::Write,
     time::{Duration, Instant},
 };
 #[derive(Clone, Copy)]
-pub(super) struct TransferLimits {
+pub(crate) struct TransferLimits {
     pub maximum_bytes: u64,
     pub maximum_redirects: usize,
     pub header_timeout: Duration,
@@ -28,8 +27,8 @@ impl Default for TransferLimits {
         }
     }
 }
-pub(super) struct Received {
-    pub file: File,
+pub(crate) struct Received {
+    pub file: files::Staging,
     pub size: u64,
     pub sha256: String,
 }
@@ -120,11 +119,11 @@ async fn response(
     }
     Err("下载重定向次数超出范围".into())
 }
-pub(super) async fn receive(
+pub(crate) async fn receive(
     client: &reqwest::Client,
     scheduler: &DownloadScheduler,
     url: reqwest::Url,
-    mut file: File,
+    mut file: files::Staging,
     cancel: &AtomicBool,
     report: &impl Fn(DownloadProgress),
     limits: TransferLimits,
@@ -180,7 +179,7 @@ pub(super) async fn receive(
             pacing.map_err(normalize_cancel)?;
             cancelled(cancel)?;
             file.write_all(slice)
-                .map_err(|_| "无法写入所选目录的匿名暂存文件")?;
+                .map_err(|_| "无法写入所选目录的下载暂存文件")?;
             digest.update(slice);
             bytes = bytes
                 .checked_add(slice.len() as u64)
@@ -200,7 +199,8 @@ pub(super) async fn receive(
         bytes,
         network,
     );
-    file.sync_all()
+    files::staging_file(&mut file)
+        .sync_all()
         .map_err(|_| "无法同步所选目录的下载暂存文件")?;
     Ok(Received {
         file,
@@ -209,7 +209,7 @@ pub(super) async fn receive(
     })
 }
 
-pub(super) fn redirect_url(current: &reqwest::Url, location: &str) -> Result<reqwest::Url> {
+pub(crate) fn redirect_url(current: &reqwest::Url, location: &str) -> Result<reqwest::Url> {
     if location.len() > 8192 || location.chars().any(char::is_control) {
         return Err("下载重定向地址无效或过长".into());
     }

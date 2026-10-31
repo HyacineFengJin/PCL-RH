@@ -16,20 +16,28 @@ use crate::{
 };
 use pcl_install::{Installer, MissingRepair, MissingRepairReport};
 use std::{
-    fs::{self, File, Metadata, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    fs::File,
     path::Path,
     sync::{atomic::Ordering, Arc, Mutex},
 };
 
+#[cfg(target_os = "linux")]
+use std::{
+    fs,
+    fs::{Metadata, OpenOptions},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+};
+
 const CHANGED: &str = "操作期间实例、游戏目录或设置已变化，请重新检查实例依赖";
 
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RootIdentity {
     device: u64,
     inode: u64,
     mode: u32,
 }
+#[cfg(target_os = "linux")]
 impl RootIdentity {
     fn of(metadata: &Metadata) -> Self {
         Self {
@@ -48,7 +56,10 @@ pub(super) struct CapturedRepair {
     close_generation: u64,
     run: RunStatus,
     pub(super) directory: File,
+    #[cfg(target_os = "linux")]
     identity: RootIdentity,
+    #[cfg(not(target_os = "linux"))]
+    observation: crate::launcher_node::BoundNode,
     pub(super) factory: Arc<pcl_network::ClientFactory>,
     pub(super) scheduler: Arc<pcl_network::DownloadScheduler>,
     pub(super) damage_operation: Mutex<Option<String>>,
@@ -127,19 +138,33 @@ pub(super) fn capture_for(
         return Err(CHANGED.into());
     }
     require_files_ready(shared, &root, id, kind, None)?;
-    let metadata = fs::symlink_metadata(&root.path).map_err(|error| error.to_string())?;
-    if !metadata.is_dir() {
-        return Err("游戏目录不是文件夹".into());
-    }
-    let identity = RootIdentity::of(&metadata);
-    let directory = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&root.path)
-        .map_err(|error| format!("无法固定补全目录：{error}"))?;
-    if RootIdentity::of(&directory.metadata().map_err(|error| error.to_string())?) != identity {
-        return Err(CHANGED.into());
-    }
+    #[cfg(target_os = "linux")]
+    let (directory, identity) = {
+        let metadata = fs::symlink_metadata(&root.path).map_err(|error| error.to_string())?;
+        if !metadata.is_dir() {
+            return Err("游戏目录不是文件夹".into());
+        }
+        let identity = RootIdentity::of(&metadata);
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&root.path)
+            .map_err(|error| format!("无法固定补全目录：{error}"))?;
+        if RootIdentity::of(&directory.metadata().map_err(|error| error.to_string())?) != identity {
+            return Err(CHANGED.into());
+        }
+        (directory, identity)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let observation =
+        crate::launcher_node::BoundNode::capture(Path::new(&root.path).to_path_buf())?;
+    #[cfg(not(target_os = "linux"))]
+    let directory = observation
+        .directory
+        .as_ref()
+        .ok_or("游戏目录不是文件夹")?
+        .try_clone_file()
+        .map_err(|e| format!("无法固定补全目录：{e}"))?;
     Ok(CapturedRepair {
         id: id.into(),
         root,
@@ -148,7 +173,10 @@ pub(super) fn capture_for(
         close_generation: shared.close_generation.load(Ordering::SeqCst),
         run: shared.status.lock().unwrap().clone(),
         directory,
+        #[cfg(target_os = "linux")]
         identity,
+        #[cfg(not(target_os = "linux"))]
+        observation,
         factory: pcl_network::snapshot(),
         scheduler: pcl_network::download_snapshot(),
         damage_operation: Mutex::new(None),
@@ -209,16 +237,44 @@ pub(super) fn verify(
     if root != captured.root {
         return Err(CHANGED.into());
     }
-    let metadata = fs::symlink_metadata(&root.path).map_err(|_| CHANGED.to_owned())?;
-    if RootIdentity::of(&metadata) != captured.identity
-        || RootIdentity::of(
-            &captured
-                .directory
-                .metadata()
-                .map_err(|_| CHANGED.to_owned())?,
-        ) != captured.identity
+    #[cfg(target_os = "linux")]
     {
-        return Err(CHANGED.into());
+        let metadata = fs::symlink_metadata(&root.path).map_err(|_| CHANGED.to_owned())?;
+        if RootIdentity::of(&metadata) != captured.identity
+            || RootIdentity::of(
+                &captured
+                    .directory
+                    .metadata()
+                    .map_err(|_| CHANGED.to_owned())?,
+            ) != captured.identity
+        {
+            return Err(CHANGED.into());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        captured
+            .observation
+            .verify()
+            .map_err(|_| CHANGED.to_owned())?;
+        let held = pcl_core::retained_fs::Directory::from_file(
+            captured
+                .directory
+                .try_clone()
+                .map_err(|_| CHANGED.to_owned())?,
+        )
+        .map_err(|_| CHANGED.to_owned())?;
+        if Some(held.identity().map_err(|_| CHANGED.to_owned())?)
+            != captured
+                .observation
+                .directory
+                .as_ref()
+                .map(|directory| directory.identity())
+                .transpose()
+                .map_err(|_| CHANGED.to_owned())?
+        {
+            return Err(CHANGED.into());
+        }
     }
     require_files_ready(
         shared,
