@@ -1,6 +1,7 @@
 mod account_appearance;
 mod account_commands;
 mod accounts;
+mod build_info;
 mod code_runner;
 mod community_catalog;
 mod community_curseforge;
@@ -2092,6 +2093,12 @@ fn main() {
         std::process::exit(code);
     }
     if let Some(code) = launcher_game_monitor::dispatch_cli() {
+        std::process::exit(code);
+    }
+    if let Some(code) = build_info::dispatch(
+        cfg!(feature = "custom-protocol"),
+        community_curseforge::credentials::embedded_available,
+    ) {
         std::process::exit(code);
     }
     let project = match project() {

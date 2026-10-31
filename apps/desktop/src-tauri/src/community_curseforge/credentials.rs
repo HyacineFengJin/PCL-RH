@@ -7,6 +7,19 @@ mod bundled {
     include!(concat!(env!("OUT_DIR"), "/curseforge_credentials.rs"));
 }
 
+/// Compile-time availability only. This does not inspect overrides, parse a
+/// credential, initialize transport, or reveal the bundled value.
+pub(crate) fn embedded_available() -> bool {
+    #[cfg(not(test))]
+    {
+        !bundled::KEY.is_empty()
+    }
+    #[cfg(test)]
+    {
+        false
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Credential(HeaderValue);
 
@@ -67,6 +80,10 @@ impl Credential {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn build_info_availability_is_fixed_false_for_test_credentials() {
+        assert!(!embedded_available());
+    }
     #[test]
     fn source_precedence_and_redaction() {
         let bundled = "synthetic-bundled-key";
