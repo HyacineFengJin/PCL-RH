@@ -59,6 +59,31 @@ fn data_security(directory: &Directory) -> io::Result<()> {
     Ok(())
 }
 
+fn lock_entry_matches(entry: &Metadata, held: &Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Darwin's nofollow entry snapshot deliberately has no ACL evidence.
+        // Only the held descriptor supplies that field; all stat fields must
+        // still agree. Private admission is checked on the held metadata.
+        let mut entry = entry.clone();
+        match (&mut entry.security, &held.security) {
+            (
+                retained_fs::Security::Unix { extended_acl, .. },
+                retained_fs::Security::Unix {
+                    extended_acl: actual,
+                    ..
+                },
+            ) => *extended_acl = *actual,
+            _ => return false,
+        }
+        entry == *held
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        entry == held
+    }
+}
+
 /// A read-only proof for the passive empty projection. Existing store entries
 /// (including links, invalid kinds and invalid JSON) always belong to Node.
 pub(super) fn extensions_absent(project_path: &Path) -> io::Result<bool> {
@@ -144,14 +169,15 @@ impl ExtensionAbsence {
             if let Some(before) = data.entry(&name)? {
                 // Match Lease::recheck explicitly, including legacy Linux data
                 // directories whose own policy is owned rather than private.
-                before.require_private()?;
                 let file = data.open_regular(&name, Links::Single)?;
-                if retained_fs::metadata(&file)? != before {
+                let held_before = retained_fs::metadata(&file)?;
+                held_before.require_private()?;
+                if !lock_entry_matches(&before, &held_before) {
                     return Err(io::Error::other("Experimental host lock changed"));
                 }
                 let held = retained_fs::shared_lock_is_held(&file)?;
                 data.recheck(&name, &before.identity)?;
-                if retained_fs::metadata(&file)? != before {
+                if retained_fs::metadata(&file)? != held_before {
                     return Err(io::Error::other("Experimental host lock changed"));
                 }
                 if held {
@@ -370,6 +396,61 @@ mod tests {
             .unwrap();
         data.create_file(&leaf("extensions.json").unwrap()).unwrap();
         assert!(!proof.recheck().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn lock_entry_unknown_acl_uses_private_held_descriptor_evidence() {
+        let (_temporary, path) = fixture();
+        let (_project, _app, data) = data(&path);
+        let name = leaf("host.lock").unwrap();
+        let file = data.create_file(&name).unwrap();
+        let entry = data.entry(&name).unwrap().unwrap();
+        let held = retained_fs::metadata(&file).unwrap();
+        assert!(matches!(
+            &entry.security,
+            retained_fs::Security::Unix {
+                extended_acl: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            entry.require_private().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        held.require_private().unwrap();
+        assert!(lock_entry_matches(&entry, &held));
+        assert!(extensions_absent(&path).unwrap());
+    }
+
+    #[test]
+    fn lock_entry_comparison_keeps_all_other_metadata_evidence() {
+        let (_temporary, path) = fixture();
+        let (_project, _app, data) = data(&path);
+        let file = data.create_file(&leaf("host.lock").unwrap()).unwrap();
+        let held = retained_fs::metadata(&file).unwrap();
+        let mut changed = vec![held.clone(); 9];
+        match &mut changed[0].identity {
+            retained_fs::Identity::Unix { inode, .. } => *inode ^= 1,
+            retained_fs::Identity::Windows { file, .. } => file[0] ^= 1,
+        }
+        changed[1].kind = Kind::Directory;
+        changed[2].len ^= 1;
+        changed[3].links ^= 1;
+        changed[4].modified.nanos = (held.modified.nanos + 1) % 1_000_000_000;
+        changed[5].changed.nanos = (held.changed.nanos + 1) % 1_000_000_000;
+        match &mut changed[6].security {
+            retained_fs::Security::Unix { owner, .. } => *owner ^= 1,
+            retained_fs::Security::Windows { owner, .. } => owner.push(0),
+        }
+        match &mut changed[7].security {
+            retained_fs::Security::Unix { mode, .. } => *mode ^= 1,
+            retained_fs::Security::Windows { descriptor, .. } => descriptor.push(0),
+        }
+        changed[8].reparse_tag = Some(1);
+        for stamp in changed {
+            assert!(!lock_entry_matches(&stamp, &held), "{stamp:?}");
+        }
     }
 
     #[cfg(unix)]
