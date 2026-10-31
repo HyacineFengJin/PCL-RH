@@ -2,17 +2,11 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/rh-code-hibernation/native-fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::SeqCst)
-            ));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("experimental")).unwrap();
         fs::write(
             root.join("experimental/host.mjs"),
@@ -42,7 +36,7 @@ for await (const line of readline.createInterface({input: process.stdin})) {
 "#,
         )
         .unwrap();
-        Self(root)
+        Self(root, temporary)
     }
     fn wait_for(&self, name: &str) {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -54,7 +48,7 @@ for await (const line of readline.createInterface({input: process.stdin})) {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(self.1.path());
     }
 }
 #[test]
@@ -69,6 +63,30 @@ fn never_used_suspend_does_not_start_or_create_data() {
         }
     );
     assert!(!fixture.0.join(".pcl-rust").exists());
+    assert!(host.is_stopped());
+}
+#[test]
+fn stale_retirement_flag_cannot_override_real_session_ownership() {
+    let fixture = Fixture::new();
+    let host = Host::new(fixture.0.clone());
+    {
+        let _owner = host.session.lock().unwrap();
+        assert!(
+            !host.is_stopped(),
+            "a busy ownership lock is not an exit receipt"
+        );
+    }
+    assert!(host.is_stopped());
+    host.call("status", json!({})).unwrap();
+    // Model an old retirement publication racing after this session started.
+    host.stopped.store(true, Ordering::SeqCst);
+    assert_eq!(host.callers.load(Ordering::SeqCst), 0);
+    assert_eq!(host.retiring.load(Ordering::Acquire), 0);
+    assert!(
+        !host.is_stopped(),
+        "the real live session still owns the host"
+    );
+    assert!(host.suspend().unwrap().released);
     assert!(host.is_stopped());
 }
 #[test]

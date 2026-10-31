@@ -1,0 +1,63 @@
+name: Native Code boundaries
+
+on:
+  push:
+    branches: [master]
+    paths: ['apps/desktop/src-tauri/src/code_runner.rs', 'apps/desktop/src-tauri/src/code_runner/**', 'apps/desktop/src-tauri/src/rh_code/harness.rs', 'apps/desktop/src-tauri/src/rh_code/harness/**', 'apps/desktop/src-tauri/src/rh_code/harness_test_host.rs', 'apps/desktop/src-tauri/src/rh_code/identity.rs', 'apps/desktop/src-tauri/src/rh_code/models.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/experimental.rs', 'apps/desktop/src-tauri/src/experimental/host*.rs', 'apps/desktop/src-tauri/src/launcher_paths.rs', 'apps/desktop/src-tauri/src/launcher_paths/**', 'crates/install/tests/launcher_paths.rs', 'crates/install/tests/experimental_host.rs', 'pcl-rh.json', 'tools/build-native.py', 'start-native.ps1', 'start-native.sh', 'crates/install/tests/code_runner.rs', 'crates/install/tests/rh_code_harness.rs', 'crates/install/Cargo.toml', 'crates/core/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/code-boundaries.yml']
+  pull_request:
+    paths: ['apps/desktop/src-tauri/src/code_runner.rs', 'apps/desktop/src-tauri/src/code_runner/**', 'apps/desktop/src-tauri/src/rh_code/harness.rs', 'apps/desktop/src-tauri/src/rh_code/harness/**', 'apps/desktop/src-tauri/src/rh_code/harness_test_host.rs', 'apps/desktop/src-tauri/src/rh_code/identity.rs', 'apps/desktop/src-tauri/src/rh_code/models.rs', 'apps/desktop/src-tauri/src/launcher_local/**', 'apps/desktop/src-tauri/src/experimental.rs', 'apps/desktop/src-tauri/src/experimental/host*.rs', 'apps/desktop/src-tauri/src/launcher_paths.rs', 'apps/desktop/src-tauri/src/launcher_paths/**', 'crates/install/tests/launcher_paths.rs', 'crates/install/tests/experimental_host.rs', 'pcl-rh.json', 'tools/build-native.py', 'start-native.ps1', 'start-native.sh', 'crates/install/tests/code_runner.rs', 'crates/install/tests/rh_code_harness.rs', 'crates/install/Cargo.toml', 'crates/core/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/code-boundaries.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-boundaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-code:
+    name: Code boundaries / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2025, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      CARGO_TERM_COLOR: never
+      RUST_BACKTRACE: '1'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Prepare stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Check portable build entry syntax
+        run: python tools/build-native.py --help
+      - name: Parse the Windows launcher entry
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'start-native.ps1'), [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) { throw ($parseErrors | Out-String) }
+      - name: Prepare Linux synthetic compiler fixtures
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap openjdk-17-jdk-headless
+      - name: Test actual source capture, provenance and build protocol
+        # Linux also executes the existing isolated synthetic javac/Gradle
+        # fixtures. Other hosts must return explicit blocked receipts before
+        # executing author code or mutating a project; no fake sandbox success.
+        run: cargo +stable test --locked -p pcl-install --test code_runner --test rh_code_harness --test launcher_paths --no-fail-fast -- --test-threads=2
+      - name: Test actual trusted host lease, RPC and retirement
+        if: ${{ !cancelled() }}
+        # The source wrapper also compiles Code dependencies tested above.
+        # Filter to host cases so compiler/process fixtures do not run twice.
+        run: |
+          cargo +stable test --locked -p pcl-install --test experimental_host experimental_host::tests -- --test-threads=2 --nocapture
+      - name: Report native toolchain
+        run: rustc +stable -vV
+      # Same-process protocol/source tests are not evidence of reexec ownership,
+      # a full Node host, native author-code confinement or a complete app.

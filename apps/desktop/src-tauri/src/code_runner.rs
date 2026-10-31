@@ -12,10 +12,18 @@
 //! death stops the owned process group and PID namespace before reaping its
 //! leader. Nonblocking input/output prevents abandoned pipes from holding the
 //! experimental host's shutdown deadline. stdout is exclusively bounded NDJSON.
+#[path = "code_runner/inputs.rs"]
+mod inputs;
+#[cfg(target_os = "linux")]
+#[path = "code_runner/process.rs"]
 mod process;
+#[path = "code_runner/protocol.rs"]
 mod protocol;
+#[cfg(target_os = "linux")]
+#[path = "code_runner/sandbox.rs"]
 mod sandbox;
 
+pub(crate) use protocol::host_pipe;
 use protocol::{Input, Writer};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -126,6 +134,7 @@ impl Outcome {
         json!({"type":"finished", "status":self.status, "exitCode":self.exit_code,
             "signal":self.signal, "error":self.error.as_ref().map(Failure::value)})
     }
+    #[cfg(target_os = "linux")]
     fn failed(error: Failure) -> Self {
         Self {
             status: "failed",
@@ -145,18 +154,23 @@ pub fn main_if_requested() -> Option<i32> {
     Some(helper_main())
 }
 fn helper_main() -> i32 {
-    let mut writer = match Writer::new(libc::STDOUT_FILENO) {
+    let mut writer = match Writer::stdout() {
         Ok(writer) => writer,
         Err(_) => return 1,
     };
-    let mut input = match Input::new(libc::STDIN_FILENO) {
+    let mut input = match Input::stdin() {
         Ok(input) => input,
         Err(error) => {
             let _ = writer.event(&Outcome::blocked(error).finished());
             return 1;
         }
     };
+    serve(&mut input, &mut writer)
+}
+
+fn serve(input: &mut Input, writer: &mut Writer) -> i32 {
     let outcome = (|| {
+        #[cfg(target_os = "linux")]
         process::arm_parent_death()?;
         let bytes = input.request(Duration::from_secs(5))?;
         let request: Request = serde_json::from_slice(&bytes)
@@ -167,7 +181,7 @@ fn helper_main() -> i32 {
             writer.set_run_id(&request.run_id);
         }
         request.validate()?;
-        execute(&request, &mut input, &mut writer)
+        execute(&request, input, writer)
     })()
     .unwrap_or_else(Outcome::blocked);
     let result = if outcome.status == "completed" { 0 } else { 1 };
@@ -177,7 +191,11 @@ fn helper_main() -> i32 {
     result
 }
 
+#[cfg(target_os = "linux")]
 fn execute(request: &Request, input: &mut Input, writer: &mut Writer) -> Result<Outcome, Failure> {
+    // The common read-only inventory bounds source and HOME before the
+    // unchanged Linux sandbox backend creates any compiler output.
+    drop(inputs::Inventory::capture(&request.root)?);
     let prepared = sandbox::Prepared::new(request)?;
     // Availability is an actual sandbox launch, not command-v or a fallback to
     // unsandboxed execution. Cancellation can also retire this short preflight.
@@ -222,5 +240,26 @@ fn execute(request: &Request, input: &mut Input, writer: &mut Writer) -> Result<
     ).unwrap_or_else(Outcome::failed))
 }
 
+#[cfg(not(target_os = "linux"))]
+fn execute(request: &Request, input: &mut Input, _writer: &mut Writer) -> Result<Outcome, Failure> {
+    let _captured = inputs::Inventory::capture(&request.root)?;
+    if input.cancelled()? {
+        return Ok(Outcome {
+            status: "cancelled",
+            exit_code: None,
+            signal: None,
+            error: None,
+        });
+    }
+    // Reading the private input copy establishes no execution confinement.
+    // Refuse before creating output directories or launching any author code.
+    Err(Failure::new("BUILD_SANDBOX_UNAVAILABLE",
+        format!("Author-code execution requires a verified native build sandbox; target {} with network={} is unavailable on this platform", request.target.argument(), request.network)))
+}
+
 #[cfg(test)]
+#[path = "code_runner/portable_tests.rs"]
+mod portable_tests;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "code_runner/tests.rs"]
 mod tests;

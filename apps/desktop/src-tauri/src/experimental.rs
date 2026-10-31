@@ -5,11 +5,8 @@ use crate::Shared;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Write},
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
+    fs,
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, MutexGuard,
@@ -93,101 +90,22 @@ pub enum Operation {
     ReviewCancel,
     ReportRead,
 }
-struct Session {
-    child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-    _lease: File,
-    broken: bool,
-}
-impl Session {
-    fn call(&mut self, operation: &str, args: Value) -> Result<Value, String> {
-        let text = serde_json::to_vec(&json!({"operation":operation,"args":args}))
-            .map_err(|e| e.to_string())?;
-        // RH snapshots contain native-owned base64 bytes. A settings batch can
-        // contain sixteen 4000-character values, so Unicode also needs a larger
-        // bounded envelope than the older renderer requests.
-        let limit = match operation {
-            "rh_code_run" => 24 * 1024 * 1024,
-            "extensions_settings" => 512 * 1024,
-            _ => 128_000,
-        };
-        if text.len() > limit {
-            return Err(format!("引擎请求超过 {} KB", limit / 1000));
-        }
-        self.broken = true;
-        self.input
-            .write_all(&text)
-            .and_then(|_| self.input.write_all(b"\n"))
-            .and_then(|_| self.input.flush())
-            .map_err(|_| "实验功能引擎已断开".to_string())?;
-        let mut line = Vec::new();
-        let reply_limit = if operation == "rh_code_harness_export" {
-            24 * 1024 * 1024
-        } else {
-            1_000_000
-        };
-        // Poll each chunk instead of allowing a crashed host to block shutdown.
-        loop {
-            if self.output.buffer().is_empty() {
-                let mut fd = libc::pollfd {
-                    fd: self.output.get_ref().as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let ready = unsafe { libc::poll(&mut fd, 1, 20_000) };
-                if ready <= 0 {
-                    return Err("实验功能引擎未及时响应".into());
-                }
-            }
-            let bytes = self
-                .output
-                .fill_buf()
-                .map_err(|_| "无法读取实验功能结果".to_string())?;
-            if bytes.is_empty() {
-                return Err("实验功能引擎已退出".into());
-            }
-            let count = bytes
-                .iter()
-                .position(|v| *v == b'\n')
-                .map(|n| n + 1)
-                .unwrap_or(bytes.len());
-            line.extend_from_slice(&bytes[..count]);
-            self.output.consume(count);
-            if line.len() > reply_limit + 1 {
-                return Err("实验功能结果超过接口上限".into());
-            }
-            if line.last() == Some(&b'\n') {
-                break;
-            }
-        }
-        let reply: Value =
-            serde_json::from_slice(&line).map_err(|_| "实验功能引擎返回了无效结果".to_string())?;
-        self.broken = false;
-        if reply["ok"] == true {
-            Ok(reply["result"].clone())
-        } else {
-            Err(reply["error"]
-                .as_str()
-                .unwrap_or("实验功能处理失败")
-                .to_owned())
-        }
-    }
-}
-impl Drop for Session {
-    fn drop(&mut self) {
-        if !self.broken {
-            let _ = self.call("shutdown", json!({}));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
+#[path = "experimental/host_files.rs"]
+mod host_files;
+#[path = "experimental/host_io.rs"]
+mod host_io;
+#[path = "experimental/host_process.rs"]
+mod host_process;
+#[path = "experimental/host_session.rs"]
+mod host_session;
+use host_session::Session;
+
 pub struct Host {
     project: PathBuf,
     session: Mutex<Option<Session>>,
     closing: AtomicBool,
-    stopped: AtomicBool,
+    stopped: Arc<AtomicBool>,
+    retiring: Arc<AtomicUsize>,
     callers: AtomicUsize,
     resume_preset: Mutex<Option<String>>,
 }
@@ -228,54 +146,23 @@ impl Host {
             project,
             session: Mutex::new(None),
             closing: AtomicBool::new(false),
-            stopped: AtomicBool::new(true),
+            stopped: Arc::new(AtomicBool::new(true)),
+            retiring: Arc::new(AtomicUsize::new(0)),
             callers: AtomicUsize::new(0),
             resume_preset: Mutex::new(None),
         }
     }
     fn start(&self) -> Result<Session, String> {
-        let data = self.project.join(".pcl-rust/experimental");
-        fs::create_dir_all(&data).map_err(|e| e.to_string())?;
-        let lease = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(data.join("host.lock"))
-            .map_err(|e| e.to_string())?;
-        if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err("另一启动器正在使用实验功能引擎".into());
+        if self.retiring.load(Ordering::Acquire) != 0 {
+            return Err("实验功能引擎正在退役，请稍后重试".into());
         }
-        let mut child = Command::new("/usr/bin/node")
-            .arg(self.project.join("experimental/host.mjs"))
-            .arg(&data)
-            .current_dir(&self.project)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("LANG", "C.UTF-8")
-            .env(
-                "PCL_RH_BUILD_RUNNER_EXE",
-                std::env::current_exe().map_err(|e| e.to_string())?,
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                format!("无法启动实验功能引擎（需要 Node.js 22.19+ 和 Python 3.11+）：{e}")
-            })?;
-        let input = child.stdin.take().ok_or("无法打开实验功能通道")?;
-        let output = BufReader::new(child.stdout.take().ok_or("无法读取实验功能通道")?);
-        self.stopped.store(false, Ordering::SeqCst);
-        let mut session = Session {
-            child,
-            input,
-            output,
-            _lease: lease,
-            broken: false,
-        };
+        let mut session = Session::start(
+            &self.project,
+            host_process::Lifecycle {
+                retiring: self.retiring.clone(),
+                stopped: self.stopped.clone(),
+            },
+        )?;
         let mut resume_preset = self
             .resume_preset
             .lock()
@@ -312,21 +199,29 @@ impl Host {
         // app exit requests recovery. Its unread stdio reply cannot be consumed
         // as the next operation's result.
         if owner.as_ref().is_some_and(|session| session.broken) {
-            drop(owner.take());
+            if let Some(session) = owner.take() {
+                session.retire(false);
+            }
         }
         if owner.is_none() {
             match self.start() {
                 Ok(session) => *owner = Some(session),
                 Err(error) => {
-                    self.stopped.store(true, Ordering::SeqCst);
+                    if self.retiring.load(Ordering::Acquire) == 0 {
+                        self.stopped.store(true, Ordering::SeqCst);
+                    }
                     return Err(error);
                 }
             }
         }
         let result = owner.as_mut().unwrap().call(operation, args);
         if owner.as_ref().is_some_and(|session| session.broken) {
-            drop(owner.take());
-            self.stopped.store(true, Ordering::SeqCst);
+            if let Some(session) = owner.take() {
+                session.retire(false);
+            }
+            if self.retiring.load(Ordering::Acquire) == 0 {
+                self.stopped.store(true, Ordering::SeqCst);
+            }
         }
         let result = result?;
         effect(result, operation_guard)
@@ -386,7 +281,10 @@ impl Host {
             }
             Err(_) => return Err("实验功能引擎状态不可用".into()),
         };
-        if self.closing.load(Ordering::SeqCst) || self.callers.load(Ordering::SeqCst) != 0 {
+        if self.closing.load(Ordering::SeqCst)
+            || self.callers.load(Ordering::SeqCst) != 0
+            || self.retiring.load(Ordering::Acquire) != 0
+        {
             return Ok(SuspendResult {
                 released: false,
                 busy: true,
@@ -416,15 +314,20 @@ impl Host {
             .lock()
             .map_err(|_| "实验功能引擎状态不可用")? =
             prepared["resumePresetId"].as_str().map(str::to_owned);
-        drop(owner.take());
-        self.stopped.store(true, Ordering::SeqCst);
+        let released = owner.take().expect("admitted idle session").retire(true);
+        if released {
+            self.stopped.store(true, Ordering::SeqCst);
+        }
         Ok(SuspendResult {
-            released: true,
-            busy: false,
+            released,
+            busy: !released,
         })
     }
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(Ordering::SeqCst) && self.callers.load(Ordering::SeqCst) == 0
+        self.stopped.load(Ordering::SeqCst)
+            && self.callers.load(Ordering::SeqCst) == 0
+            && self.retiring.load(Ordering::Acquire) == 0
+            && self.session.try_lock().is_ok_and(|owner| owner.is_none())
     }
     pub fn shutdown(self: &Arc<Self>) {
         if self.closing.swap(true, Ordering::SeqCst) {
@@ -435,9 +338,13 @@ impl Host {
         let host = self.clone();
         std::thread::spawn(move || {
             if let Ok(mut owner) = host.session.lock() {
-                drop(owner.take());
+                if let Some(session) = owner.take() {
+                    session.retire(true);
+                }
             }
-            host.stopped.store(true, Ordering::SeqCst);
+            if host.retiring.load(Ordering::Acquire) == 0 {
+                host.stopped.store(true, Ordering::SeqCst);
+            }
         });
     }
 }
@@ -578,11 +485,7 @@ pub async fn experimental_open(
         if !path.starts_with(host.project.join(".pcl-rust/experimental/jobs")) {
             return Err("工程不属于实验工作区".into());
         }
-        Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        pcl_desktop_platform::opener::open_path(&path)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -677,11 +580,7 @@ pub async fn rh_code_build_open(
         code.call("build_artifact_owner", args.clone())?;
         let result = host.call("rh_code_build_artifact_directory", args.clone())?;
         let directory = checked_build_directory(&host.project, &args, &result)?;
-        Command::new("xdg-open")
-            .arg(directory)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        pcl_desktop_platform::opener::open_path(&directory)
     })
     .await
     .map_err(|e| e.to_string())?

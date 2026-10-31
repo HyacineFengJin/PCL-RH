@@ -39,6 +39,16 @@ PCL_BUILD_JOBS=1 ./build-native.sh
 
 The build script installs locked WebUI and AI runtime dependencies, builds the frontend and native executables, and prepares the desktop entry point. Set `PCL_BUILD_JOBS=1` to reduce compiler concurrency. Run `./install-desktop.sh` to install a desktop shortcut once `desktop-file-validate` is available.
 
+## 跨平台便携构建（适配中）
+
+已有原生工具链的 Windows、macOS 和 Linux 可以使用同一个构建入口：
+
+```sh
+python tools/build-native.py --jobs 2
+```
+
+脚本构建当前主机的桌面与 CLI，将结果放入 `.pcl-rust/bin`；`--build-only` 只保留 `target` 中的产物。Windows 用 `start-native.ps1` 启动，Linux/macOS 用 `start-native.sh`。这仍是可写项目文件夹中的便携布局，不是已完成的 Windows 安装器或 macOS `.app` 发行包。当前通过情况与未完成能力以[平台说明](PLATFORMS.md)为准。
+
 ## 开发与检查
 
 WebUI 预览、Tauri 开发、相关测试和贡献方式见[贡献指南](../CONTRIBUTING.md)，实现导航见[开发文档](DEVELOPMENT.md)。

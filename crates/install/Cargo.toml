@@ -20,7 +20,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_IO", "Win32_System_Pipes", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 base64 = "0.22"

@@ -5,6 +5,7 @@ mod assets;
 mod context;
 mod files;
 mod harness;
+mod identity;
 mod layout;
 use crate::{
     product_plugins::{
@@ -14,10 +15,10 @@ use crate::{
     Shared,
 };
 use files::{atomic, atomic_with_permissions, inventory, read};
+use identity::{hash, id};
 use layout::{checked_layout, portable_layout};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs,
@@ -28,56 +29,9 @@ use std::{
 use tauri::State;
 
 const LIMIT: usize = 8 * 1024 * 1024;
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Message {
-    pub id: String,
-    pub role: String,
-    pub content: String,
-    pub job_id: Option<String>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Conversation {
-    pub id: String,
-    pub title: String,
-    pub mode: String,
-    pub messages: Vec<Message>,
-    pub active_job: Option<String>,
-    #[serde(default)]
-    pub draft: String,
-    #[serde(default)]
-    pub context_note: String,
-    #[serde(default)]
-    pub context_paths: Vec<String>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Target {
-    pub minecraft: String,
-    pub loaders: Vec<String>,
-}
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BuildPolicy {
-    pub enabled: bool,
-    pub network: bool,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub folder: String,
-    pub updated_at: u64,
-    pub targets: Vec<Target>,
-    pub conversations: Vec<Conversation>,
-    pub layout: Value,
-    #[serde(default)]
-    pub instructions: String,
-    #[serde(default)]
-    pub build_policy: BuildPolicy,
-}
+#[path = "rh_code/models.rs"]
+mod models;
+pub use models::{BuildPolicy, Conversation, Message, Project, Target};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LayoutPreset {
@@ -109,28 +63,11 @@ pub struct Store {
     root: PathBuf,
     runtime: Arc<Runtime>,
 }
-fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-fn id() -> String {
-    hash(
-        format!(
-            "{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        )
-        .as_bytes(),
-    )[..24]
-        .to_owned()
 }
 fn text(a: &Value, key: &str, max: usize) -> Result<String, String> {
     let s = a[key].as_str().ok_or_else(|| format!("Missing {key}"))?;

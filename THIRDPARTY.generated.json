@@ -38,7 +38,7 @@
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.toml",
-      "sha256": "a52ef82d894c3ad12bf04784ea1d8949279d03680063675dccfaf1573c064bdb"
+      "sha256": "743db980b9a5c4af113ff4d06688494a3701e85536d84e0c6c60dd8bac12c02c"
     },
     {
       "path": "crates/auth/Cargo.toml",
@@ -58,7 +58,7 @@
     },
     {
       "path": "crates/install/Cargo.toml",
-      "sha256": "d42160e6e0159a89c75ec193a0cdcf2d2e09f97f7eed47cd71a18ab03e610dfa"
+      "sha256": "3ee7175c48e7ab05e486b297aff9310956831b8a28f65f8726ab7d1625cbd54b"
     },
     {
       "path": "crates/network/Cargo.toml",

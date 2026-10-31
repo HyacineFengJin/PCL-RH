@@ -9,27 +9,19 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::{symlink, PermissionsExt},
     },
-    path::Path,
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, #[allow(dead_code)] tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/harness-runner-2026-10-13/native-fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::SeqCst)
-            ));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("attempt");
         fs::create_dir_all(root.join("source")).unwrap();
         fs::create_dir(root.join("home")).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        Self(fs::canonicalize(root).unwrap())
+        Self(fs::canonicalize(root).unwrap(), temporary)
     }
     fn request(&self, recipe: Recipe, target: Target) -> Request {
         Request {
@@ -109,11 +101,6 @@ public class GradleWrapperMain {
             "fixture jar failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 fn pipe() -> (File, File) {

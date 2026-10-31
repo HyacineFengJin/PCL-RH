@@ -1,7 +1,7 @@
 //! One owned bwrap leader reserves its PID until the namespace/group is stopped.
 //! waitid(WNOWAIT) observes exit without the PID/PGID reuse race from try_wait.
 use super::{
-    protocol::{nonblocking, Input, Utf8},
+    protocol::{nonblocking, Input, OutputBudget, Utf8},
     Failure, Outcome,
 };
 use std::{
@@ -157,32 +157,6 @@ impl Drop for Owned {
     }
 }
 
-struct OutputBudget {
-    raw_bytes: usize,
-    text_bytes: usize,
-    limit: usize,
-}
-impl OutputBudget {
-    fn emit(
-        &mut self,
-        stream: &str,
-        text: &str,
-        output: &mut impl FnMut(&str, &str) -> Result<(), Failure>,
-    ) -> Result<bool, Failure> {
-        // Invalid UTF-8 becomes U+FFFD, which can expand one raw byte to three.
-        // Both raw I/O and the persisted model-visible text obey the same cap.
-        let remaining = self.limit.saturating_sub(self.text_bytes);
-        let mut end = text.len().min(remaining);
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        if end != 0 {
-            output(stream, &text[..end])?;
-            self.text_bytes += end;
-        }
-        Ok(end < text.len())
-    }
-}
 struct Stream<R> {
     reader: R,
     utf8: Utf8,

@@ -5,30 +5,23 @@ use crate::experimental::Operation;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc, Arc, MutexGuard,
-    },
+    sync::{atomic::Ordering, mpsc, Arc, MutexGuard},
     time::{Duration, Instant},
 };
 
 struct Fixture {
     backing: crate::integration_tests::Fixture,
+    _temporary: tempfile::TempDir,
 }
 impl Fixture {
     fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/plugin-capabilities-2026-10-20/native-fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::SeqCst)
-            ));
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
         fs::create_dir_all(root.join("experimental")).unwrap();
         fs::create_dir_all(root.join("Minecraft/.minecraft")).unwrap();
         let fixture = Self {
             backing: crate::integration_tests::Fixture(root.canonicalize().unwrap()),
+            _temporary: temporary,
         };
         fs::write(
             fixture.root().join("experimental/host.mjs"),

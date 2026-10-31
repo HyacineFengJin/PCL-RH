@@ -57,6 +57,7 @@ mod launcher_minecraft_updates;
 mod launcher_monitor_runtime;
 #[cfg(not(target_os = "linux"))]
 mod launcher_node;
+mod launcher_paths;
 mod launcher_prefs;
 mod launcher_preparation;
 mod launcher_repair;
@@ -237,12 +238,8 @@ struct InstanceView {
     metadata: instance_meta::Metadata,
     metadata_revision: String,
 }
-fn project() -> PathBuf {
-    std::env::var_os("PCL_LINUX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
-        .canonicalize()
-        .expect("项目路径不存在")
+fn project() -> Result<PathBuf, String> {
+    launcher_paths::resolve()
 }
 fn bootstrap_view(s: &Shared) -> Bootstrap {
     let _ = launcher_monitor_runtime::refresh(s);
@@ -2097,7 +2094,13 @@ fn main() {
     if let Some(code) = launcher_game_monitor::dispatch_cli() {
         std::process::exit(code);
     }
-    let project = project();
+    let project = match project() {
+        Ok(project) => project,
+        Err(error) => {
+            eprintln!("PCL RH 启动失败：{error}");
+            std::process::exit(1);
+        }
+    };
     let launcher_preferences = launcher_prefs::LauncherPreferencesStore::load(&project);
     let initial_preferences = launcher_preferences.snapshot().preferences;
     let network_warning =

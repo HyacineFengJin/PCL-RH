@@ -3,7 +3,7 @@
 //! authorizes an external title-image pathname.
 use crate::{launcher_assets as assets, launcher_prefs::*, Shared};
 use serde::Serialize;
-use std::{path::Path, process::Command, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use tauri::{Manager, State};
 
 #[derive(Serialize)]
@@ -35,11 +35,8 @@ pub async fn launcher_open_media_folder(
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = shared.launcher_assets.ensure_folder(collection)?;
-        Command::new("xdg-open")
-            .arg(path)
-            .spawn()
-            .map_err(|e| format!("无法打开媒体目录：{e}"))?;
-        Ok(())
+        pcl_desktop_platform::opener::open_path(&path)
+            .map_err(|error| format!("无法打开媒体目录：{error}"))
     })
     .await
     .map_err(|_| "打开媒体目录的任务意外退出".to_string())?
@@ -255,11 +252,7 @@ pub async fn launcher_home_refresh(
 #[tauri::command]
 pub fn launcher_home_open_link(url: String) -> Result<(), String> {
     let link = assets::validate_homepage_link(&url)?;
-    Command::new("xdg-open")
-        .arg(link)
-        .spawn()
-        .map_err(|_| "无法打开默认浏览器")?;
-    Ok(())
+    pcl_desktop_platform::opener::open_url(&link)
 }
 
 pub fn serve_media(

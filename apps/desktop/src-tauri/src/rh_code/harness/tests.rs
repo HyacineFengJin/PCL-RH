@@ -1,21 +1,22 @@
 use super::*;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 
 struct Fixture {
+    _temporary: tempfile::TempDir,
     directory: std::path::PathBuf,
     store: std::path::PathBuf,
     project: Project,
 }
 impl Fixture {
     fn new() -> Self {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/harness-2026-10-12/native/fixtures")
-            .join(id());
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().to_owned();
         let project_folder = directory.join("project");
         fs::create_dir_all(&project_folder).unwrap();
         let directory = fs::canonicalize(directory).unwrap();
         let project_folder = fs::canonicalize(project_folder).unwrap();
         Self {
+            _temporary: temporary,
             store: directory.join("store"),
             directory,
             project: Project {
@@ -118,11 +119,6 @@ impl Fixture {
             publish(&self.project, &root, entry).unwrap();
         }
         (transaction, journal)
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.directory);
     }
 }
 fn replacement(path: &str, before: &str, after: &str) -> Value {

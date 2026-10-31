@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PCL_RH_HOME="$project_dir"
 export PCL_LINUX_HOME="$project_dir"
 binary="$project_dir/.pcl-rust/bin/pcl-desktop"
 if [ ! -x "$binary" ]; then
