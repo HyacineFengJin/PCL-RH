@@ -96,17 +96,17 @@ Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约
 
 在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面与 CLI 程序，并生成未签名的便携测试包；不使用服务密钥、不发布 Release，也不生成 MSI / `.app` 等标准安装包。
 
-各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184802305)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
+各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41189560414)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
-[Linux 与两种 macOS 架构](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41187465885)以及[Windows](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41188367747)的便携测试包已通过实际归档、解压、文件哈希、原生可执行架构、CLI 扫描和声明型插件宿主 RPC 检查。该检查不打开桌面窗口、不启动游戏或模型。下载和依赖要求见[便携测试包说明](BUILDING.md#便携测试包)。
+[四个平台的便携测试包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41189560414)已在同一轮构建中通过实际归档、解压、文件哈希、原生可执行架构、CLI 扫描和声明型插件宿主 RPC 检查。[Code 边界回归](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41189886548)也在四个原生主机上通过；Linux 包含实际子进程、namespace init 退出确认、启动前取消和 UTF-8 输出帧顺序检查。这些检查不打开桌面窗口、不启动游戏或模型。下载和依赖要求见[便携测试包说明](BUILDING.md#便携测试包)。
 
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773913)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773868)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184802305)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41184773913)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41189886548)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41189560414)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 
-PCL RH now compiles and links as a complete desktop application on native Linux x64, Windows x64, macOS Intel and Apple Silicon CI hosts. Runtime validation and distribution packages remain unfinished. The table above distinguishes verified transactions from unavailable native Code publication and author-code confinement.
+PCL RH now compiles and links as a complete desktop application on native Linux x64, Windows x64, macOS Intel and Apple Silicon CI hosts. Unsigned portable previews pass archive and headless runtime checks on all four hosts; interactive validation, standard installers and signing remain unfinished. The table above distinguishes verified transactions from unavailable native Code publication and author-code confinement.
 
 The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. A separate installer workflow compiles the production installer and passes actual vanilla/Fabric installation, repair/recovery, resource publication/undo and instance mutation fixtures on all four hosts. Non-Linux confined Java processors, native Code publication, Windows running-executable replacement, distribution packages and interactive game validation remain unfinished. Architecture-specific Minecraft natives must also exist for the selected game version. The portable source-build entry is `tools/build-native.py`; desktop shortcut installation remains Linux-specific.
 
