@@ -13,7 +13,7 @@
 
 各系统依赖的安装方法见 [Tauri 官方前置依赖说明](https://v2.tauri.app/start/prerequisites/)。
 
-Linux 中执行 RH Code 的隔离构建还需要 bubblewrap 0.8+ 和可用 JDK；普通游戏启动不预先加载该构建环境。
+Linux 中执行 RH Code 的隔离构建还需要 bubblewrap 0.8+、支持 pidfd 的 Linux 内核和可用 JDK；普通游戏启动不预先加载该构建环境。
 
 Linux 系统依赖通过所用发行版的软件包管理器安装，文件选择器需要 XDG Desktop Portal 和适合桌面环境的后端。记住正版登录需要当前平台可用的系统凭据服务。运行游戏所需 Java 可以在启动器中下载。
 

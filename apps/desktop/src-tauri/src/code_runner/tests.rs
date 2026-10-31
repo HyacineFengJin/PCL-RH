@@ -3,6 +3,7 @@
 use super::*;
 use std::{
     cell::Cell,
+    collections::BTreeSet,
     fs::{self, File},
     io::{Read, Write},
     os::{
@@ -144,20 +145,54 @@ fn assert_resolved_recipe_tool(command: &Command, tool: &str) {
     assert_eq!(arguments[separator + 1], expected.as_os_str());
 }
 fn descendants(pid: u32) -> Vec<u32> {
-    let mut result = Vec::new();
+    const MAX_PROCESSES: usize = 128;
+    const MAX_THREADS: usize = 1024;
+    const MAX_CHILDREN_BYTES: u64 = 16 * 1024;
+    let mut seen = BTreeSet::from([pid]);
     let mut pending = vec![pid];
+    let mut threads = 0;
     while let Some(parent) = pending.pop() {
-        let text = fs::read_to_string(format!("/proc/{parent}/task/{parent}/children"))
-            .unwrap_or_default();
-        for child in text
-            .split_whitespace()
-            .filter_map(|v| v.parse::<u32>().ok())
-        {
-            result.push(child);
-            pending.push(child);
+        // Linux records children on the thread which created them. A JVM may
+        // spawn from a non-main thread, so task/<PID>/children is incomplete.
+        // Walk only threads of processes reached from this owned leader.
+        for task in fs::read_dir(format!("/proc/{parent}/task")).unwrap() {
+            let task = task.unwrap();
+            threads += 1;
+            assert!(
+                threads <= MAX_THREADS,
+                "owned fixture exceeds its thread bound"
+            );
+            let children = match File::open(task.path().join("children")) {
+                Ok(file) => file,
+                // JVM worker threads may retire during task enumeration.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => panic!("cannot inspect owned thread children: {error}"),
+            };
+            let mut text = String::new();
+            children
+                .take(MAX_CHILDREN_BYTES + 1)
+                .read_to_string(&mut text)
+                .unwrap();
+            assert!(
+                text.len() as u64 <= MAX_CHILDREN_BYTES,
+                "owned thread children exceed their byte bound"
+            );
+            for child in text
+                .split_whitespace()
+                .map(|value| value.parse::<u32>().unwrap())
+            {
+                if seen.insert(child) {
+                    assert!(
+                        seen.len() <= MAX_PROCESSES,
+                        "owned fixture exceeds its process bound"
+                    );
+                    pending.push(child);
+                }
+            }
         }
     }
-    result
+    seen.remove(&pid);
+    seen.into_iter().collect()
 }
 fn live(pid: u32) -> bool {
     let Ok(text) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
