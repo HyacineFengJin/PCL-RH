@@ -235,6 +235,28 @@ use filesystem::{
 pub(crate) use token::for_verified_snapshot;
 pub(crate) use token::{same_identity, token_for, token_for_cancellable, valid_token};
 
+// Only an explicit cancellation from an open download window changes role.
+// Recovery/commit reads pass None; IO, digest, budget and cleanup errors retain
+// their original identity even when the task's cancellation flag is also set.
+pub(crate) fn download_token(file: &File, cancel: Option<&AtomicBool>) -> Result<String, String> {
+    token_for_cancellable(file, cancel).map_err(|error| {
+        if cancel.is_some() && error == token::CANCELLED {
+            crate::modrinth_install::CANCELLED.to_owned()
+        } else {
+            error
+        }
+    })
+}
+
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use verified_batch::recheck_sources as recheck_verified_sources_for_test;
+
+#[cfg(all(test, windows))]
+pub(crate) fn after_token_read_for_test(hook: impl FnOnce() + 'static) {
+    token::AFTER_ACTUAL_READ.with(|next| *next.borrow_mut() = Some(Box::new(hook)));
+}
+
 pub fn fingerprint(path: &Path) -> Result<String, String> {
     let name = path
         .file_name()
@@ -243,6 +265,34 @@ pub fn fingerprint(path: &Path) -> Result<String, String> {
     let parent = path.parent().ok_or("文件路径无效")?;
     let dir = Dir::open(parent)?;
     directory_token(&dir, name, None)
+}
+
+/// The Windows resource panel shares one actual-read budget across every
+/// content token and ZIP metadata read; ordinary callers keep fingerprint().
+#[cfg(windows)]
+pub(crate) fn fingerprint_controlled(
+    path: &Path,
+    control: &mut token::ReadControl<'_>,
+) -> Result<String, String> {
+    control.check()?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("文件名无效")?;
+    let parent = path.parent().ok_or("文件路径无效")?;
+    let dir = Dir::open(parent)?;
+    let file = dir.regular_file(name)?;
+    let before = pcl_core::retained_fs::metadata(&file).map_err(|e| e.to_string())?;
+    let value = token::token_for_controlled(&file, control)?;
+    if pcl_core::retained_fs::metadata(&file).map_err(|e| e.to_string())? != before
+        || dir.metadata(name)?.as_ref() != Some(&before)
+    {
+        return Err(format!(
+            "文件在读取内容指纹期间已变化，请重新读取列表：{name}"
+        ));
+    }
+    control.check()?;
+    Ok(value)
 }
 
 fn safe_name(name: &str) -> Result<(), String> {
@@ -2543,28 +2593,51 @@ mod tests {
         .unwrap()
         .undo_id
         .unwrap();
-        let context = Context::new(fixture.root(), "shared", "mods", true).unwrap();
-        let operation = context.operation(&undo).unwrap();
-        let mut journal = read_journal(&operation, &undo).unwrap();
-        for item in &mut journal.items {
-            item.fingerprint = legacy_w1(&item.fingerprint);
-        }
-        write_journal(&operation, &journal).unwrap();
-        let bytes = journal_bytes(&operation).unwrap().unwrap();
-        let retained = operation.child("files").unwrap();
-        let name = journal.items[0].target_name.clone();
-        let identity = source_identity(&retained.regular_file(&name).unwrap()).unwrap();
+        let (bytes, name, identity, operations_before) = {
+            let context = Context::new(fixture.root(), "shared", "mods", true).unwrap();
+            let operation = context.operation(&undo).unwrap();
+            let mut journal = read_journal(&operation, &undo).unwrap();
+            for item in &mut journal.items {
+                item.fingerprint = legacy_w1(&item.fingerprint);
+            }
+            write_journal(&operation, &journal).unwrap();
+            let bytes = journal_bytes(&operation).unwrap().unwrap();
+            let retained = operation.child("files").unwrap();
+            let name = journal.items[0].target_name.clone();
+            let identity = source_identity(&retained.regular_file(&name).unwrap()).unwrap();
+            (
+                bytes,
+                name,
+                identity,
+                context.storage().unwrap().names().unwrap(),
+            )
+        };
+        // The preparation Context owns the exclusive root history lock. Undo
+        // is a new writer and must run after that actual owner has retired.
+        drop(crate::instance_rename_refs::root_history_lock(fixture.root()).unwrap());
+        let mut committed = false;
         let error = restore(
             fixture.root(),
             "shared",
             "mods",
             &undo,
             &flag(),
-            &mut commit,
+            &mut || {
+                committed = true;
+                Ok(())
+            },
             &mut progress,
         )
         .unwrap_err();
         assert!(error.contains("指纹版本"), "{error}");
+        assert!(!committed);
+        let context = Context::new(fixture.root(), "shared", "mods", false).unwrap();
+        assert_eq!(
+            context.storage().unwrap().names().unwrap(),
+            operations_before
+        );
+        let operation = context.operation(&undo).unwrap();
+        let retained = operation.child("files").unwrap();
         assert_eq!(
             source_identity(&retained.regular_file(&name).unwrap()).unwrap(),
             identity

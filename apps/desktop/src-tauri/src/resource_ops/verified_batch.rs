@@ -9,7 +9,7 @@
 //! registered inodes whose complete bytes still match. After a durable commit
 //! it keeps outputs and finishes owned staging cleanup. Any conflict retains
 //! the journal and reports Error, even when the cancellation flag is set.
-use super::{safe_name, token_for, MutationResult};
+use super::{download_token, safe_name, token_for, MutationResult};
 use pcl_core::content_scope::IsolationPolicy;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -369,20 +369,24 @@ fn source_tokens(files: &mut [VerifiedImport], cancel: &AtomicBool) -> Result<Ve
         if !keys.insert(filesystem::key_file(&f.file)?) {
             return Err("下载资源描述符重复".into());
         }
-        let token = token_for(&f.file)?;
-        filesystem::verify_file(&mut f.file, None, f.size, &f.sha512, Some(cancel))?;
+        let (_, token) =
+            filesystem::verify_file_snapshot(&mut f.file, None, f.size, &f.sha512, Some(cancel))?;
         archive::validate(&mut f.file, cancel)?;
-        if token_for(&f.file)? != token {
+        if download_token(&f.file, Some(cancel))? != token {
             return Err("下载资源在验证期间已经变化".into());
         }
         tokens.push(token);
     }
     Ok(tokens)
 }
-fn recheck_sources(files: &[VerifiedImport], tokens: &[String]) -> Result<()> {
+pub(crate) fn recheck_sources(
+    files: &[VerifiedImport],
+    tokens: &[String],
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
     for (f, token) in files.iter().zip(tokens) {
         filesystem::anonymous_source(&f.file)?;
-        if token_for(&f.file)? != *token {
+        if download_token(&f.file, cancel)? != *token {
             return Err("已校验的下载资源描述符已经变化".into());
         }
     }
@@ -478,7 +482,7 @@ fn stage(
         check(cancel)?;
         operation_binding(operation, j)?;
         f.file.seek(SeekFrom::Start(0)).map_err(error)?;
-        let before = token_for(&f.file)?;
+        let before = download_token(&f.file, Some(cancel))?;
         let mut size = 0u64;
         loop {
             check(cancel)?;
@@ -494,7 +498,10 @@ fn stage(
             done += n as u64;
             progress(done, total);
         }
-        if size != f.size || before != tokens[index] || token_for(&f.file)? != before {
+        if size != f.size
+            || before != tokens[index]
+            || download_token(&f.file, Some(cancel))? != before
+        {
             return Err("下载资源在复制期间已经变化".into());
         }
         copy.sync_all().map_err(error)?;
@@ -505,7 +512,7 @@ fn stage(
         check(cancel)?;
         destination.link_anonymous(copy, &slot(index))?;
     }
-    recheck_sources(files, tokens)?;
+    recheck_sources(files, tokens, Some(cancel))?;
     Ok(())
 }
 fn verify_stage(operation: &Dir, j: &Journal, complete: bool) -> Result<Option<Dir>> {
@@ -837,7 +844,7 @@ pub(super) fn import_verified_batch_with_isolation(
         write_journal(&operation, &j)?;
         check(cancel)?;
         commit()?;
-        recheck_sources(files, &tokens)?;
+        recheck_sources(files, &tokens, None)?;
         check(cancel)?;
         // No more cancellation checks after the admitted commit. Ordinary I/O
         // and content conflicts still fail and preserve their own error text.

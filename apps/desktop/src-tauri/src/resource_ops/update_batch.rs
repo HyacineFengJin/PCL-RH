@@ -232,10 +232,10 @@ fn validate_sources(
             return Err("更新下载文件重复或大小、SHA512 无效".into());
         }
         filesystem::anonymous_source(&f.file)?;
-        let token = super::token_for(&f.file)?;
-        filesystem::verify_file(&mut f.file, None, f.size, &f.sha512, Some(cancel))?;
+        let (_, token) =
+            filesystem::verify_file_snapshot(&mut f.file, None, f.size, &f.sha512, Some(cancel))?;
         archive::validate(&mut f.file, cancel)?;
-        if super::token_for(&f.file)? != token {
+        if super::download_token(&f.file, Some(cancel))? != token {
             return Err("更新下载文件校验期间已经变化".into());
         }
         tokens.push(token);
@@ -264,10 +264,14 @@ fn validate_sources(
     }
     Ok(tokens)
 }
-fn sources_unchanged(files: &[VerifiedImport], tokens: &[String]) -> Result<()> {
+pub(crate) fn sources_unchanged(
+    files: &[VerifiedImport],
+    tokens: &[String],
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
     for (f, t) in files.iter().zip(tokens) {
         filesystem::anonymous_source(&f.file)?;
-        if super::token_for(&f.file)? != *t {
+        if super::download_token(&f.file, cancel)? != *t {
             return Err("更新下载描述符已经变化".into());
         }
     }
@@ -332,7 +336,7 @@ pub(super) fn update_verified_batch_with_isolation(
         journal::write(&context, &j)?;
         check(cancel)?;
         commit()?;
-        sources_unchanged(files, &tokens)?;
+        sources_unchanged(files, &tokens, None)?;
         check(cancel)?;
         context.live(&j, true, cancel)?;
         j.state = State::Applying;
@@ -389,7 +393,7 @@ fn stage(
                 .resources(j, &j.items[index].kind, false)?
                 .ok_or("旧资源目录缺失")?;
             let mut file = dir.regular(&old.name)?;
-            if super::token_for(&file)? != old.fingerprint {
+            if super::download_token(&file, Some(cancel))? != old.fingerprint {
                 return Err("旧资源文件已经变化".into());
             }
             let mut staged = copy(
@@ -403,7 +407,7 @@ fn stage(
                 total,
                 progress,
             )?;
-            if super::token_for(&file)? != old.fingerprint {
+            if super::download_token(&file, Some(cancel))? != old.fingerprint {
                 return Err("旧资源在备份期间已经变化".into());
             }
             journal::register_copy(context, j, index, true, &staged.owned)?;
@@ -415,7 +419,7 @@ fn stage(
                 .link_anonymous(&mut staged.file, &slot("backup", index))?;
         }
         let f = &mut files[index];
-        if super::token_for(&f.file)? != tokens[index] {
+        if super::download_token(&f.file, Some(cancel))? != tokens[index] {
             return Err("更新下载描述符已经变化".into());
         }
         let mut staged = copy(
@@ -429,7 +433,7 @@ fn stage(
             total,
             progress,
         )?;
-        if super::token_for(&f.file)? != tokens[index] {
+        if super::download_token(&f.file, Some(cancel))? != tokens[index] {
             return Err("更新下载文件复制期间已经变化".into());
         }
         journal::register_copy(context, j, index, false, &staged.owned)?;
@@ -441,7 +445,7 @@ fn stage(
             .ok_or("更新目录缺失")?
             .link_anonymous(&mut staged.file, &slot("new", index))?;
     }
-    sources_unchanged(files, tokens)
+    sources_unchanged(files, tokens, Some(cancel))
 }
 fn copy(
     context: &Context,

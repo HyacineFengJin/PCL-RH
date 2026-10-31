@@ -244,6 +244,49 @@ mod resource_directory;
 pub use resource_directory::resource_dir;
 pub use resource_directory::resource_dir_with_isolation;
 
+#[cfg(windows)]
+fn fill_controlled_resource_row(
+    row: &mut ResourceInfo,
+    original_path: &std::path::Path,
+    display_path: &std::path::Path,
+    kind: &str,
+    control: &mut crate::resource_ops::token::ReadControl<'_>,
+) -> Result<(), String> {
+    control.check()?;
+    let needs_fingerprint = (kind == "mods"
+        && (row.file_name.ends_with(".jar") || row.file_name.ends_with(".jar.disabled")))
+        || (matches!(kind, "resourcepacks" | "shaderpacks") && row.file_name.ends_with(".zip"));
+    if !needs_fingerprint {
+        return Ok(());
+    }
+    row.fingerprint = None;
+    if control.remaining() == Some(0) {
+        row.description = Some("内容读取预算已用尽，未核验资源当前只读".into());
+        return Ok(());
+    }
+    match crate::resource_ops::fingerprint_controlled(original_path, control) {
+        Ok(fingerprint) => row.fingerprint = Some(fingerprint),
+        Err(_) => {
+            // No metadata substitute can authorize mutations. The existing UI
+            // treats a missing fingerprint as read-only and keeps the row.
+            control.check()?;
+            row.fingerprint = None;
+            row.description = Some("未完成内容核验，当前只读".into());
+            return Ok(());
+        }
+    }
+    if kind == "mods" && control.remaining() != Some(0) {
+        control.check()?;
+        if let Ok(file) = fs::File::open(display_path) {
+            let reader = control.reader(file);
+            if let Ok(mut jar) = zip::ZipArchive::new(reader) {
+                mod_metadata(&mut jar, row, MetadataPurpose::Display);
+            }
+        }
+    }
+    control.check()
+}
+
 #[tauri::command]
 pub async fn instance_resources(
     id: String,
@@ -252,10 +295,20 @@ pub async fn instance_resources(
     state: State<'_, Arc<Shared>>,
 ) -> Result<Vec<ResourceInfo>, String> {
     let shared = state.inner().clone();
+    #[cfg(windows)]
+    let listing_deadline = std::time::Instant::now() + Duration::from_secs(30);
     let captured = shared.config.isolation_settings(root_id.as_deref())?;
     let policy = captured.policy(&id);
     let root = PathBuf::from(&captured.root.path);
     tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        let mut control = crate::resource_ops::token::ReadControl::new(
+            Some(&shared.closing),
+            Some(listing_deadline),
+            Some(8 * 1024 * 1024 * 1024),
+        );
+        #[cfg(windows)]
+        control.check()?;
         let folder = resource_dir_with_isolation(&root, &id, &kind, policy)?;
         if !folder.exists() {
             if shared
@@ -266,11 +319,23 @@ pub async fn instance_resources(
             {
                 return Err("实例隔离设置已变化，请重新读取资源列表".into());
             }
+            #[cfg(windows)]
+            control.check()?;
             return Ok(Vec::new());
         }
         let root = root.canonicalize().map_err(|e| e.to_string())?;
         let mut entries = Vec::new();
+        #[cfg(windows)]
+        let mut scanned = 0usize;
         for entry in fs::read_dir(&folder).map_err(|e| e.to_string())? {
+            #[cfg(windows)]
+            {
+                control.check()?;
+                scanned += 1;
+                if scanned > 4096 {
+                    return Err("资源目录条目超过 4096 项，请缩小范围后重试".into());
+                }
+            }
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if crate::resource_ops::is_stage_entry(&name) {
@@ -294,7 +359,11 @@ pub async fn instance_resources(
                 version: None,
                 description: None,
                 icon: None,
-                fingerprint: if (kind == "mods"
+                fingerprint: None,
+            };
+            #[cfg(not(windows))]
+            {
+                row.fingerprint = if (kind == "mods"
                     && (entry.file_name().to_string_lossy().ends_with(".jar")
                         || entry
                             .file_name()
@@ -306,8 +375,11 @@ pub async fn instance_resources(
                     crate::resource_ops::fingerprint(&entry.path()).ok()
                 } else {
                     None
-                },
-            };
+                };
+            }
+            #[cfg(windows)]
+            fill_controlled_resource_row(&mut row, &entry.path(), &path, &kind, &mut control)?;
+            #[cfg(not(windows))]
             if kind == "mods"
                 && (row.file_name.ends_with(".jar") || row.file_name.ends_with(".jar.disabled"))
             {
@@ -319,6 +391,8 @@ pub async fn instance_resources(
             }
             entries.push(row);
         }
+        #[cfg(windows)]
+        control.check()?;
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         if resource_dir_with_isolation(&root, &id, &kind, policy)? != folder {
             return Err("实例内容目录已变化，请重新读取资源列表".into());
@@ -331,6 +405,8 @@ pub async fn instance_resources(
         {
             return Err("实例隔离设置已变化，请重新读取资源列表".into());
         }
+        #[cfg(windows)]
+        control.check()?;
         Ok(entries)
     })
     .await
@@ -340,6 +416,50 @@ pub async fn instance_resources(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn controlled_listing_keeps_real_readonly_rows_and_completed_w2_rows() {
+        use crate::resource_ops::token::ReadControl;
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("actual.jar");
+        fs::write(&path, b"actual resource bytes").unwrap();
+        let row = || ResourceInfo {
+            name: "actual.jar".into(),
+            file_name: "actual.jar".into(),
+            path: path.display().to_string(),
+            enabled: true,
+            fingerprint: None,
+            version: None,
+            description: None,
+            icon: None,
+        };
+        let mut failed = row();
+        let mut limited = ReadControl::new(None, None, Some(3));
+        fill_controlled_resource_row(&mut failed, &path, &path, "mods", &mut limited).unwrap();
+        assert!(failed.fingerprint.is_none());
+        assert!(failed.description.as_deref().unwrap().contains("只读"));
+        assert_eq!(failed.file_name, "actual.jar");
+        assert_eq!(failed.path, path.display().to_string());
+        assert_eq!(limited.remaining(), Some(0));
+        let mut next = row();
+        fill_controlled_resource_row(&mut next, &path, &path, "mods", &mut limited).unwrap();
+        assert!(next.fingerprint.is_none());
+        assert_eq!(limited.remaining(), Some(0));
+        let mut completed = row();
+        let mut enough = ReadControl::new(None, None, Some(128));
+        fill_controlled_resource_row(&mut completed, &path, &path, "mods", &mut enough).unwrap();
+        assert_eq!(
+            completed.fingerprint.as_deref(),
+            Some(crate::resource_ops::fingerprint(&path).unwrap().as_str())
+        );
+        assert!(completed.description.is_none());
+        let closing = std::sync::atomic::AtomicBool::new(true);
+        let mut cancelled = ReadControl::new(Some(&closing), None, Some(128));
+        assert!(
+            fill_controlled_resource_row(&mut row(), &path, &path, "mods", &mut cancelled).is_err()
+        );
+        assert_eq!(cancelled.remaining(), Some(128));
+    }
     fn parse_fixture(files: &[(&str, &[u8])]) -> ResourceInfo {
         use std::io::{Cursor, Write};
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));

@@ -5,6 +5,24 @@ use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir as symlink;
 use std::{fs, fs::File, io::Write};
+
+#[test]
+fn final_source_recheck_maps_only_an_open_download_cancellation_window() {
+    let fixture = Fixture::new(false, true);
+    let mut files = fixture.files();
+    let tokens = source_tokens(&mut files, &AtomicBool::new(false)).unwrap();
+    let cancel = AtomicBool::new(true);
+    assert_eq!(
+        recheck_sources(&files, &tokens, Some(&cancel)).unwrap_err(),
+        CANCELLED
+    );
+    recheck_sources(&files, &tokens, None).unwrap();
+    files[0].file.set_len(files[0].size - 1).unwrap();
+    let conflict = recheck_sources(&files, &tokens, None).unwrap_err();
+    assert!(conflict.contains("描述符已经变化"), "{conflict}");
+    assert_ne!(conflict, CANCELLED);
+}
+
 struct Fixture {
     root: PathBuf,
     source: PathBuf,

@@ -1,6 +1,24 @@
 use super::*;
 use sha2::{Digest, Sha512};
 use std::fs;
+
+#[test]
+fn final_update_source_recheck_maps_only_an_open_download_cancellation_window() {
+    let fixture = Fixture::new(false, true);
+    let mut files = vec![fixture.file("mods", "fixture.jar", b"actual archive")];
+    let tokens = validate_sources(&mut files, &[], &AtomicBool::new(false)).unwrap();
+    let cancel = AtomicBool::new(true);
+    assert_eq!(
+        sources_unchanged(&files, &tokens, Some(&cancel)).unwrap_err(),
+        CANCELLED
+    );
+    sources_unchanged(&files, &tokens, None).unwrap();
+    files[0].file.set_len(files[0].size - 1).unwrap();
+    let conflict = sources_unchanged(&files, &tokens, None).unwrap_err();
+    assert!(conflict.contains("描述符已经变化"), "{conflict}");
+    assert_ne!(conflict, CANCELLED);
+}
+
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]

@@ -712,6 +712,67 @@ mod tests {
     }
 
     #[test]
+    fn final_source_token_cancel_uses_the_real_finish_path_and_keeps_closed_window_conflicts() {
+        let fixture = resource_ops::update_batch::tests::Fixture::new(false, true);
+        let files = vec![fixture.file("mods", "fixture.jar", b"actual archive")];
+        let tokens = files
+            .iter()
+            .map(|file| resource_ops::token_for(&file.file).unwrap())
+            .collect::<Vec<_>>();
+        let (tasks, handle) = admitted();
+        let id = handle.id().to_owned();
+        tasks.cancel(&id).unwrap();
+        let cancel = handle.cancellation_token();
+        let error = resource_ops::recheck_verified_sources_for_test(&files, &tokens, Some(&cancel))
+            .unwrap_err();
+        assert_eq!(error, modrinth_install::CANCELLED);
+        resource_ops::recheck_verified_sources_for_test(&files, &tokens, None).unwrap();
+        finish(handle, Err(error));
+        let cancelled = tasks.wait_terminal(&id).unwrap();
+        assert_eq!(cancelled.stage, tasks::TaskStage::Cancelled);
+        assert!(cancelled.error.is_none());
+
+        // Closing the window must retain an actual source conflict, even if a
+        // cancellation request had already been accepted for this task.
+        files[0].file.set_len(files[0].size - 1).unwrap();
+        let error =
+            resource_ops::recheck_verified_sources_for_test(&files, &tokens, None).unwrap_err();
+        let (tasks, handle) = admitted();
+        let id = handle.id().to_owned();
+        tasks.cancel(&id).unwrap();
+        finish(handle, Err(error.clone()));
+        let failed = tasks.wait_terminal(&id).unwrap();
+        assert_eq!(failed.stage, tasks::TaskStage::Error);
+        assert_eq!(failed.error.as_deref(), Some(error.as_str()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_actual_final_token_read_cancel_finishes_as_cancelled() {
+        let fixture = resource_ops::update_batch::tests::Fixture::new(false, true);
+        let files = vec![fixture.file("mods", "fixture.jar", b"actual archive")];
+        let tokens = vec![resource_ops::token_for(&files[0].file).unwrap()];
+        let (tasks, handle) = admitted();
+        let id = handle.id().to_owned();
+        let cancel = handle.cancellation_token();
+        assert!(!cancel.load(Ordering::Acquire));
+        let after_read = tasks.clone();
+        let cancelled_id = id.clone();
+        resource_ops::after_token_read_for_test(move || {
+            after_read.cancel(&cancelled_id).unwrap();
+        });
+        let error = resource_ops::recheck_verified_sources_for_test(&files, &tokens, Some(&cancel))
+            .unwrap_err();
+        assert!(cancel.load(Ordering::Acquire));
+        assert_eq!(error, modrinth_install::CANCELLED);
+        finish(handle, Err(error));
+        let actual = tasks.wait_terminal(&id).unwrap();
+        assert_eq!(actual.stage, tasks::TaskStage::Cancelled);
+        assert!(actual.error.is_none());
+        assert!(tasks.active().is_none());
+    }
+
+    #[test]
     fn network_submission_and_worker_ready_allow_own_admitted_root() {
         let fixture = crate::integration_tests::Fixture::new();
         let shared = fixture.shared();

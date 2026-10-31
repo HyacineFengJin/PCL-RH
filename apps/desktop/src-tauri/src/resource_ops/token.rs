@@ -4,12 +4,98 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// One caller-owned read allowance. It is shared across files and archive
+/// seeks; neither a new file nor a chunk renews its absolute deadline.
+#[cfg(any(windows, test))]
+pub(crate) struct ReadControl<'a> {
+    cancel: Option<&'a AtomicBool>,
+    deadline: Option<std::time::Instant>,
+    remaining: Option<u64>,
+}
+#[cfg(any(windows, test))]
+impl<'a> ReadControl<'a> {
+    pub(crate) fn new(
+        cancel: Option<&'a AtomicBool>,
+        deadline: Option<std::time::Instant>,
+        bytes: Option<u64>,
+    ) -> Self {
+        Self {
+            cancel,
+            deadline,
+            remaining: bytes,
+        }
+    }
+    pub(crate) fn check(&self) -> Result<(), String> {
+        cancelled(self.cancel)?;
+        if self
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err("资源内容读取达到时间上限，请缩小范围后重试".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn remaining(&self) -> Option<u64> {
+        self.remaining
+    }
+    pub(crate) fn read(
+        &mut self,
+        reader: &mut impl std::io::Read,
+        bytes: &mut [u8],
+    ) -> std::io::Result<usize> {
+        self.check().map_err(std::io::Error::other)?;
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        let allowed = self.remaining.map_or(bytes.len(), |remaining| {
+            remaining.min(bytes.len() as u64) as usize
+        });
+        if allowed == 0 {
+            return Err(std::io::Error::other("资源内容读取预算已用尽，当前只读"));
+        }
+        let count = reader.read(&mut bytes[..allowed])?;
+        if let Some(remaining) = &mut self.remaining {
+            *remaining -= count as u64;
+        }
+        self.check().map_err(std::io::Error::other)?;
+        Ok(count)
+    }
+    pub(crate) fn reader<'b, R>(&'b mut self, reader: R) -> ControlledReader<'b, 'a, R> {
+        ControlledReader {
+            reader,
+            control: self,
+        }
+    }
+}
+#[cfg(any(windows, test))]
+pub(crate) struct ControlledReader<'a, 'c, R> {
+    reader: R,
+    control: &'a mut ReadControl<'c>,
+}
+#[cfg(any(windows, test))]
+impl<R: std::io::Read> std::io::Read for ControlledReader<'_, '_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.control.read(&mut self.reader, bytes)
+    }
+}
+#[cfg(any(windows, test))]
+impl<R: std::io::Seek> std::io::Seek for ControlledReader<'_, '_, R> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.control.check().map_err(std::io::Error::other)?;
+        let position = self.reader.seek(position)?;
+        self.control.check().map_err(std::io::Error::other)?;
+        Ok(position)
+    }
+}
+
 pub(crate) const MAX_FINGERPRINT_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub(crate) const MAX_TOKEN_BYTES: usize = if cfg!(windows) { 300 } else { 256 };
 
+pub(crate) const CANCELLED: &str = "操作已取消";
+
 fn cancelled(cancel: Option<&AtomicBool>) -> Result<(), String> {
     if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-        Err("操作已取消".into())
+        Err(CANCELLED.into())
     } else {
         Ok(())
     }
@@ -154,7 +240,7 @@ fn independent_reader(file: &File) -> Result<File, String> {
 
 #[cfg(all(test, windows))]
 std::thread_local! {
-    static AFTER_ACTUAL_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static AFTER_ACTUAL_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(windows)]
@@ -162,10 +248,19 @@ pub(crate) fn token_for_cancellable(
     file: &File,
     cancel: Option<&AtomicBool>,
 ) -> Result<String, String> {
+    let mut control = ReadControl::new(cancel, None, None);
+    token_for_controlled(file, &mut control)
+}
+
+#[cfg(windows)]
+pub(crate) fn token_for_controlled(
+    file: &File,
+    control: &mut ReadControl<'_>,
+) -> Result<String, String> {
     use pcl_core::retained_fs;
     use sha2::{Digest, Sha256};
-    use std::io::{Read, Seek, SeekFrom};
-    cancelled(cancel)?;
+    use std::io::{Seek, SeekFrom};
+    control.check()?;
     let before = retained_fs::metadata(file).map_err(|e| e.to_string())?;
     checked_metadata(&before)?;
     let mut reader = independent_reader(file)?;
@@ -177,12 +272,12 @@ pub(crate) fn token_for_cancellable(
     let mut buffer = [0; 128 * 1024];
     let mut total = 0u64;
     loop {
-        cancelled(cancel)?;
+        control.check()?;
         // At most one sentinel byte beyond the admitted size is read. A sparse
         // or growing file cannot turn token generation into an unbounded read.
         let available = (before.len - total + 1).min(buffer.len() as u64) as usize;
-        let length = reader
-            .read(&mut buffer[..available])
+        let length = control
+            .read(&mut reader, &mut buffer[..available])
             .map_err(|e| e.to_string())?;
         if length == 0 {
             break;
@@ -199,7 +294,7 @@ pub(crate) fn token_for_cancellable(
             }
         });
     }
-    cancelled(cancel)?;
+    control.check()?;
     if total != before.len
         || retained_fs::metadata(&reader).map_err(|e| e.to_string())? != before
         || retained_fs::metadata(file).map_err(|e| e.to_string())? != before
@@ -251,6 +346,105 @@ pub(crate) fn same_identity(left: &str, right: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn actual_reads_and_seeks_share_one_budget_across_files() {
+        use std::io::{Read, Seek, SeekFrom};
+        let temporary = tempfile::tempdir().unwrap();
+        let first = temporary.path().join("first");
+        let second = temporary.path().join("second");
+        std::fs::write(&first, b"abcdef").unwrap();
+        std::fs::write(&second, b"uvwxyz").unwrap();
+        let mut control = ReadControl::new(None, None, Some(5));
+        let mut bytes = [0; 128];
+        {
+            let mut reader = control.reader(File::open(&first).unwrap());
+            assert_eq!(reader.read(&mut bytes[..3]).unwrap(), 3);
+            assert_eq!(&bytes[..3], b"abc");
+            reader.seek(SeekFrom::Start(0)).unwrap();
+            assert_eq!(reader.read(&mut bytes).unwrap(), 2);
+            assert_eq!(&bytes[..2], b"ab");
+            assert!(reader.read(&mut bytes).is_err());
+            assert_eq!(reader.stream_position().unwrap(), 2);
+        }
+        assert_eq!(control.remaining(), Some(0));
+        let mut second = File::open(&second).unwrap();
+        assert!(control.read(&mut second, &mut bytes).is_err());
+        assert_eq!(second.stream_position().unwrap(), 0);
+    }
+    #[test]
+    fn closing_after_an_actual_block_stops_and_charges_the_same_controller() {
+        use std::io::{Read, Seek};
+        struct ClosingReader<'a> {
+            file: File,
+            closing: &'a AtomicBool,
+        }
+        impl Read for ClosingReader<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.file.read(bytes)?;
+                self.closing.store(true, Ordering::Release);
+                Ok(count)
+            }
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("closing");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let closing = AtomicBool::new(false);
+        let mut control = ReadControl::new(Some(&closing), None, Some(6));
+        let mut reader = ClosingReader {
+            file: File::open(&path).unwrap(),
+            closing: &closing,
+        };
+        let error = control.read(&mut reader, &mut [0; 3]).unwrap_err();
+        assert_eq!(error.to_string(), "操作已取消");
+        assert_eq!(control.remaining(), Some(3));
+        assert_eq!(reader.file.stream_position().unwrap(), 3);
+        assert!(control.read(&mut reader, &mut [0; 3]).is_err());
+        assert_eq!(reader.file.stream_position().unwrap(), 3);
+    }
+    #[test]
+    fn expired_absolute_deadline_survives_reader_and_seek_boundaries_without_io() {
+        use std::{
+            io::{Read, Seek, SeekFrom},
+            time::Instant,
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("deadline");
+        std::fs::write(&path, b"abcdef").unwrap();
+        let deadline = Instant::now();
+        let mut control = ReadControl::new(None, Some(deadline), Some(64));
+        for _ in 0..2 {
+            let mut file = File::open(&path).unwrap();
+            {
+                let mut reader = control.reader(&mut file);
+                assert!(reader.seek(SeekFrom::Start(3)).is_err());
+                assert!(reader.read(&mut [0; 6]).is_err());
+            }
+            assert_eq!(file.stream_position().unwrap(), 0);
+            assert_eq!(control.deadline, Some(deadline));
+            assert_eq!(control.remaining(), Some(64));
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn windows_controlled_token_never_mints_without_the_complete_bounded_read() {
+        use std::io::{Seek, SeekFrom};
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("bounded-token");
+        std::fs::write(&path, b"abcdefgh").unwrap();
+        let mut file = File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(3)).unwrap();
+        let expected = token_for(&file).unwrap();
+        let mut enough = ReadControl::new(None, None, Some(9));
+        assert_eq!(token_for_controlled(&file, &mut enough).unwrap(), expected);
+        assert_eq!(enough.remaining(), Some(1));
+        let mut no_sentinel = ReadControl::new(None, None, Some(8));
+        assert!(token_for_controlled(&file, &mut no_sentinel).is_err());
+        assert_eq!(no_sentinel.remaining(), Some(0));
+        let mut partial = ReadControl::new(None, None, Some(3));
+        assert!(token_for_controlled(&file, &mut partial).is_err());
+        assert_eq!(partial.remaining(), Some(0));
+        assert_eq!(file.stream_position().unwrap(), 3);
+    }
     #[test]
     fn tokens_detect_content_edits_and_keep_identity_across_rename() {
         let temp = tempfile::tempdir().unwrap();

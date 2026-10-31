@@ -202,8 +202,10 @@ impl Context {
     pub(super) fn live(&self, j: &Journal, before: bool, cancel: &AtomicBool) -> Result<()> {
         self.validate_actual_scope(j)?;
         if let Some(token) = &self.profile_token {
-            if super::super::token_for(&self.instance.regular(&format!("{}.json", self.id))?)?
-                != *token
+            if super::super::download_token(
+                &self.instance.regular(&format!("{}.json", self.id))?,
+                Some(cancel),
+            )? != *token
             {
                 return Err("实例版本文件在更新期间已经变化".into());
             }
@@ -215,7 +217,9 @@ impl Context {
                     let dir = self
                         .resources(j, &item.kind, false)?
                         .ok_or("原资源目录缺失")?;
-                    if super::super::token_for(&dir.regular(&old.name)?)? != old.fingerprint {
+                    if super::super::download_token(&dir.regular(&old.name)?, Some(cancel))?
+                        != old.fingerprint
+                    {
                         return Err("旧资源 fingerprint 已变化".into());
                     }
                 }
@@ -227,7 +231,7 @@ impl Context {
 fn snapshot(dir: &Dir, name: &str, cancel: Option<&AtomicBool>) -> Result<Owned> {
     let mut file = dir.regular(name)?;
     let m = file.metadata().map_err(err)?;
-    let token = super::super::token_for(&file)?;
+    let token = super::super::download_token(&file, cancel)?;
     if !filesystem::single(&file)? || m.len() > MAX_FILE_BYTES {
         return Err("本地资源不是独立普通文件或超过 2 GiB".into());
     }
@@ -249,8 +253,8 @@ fn snapshot(dir: &Dir, name: &str, cancel: Option<&AtomicBool>) -> Result<Owned>
         digest.update(&buffer[..n]);
     }
     if count != m.len()
-        || super::super::token_for(&file)? != token
-        || super::super::token_for(&dir.regular(name)?)? != token
+        || super::super::download_token(&file, cancel)? != token
+        || super::super::download_token(&dir.regular(name)?, cancel)? != token
     {
         return Err("本地资源读取期间被替换或修改".into());
     }
@@ -329,8 +333,9 @@ pub(super) fn prepare_with_isolation(
     pcl_core::identifier(id)?;
     let mut context = Context::base(root, id)?;
     context.policy = Some(policy);
-    context.profile_token = Some(super::super::token_for(
+    context.profile_token = Some(super::super::download_token(
         &context.instance.regular(&format!("{id}.json"))?,
+        Some(cancel),
     )?);
     let mut resources = BTreeMap::new();
     for kind in KINDS {
@@ -388,7 +393,9 @@ pub(super) fn prepare_with_isolation(
             let dir = context
                 .base_for(&scope.resources[&r.kind])?
                 .child(&r.kind)?;
-            if super::super::token_for(&dir.regular(&r.old_file_name)?)? != r.old_fingerprint {
+            if super::super::download_token(&dir.regular(&r.old_file_name)?, Some(cancel))?
+                != r.old_fingerprint
+            {
                 return Err("待更新旧文件 fingerprint 已变化".into());
             }
             Some(Old {
