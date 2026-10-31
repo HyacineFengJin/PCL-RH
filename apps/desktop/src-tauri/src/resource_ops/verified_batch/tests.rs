@@ -665,6 +665,42 @@ fn pending_batch_blocks_legacy_write_before_missing_target_creation() {
 }
 
 #[test]
+fn isolated_scope_keeps_slash_wire_paths_and_publishes_in_the_captured_base() {
+    let f = Fixture::new(false, false);
+    let mut files = f.files();
+    let kinds = files.iter().map(|file| file.kind.clone()).collect();
+    let (scope, _) =
+        Scope::capture_with_isolation(&f.root, "test", &kinds, IsolationPolicy::Isolated).unwrap();
+    assert_eq!(scope.destinations.len(), 3);
+    for (kind, destination) in &scope.destinations {
+        assert_eq!(destination.relative, format!("versions/test/{kind}"));
+        assert!(destination.before.is_none());
+        assert!(destination.created.is_none());
+        assert!(!f.root.join(&destination.relative).exists());
+    }
+    let result = import_verified_batch_with_isolation(
+        &f.root,
+        "test",
+        &mut files,
+        &AtomicBool::new(false),
+        &mut || Ok(()),
+        &mut |_, _| {},
+        IsolationPolicy::Isolated,
+    )
+    .unwrap();
+    assert_eq!(result.changed, 3);
+    for file in &files {
+        assert!(f
+            .root
+            .join(&scope.destinations[&file.kind].relative)
+            .join(&file.file_name)
+            .is_file());
+        assert!(!f.root.join(&file.kind).exists());
+    }
+    f.clean();
+}
+
+#[test]
 fn explicit_isolation_publishes_all_resource_kinds_in_the_captured_base() {
     for policy in [IsolationPolicy::Shared, IsolationPolicy::Isolated] {
         let f = Fixture::new(policy == IsolationPolicy::Shared, false);

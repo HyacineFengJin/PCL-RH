@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 #[path = "verified_batch/archive.rs"]
@@ -148,12 +148,18 @@ impl Scope {
         let mut destinations = BTreeMap::new();
         for kind in kinds {
             let target = crate::ui_data::resource_dir_with_isolation(&root, id, kind, policy)?;
+            // Journals and retained traversal use slash-separated leaves on
+            // every host; native Windows path separators are not wire bytes.
             let relative = target
                 .strip_prefix(&root)
                 .map_err(|_| "资源目录超出游戏目录")?
-                .to_str()
-                .ok_or("资源目录不是 UTF-8")?
-                .to_owned();
+                .components()
+                .map(|component| match component {
+                    Component::Normal(name) => name.to_str().ok_or("资源目录不是 UTF-8"),
+                    _ => Err("资源目录隔离规则无效"),
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                .join("/");
             if relative != *kind && relative != format!("versions/{id}/{kind}") {
                 return Err("资源目录隔离规则无效".into());
             }

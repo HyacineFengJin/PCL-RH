@@ -712,7 +712,9 @@ pub(super) fn apply(
         journal.validate()?;
         let bytes = serde_json::to_vec(&journal).map_err(|_| "无法编码启动器更新日志")?;
         fs.publish(&fs.storage, JOURNAL, &bytes)?;
-        let forward = || -> Result<InstallationView, String> {
+        #[cfg_attr(target_os = "linux", allow(unused_mut))]
+        // Native publication consumes the retained Ticket.
+        let mut forward = || -> Result<InstallationView, String> {
             if cancel.load(Ordering::Acquire) {
                 return Err("更新应用已取消，原启动器保留".into());
             }
