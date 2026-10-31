@@ -54,6 +54,18 @@ def hashes(root: Path, manifest: dict) -> None:
                     "Installed file differs: " + entry["path"])
 
 
+def verify_shortcut(metadata: dict, root: Path) -> None:
+    target = Path(metadata["targetPath"])
+    working = Path(metadata["workingDirectory"])
+    # Shell links may expose long/short names or a trailing directory separator.
+    # Check the actual file and parent identity, not cosmetic path spellings.
+    require(target.is_absolute() and working.is_absolute()
+            and target.resolve().name.casefold() == "pcl-desktop.exe"
+            and target.samefile(root / "pcl-desktop.exe")
+            and target.parent.samefile(root) and working.samefile(root)
+            and metadata["arguments"] == "", "Installed shortcut target, directory or arguments differ")
+
+
 @contextmanager
 def locked_file(path: Path):
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -91,10 +103,14 @@ def run(directory: Path, portable: Path) -> dict:
         setup(executable, root, directory / "install.log")
         require(registered() and shortcut.is_file(), "Installer did not register the per-user app and shortcut")
         env = {**os.environ, "PCL_SETUP_ROOT": str(root), "PCL_SETUP_LINK": str(shortcut)}
-        subprocess.run(["pwsh", "-NoProfile", "-NonInteractive", "-Command",
+        shortcut_raw = subprocess.check_output(["pwsh", "-NoProfile", "-NonInteractive", "-Command",
+                        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
                         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:PCL_SETUP_LINK); "
-                        "if ($s.TargetPath -ne (Join-Path $env:PCL_SETUP_ROOT 'pcl-desktop.exe') "
-                        "-or $s.WorkingDirectory -ne $env:PCL_SETUP_ROOT) { exit 1 }"], env=env, check=True)
+                        "@{targetPath=$s.TargetPath;workingDirectory=$s.WorkingDirectory;arguments=$s.Arguments} "
+                        "| ConvertTo-Json -Compress"], env=env, text=True, encoding="utf-8", timeout=20)
+        shortcut_metadata = json.loads(shortcut_raw)
+        (directory / "shortcut-verification.json").write_text(json.dumps(shortcut_metadata, indent=2) + "\n")
+        verify_shortcut(shortcut_metadata, root)
         hashes(root, resources)
         build = VERIFY.smoke(root, scratch, manifest)
         VERIFY.verify_windows_entry(root, scratch, build)

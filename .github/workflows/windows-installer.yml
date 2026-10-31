@@ -1,0 +1,186 @@
+name: Windows installer verification
+
+# Reuse an official candidate's verified portable payload without compiling it.
+# This installs only on a disposable runner, never on a user's computer.
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Completed official-native run containing the Windows release portable artifact
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}-${{ inputs.source_run }}
+  cancel-in-progress: false
+
+jobs:
+  installer:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Validate the official producer and download its fixed Windows artifact
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PureWindowsPath
+          import re
+          import stat
+          import subprocess
+          import tempfile
+          import zipfile
+
+          repository = 'HyacineFengJin/PCL-RH'
+          artifact_name = 'portable-preview-windows-2025-release'
+          run_id = os.environ['SOURCE_RUN']
+          if re.fullmatch(r'[1-9][0-9]{0,19}', run_id) is None:
+              raise SystemExit('source_run must be a positive numeric workflow run ID')
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def api(endpoint, *, pages=False):
+              command = ['gh', 'api', '-H', 'Accept: application/vnd.github+json',
+                         '-H', 'X-GitHub-Api-Version: 2022-11-28']
+              if pages:
+                  command += ['--paginate', '--slurp']
+              return json.loads(subprocess.check_output(command + [endpoint], timeout=60))
+
+          run = api(f'repos/{repository}/actions/runs/{run_id}')
+          owner = run.get('repository') or {}
+          head = run.get('head_repository') or {}
+          commit = run.get('head_sha', '')
+          require(run.get('id') == int(run_id)
+                  and owner.get('full_name') == repository and head.get('full_name') == repository
+                  and type(owner.get('id')) is int and owner['id'] == head.get('id')
+                  and run.get('head_branch') == 'master' and run.get('event') == 'workflow_dispatch'
+                  and run.get('path') == '.github/workflows/official-native.yml'
+                  and run.get('status') == 'completed'
+                  and re.fullmatch(r'[0-9a-f]{40}', commit) is not None,
+                  'The source must be a completed official-native dispatch from this repository master')
+          # The Windows package can be valid even when a later installer check
+          # or another platform failed. Its exact artifact must still be unique.
+          pages = api(f'repos/{repository}/actions/runs/{run_id}/artifacts'
+                      f'?name={artifact_name}&per_page=100', pages=True)
+          artifacts = [item for page in pages for item in page['artifacts']
+                       if item.get('name') == artifact_name and item.get('expired') is False]
+          require(len(artifacts) == 1, 'Expected exactly one Windows release portable artifact')
+          artifact = artifacts[0]
+          require(type(artifact.get('size_in_bytes')) is int
+                  and 0 < artifact['size_in_bytes'] <= 512 * 1024**2,
+                  'Selected artifact exceeds the download size bound')
+          witness = artifact.get('workflow_run') or {}
+          require(artifact.get('expired') is False
+                  and datetime.fromisoformat(artifact['expires_at'].replace('Z', '+00:00')) > datetime.now(timezone.utc)
+                  and type(artifact.get('id')) is int and artifact['id'] > 0
+                  and witness.get('id') == int(run_id)
+                  and witness.get('repository_id') == owner['id']
+                  and witness.get('head_repository_id') == owner['id']
+                  and witness.get('head_branch') == 'master' and witness.get('head_sha') == commit,
+                  'The artifact is expired or belongs to another producer')
+          expected = artifact.get('digest', '')
+          require(re.fullmatch(r'sha256:[0-9a-f]{64}', expected) is not None,
+                  'The source artifact must have a GitHub SHA256 digest')
+          destination = Path('target/native-packages')
+          require(not destination.exists(), 'Refusing to replace an existing downloaded payload')
+          destination.mkdir(parents=True)
+          with tempfile.TemporaryDirectory(prefix='pcl-installer-artifact-', dir=os.environ['RUNNER_TEMP']) as temporary:
+              archive = Path(temporary) / 'portable-artifact.zip'
+              with archive.open('xb') as output:
+                  subprocess.run(['gh', 'api', f'repos/{repository}/actions/artifacts/{artifact["id"]}/zip'],
+                                 stdout=output, check=True, timeout=180)
+              require(archive.stat().st_size <= 512 * 1024**2, 'Artifact archive exceeds download bounds')
+              with archive.open('rb') as source:
+                  require('sha256:' + hashlib.file_digest(source, 'sha256').hexdigest() == expected,
+                          'Downloaded artifact differs from the selected GitHub digest')
+              with zipfile.ZipFile(archive) as source:
+                  entries = source.infolist()
+                  require(len(entries) <= 1000 and sum(entry.file_size for entry in entries) <= 2 * 1024**3,
+                          'Artifact contents exceed extraction bounds')
+                  names = set()
+                  for entry in entries:
+                      name = entry.filename.rstrip('/')
+                      parts = name.split('/')
+                      reserved = {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'}
+                      mode = entry.external_attr >> 16
+                      require(name and not name.startswith('/') and not PureWindowsPath(name).drive
+                              and '\\' not in name and all(part not in ('', '.', '..') for part in parts)
+                              and not any(ord(c) < 32 or c in ':*?<>|"{};' for c in name)
+                              and all(not part.endswith(('.', ' ')) for part in parts)
+                              and all(part.split('.', 1)[0].upper() not in reserved
+                                      and re.fullmatch(r'(?:COM|LPT)[1-9¹²³]', part.split('.', 1)[0].upper()) is None
+                                      for part in parts)
+                              and name.casefold() not in names
+                              and stat.S_IFMT(mode) in (0, stat.S_IFREG, stat.S_IFDIR),
+                              'Unsafe or duplicate artifact member')
+                      names.add(name.casefold())
+                  source.extractall(destination)
+          payload = json.loads((destination / 'package-manifest.json').read_text(encoding='utf-8'))
+          require(payload.get('platform') == 'windows' and payload.get('arch') == 'x86_64'
+                  and payload.get('profile') == 'release' and payload.get('commit') == commit,
+                  'The downloaded manifest does not describe the selected Windows release producer')
+          evidence = Path('target/native-installers/source-run.json')
+          evidence.parent.mkdir(parents=True, exist_ok=True)
+          evidence.write_text(json.dumps({'source_run': int(run_id), 'source_commit': commit,
+                                         'source_conclusion': run.get('conclusion'),
+                                         'artifact_id': artifact['id'], 'artifact_digest': expected,
+                                         'installer_tool_commit': os.environ['GITHUB_SHA']}, indent=2) + '\n',
+                              encoding='utf-8')
+          # Preserve GITHUB_SHA as the current installer-tool revision.
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+              environment.write('PCL_NATIVE_SOURCE_COMMIT=' + commit + '\n')
+          print(json.dumps({'source_run': int(run_id), 'source_commit': commit, 'artifact_id': artifact['id']}))
+          PY
+      - name: Verify the original portable payload with the actual native binaries
+        run: python tools/ci/verify-native-package.py --directory target/native-packages
+      - name: Build a per-user Windows installer
+        run: python tools/installer-native.py --directory target/native-packages --output target/native-installers
+      - name: Prepare WebView2 on the disposable runner
+        shell: pwsh
+        run: ./tools/ci/prepare-webview2.ps1
+      - name: Verify installation, occupied files and data-preserving uninstall
+        run: python tools/ci/verify-native-installer.py --directory target/native-installers --portable target/native-packages
+      - name: Save the verified Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-user-installer-retest
+          path: |
+            target/native-installers/*.exe
+            target/native-installers/*.sha256
+            target/native-installers/*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Save installer diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer-retest-diagnostics
+          path: |
+            target/native-installers/*.json
+            target/native-installers/*.log
+            target/native-installers/window-smoke/*.log
+          if-no-files-found: ignore
+          retention-days: 7

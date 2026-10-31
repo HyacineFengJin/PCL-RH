@@ -188,6 +188,7 @@ def build(directory: Path, output: Path) -> dict:
         target.with_suffix(".exe.sha256").write_text(installer_hash + "  " + target.name + "\n")
         report = {"schema_version": 1, "installer": target.name, "sha256": installer_hash,
                   "source_archive_sha256": digest, "commit": manifest["commit"],
+                  "installer_tool_commit": os.environ.get("GITHUB_SHA"),
                   "per_user": True, "signed": False, "user_data_included": False,
                   "installer_resources": [{"path": "LICENSES/INNO-SETUP.txt", "bytes": len(notice),
                                             "sha256": hashlib.sha256(notice).hexdigest()}]}

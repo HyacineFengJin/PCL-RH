@@ -15,9 +15,24 @@ SPEC = importlib.util.spec_from_file_location("pcl_install_recipe", Path(__file_
 assert SPEC is not None and SPEC.loader is not None
 INSTALL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALL)
+CHECK = INSTALL.load("pcl_installer_check", Path(__file__).parent / "ci/verify-native-installer.py")
 
 
 class InstallerRecipeTests(unittest.TestCase):
+    def test_shortcut_uses_native_file_and_directory_identity_and_empty_arguments(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="shortcut & 中文-") as temporary:
+            root = Path(temporary)
+            target = root / "pcl-desktop.exe"
+            target.write_bytes(b"inert shortcut fixture, never executed")
+            record = {"targetPath": str(target), "workingDirectory": str(root) + os.sep, "arguments": ""}
+            CHECK.verify_shortcut(record, root)
+            other = root / "other.exe"
+            other.write_bytes(target.read_bytes())
+            for changed in ({"targetPath": str(other)}, {"workingDirectory": str(root.parent)},
+                            {"arguments": "--rh-code-build-runner"}):
+                with self.subTest(changed=changed), self.assertRaises(ValueError):
+                    CHECK.verify_shortcut({**record, **changed}, root)
+
     @unittest.skipUnless(os.name == "nt", "Actual Inno compiler requires native Windows")
     def test_actual_bilingual_installer_compiles_and_rejects_source_hash_drift(self) -> None:
         # Compile an installer containing inert text, never execute or install

@@ -28,6 +28,16 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def expected_source_commit() -> str | None:
+    # A distribution-only workflow verifies a prebuilt artifact against its
+    # independently checked producer run. Ordinary builds still bind GITHUB_SHA.
+    value = os.environ.get("PCL_NATIVE_SOURCE_COMMIT", os.environ.get("GITHUB_SHA"))
+    if value is not None:
+        require(re.fullmatch(r"[0-9a-fA-F]{40}", value) is not None,
+                "Invalid expected native source commit")
+    return value
+
+
 def relative_name(name: str) -> PurePosixPath:
     value = PurePosixPath(name)
     require(bool(name) and not value.is_absolute() and "\\" not in name
@@ -107,8 +117,8 @@ def verify_manifest(root: Path, external: Path) -> dict:
     expected_arch = "aarch64" if platform.machine().lower() in ("aarch64", "arm64") else "x86_64"
     require(manifest["platform"] == expected_system and manifest["arch"] == expected_arch,
             "Manifest does not describe this native runner")
-    if os.environ.get("GITHUB_SHA"):
-        require(manifest["commit"] == os.environ["GITHUB_SHA"], "Package belongs to another commit")
+    if expected_source_commit() is not None:
+        require(manifest["commit"] == expected_source_commit(), "Package belongs to another commit")
     expected: set[str] = set()
     for entry in manifest["files"]:
         name = entry["path"]
@@ -138,8 +148,8 @@ def verify_desktop_build(raw: str, manifest: dict) -> dict:
     require(info["version"] == manifest["version"], "Desktop version differs from the package")
     require(isinstance(info["commit"], str) and re.fullmatch(r"[0-9a-fA-F]{40}", info["commit"]) is not None
             and info["commit"] == manifest["commit"], "Desktop commit differs from the package or is unknown")
-    if os.environ.get("GITHUB_SHA"):
-        require(info["commit"] == os.environ["GITHUB_SHA"], "Desktop belongs to another CI commit")
+    if expected_source_commit() is not None:
+        require(info["commit"] == expected_source_commit(), "Desktop belongs to another CI commit")
     require(info["profile"] == manifest["profile"] and info["profile"] in ("debug", "release"),
             "Desktop profile differs from the package")
     require(info["target_os"] == manifest["platform"] and info["target_arch"] == manifest["arch"],

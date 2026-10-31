@@ -85,6 +85,18 @@ class NativeCandidateVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another CI commit"):
             VERIFY.verify_desktop_build(json.dumps({**desktop(), "commit": wrong}), {**manifest(), "commit": wrong})
 
+    def test_explicit_producer_commit_binds_repackaging_without_changing_runner_identity(self) -> None:
+        producer = "a" * 40
+        with mock.patch.dict(os.environ, {"PCL_NATIVE_SOURCE_COMMIT": producer}):
+            info = {**desktop(), "commit": producer}
+            self.assertEqual(VERIFY.verify_desktop_build(json.dumps(info), {**manifest(), "commit": producer}), info)
+            self.assertEqual(os.environ["GITHUB_SHA"], COMMIT)
+            with self.assertRaisesRegex(ValueError, "another CI commit"):
+                VERIFY.verify_desktop_build(json.dumps(desktop()), manifest())
+        for invalid in ("", "not-a-commit", "a" * 39, "a" * 40 + "\n"):
+            with mock.patch.dict(os.environ, {"PCL_NATIVE_SOURCE_COMMIT": invalid}), self.assertRaises(ValueError):
+                VERIFY.expected_source_commit()
+
     def test_explicit_embedded_service_requires_matching_binary_boolean(self) -> None:
         embedded = {**desktop(), "curseforge_embedded": True}
         declared = {**manifest(), "curseforge_embedded": True}
