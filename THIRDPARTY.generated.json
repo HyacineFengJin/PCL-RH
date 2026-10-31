@@ -50,7 +50,7 @@
     },
     {
       "path": "crates/core/Cargo.toml",
-      "sha256": "45fb09d50d19a0b78eeb15cbabd6d43d1bb8033638911807037dcabe27dc3aba"
+      "sha256": "2fa6f1b3e98fe8ebe0b93464abd18c19a1d5bb4ad2b5410b5ca4571668dbd6a9"
     },
     {
       "path": "crates/desktop-platform/Cargo.toml",
