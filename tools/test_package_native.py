@@ -11,6 +11,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import types
 import unittest
 from unittest import mock
 import zipfile
@@ -213,14 +214,19 @@ class NativePackageTests(unittest.TestCase):
         self.assert_no_scratch()
 
     @unittest.skipUnless(os.name == "nt", "CPython Windows path-derived execute bits")
-    def test_windows_exe_path_and_handle_have_same_snapshot_despite_synthetic_execute_bits(self) -> None:
+    def test_windows_exe_path_and_handle_compare_common_fields_and_each_role_stays_stable(self) -> None:
         path = self.binaries / "pcl-cli.exe"
         before = path.lstat()
         with path.open("rb") as source:
             held = os.fstat(source.fileno())
             diagnostic = f"synthetic EXE path={before!r}, handle={held!r}"
             self.assertEqual(before.st_mode ^ held.st_mode, 0o111, diagnostic)
-            self.assertEqual(PACKAGE.stamp(before), PACKAGE.stamp(held), diagnostic)
+            # CPython 3.11 can expose creation time through both ctimes;
+            # 3.13 can expose creation time for paths but ChangeTime for fd.
+            # Do not assume cross-role ctimes have matching meanings.
+            self.assertEqual(PACKAGE.common_stamp(before), PACKAGE.common_stamp(held), diagnostic)
+            self.assertEqual(PACKAGE.stamp(before), PACKAGE.stamp(path.lstat()), diagnostic)
+            self.assertEqual(PACKAGE.stamp(held), PACKAGE.stamp(os.fstat(source.fileno())), diagnostic)
         # A real edit still changes the snapshot. Growth guarantees an
         # observable difference without depending on NTFS timestamp timing.
         with path.open("ab") as output:
@@ -228,7 +234,7 @@ class NativePackageTests(unittest.TestCase):
         changed = path.lstat()
         self.assertNotEqual(PACKAGE.stamp(before), PACKAGE.stamp(changed))
         with path.open("rb") as source:
-            self.assertEqual(PACKAGE.stamp(changed), PACKAGE.stamp(os.fstat(source.fileno())))
+            self.assertEqual(PACKAGE.common_stamp(changed), PACKAGE.common_stamp(os.fstat(source.fileno())))
 
     def test_snapshot_keeps_file_identity_after_same_size_replacement(self) -> None:
         path = self.base / "snapshot-input.bin"
@@ -243,6 +249,32 @@ class NativePackageTests(unittest.TestCase):
         self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
         self.assertNotEqual(before.st_ino, after.st_ino)
         self.assertNotEqual(PACKAGE.stamp(before), PACKAGE.stamp(after))
+
+    def test_copy_rejects_handle_ctime_change_even_when_common_fields_stay_equal(self) -> None:
+        path = self.base / "snapshot-input.bin"
+        path.write_bytes(b"real synthetic input bytes")
+        stage = PACKAGE.Stage(self.base / "ctime-stage")
+        stage.root.mkdir()
+        real_fstat = os.fstat
+        calls = 0
+
+        def changed_handle_ctime(descriptor: int):
+            nonlocal calls
+            metadata = real_fstat(descriptor)
+            calls += 1
+            if calls == 1:
+                return metadata
+            fields = {name: getattr(metadata, name) for name in dir(metadata) if name.startswith("st_")}
+            fields["st_ctime_ns"] += 1
+            return types.SimpleNamespace(**fields)
+
+        # Inject only the second handle query's ctime. The actual input bytes,
+        # path snapshot and every cross-role common field remain unchanged.
+        with mock.patch.object(PACKAGE.os, "fstat", side_effect=changed_handle_ctime):
+            with self.assertRaisesRegex(ValueError, "Input changed during copy"):
+                stage.add_file("copied.bin", path, 0o644)
+        self.assertEqual(calls, 2)
+        self.assertEqual(stage.files, [])
 
     @unittest.skipIf(os.name == "nt", "Unix execute permissions are real metadata")
     def test_unix_snapshot_keeps_real_execute_permission_changes(self) -> None:

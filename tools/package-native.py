@@ -142,7 +142,7 @@ def reparse(metadata: os.stat_result) -> bool:
     return bool(getattr(metadata, "st_file_attributes", 0) & 0x400)
 
 
-def stamp(metadata: os.stat_result) -> tuple:
+def common_stamp(metadata: os.stat_result) -> tuple:
     mode = metadata.st_mode
     if os.name == "nt":
         # CPython's path stat adds 0111 for .exe/.bat/.cmd/.com; fstat has
@@ -153,9 +153,18 @@ def stamp(metadata: os.stat_result) -> tuple:
         # update_st_mode_from_path; Python/fileutils.c _Py_fstat_noraise.
         mode &= ~0o111
     return (metadata.st_dev, metadata.st_ino, mode, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_nlink,
+            metadata.st_mtime_ns, metadata.st_nlink,
             getattr(metadata, "st_file_attributes", None),
-            getattr(metadata, "st_reparse_tag", None))
+            getattr(metadata, "st_reparse_tag", None),
+            getattr(metadata, "st_birthtime_ns", None))
+
+
+def stamp(metadata: os.stat_result) -> tuple:
+    # Compare ctime only within one query role. Windows CPython 3.11 uses
+    # creation time; in 3.13 win32_xstat_implementation preserves that legacy
+    # path result while _Py_fstat_noraise may expose the real ChangeTime.
+    # Every role still checks its complete snapshot before/after the copy.
+    return (*common_stamp(metadata), metadata.st_ctime_ns)
 
 
 def regular_directory(path: Path) -> None:
@@ -201,7 +210,8 @@ class Stage:
         digest = hashlib.sha256()
         count = 0
         with os.fdopen(os.open(source, flags), "rb") as incoming, destination.open("xb") as outgoing:
-            require(stamp(before) == stamp(os.fstat(incoming.fileno())), "Input changed before copy")
+            held_before = os.fstat(incoming.fileno())
+            require(common_stamp(before) == common_stamp(held_before), "Input changed before copy")
             if binary:
                 header = incoming.read(1024 * 1024)
                 validate_binary(header, *binary)
@@ -211,8 +221,11 @@ class Stage:
                 require(count <= before.st_size, "Input grew during copy")
                 digest.update(chunk)
                 outgoing.write(chunk)
-            require(count == before.st_size and stamp(before) == stamp(os.fstat(incoming.fileno()))
-                    and stamp(before) == stamp(source.lstat()), "Input changed during copy")
+            held_after = os.fstat(incoming.fileno())
+            path_after = source.lstat()
+            require(count == before.st_size and stamp(held_before) == stamp(held_after)
+                    and stamp(before) == stamp(path_after)
+                    and common_stamp(held_after) == common_stamp(path_after), "Input changed during copy")
         destination.chmod(mode)
         self.record(name, count, digest.hexdigest(), mode)
 
