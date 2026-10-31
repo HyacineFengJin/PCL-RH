@@ -224,13 +224,50 @@ fn media_head_keeps_missing_changed_range_and_directory_identity_rejections() {
         None,
     )
     .unwrap();
-    fs::rename(scope.path(), fixture.path().join("retained-titles")).unwrap();
-    fs::create_dir(scope.path()).unwrap();
-    assert!(head.respond(response::Method::Head).is_err());
+    let changed_stamp = changed.stamp.clone();
+    let retained = fixture.path().join("retained-titles");
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+        // Native child handles deliberately keep delete sharing closed. NTFS
+        // rejects the parent-directory rename while these real readers live.
+        let error = fs::rename(scope.path(), &retained).unwrap_err();
+        assert!(
+            matches!(
+                error.raw_os_error().map(|code| code as u32),
+                Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION)
+            ),
+            "expected a native access/sharing rejection, got {error}"
+        );
+        assert!(!retained.exists());
+        scope.recheck().unwrap();
+        assert_eq!(folder.identity().unwrap(), folder_id);
+        assert_eq!(fs::read(scope.path().join("title")).unwrap(), b"ca");
+        assert_eq!(filesystem::Stamp::of(&head.file).unwrap(), changed_stamp);
+        let still_admitted = head.respond(response::Method::Head).unwrap();
+        assert_eq!(still_admitted.span.content_length(), 2);
+        assert_eq!(still_admitted.bytes.capacity(), 0);
+        // Keep only plain identity/stamp evidence, not child-file owners. The
+        // subsequent rename must actually succeed before testing stale IDs.
+        drop(head);
+        drop(get);
+        drop(snapshot);
+        drop(changed);
+        fs::rename(scope.path(), &retained).unwrap();
+        // Recreate through the native fixture owner, including on elevated
+        // Windows runners whose std::fs defaults can name Administrators owner.
+        scope.owner.as_ref().unwrap().create("titles").unwrap();
+    }
+    #[cfg(unix)]
+    {
+        fs::rename(scope.path(), &retained).unwrap();
+        fs::create_dir(scope.path()).unwrap();
+        assert!(head.respond(response::Method::Head).is_err());
+    }
     let rebound = Scope::open(fixture.path(), "titles").unwrap();
     assert!(response::authorize(
         &rebound,
-        media_binding("title", &changed.stamp, &root_id, &owner_id, &folder_id),
+        media_binding("title", &changed_stamp, &root_id, &owner_id, &folder_id),
         None
     )
     .is_err());
