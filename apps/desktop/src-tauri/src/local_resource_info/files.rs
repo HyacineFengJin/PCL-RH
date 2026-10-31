@@ -2,14 +2,15 @@
 //! no-follow. A batch has a total hashing budget and cancellation deadline; no
 //! chooser or writer admission is held during bulk reads. Fingerprints match the
 //! resource row format, while SHA256 detects content edits between confirmation.
-use crate::launcher_local::filesystem::{check_file, component, Dir, Stamp};
+use crate::launcher_local::filesystem::{check_physical_file as check_file, component, Dir, Stamp};
+use crate::resource_ops::token_for as token;
 use pcl_core::content_scope::{resolve_scope, ContentScope, IsolationPolicy, MarkerState};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::{ffi::CString, os::fd::AsRawFd};
 use std::{
-    ffi::CString,
     fs::File,
     io::{Read, Seek, SeekFrom},
-    os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
@@ -49,19 +50,6 @@ pub(super) struct Pinned {
     pub digest: String,
     pub token: String,
 }
-fn token(file: &File) -> Result<String, String> {
-    let m = file.metadata().map_err(|_| "无法检查资源文件")?;
-    Ok(format!(
-        "v2:{}:{}:{}:{}:{}:{}:{}",
-        m.len(),
-        m.mtime(),
-        m.mtime_nsec(),
-        m.dev(),
-        m.ino(),
-        m.ctime(),
-        m.ctime_nsec()
-    ))
-}
 impl Pinned {
     pub fn read(
         folder: &Dir,
@@ -73,7 +61,7 @@ impl Pinned {
         budget.check(closing)?;
         component(name)?;
         let mut file = folder.file(name)?.ok_or("所选资源文件不存在，请刷新列表")?;
-        let stamp = Stamp::of(&file.metadata().map_err(|_| "无法检查资源文件")?);
+        let stamp = Stamp::from_file(&file)?;
         if stamp.bytes > max {
             return Err(if max == FILE_LIMIT {
                 "所选资源超过单文件 256 MiB 上限"
@@ -135,11 +123,21 @@ impl Pinned {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(unix)]
 struct Marker {
     device: u64,
     inode: u64,
     mode: u32,
 }
+#[cfg(windows)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Marker {
+    identity: pcl_core::retained_fs::Identity,
+    kind: pcl_core::retained_fs::Kind,
+    security: pcl_core::retained_fs::Security,
+    reparse_tag: Option<u32>,
+}
+#[cfg(unix)]
 fn marker(folder: &Dir, name: &str) -> Result<Option<Marker>, String> {
     let name = CString::new(name).unwrap();
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -160,10 +158,51 @@ fn marker(folder: &Dir, name: &str) -> Result<Option<Marker>, String> {
     }
     let stat = unsafe { stat.assume_init() };
     Ok(Some(Marker {
-        device: stat.st_dev,
+        device: stat.st_dev as u64,
         inode: stat.st_ino,
-        mode: stat.st_mode,
+        mode: stat.st_mode as u32,
     }))
+}
+#[cfg(windows)]
+fn marker(folder: &Dir, name: &str) -> Result<Option<Marker>, String> {
+    use pcl_core::retained_fs::{Directory, Leaf};
+    component(name)?;
+    let directory = Directory::from_file(folder.0.try_clone().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    directory
+        .entry(&Leaf::new(name).map_err(|e| e.to_string())?)
+        .map(|entry| {
+            entry.map(|m| Marker {
+                identity: m.identity,
+                kind: m.kind,
+                security: m.security,
+                reparse_tag: m.reparse_tag,
+            })
+        })
+        .map_err(|e| format!("无法核对实例隔离配置：{e}"))
+}
+fn marker_state(marker: Option<&Marker>) -> MarkerState {
+    let Some(marker) = marker else {
+        return MarkerState::Missing;
+    };
+    #[cfg(unix)]
+    {
+        let mode = marker.mode & libc::S_IFMT as u32;
+        if mode == libc::S_IFREG as u32 || mode == libc::S_IFDIR as u32 {
+            MarkerState::Present
+        } else {
+            MarkerState::Unsupported
+        }
+    }
+    #[cfg(windows)]
+    {
+        use pcl_core::retained_fs::Kind;
+        if marker.reparse_tag.is_none() && matches!(marker.kind, Kind::Regular | Kind::Directory) {
+            MarkerState::Present
+        } else {
+            MarkerState::Unsupported
+        }
+    }
 }
 fn isolation_snapshot(
     folder: &Dir,
@@ -172,11 +211,7 @@ fn isolation_snapshot(
     let mut markers = Vec::new();
     let scope = resolve_scope(policy, |name| {
         let found = marker(folder, name)?;
-        let state = match found.as_ref().map(|m| m.mode & libc::S_IFMT) {
-            None => MarkerState::Missing,
-            Some(libc::S_IFREG | libc::S_IFDIR) => MarkerState::Present,
-            Some(_) => MarkerState::Unsupported,
-        };
+        let state = marker_state(found.as_ref());
         markers.push(found);
         Ok(state)
     })?;
@@ -328,3 +363,7 @@ pub(super) fn bounded_zip(file: &mut File) -> Result<(), String> {
         .map_err(|_| "无法读取资源元数据")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "files/tests.rs"]
+mod tests;

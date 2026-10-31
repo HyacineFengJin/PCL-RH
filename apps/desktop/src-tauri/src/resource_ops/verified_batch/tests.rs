@@ -541,15 +541,8 @@ fn limits_reject_without_allocating_large_files() {
     let mut files = vec![f.file("mods", "big.jar")];
     files[0].size = MAX_FILE_BYTES + 1;
     assert!(run(&f, &mut files, &c, &mut || panic!("commit"), &mut |_, _| {}).is_err());
-    let file = f.file("mods", "test.jar");
     let mut many: Vec<_> = (0..MAX_FILES + 1)
-        .map(|n| VerifiedImport {
-            kind: "mods".into(),
-            file_name: format!("test{n}.jar"),
-            file: file.file.try_clone().unwrap(),
-            size: file.size,
-            sha512: file.sha512.clone(),
-        })
+        .map(|n| f.file("mods", &format!("test{n}.jar")))
         .collect();
     assert!(
         run(&f, &mut many, &c, &mut || panic!("commit"), &mut |_, _| {})

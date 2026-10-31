@@ -780,7 +780,12 @@ pub(crate) fn check_file(file: &File, stamp: &Stamp, dir: &Dir, name: &str) -> R
     }
     check_physical_file(file, stamp, dir, name)
 }
-fn check_physical_file(file: &File, stamp: &Stamp, dir: &Dir, name: &str) -> Result<(), String> {
+pub(crate) fn check_physical_file(
+    file: &File,
+    stamp: &Stamp,
+    dir: &Dir,
+    name: &str,
+) -> Result<(), String> {
     let current = dir.file(name)?.ok_or("启动器本地文件文件已消失")?;
     if Stamp::from_file(file)? != *stamp || Stamp::from_file(&current)? != *stamp {
         Err("启动器本地文件文件已变化，请刷新启动器本地文件列表".into())

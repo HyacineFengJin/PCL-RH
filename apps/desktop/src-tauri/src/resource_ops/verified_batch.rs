@@ -605,7 +605,7 @@ fn publish(
     write_journal(operation, j)
 }
 fn cleanup_stage(operation: &Dir, j: &Journal) -> Result<()> {
-    let root = operation_binding(operation, j)?;
+    let _root = operation_binding(operation, j)?;
     if let Some(stage) = verify_stage(operation, j, false)? {
         let names = stage.names()?;
         for name in names {
@@ -678,7 +678,7 @@ fn cleanup_stage(operation: &Dir, j: &Journal) -> Result<()> {
     #[cfg(not(windows))]
     {
         operation.unlink("journal.json", false)?;
-        let store = storage(&root, false)?.ok_or("资源批次记录目录缺失")?;
+        let store = storage(&_root, false)?.ok_or("资源批次记录目录缺失")?;
         if store.child(&j.operation_id)?.key()? != j.operation_key || !operation.names()?.is_empty()
         {
             return Err("资源批次目录已替换，拒绝清理".into());

@@ -119,9 +119,22 @@ fn validate_inventory(value: &Inventory) -> Result<()> {
                         .filter(|s| *s <= 16 * 1024 * 1024 * 1024)
                         .ok_or("更新 inventory 过大")?;
                 }
+                #[cfg(unix)]
                 Node::Directory { mode, .. } => {
-                    if mode & libc::S_IFMT != libc::S_IFDIR {
+                    if mode & libc::S_IFMT as u32 != libc::S_IFDIR as u32 {
                         return Err("更新 inventory 目录声明无效".into());
+                    }
+                }
+                #[cfg(windows)]
+                Node::Directory { security, .. } => {
+                    // Persisted evidence must belong to this platform. Exact
+                    // ID/security equality against the live directory remains
+                    // mandatory in Context inventory checks before any move.
+                    if !matches!(security, pcl_core::retained_fs::Security::Windows {
+                        owner, descriptor, ..
+                    } if !owner.is_empty() && !descriptor.is_empty())
+                    {
+                        return Err("更新 inventory 原生目录声明无效".into());
                     }
                 }
             }
@@ -356,7 +369,7 @@ fn replace(
     context: &Context,
     j: &Journal,
     name: &str,
-    next: &str,
+    _next: &str,
     value: &impl Serialize,
     limit: u64,
 ) -> Result<()> {
@@ -380,21 +393,21 @@ fn replace(
             return Ok(());
         }
         let before = super::super::token_for(&operation.regular(name)?)?;
-        if operation.stat(next)?.is_some() {
-            let token = super::super::token_for(&operation.regular(next)?)?;
-            validate_private_name(context, j, next)?;
+        if operation.stat(_next)?.is_some() {
+            let token = super::super::token_for(&operation.regular(_next)?)?;
+            validate_private_name(context, j, _next)?;
             context.check(j)?;
-            if super::super::token_for(&operation.regular(next)?)? != token {
+            if super::super::token_for(&operation.regular(_next)?)? != token {
                 return Err("更新临时状态记录已被替换".into());
             }
-            operation.unlink(next, false)?;
+            operation.unlink(_next, false)?;
         }
-        publish(operation, next, value, limit)?;
+        publish(operation, _next, value, limit)?;
         context.check(j)?;
         if super::super::token_for(&operation.regular(name)?)? != before {
             return Err("更新状态记录被外部替换".into());
         }
-        operation.replace_journal(next, name)
+        operation.replace_journal(_next, name)
     }
 }
 #[cfg(not(target_os = "linux"))]

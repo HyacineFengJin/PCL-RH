@@ -22,6 +22,7 @@ mod launcher_local {
     pub(crate) use crate::local_filesystem as filesystem;
 }
 #[path = "../../../apps/desktop/src-tauri/src/modrinth_install.rs"]
+#[allow(unused_imports)]
 mod modrinth_install;
 #[path = "../../../apps/desktop/src-tauri/src/resource_digest.rs"]
 mod resource_digest;
