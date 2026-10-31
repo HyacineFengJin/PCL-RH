@@ -1,5 +1,5 @@
 //! Standalone official resource Save. Preparation binds one explicitly selected
-//! file; transfer and final authority checks use that opaque revision. Anonymous
+//! file; transfer and final authority checks use that opaque revision. Native
 //! staging belongs to the chosen filesystem, then a task-owned cancellation
 //! gate precedes no-replacement publication. No instance or cache is touched.
 #[path = "resource_save/authority.rs"]
@@ -185,7 +185,7 @@ async fn save_with(
         (session.request_file)(&authority.file)?,
         plan.size,
         authority::expected_digest(plan)?,
-        &mut file,
+        files::staging_file(&mut file),
         cancel,
         |amount| {
             bytes_done = bytes_done.saturating_add(amount);
@@ -212,7 +212,7 @@ async fn save_with(
     let file = files::verify_anonymous(file, plan, cancel)?;
     let final_authority = (session.resolve)(request).await.map_err(normalize_cancel)?;
     if final_authority.plan.revision != revision {
-        return Err("下载期间官方文件信息已变化；暂存文件已丢弃，请重新确认".into());
+        return Err("下载期间官方文件信息已变化；文件未发布，请重新确认".into());
     }
     let network_bytes = session.network_bytes();
     target.recheck()?;

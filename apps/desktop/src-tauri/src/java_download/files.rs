@@ -33,11 +33,11 @@ struct Owner {
 }
 pub struct Store {
     pub path: PathBuf,
-    pub dir: Dir,
+    pub(super) dir: Dir,
 }
 pub struct Stage<'a> {
     store: &'a Store,
-    pub dir: Dir,
+    pub(super) dir: Dir,
     name: String,
     owner: Owner,
     published: bool,
@@ -157,7 +157,7 @@ impl Store {
         }
         Ok(())
     }
-    pub fn recover(&self, lock: &WriteLock) -> Result<()> {
+    pub(super) fn recover(&self, lock: &WriteLock) -> Result<()> {
         self.recheck()?;
         for name in self
             .dir
@@ -195,7 +195,7 @@ impl Store {
         }
         Ok(())
     }
-    pub fn create<'a>(
+    pub(super) fn create<'a>(
         &'a self,
         package: &Package,
         manifest: &Manifest,
@@ -455,5 +455,18 @@ impl Stage<'_> {
         self.walk(&self.dir, "", true)?;
         unlink(&self.dir, OWNER, false)?;
         unlink(&self.store.dir, &self.name, true)
+    }
+}
+
+// Keep Linux's anonymous descriptor and existing syscall boundary unchanged.
+pub fn download_handle(file: &mut File) -> &mut File {
+    file
+}
+impl Stage<'_> {
+    pub fn download(&self, path: &str) -> Result<File> {
+        self.anonymous(path)
+    }
+    pub fn finish_download(&self, path: &str, file: File, executable: bool) -> Result<()> {
+        self.publish_file(path, &file, executable)
     }
 }

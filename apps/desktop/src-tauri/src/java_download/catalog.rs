@@ -229,7 +229,10 @@ impl Manifest {
         }
         let mut total = 0u64;
         for (path, entry) in &self.files {
-            parts(path)?;
+            for part in parts(path)? {
+                pcl_core::retained_fs::Leaf::new(part)
+                    .map_err(|_| "Java 清单路径不适用于当前文件系统")?;
+            }
             if path.starts_with('.') {
                 return Err("Java 清单不能占用启动器内部文件名".into());
             }
@@ -294,15 +297,39 @@ impl Manifest {
                 }
             }
         }
-        if !matches!(
-            self.files.get("bin/java"),
-            Some(Entry::File {
-                executable: true,
-                ..
-            })
-        ) {
-            return Err("Java 清单缺少可执行 bin/java".into());
+        self.java_entry()?;
+        // NTFS commonly folds names. Reject portable ASCII aliases before any
+        // bytes are transferred rather than rely on a late create collision.
+        if cfg!(windows) {
+            let mut names = BTreeSet::new();
+            for (path, entry) in &self.files {
+                if !names.insert(path.to_ascii_lowercase()) {
+                    return Err("Java 清单路径在 Windows 上重复".into());
+                }
+                if matches!(entry, Entry::Link { .. }) {
+                    return Err("Windows 官方 Java 清单不支持内部链接".into());
+                }
+            }
         }
         Ok(total)
+    }
+    pub fn java_entry(&self) -> Result<String> {
+        let platform = pcl_core::platform::Platform::current()?;
+        self.java_entry_for(platform)
+    }
+    pub fn java_entry_for(&self, platform: pcl_core::platform::Platform) -> Result<String> {
+        use pcl_core::platform::OperatingSystem;
+        for path in platform.java_paths(Path::new("")) {
+            let path = path
+                .to_str()
+                .ok_or("Java 可执行路径无效")?
+                .replace('\\', "/");
+            if matches!(self.files.get(&path), Some(Entry::File { executable, .. })
+                if *executable || platform.os == OperatingSystem::Windows)
+            {
+                return Ok(path);
+            }
+        }
+        Err("Java 清单缺少当前平台的可执行文件".into())
     }
 }

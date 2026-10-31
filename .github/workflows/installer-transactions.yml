@@ -3,9 +3,9 @@ name: Installer transactions
 on:
   push:
     branches: [master]
-    paths: ['crates/install/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
+    paths: ['crates/install/**', 'apps/desktop/src-tauri/src/java_download.rs', 'apps/desktop/src-tauri/src/java_download/**', 'apps/desktop/src-tauri/src/resource_save.rs', 'apps/desktop/src-tauri/src/resource_save/**', 'apps/desktop/src-tauri/src/resource_digest.rs', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
   pull_request:
-    paths: ['crates/install/**', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
+    paths: ['crates/install/**', 'apps/desktop/src-tauri/src/java_download.rs', 'apps/desktop/src-tauri/src/java_download/**', 'apps/desktop/src-tauri/src/resource_save.rs', 'apps/desktop/src-tauri/src/resource_save/**', 'apps/desktop/src-tauri/src/resource_digest.rs', 'crates/core/**', 'crates/network/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/installer-transactions.yml']
   workflow_dispatch:
 
 permissions:
@@ -46,6 +46,8 @@ jobs:
             javac -version
           fi
           cargo +stable test --locked -p pcl-install --lib -- --test-threads=2
+      - name: Test native Java store adapters without a JVM download
+        run: cargo +stable test --locked -p pcl-install --test java_download_native --test resource_save_files -- --test-threads=2
       - name: Report host toolchain
         run: rustc +stable -vV
       # Native installer tests are not evidence of a complete desktop app or of

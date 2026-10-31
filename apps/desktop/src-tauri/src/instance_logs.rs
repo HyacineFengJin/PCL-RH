@@ -11,8 +11,10 @@ mod tests;
 
 use crate::{config::GameRoot, launcher_local::filesystem::Stamp, Shared};
 use binding::{Binding, Selected};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Serialize;
+mod model;
+use model::digest;
+pub(super) use model::LogKind;
 use std::{
     path::Path,
     sync::{atomic::Ordering, MutexGuard},
@@ -20,29 +22,6 @@ use std::{
 
 pub(super) const CHANGED: &str = "游戏日志或实例目录已变化，请刷新列表后重新选择日志";
 const MAX_ROWS: usize = 512;
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum LogKind {
-    Game,
-    Crash,
-}
-impl LogKind {
-    fn directory(self) -> &'static str {
-        match self {
-            Self::Game => "logs",
-            Self::Crash => "crash-reports",
-        }
-    }
-    fn accepts(self, name: &str) -> bool {
-        match self {
-            Self::Game => {
-                name.ends_with(".log") || name.ends_with(".txt") || name.ends_with(".log.gz")
-            }
-            Self::Crash => name.ends_with(".txt"),
-        }
-    }
-}
 
 #[derive(Serialize)]
 pub(super) struct LogRow {
@@ -71,12 +50,6 @@ pub(super) struct LogContent {
     pub content_revision: String,
 }
 
-fn digest(value: &impl Serialize) -> Result<String, String> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(value).map_err(|_| "无法绑定日志选择")?)
-    ))
-}
 fn row_revision(scope: &str, kind: LogKind, name: &str, stamp: &Stamp) -> Result<String, String> {
     digest(&(scope, kind, name, stamp))
 }
@@ -215,7 +188,7 @@ fn list_with(
                 binding::valid_name(kind, &name)?;
                 let file = folder.file(&name)?.ok_or(CHANGED)?;
                 let metadata = file.metadata().map_err(|_| "无法检查游戏日志")?;
-                let stamp = Stamp::of(&metadata);
+                let stamp = Stamp::from_file(&file)?;
                 entries.push(LogRow {
                     kind,
                     revision: row_revision(&captured.revision, kind, &name, &stamp)?,

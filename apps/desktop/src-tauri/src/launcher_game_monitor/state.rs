@@ -10,9 +10,13 @@ use crate::launcher_local::filesystem::Stamp;
 use crate::launcher_local::filesystem::{
     optional_snapshot, revision, Dir, Scope, Snapshot, WriteLock,
 };
-use pcl_core::retained_fs::{self as native_fs, Kind};
+use pcl_core::retained_fs as native_fs;
+#[cfg(unix)]
+use pcl_core::retained_fs::Kind;
 #[cfg(target_os = "macos")]
-use pcl_core::retained_fs::{Directory, Leaf, Links};
+use pcl_core::retained_fs::Links;
+#[cfg(not(target_os = "linux"))]
+use pcl_core::retained_fs::{Directory, Leaf};
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use sha2::{Digest, Sha256};

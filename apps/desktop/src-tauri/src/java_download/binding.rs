@@ -3,14 +3,13 @@
 //! never substitutes a newly reopened pathname for the captured descriptor.
 use super::{Result, Store};
 use crate::launcher_local::filesystem::Dir;
+use crate::launcher_local::filesystem::DirectoryIdentity;
+use std::path::{Component, Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::{
     ffi::CString,
     fs::File,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::ffi::OsStrExt,
-    },
-    path::{Component, Path, PathBuf},
+    os::fd::{AsRawFd, FromRawFd},
 };
 
 const SUFFIX: [&str; 2] = [".pcl-rust", "java"];
@@ -19,7 +18,7 @@ pub struct StoreBinding {
     path: PathBuf,
     anchor_path: PathBuf,
     anchor: Dir,
-    identity: (u64, u64),
+    identity: DirectoryIdentity,
     missing: Vec<&'static str>,
 }
 
@@ -29,14 +28,19 @@ impl StoreBinding {
     pub fn capture(project: &Path) -> Result<Self> {
         let path = project.join(".pcl-rust/java");
         if !path.is_absolute()
-            || path.as_os_str().as_bytes().len() > 4096
+            || path.as_os_str().as_encoded_bytes().len() > 4096
             || path.components().count() > 128
-            || path
-                .components()
-                .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+            || path.components().any(|part| {
+                !matches!(
+                    part,
+                    Component::RootDir | Component::Prefix(_) | Component::Normal(_)
+                )
+            })
         {
             return Err("托管 Java 目录必须是有界规范绝对路径".into());
         }
+        #[cfg(not(target_os = "linux"))]
+        pcl_core::retained_fs::validate_absolute_path(&path).map_err(|e| e.to_string())?;
         let mut anchor = Dir::absolute(project)?;
         let mut anchor_path = project.to_path_buf();
         let mut missing = Vec::new();
@@ -119,6 +123,7 @@ impl StoreBinding {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn child(parent: &Dir, name: &str) -> Result<Option<Dir>> {
     #[repr(C)]
     struct How {
@@ -153,6 +158,25 @@ fn child(parent: &Dir, name: &str) -> Result<Option<Dir>> {
     }
 }
 
-#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
+fn child(parent: &Dir, name: &str) -> Result<Option<Dir>> {
+    use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+    let parent = Directory::from_file(parent.0.try_clone().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    match parent.child(
+        &Leaf::new(name).map_err(|e| e.to_string())?,
+        Traversal::SameFilesystem,
+    ) {
+        Ok(child) => Ok(Some(Dir(child
+            .try_clone_file()
+            .map_err(|e| e.to_string())?))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "无法打开新托管 Java 目录（不允许链接或新挂载）：{e}"
+        )),
+    }
+}
+
+#[cfg(all(test, unix))]
 #[path = "binding_tests.rs"]
 mod tests;

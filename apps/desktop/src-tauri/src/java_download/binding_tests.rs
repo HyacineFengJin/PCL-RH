@@ -2,33 +2,19 @@ use super::*;
 use std::{
     fs,
     os::unix::fs::{symlink, PermissionsExt},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, #[allow(dead_code)] tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/launch-readiness-2026-10-18/java-store-bindings")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        let temp = tempfile::tempdir().unwrap();
+        Self(temp.path().canonicalize().unwrap(), temp)
     }
     fn directory(&self, name: &str) -> PathBuf {
         let path = self.0.join(name);
         fs::create_dir_all(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         path
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
     }
 }
 

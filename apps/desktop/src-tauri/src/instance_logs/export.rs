@@ -1,18 +1,20 @@
 //! Export exactly the displayed text, bound to its selection and content hash.
 //! Preparation rereads and redacts outside admission; a native chooser supplies
 //! the destination. Only short identity checks run under the final operations
-//! guard, which publish_new retains through anonymous no-overwrite publication.
+//! guard, which is held through no-overwrite publication. Linux retains its
+//! anonymous staging; native named leases use a new private workspace.
 use super::{prepare_read_with, LogKind, PreparedRead, CHANGED};
-use crate::{
-    launcher_local::filesystem::Dir,
-    toolbox_images::publish::{self, ExportOutcome},
-    Shared,
-};
-use std::{
-    fs::File,
-    os::fd::{AsRawFd, FromRawFd},
-    path::{Path, PathBuf},
-};
+use crate::{toolbox_images::publish::ExportOutcome, Shared};
+use std::path::Path;
+#[path = "destination.rs"]
+mod destination;
+use destination::Destination;
+
+#[cfg(target_os = "linux")]
+use crate::toolbox_images::publish;
+#[cfg(not(target_os = "linux"))]
+#[path = "native_export.rs"]
+mod native_export;
 
 pub(crate) struct PreparedExport {
     read: PreparedRead,
@@ -110,7 +112,7 @@ impl PreparedExport {
     ) -> Result<ExportOutcome, String> {
         let destination =
             Destination::capture(target, self.read.captured.binding.root_identity()?)?;
-        publish::publish_new(target, self.read.content.text.as_bytes(), "txt", 1, || {
+        let authorize = || {
             before_authorize();
             let guard = self.read.authorize(shared)?;
             // A newly added account may recognize a secret the earlier read did
@@ -121,59 +123,27 @@ impl PreparedExport {
             }
             destination.verify()?;
             Ok(guard)
-        })
-    }
-}
-
-struct Destination {
-    parent: PathBuf,
-    folder: Dir,
-    source_root: (u64, u64),
-}
-impl Destination {
-    fn capture(target: &Path, source_root: (u64, u64)) -> Result<Self, String> {
-        let parent = target.parent().ok_or("保存目录无效")?.to_owned();
-        let folder = Dir::absolute(&parent)?;
-        outside_source(&folder, source_root)?;
-        Ok(Self {
-            parent,
-            folder,
-            source_root,
-        })
-    }
-    fn verify(&self) -> Result<(), String> {
-        if Dir::absolute(&self.parent)?.identity()? != self.folder.identity()? {
-            return Err("保存目录已被替换，请重新选择".into());
-        }
-        outside_source(&self.folder, self.source_root)
-    }
-}
-
-/// Compare real directory identities through parent FDs. This also rejects a
-/// bind-mounted alias of the root and a destination moved inside the root while
-/// staging; lexical prefixes cannot establish either relationship.
-fn outside_source(folder: &Dir, source_root: (u64, u64)) -> Result<(), String> {
-    let mut current = Dir(folder.0.try_clone().map_err(|_| "无法检查保存目录")?);
-    for _ in 0..4096 {
-        let identity = current.identity()?;
-        if identity == source_root {
-            return Err("请将日志文本保存到游戏根目录以外的位置".into());
-        }
-        let fd = unsafe {
-            libc::openat(
-                current.0.as_raw_fd(),
-                c"..".as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )
         };
-        if fd < 0 {
-            return Err("无法检查保存目录的真实祖先".into());
+        #[cfg(target_os = "linux")]
+        {
+            publish::publish_new(
+                target,
+                self.read.content.text.as_bytes(),
+                "txt",
+                1,
+                authorize,
+            )
         }
-        let parent = Dir(unsafe { File::from_raw_fd(fd) });
-        if parent.identity()? == identity {
-            return Ok(());
+        #[cfg(not(target_os = "linux"))]
+        {
+            let saved =
+                native_export::publish(target, self.read.content.text.as_bytes(), authorize)?;
+            Ok(ExportOutcome {
+                status: "complete".into(),
+                path: Some(target.display().to_string()),
+                count: 1,
+                warning: saved.warning,
+            })
         }
-        current = parent;
     }
-    Err("保存目录祖先层级超过安全上限".into())
 }

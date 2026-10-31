@@ -1,31 +1,13 @@
 //! Launcher-owned export choices, separate from the files being exported.
 use crate::instance_export::ExportRequest;
+use crate::launcher_local::filesystem::{self as local, Scope, Snapshot};
+use pcl_core::retained_fs::{Directory, Leaf, Lock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    ffi::CString,
-    fs::File,
-    io::{Read, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::ffi::OsStrExt,
-    },
-    path::{Component, Path},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::Path;
 
 const LIMIT: u64 = 64 * 1024;
-static NEXT: AtomicU64 = AtomicU64::new(0);
-
-struct PresetLock(File);
-impl Drop for PresetLock {
-    fn drop(&mut self) {
-        // A Java probe can fork while this writer is finishing. Release the
-        // shared lock description explicitly, even if a pre-exec child still
-        // holds a copied descriptor; close alone is insufficient.
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
+struct PresetLock(#[allow(dead_code)] Lock);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,90 +26,33 @@ pub(crate) fn name(root_id: &str, id: &str) -> String {
     hash.update(id);
     format!("{:x}.json", hash.finalize())
 }
-fn c(s: impl AsRef<std::ffi::OsStr>) -> Result<CString, String> {
-    CString::new(s.as_ref().as_bytes()).map_err(|_| "配置路径无效".into())
-}
-fn open_dir(parent: &File, name: &CString) -> std::io::Result<File> {
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-        )
-    };
-    if fd < 0 {
-        Err(std::io::Error::last_os_error())
+fn directory(project: &Path, create: bool) -> Result<Option<Scope>, String> {
+    let scope = if create {
+        Scope::create(project, "export-presets")?
     } else {
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-}
-fn directory(project: &Path, create: bool) -> Result<Option<File>, String> {
-    if !project.is_absolute() {
-        return Err("配置目录必须是绝对路径".into());
-    }
-    let mut dir = File::open("/").map_err(|e| e.to_string())?;
-    for part in project.components() {
-        match part {
-            Component::RootDir => {}
-            Component::Normal(part) => {
-                dir = open_dir(&dir, &c(part)?).map_err(|e| format!("无法访问配置目录：{e}"))?
-            }
-            _ => return Err("配置目录路径无效".into()),
-        }
-    }
-    for part in [".pcl-rust", "export-presets"] {
-        let part = c(part)?;
-        if create {
-            let rc = unsafe { libc::mkdirat(dir.as_raw_fd(), part.as_ptr(), 0o700) };
-            if rc != 0
-                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
-            {
-                return Err(format!(
-                    "无法创建导出配置目录：{}",
-                    std::io::Error::last_os_error()
-                ));
-            }
-        }
-        match open_dir(&dir, &part) {
-            Ok(next) => dir = next,
-            Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("无法访问导出配置目录：{e}")),
-        }
-    }
-    Ok(Some(dir))
-}
-fn read_at(dir: &File, filename: &CString) -> Result<Option<Preset>, String> {
-    use std::os::fd::FromRawFd;
-    let fd = unsafe {
-        libc::openat(
-            dir.as_raw_fd(),
-            filename.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-        )
+        Scope::open(project, "export-presets")?
     };
-    if fd < 0 {
-        let e = std::io::Error::last_os_error();
-        return if e.kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(format!("无法读取导出配置：{e}"))
-        };
+    if scope.folder.is_some() {
+        Ok(Some(scope))
+    } else {
+        Ok(None)
     }
-    let file = unsafe { File::from_raw_fd(fd) };
-    let metadata = file.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file() || metadata.len() > LIMIT {
-        return Err("导出配置不是有效的普通文件或文件过大".into());
+}
+fn read_at(scope: &Scope, filename: &str) -> Result<Option<(Snapshot, Preset)>, String> {
+    scope.recheck()?;
+    let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
+    let Some(mut snapshot) = local::optional_snapshot(dir, filename, LIMIT)? else {
+        scope.recheck()?;
+        return Ok(None);
+    };
+    let bytes = snapshot.bytes(dir, filename)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != snapshot.digest {
+        return Err("导出配置在读取期间已变化，原文件已保留".into());
     }
-    let mut bytes = Vec::new();
-    file.take(LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("导出配置文件过大".into());
-    }
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|_| "导出配置损坏或格式不受支持，原文件已保留".into())
+    scope.recheck()?;
+    let preset =
+        serde_json::from_slice(&bytes).map_err(|_| "导出配置损坏或格式不受支持，原文件已保留")?;
+    Ok(Some((snapshot, preset)))
 }
 fn check(preset: &Preset, root_id: &str, root: &Path, id: &str) -> Result<(), String> {
     if preset.schema_version != 1
@@ -148,34 +73,21 @@ pub fn read(
     let Some(dir) = directory(project, false)? else {
         return Ok(None);
     };
-    let Some(preset) = read_at(&dir, &c(name(root_id, id))?)? else {
+    let Some((_, preset)) = read_at(&dir, &name(root_id, id))? else {
         return Ok(None);
     };
     check(&preset, root_id, root, id)?;
     Ok(Some(preset.request))
 }
-fn lock_preset(dir: &File, root_id: &str, id: &str) -> Result<PresetLock, String> {
-    let lockname = c(format!("{}.lock", name(root_id, id)))?;
-    let fd = unsafe {
-        libc::openat(
-            dir.as_raw_fd(),
-            lockname.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return Err(format!(
-            "无法锁定导出配置：{}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let lock = unsafe { File::from_raw_fd(fd) };
-    if !lock.metadata().map_err(|e| e.to_string())?.is_file()
-        || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-    {
-        return Err("导出配置正被另一个启动器使用".into());
-    }
+fn lock_preset(scope: &Scope, root_id: &str, id: &str) -> Result<PresetLock, String> {
+    scope.recheck()?;
+    let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
+    let native = Directory::from_file(dir.0.try_clone().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let lock = native
+        .lock(&Leaf::new(format!("{}.lock", name(root_id, id))).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("导出配置正被另一个启动器使用或锁无效：{e}"))?;
+    scope.recheck()?;
     Ok(PresetLock(lock))
 }
 
@@ -186,13 +98,24 @@ pub fn save(
     id: &str,
     request: ExportRequest,
 ) -> Result<(), String> {
+    save_checked(project, root_id, root, id, request, || Ok(()))
+}
+fn save_checked(
+    project: &Path,
+    root_id: &str,
+    root: &Path,
+    id: &str,
+    request: ExportRequest,
+    before_publish: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     request.validate()?;
-    let dir = directory(project, true)?.ok_or("无法创建配置目录")?;
-    let filename = c(name(root_id, id))?;
-    let _lock = lock_preset(&dir, root_id, id)?;
+    let scope = directory(project, true)?.ok_or("无法创建配置目录")?;
+    let filename = name(root_id, id);
+    let _lock = lock_preset(&scope, root_id, id)?;
     crate::instance_rename_refs::ensure_project_ready(project)?;
-    if let Some(old) = read_at(&dir, &filename)? {
-        check(&old, root_id, root, id)?;
+    let current = read_at(&scope, &filename)?;
+    if let Some((_, old)) = &current {
+        check(old, root_id, root, id)?;
     }
     let data = serde_json::to_vec_pretty(&Preset {
         schema_version: 1,
@@ -205,50 +128,26 @@ pub fn save(
     if data.len() as u64 > LIMIT {
         return Err("导出配置内容过多".into());
     }
-    let temporary = c(format!(
-        ".preset-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))?;
-    let fd = unsafe {
-        libc::openat(
-            dir.as_raw_fd(),
-            temporary.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            0o600,
-        )
+    before_publish()?;
+    scope.recheck()?;
+    let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
+    // The native local writer owns no-replace creation and Unix CAS exchange.
+    // Windows permits genuine new files, and explicitly refuses an existing
+    // dynamic document until its typed logical-document scope is implemented.
+    dir.replace(
+        &filename,
+        current.as_ref().map(|(snapshot, _)| snapshot),
+        &data,
+        LIMIT,
+    )?;
+    scope.recheck()?;
+    let Some((after, preset)) = read_at(&scope, &filename)? else {
+        return Err("导出配置可能已保存，但发布后的文件已消失，请重新读取".into());
     };
-    if fd < 0 {
-        return Err(format!(
-            "无法暂存导出配置：{}",
-            std::io::Error::last_os_error()
-        ));
+    if after.digest != format!("{:x}", Sha256::digest(&data)) {
+        return Err("导出配置可能已保存，但发布后被修改，原件与证据已保留".into());
     }
-    let mut file = unsafe { File::from_raw_fd(fd) };
-    let result = (|| {
-        file.write_all(&data)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| format!("保存导出配置失败：{e}"))?;
-        if unsafe {
-            libc::renameat(
-                dir.as_raw_fd(),
-                temporary.as_ptr(),
-                dir.as_raw_fd(),
-                filename.as_ptr(),
-            )
-        } != 0
-        {
-            return Err(format!(
-                "发布导出配置失败：{}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        dir.sync_all().map_err(|e| format!("保存导出配置失败：{e}"))
-    })();
-    if result.is_err() {
-        unsafe { libc::unlinkat(dir.as_raw_fd(), temporary.as_ptr(), 0) };
-    }
-    result
+    check(&preset, root_id, root, id)
 }
 
 pub(crate) fn rename_bytes(
@@ -270,142 +169,5 @@ pub(crate) fn rename_bytes(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    struct Fixture(std::path::PathBuf);
-    impl Fixture {
-        fn new() -> Self {
-            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../work/instance-ops-2026-10-04/preset-fixtures")
-                .join(format!(
-                    "{}-{}",
-                    std::process::id(),
-                    NEXT.fetch_add(1, Ordering::Relaxed)
-                ));
-            fs::create_dir_all(&path).unwrap();
-            Self(fs::canonicalize(path).unwrap())
-        }
-        fn request() -> ExportRequest {
-            serde_json::from_value(
-                serde_json::json!({"name":"Example","version":"1.0.0","checks":{},"excluded":{}}),
-            )
-            .unwrap()
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    #[test]
-    fn preset_save_can_follow_owner_drop_while_duplicate_descriptor_stays_open() {
-        let fixture = Fixture::new();
-        let dir = directory(&fixture.0, true).unwrap().unwrap();
-        let owner = lock_preset(&dir, "a", "Example").unwrap();
-        let inherited = owner.0.try_clone().unwrap();
-        assert!(save(
-            &fixture.0,
-            "a",
-            Path::new("/game"),
-            "Example",
-            Fixture::request()
-        )
-        .is_err());
-        drop(owner);
-        save(
-            &fixture.0,
-            "a",
-            Path::new("/game"),
-            "Example",
-            Fixture::request(),
-        )
-        .unwrap();
-        assert_eq!(
-            read(&fixture.0, "a", Path::new("/game"), "Example")
-                .unwrap()
-                .unwrap()
-                .name,
-            "Example"
-        );
-        drop(inherited);
-    }
-    #[test]
-    fn scoped_presets_survive_restart_and_reject_retargeting() {
-        let fixture = Fixture::new();
-        assert!(read(&fixture.0, "a", Path::new("/game-a"), "Example")
-            .unwrap()
-            .is_none());
-        save(
-            &fixture.0,
-            "a",
-            Path::new("/game-a"),
-            "Example",
-            Fixture::request(),
-        )
-        .unwrap();
-        assert_eq!(
-            read(&fixture.0, "a", Path::new("/game-a"), "Example")
-                .unwrap()
-                .unwrap()
-                .name,
-            "Example"
-        );
-        assert!(read(&fixture.0, "b", Path::new("/game-b"), "Example")
-            .unwrap()
-            .is_none());
-        assert!(read(&fixture.0, "a", Path::new("/other"), "Example").is_err());
-        assert!(save(
-            &fixture.0,
-            "a",
-            Path::new("/other"),
-            "Example",
-            Fixture::request()
-        )
-        .is_err());
-        assert_eq!(
-            read(&fixture.0, "a", Path::new("/game-a"), "Example")
-                .unwrap()
-                .unwrap()
-                .name,
-            "Example"
-        );
-    }
-    #[test]
-    fn malformed_preset_and_symlinked_storage_are_preserved() {
-        let fixture = Fixture::new();
-        save(
-            &fixture.0,
-            "a",
-            Path::new("/game"),
-            "Example",
-            Fixture::request(),
-        )
-        .unwrap();
-        let file = fixture
-            .0
-            .join(".pcl-rust/export-presets")
-            .join(name("a", "Example"));
-        fs::write(&file, b"malformed").unwrap();
-        assert!(save(
-            &fixture.0,
-            "a",
-            Path::new("/game"),
-            "Example",
-            Fixture::request()
-        )
-        .is_err());
-        assert_eq!(fs::read(&file).unwrap(), b"malformed");
-        let other = Fixture::new();
-        std::os::unix::fs::symlink(&fixture.0, other.0.join(".pcl-rust")).unwrap();
-        assert!(read(&other.0, "a", Path::new("/game"), "Example").is_err());
-        assert!(save(
-            &other.0,
-            "a",
-            Path::new("/game"),
-            "Example",
-            Fixture::request()
-        )
-        .is_err());
-    }
-}
+#[path = "export_presets/tests.rs"]
+mod tests;

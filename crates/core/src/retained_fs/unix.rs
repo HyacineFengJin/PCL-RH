@@ -56,6 +56,16 @@ pub(super) fn open_root(_: &Path) -> io::Result<File> {
     })
 }
 
+pub(super) fn parent_snapshot(directory: &File) -> io::Result<File> {
+    owned_fd(unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            c"..".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn open(parent: &File, name: &OsStr, flags: i32, mode: u32, policy: Traversal) -> io::Result<File> {
     #[repr(C)]

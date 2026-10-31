@@ -183,6 +183,64 @@ pub(super) fn open_root(root: &Path) -> io::Result<File> {
         )
     })
 }
+fn current_directory_name(directory: &File) -> io::Result<std::path::PathBuf> {
+    // GetFinalPathNameByHandleW includes the terminator only in the required
+    // size on a short buffer. Bound both allocation and retries under churn.
+    let mut buffer = vec![0u16; 512];
+    for _ in 0..3 {
+        let count = unsafe {
+            GetFinalPathNameByHandleW(
+                directory.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        } as usize;
+        if count == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count < buffer.len() {
+            if buffer[..count].contains(&0) {
+                return Err(invalid("Native directory name contains NUL"));
+            }
+            return Ok(OsString::from_wide(&buffer[..count]).into());
+        }
+        if count > 32768 {
+            return Err(invalid("Native directory name exceeds ancestry limit"));
+        }
+        buffer.resize(count, 0);
+    }
+    Err(conflict("Native directory name changed during lookup"))
+}
+pub(super) fn parent_snapshot(directory: &File) -> io::Result<File> {
+    let before = metadata(directory)?;
+    let path = current_directory_name(directory)?;
+    let parent = if let (Some(parent_path), Some(name)) = (path.parent(), path.file_name()) {
+        let parent = Directory::open_absolute(parent_path)?;
+        parent.recheck(&Leaf::new(name)?, &before.identity)?;
+        parent
+    } else {
+        // A volume/share root is its own terminal ancestry node.
+        let root = Directory::open_absolute(&path)?;
+        if root.identity()? != before.identity {
+            return Err(conflict("Native ancestry root identity differs"));
+        }
+        root
+    };
+    let after = metadata(directory)?;
+    if !before.same_object(&after)
+        || after.kind != Kind::Directory
+        || after.reparse_tag.is_some()
+        || current_directory_name(directory)? != path
+    {
+        return Err(conflict("Directory ancestry changed during native lookup"));
+    }
+    // Recheck the visible relation after the second native name query as well.
+    if let Some(name) = path.file_name() {
+        parent.recheck(&Leaf::new(name)?, &before.identity)?;
+    }
+    parent.try_clone_file()
+}
 fn open(
     parent: &File,
     name: &OsStr,

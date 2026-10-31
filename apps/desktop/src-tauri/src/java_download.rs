@@ -1,14 +1,20 @@
 //! Official Java runtime installation, independent of any selected game root.
-//! Catalog authority -> bounded manifest -> anonymous checked files -> probe ->
+//! Catalog authority -> bounded manifest -> native checked files -> probe ->
 //! no-replacement directory publication. Config registration only appends the
 //! resulting canonical executable; it never changes a manual/automatic choice.
 mod binding;
 mod catalog;
+#[cfg(target_os = "linux")]
 mod files;
+#[cfg(not(target_os = "linux"))]
+#[path = "java_download/files_native.rs"]
+mod files;
+#[cfg(all(test, not(target_os = "linux")))]
+mod native_tests;
 mod network;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod parallel_tests;
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests;
 use crate::tasks::{TaskHandle, TaskProgress, TaskStage};
 pub use binding::StoreBinding;
@@ -215,7 +221,7 @@ async fn install_bound(
             Some(async move {
                 check(cancel)?;
                 fast()?;
-                let mut file = stage_ref.anonymous(path)?;
+                let mut file = stage_ref.download(path)?;
                 report(
                     task,
                     1,
@@ -226,30 +232,36 @@ async fn install_bound(
                     format!("正在下载 Java：{path}"),
                 );
                 let mut previous = 0;
-                http.file(source, &mut file, cancel, fast, |current| {
-                    bytes.set(bytes.get() + current - previous);
-                    previous = current;
-                    report(
-                        task,
-                        1,
-                        complete.get(),
-                        total,
-                        bytes.get(),
-                        total_bytes,
-                        format!("正在下载 Java：{path}"),
-                    )
-                })
+                http.file(
+                    source,
+                    files::download_handle(&mut file),
+                    cancel,
+                    fast,
+                    |current| {
+                        bytes.set(bytes.get() + current - previous);
+                        previous = current;
+                        report(
+                            task,
+                            1,
+                            complete.get(),
+                            total,
+                            bytes.get(),
+                            total_bytes,
+                            format!("正在下载 Java：{path}"),
+                        )
+                    },
+                )
                 .await?;
                 Ok((path, file, *executable))
             })
         });
-        // Completion consumes and publishes one checked anonymous descriptor
+        // Completion consumes and publishes one checked native stage
         // immediately. On any error the helper drops all remaining futures
         // (responses, scheduler permits and FDs) before stage cleanup runs.
         pcl_network::for_each_bounded(jobs, http.parallel_limit(), |(path, file, executable)| {
             check(&cancel)?;
             full()?;
-            stage_ref.publish_file(path, &file, executable)?;
+            stage_ref.finish_download(path, file, executable)?;
             complete.set(complete.get() + 1);
             report(
                 task,

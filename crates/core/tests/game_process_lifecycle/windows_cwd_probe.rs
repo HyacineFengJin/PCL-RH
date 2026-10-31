@@ -5,6 +5,9 @@
 #[path = "../../src/file_ops/junction_fixture.rs"]
 mod junction_fixture;
 
+#[path = "windows_cwd_anchor_probe.rs"]
+mod anchor_probe;
+
 use pcl_core::retained_fs::{self, Directory, Identity, Kind, Leaf, Links};
 use serde_json::{json, Value};
 use std::{
@@ -422,6 +425,9 @@ fn child(control: &Path, expected: Identity) -> io::Result<()> {
 }
 
 pub(super) fn run_if_enabled() -> io::Result<()> {
+    if env::var_os("PCL_RH_CWD_ANCHOR_PROBE").is_some_and(|value| value == "1") {
+        return anchor_probe::run();
+    }
     if env::var_os("PCL_RH_CWD_PROBE").is_none_or(|value| value != "1") {
         return Ok(());
     }
@@ -562,6 +568,9 @@ pub(super) fn run_if_enabled() -> io::Result<()> {
 
 /// Must run before the enclosing lifecycle executable dispatches any fixture.
 pub(super) fn dispatch() -> Option<i32> {
+    if let Some(code) = anchor_probe::dispatch() {
+        return Some(code);
+    }
     let args = env::args_os().skip(1).collect::<Vec<_>>();
     let worker_mode = args.first().is_some_and(|arg| arg == "--cwd-probe-worker");
     let child_mode = args.first().is_some_and(|arg| arg == "--cwd-probe-child");

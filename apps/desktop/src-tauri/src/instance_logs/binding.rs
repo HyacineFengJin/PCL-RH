@@ -2,14 +2,17 @@
 //! directory/file opens and single-owner/single-link regular-file checks. Only
 //! fixed log child directories and one validated basename can become inputs.
 use super::{digest, reader, LogKind, CHANGED};
+use crate::launcher_local::filesystem::DirectoryIdentity;
 use crate::launcher_local::filesystem::{check_file, component, Dir, Stamp};
 use pcl_core::content_scope::{resolve_scope, ContentScope, IsolationPolicy, MarkerState};
+#[cfg(windows)]
+use pcl_core::retained_fs::{self, Directory, Kind, Leaf};
 use serde::Serialize;
+#[cfg(unix)]
+use std::{ffi::CString, os::fd::AsRawFd};
 use std::{
-    ffi::CString,
     fs::File,
     io::{Read, Seek, SeekFrom},
-    os::fd::AsRawFd,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
@@ -23,12 +26,21 @@ pub(super) fn valid_name(kind: LogKind, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
 #[derive(Clone, PartialEq, Eq, Serialize)]
 struct Marker {
     device: u64,
     inode: u64,
     mode: u32,
 }
+#[cfg(windows)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
+struct Marker {
+    identity: retained_fs::Identity,
+    kind: Kind,
+    reparse_tag: Option<u32>,
+}
+#[cfg(unix)]
 fn markers(
     instance: &Dir,
     policy: IsolationPolicy,
@@ -54,14 +66,48 @@ fn markers(
         } else {
             let stat = unsafe { stat.assume_init() };
             Some(Marker {
-                device: stat.st_dev,
-                inode: stat.st_ino,
-                mode: stat.st_mode,
+                device: stat.st_dev as u64,
+                inode: stat.st_ino as u64,
+                mode: stat.st_mode as u32,
             })
         };
-        let state = match marker.as_ref().map(|m| m.mode & libc::S_IFMT) {
+        let state = match marker.as_ref().map(|m| m.mode & libc::S_IFMT as u32) {
             None => MarkerState::Missing,
-            Some(libc::S_IFREG | libc::S_IFDIR) => MarkerState::Present,
+            Some(mode) if mode == libc::S_IFREG as u32 || mode == libc::S_IFDIR as u32 => {
+                MarkerState::Present
+            }
+            Some(_) => MarkerState::Unsupported,
+        };
+        values.push(marker);
+        Ok(state)
+    })?;
+    Ok((scope, values))
+}
+
+#[cfg(windows)]
+fn markers(
+    instance: &Dir,
+    policy: IsolationPolicy,
+) -> Result<(ContentScope, Vec<Option<Marker>>), String> {
+    let directory = Directory::from_file(instance.0.try_clone().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let mut values = Vec::new();
+    let scope = resolve_scope(policy, |name| {
+        let marker = directory
+            .entry(&Leaf::new(name).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("无法检查实例隔离标记：{e}"))?
+            .map(|m| Marker {
+                identity: m.identity,
+                kind: m.kind,
+                reparse_tag: m.reparse_tag,
+            });
+        let state = match marker.as_ref() {
+            None => MarkerState::Missing,
+            Some(m)
+                if m.reparse_tag.is_none() && matches!(m.kind, Kind::Regular | Kind::Directory) =>
+            {
+                MarkerState::Present
+            }
             Some(_) => MarkerState::Unsupported,
         };
         values.push(marker);
@@ -97,7 +143,7 @@ impl Binding {
         let json = instance
             .file(&format!("{id}.json"))?
             .ok_or("未找到所选实例的版本元数据，请刷新实例列表")?;
-        let json_stamp = Stamp::of(&json.metadata().map_err(|_| "无法检查实例元数据")?);
+        let json_stamp = Stamp::from_file(&json)?;
         if json_stamp.bytes > MAX_JSON_BYTES {
             return Err("实例元数据超过 1 MiB 上限".into());
         }
@@ -135,7 +181,7 @@ impl Binding {
     pub fn is_shared(&self) -> bool {
         !self.scope.is_isolated()
     }
-    pub fn root_identity(&self) -> Result<(u64, u64), String> {
+    pub fn root_identity(&self) -> Result<DirectoryIdentity, String> {
         self.root.identity()
     }
     pub fn folder(&self, kind: LogKind) -> Option<&Dir> {
@@ -237,7 +283,7 @@ impl Selected {
             .ok_or(CHANGED)?
             .file(name)?
             .ok_or(CHANGED)?;
-        let stamp = Stamp::of(&file.metadata().map_err(|_| "无法检查所选游戏日志")?);
+        let stamp = Stamp::from_file(&file)?;
         Ok(Self {
             kind,
             name: name.into(),

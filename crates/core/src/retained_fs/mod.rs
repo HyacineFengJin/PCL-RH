@@ -198,6 +198,24 @@ impl Directory {
     pub fn identity(&self) -> io::Result<Identity> {
         Ok(self.metadata()?.identity)
     }
+    /// Observe the current physical parent for ancestry checks. This does not
+    /// freeze a directory graph or authorize writes outside an admitted root.
+    /// Unix opens `..` relative to this held inode. Windows queries its current
+    /// native name, walks without reparse points, and binds the observed child
+    /// back to this full file identity before and after the lookup. Unavailable
+    /// names or concurrent changes fail; no lexical caller path is substituted.
+    pub fn parent_snapshot(&self) -> io::Result<Self> {
+        let before = self.metadata()?;
+        if before.kind != Kind::Directory || before.reparse_tag.is_some() {
+            return Err(invalid("Ancestry source is not a literal directory"));
+        }
+        let parent = Self::from_file(native::parent_snapshot(&self.file)?)?;
+        let after = self.metadata()?;
+        if !before.same_object(&after) || after.reparse_tag.is_some() {
+            return Err(conflict("Ancestry source changed during observation"));
+        }
+        Ok(parent)
+    }
     pub fn child(&self, name: &Leaf, policy: Traversal) -> io::Result<Self> {
         let file = native::open_directory(&self.file, name.as_os_str(), policy)?;
         let mut directory = Self::from_file(file)?;
