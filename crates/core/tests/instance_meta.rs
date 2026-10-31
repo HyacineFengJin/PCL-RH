@@ -5,6 +5,7 @@
 #[allow(unused_imports)]
 #[path = "../../../apps/desktop/src-tauri/src/launcher_local/filesystem.rs"]
 pub(crate) mod local_filesystem;
+#[cfg(not(target_os = "linux"))]
 mod launcher_local {
     pub(crate) use crate::local_filesystem as filesystem;
 }

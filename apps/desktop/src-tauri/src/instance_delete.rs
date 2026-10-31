@@ -38,8 +38,8 @@ use std::{
 
 mod filesystem;
 use filesystem::{
-    absolute, canonical, hash, lock, name_ok, read_bytes, rename_new, scan, Dir, FileToken, Key,
-    Tree, MAX_DEPTH, MAX_FILES,
+    absolute, anonymous_key, canonical, hash, lock, name_ok, read_bytes, rename_new, scan, Dir,
+    FileToken, Key, Tree, MAX_DEPTH, MAX_FILES,
 };
 
 const STORE: &str = "instance-deletions";
@@ -387,7 +387,7 @@ fn validate(j: &Journal, name: &str) -> Result<()> {
         || j.tree.entries.len() > MAX_FILES
         || !j.tree.entries[0].path.is_empty()
         || j.tree.entries[0].hash.is_some()
-        || j.tree.entries[0].stamp.key.dev != j.root_key.dev
+        || !j.tree.entries[0].stamp.key.same_volume(&j.root_key)
     {
         return Err("实例删除记录版本或范围无效，已保留".into());
     }
@@ -406,8 +406,8 @@ fn validate(j: &Journal, name: &str) -> Result<()> {
                 name_ok(p)?;
             }
         }
-        if e.stamp.key.dev != j.root_key.dev
-            || e.stamp.key.ino == 0
+        if !e.stamp.key.same_volume(&j.root_key)
+            || !e.stamp.key.valid()
             || e.stamp.links == 0
             || e.hash
                 .as_ref()
@@ -415,9 +415,13 @@ fn validate(j: &Journal, name: &str) -> Result<()> {
         {
             return Err("实例删除内容身份无效，已保留".into());
         }
-        match (e.stamp.mode & libc::S_IFMT, e.hash.is_some()) {
-            (libc::S_IFDIR, false) => {}
-            (libc::S_IFREG, true) if e.stamp.links == 1 => {
+        match (
+            e.stamp.is_directory(),
+            e.stamp.is_regular(),
+            e.hash.is_some(),
+        ) {
+            (true, false, false) => {}
+            (false, true, true) if e.stamp.links == 1 => {
                 files += 1;
                 bytes = bytes.checked_add(e.stamp.size).ok_or("实例记录过大")?;
             }
@@ -628,7 +632,7 @@ fn create_marker(j: &Journal) -> Result<()> {
         project_key: j.project_key.clone(),
         storage_key: j.storage_key.clone(),
         operation_key: j.operation_key.clone(),
-        file_key: Key::of(&file.metadata().map_err(|e| e.to_string())?),
+        file_key: anonymous_key(&file)?,
     };
     file.write_all(&serde_json::to_vec(&marker).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -814,6 +818,7 @@ pub fn execute(
     cancel: &AtomicBool,
     report: impl Fn(DeleteProgress),
 ) -> Result<Value> {
+    filesystem::require_mutation_support()?;
     instance_rename_refs::with_settings_lock(project, || {
         execute_locked(root, project, plan, cancel, report)
     })
@@ -1053,6 +1058,7 @@ pub fn undo(
     cancel: &AtomicBool,
     report: impl Fn(DeleteProgress),
 ) -> Result<Value> {
+    filesystem::require_mutation_support()?;
     instance_rename_refs::with_settings_lock(project, || {
         undo_locked(
             root,
@@ -1151,6 +1157,22 @@ fn undo_locked(
     }
 }
 pub fn recover_pending(root: &Path, project: &Path) -> Result<Value> {
+    #[cfg(windows)]
+    {
+        // An empty read-only probe needs no journal update or settings lock.
+        // Use the same literal-directory and validated marker readers as real
+        // recovery; missing, malformed and inaccessible state stay distinct.
+        let path = canonical(root)?;
+        let project_path = canonical(project)?;
+        ensure_rename_ready(&project_path)?;
+        let directory = Dir::open(&path)?;
+        let store = storage(&directory, false)?;
+        let marker = pending_root(&project_path)?;
+        if store.is_none() && marker.is_none() {
+            return Ok(json!({"recovered": 0}));
+        }
+    }
+    filesystem::require_mutation_support()?;
     instance_rename_refs::with_settings_lock(project, || recover_locked(root, project))
 }
 fn recover_locked(root: &Path, project: &Path) -> Result<Value> {

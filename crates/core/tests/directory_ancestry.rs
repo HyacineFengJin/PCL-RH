@@ -59,6 +59,7 @@ fn moved_directory_observes_new_parent_instead_of_cached_ancestry() {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 #[path = "../src/file_ops/junction_fixture.rs"]
 mod junction_fixture;
 

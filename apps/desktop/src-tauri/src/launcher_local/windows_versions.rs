@@ -1021,7 +1021,11 @@ mod tests {
     }
     #[test]
     fn base_and_sidecar_identity_binding_rejects_transplanted_valid_header() {
-        let (fixture, _dir, _expected) = ready();
+        let (fixture, _dir, expected) = ready();
+        // Windows refuses moving a directory containing an open child file.
+        // Close this reader before transplanting the complete on-disk store;
+        // the test exercises header binding, not native sharing refusal.
+        drop(expected);
         let second = Fixture::new();
         let other = second.dir();
         other.write_new(NAME, b"physical original").unwrap();
