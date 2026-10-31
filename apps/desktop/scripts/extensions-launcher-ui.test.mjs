@@ -50,8 +50,9 @@ test.before(async () => {
         export { ExtensionActions } from './src/ExtensionActions';
         export * from './src/extensionEvents';
         export * from './src/launcherExtensionSlots';
-        export { t, formatNumber } from './src/i18n';
-        export { mount, nodes, text } from ${JSON.stringify(mock)};
+        export { t, formatNumber, serviceError, createTranslator } from './src/i18n';
+        export { nodeRuntimeError } from './src/nodeRuntimeError';
+        export { mount, nodes, text, useState, useRef, useEffect, jsx, jsxs, Fragment } from ${JSON.stringify(mock)};
       `,
       resolveDir: desktop,
       loader: "tsx",
@@ -614,5 +615,286 @@ test("each new launcher slot performs only its card read and never starts Agent,
     await hidden.flush();
     assert.deepEqual(hiddenApi.operations(), []);
     hidden.unmount();
+  }
+});
+
+test("only exact native Node prerequisite tags receive bilingual dependency guidance", () => {
+  for (const [tag, kind, key] of [
+    ["PCL_NODE_MISSING:", "missing", "experimental.nodeMissing"],
+    ["PCL_NODE_UNSUPPORTED:", "unsupported", "experimental.nodeUnsupported"],
+  ]) {
+    for (const error of [
+      tag + "native detail",
+      new Error(tag + "native detail"),
+      String(new Error(tag + "native detail")),
+    ])
+      assert.equal(compiled.nodeRuntimeError(error), kind);
+    for (const language of ["zh-CN", "en-US"]) {
+      const tr = compiled.createTranslator({ language, region: language });
+      assert.equal(
+        tr.serviceError(new Error(tag + "native detail")),
+        tr.t(key),
+      );
+      assert.ok(tr.serviceError(tag).includes("22.19"));
+    }
+  }
+  for (const error of [
+    "Node permission denied",
+    "STORE_UNREADABLE",
+    "wrapped PCL_NODE_MISSING:",
+    "Error: Error: PCL_NODE_MISSING:",
+    "PCL_NODE_MISSING_OTHER:",
+    "PCL_NODE_MISSING",
+    { message: "PCL_NODE_MISSING:" },
+  ]) {
+    assert.equal(compiled.nodeRuntimeError(error), null);
+    assert.ok(compiled.serviceError(error).includes(String(error)));
+  }
+});
+
+test("empty passive home card snapshots remain clean without dependency notices", async () => {
+  for (const slot of ["home.banner", "home.quick-actions", "home.secondary"]) {
+    const invoke = api(),
+      ui = mount(compiled.ExperimentalCards, props(invoke, { slot }));
+    invoke.next("extensions_cards").resolve([]);
+    await ui.flush();
+    assert.equal(
+      nodes(ui).filter((node) => node.props?.role === "alert").length,
+      0,
+    );
+    assert.deepEqual(invoke.operations(), ["extensions_cards"]);
+    assert.equal(compiled.text(ui.tree), "");
+    ui.unmount();
+  }
+});
+
+test("Node card dependency retry repeats its actual scoped read and restores the card", async () => {
+  for (const tag of ["PCL_NODE_MISSING:", "PCL_NODE_UNSUPPORTED:"]) {
+    const invoke = api(),
+      ui = mount(
+        compiled.ExperimentalCards,
+        props(invoke, { slot: "home.banner" }),
+      );
+    invoke.next("extensions_cards").reject(new Error(tag + "native detail"));
+    await ui.flush();
+    assert.ok(compiled.text(ui.tree).includes("22.19"));
+    assert.equal(compiled.text(ui.tree).includes("PCL_NODE_"), false);
+    button(ui, compiled.t("about.documentRetry")).onClick();
+    await ui.flush();
+    const retried = invoke.next("extensions_cards");
+    assert.deepEqual(retried.args, { slot: "home.banner" });
+    retried.resolve([card()]);
+    await ui.flush();
+    assert.ok(compiled.text(ui.tree).includes("Saved limits"));
+    assert.equal(
+      nodes(ui).filter((node) => node.props?.role === "alert").length,
+      0,
+    );
+    assert.deepEqual(invoke.operations(), [
+      "extensions_cards",
+      "extensions_cards",
+    ]);
+    ui.unmount();
+    assert.equal(ui.retiredWrites, 0);
+  }
+});
+
+test("store and permission failures stay visible and retired dependency handlers cannot retry", async () => {
+  for (const error of [
+    "Extension store unreadable; retained for recovery. No grants loaded.",
+    "Node host.lock permission denied",
+  ]) {
+    const invoke = api(),
+      ui = mount(compiled.ExperimentalCards, props(invoke));
+    invoke.next("extensions_cards").reject(error);
+    await ui.flush();
+    assert.ok(compiled.text(ui.tree).includes(error));
+    assert.equal(
+      nodes(ui).some((node) => node.type === "button"),
+      false,
+    );
+    ui.unmount();
+  }
+  const invoke = api(),
+    ui = mount(compiled.ExperimentalCards, props(invoke));
+  invoke.next("extensions_cards").reject("PCL_NODE_MISSING: unavailable");
+  await ui.flush();
+  const stale = button(ui, compiled.t("about.documentRetry")).onClick;
+  ui.setProps(props(invoke, { native: false }));
+  stale();
+  await ui.flush();
+  assert.deepEqual(invoke.operations(), ["extensions_cards"]);
+  ui.unmount();
+  stale();
+  await ui.flush();
+  assert.equal(ui.retiredWrites, 0);
+});
+
+// Actual RHCode function with only its controller and child component seams
+// replaced. Its hooks, retry handler, visibility owner and JSX are real source.
+async function codeRetryFixture(initialError) {
+  const source = await readFile(
+    new URL("../src/rh-code/RHCode.tsx", import.meta.url),
+    "utf8",
+  );
+  const ast = ts.createSourceFile(
+    "RHCode.tsx",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  const declaration = ast.statements.find(
+    (node) => ts.isFunctionDeclaration(node) && node.name?.text === "RHCode",
+  );
+  const deferred = () => {
+    let resolve, reject;
+    const promise = new Promise((a, b) => {
+      resolve = a;
+      reject = b;
+    });
+    return { promise, resolve, reject };
+  };
+  const engine = [],
+    reads = [],
+    writes = [];
+  let controller;
+  const context = {
+    useEffect: compiled.useEffect,
+    useRef: compiled.useRef,
+    useState: compiled.useState,
+    nodeRuntimeError: compiled.nodeRuntimeError,
+    serviceError: compiled.serviceError,
+    label: (zh) => zh,
+    useController() {
+      const [error, setError] = compiled.useState(initialError);
+      controller = {
+        error,
+        snapshot: null,
+        project: null,
+        setError(value) {
+          writes.push(value);
+          setError(value);
+        },
+        read: async () => {
+          reads.push("bootstrap");
+        },
+        refreshEngine(stillCurrent) {
+          const reply = deferred();
+          reply.stillCurrent = stillCurrent;
+          engine.push(reply);
+          return reply.promise;
+        },
+      };
+      return controller;
+    },
+    CodeContext: { Provider: Symbol("CodeContext") },
+    CodeSurfaceVisibility: { Provider: Symbol("CodeSurfaceVisibility") },
+  };
+  for (const name of [
+    "ArrowLeft",
+    "Settings2",
+    "LayoutDashboard",
+    "X",
+    "CeSelect",
+    "ExperimentalAi",
+    "LegacyArchive",
+    "Projects",
+    "Dialog",
+    "Plugins",
+    "Workspace",
+    "Layouts",
+  ])
+    context[name] = function Placeholder() {};
+  const exports = {};
+  const code = ts.transpileModule(declaration.getText(ast), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+      jsx: ts.JsxEmit.ReactJSX,
+    },
+  }).outputText;
+  new Function("exports", "require", ...Object.keys(context), code)(
+    exports,
+    (id) => {
+      assert.equal(id, "react/jsx-runtime");
+      return compiled;
+    },
+    ...Object.values(context),
+  );
+  const props = {
+    api: async () => {},
+    native: true,
+    visible: true,
+    section: "code",
+    kernel: { subscribe: () => () => {} },
+    onController() {},
+    onConfiguration() {},
+    onNavigate() {},
+  };
+  const ui = mount(exports.RHCode, props);
+  return {
+    ui,
+    props,
+    reads,
+    engine,
+    writes,
+    get controller() {
+      return controller;
+    },
+  };
+}
+
+test("Code dependency retry asks for the engine instead of only bootstrapping projects", async () => {
+  const f = await codeRetryFixture(
+    String(new Error("PCL_NODE_MISSING: unavailable")),
+  );
+  assert.ok(compiled.text(f.ui.tree).includes("22.19"));
+  button(f.ui, "刷新").onClick();
+  button(f.ui, "刷新").onClick();
+  assert.equal(f.engine.length, 1);
+  assert.deepEqual(f.reads, []);
+  f.engine[0].resolve();
+  await f.ui.flush();
+  assert.equal(f.controller.error, "");
+  const ordinary = await codeRetryFixture("host.lock permission denied");
+  button(ordinary.ui, "刷新").onClick();
+  await ordinary.ui.flush();
+  assert.deepEqual(ordinary.reads, ["bootstrap"]);
+  assert.equal(ordinary.engine.length, 0);
+});
+
+test("Code dependency retry ignores late replies after visibility replacement or unmount", async () => {
+  for (const retire of [
+    "hide-return",
+    "unmount",
+    "new-error",
+    "api",
+    "native",
+    "section",
+  ]) {
+    const f = await codeRetryFixture("PCL_NODE_UNSUPPORTED: v20");
+    button(f.ui, "刷新").onClick();
+    if (retire === "hide-return") {
+      f.ui.setProps({ ...f.props, visible: false });
+      f.ui.setProps(f.props);
+    } else if (retire === "unmount") f.ui.unmount();
+    else if (retire === "api")
+      f.ui.setProps({ ...f.props, api: async () => {} });
+    else if (retire === "native") f.ui.setProps({ ...f.props, native: false });
+    else if (retire === "section")
+      f.ui.setProps({ ...f.props, section: "plugins" });
+    else {
+      f.controller.setError("new store error");
+      await f.ui.flush();
+    }
+    const before = f.writes.length;
+    assert.equal(f.engine[0].stillCurrent(), false, retire);
+    if (retire === "api" || retire === "unmount")
+      f.engine[0].reject(new Error("late runtime failure"));
+    else f.engine[0].resolve();
+    await f.ui.flush();
+    assert.equal(f.writes.length, before, retire);
+    assert.equal(f.ui.retiredWrites, 0, retire);
   }
 });

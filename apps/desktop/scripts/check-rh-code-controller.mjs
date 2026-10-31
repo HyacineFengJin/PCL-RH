@@ -1400,3 +1400,43 @@ test("retired views retain only exact source-token cleanup through their origina
   );
   assert.equal(host.calls.length, count);
 });
+
+test("engine dependency retries check their current owner before IPC and before adopting a delayed reply", async (t) => {
+  const host = hostFixture(),
+    delayed = deferred();
+  let reads = 0,
+    current = true;
+  const api = (command, args) =>
+    args.operation === "status" && ++reads === 1
+      ? delayed.promise
+      : host.api(command, args);
+  const ui = controllerDriver(api, false);
+  t.after(() => ui.close());
+  await ui.flush();
+  assert.equal(ui.value.engine, null);
+  await ui.value.refreshEngine(() => false);
+  assert.equal(reads, 0, "A retired retry must not request the engine");
+  const pending = ui.value.refreshEngine(() => current);
+  await ui.flush();
+  assert.equal(reads, 1);
+  current = false;
+  delayed.resolve({
+    jobs: [],
+    liveConfigured: true,
+    liveAvailable: true,
+    aiPresets: { selectedId: "old-owner", presets: [] },
+  });
+  await pending;
+  await ui.flush();
+  assert.equal(
+    ui.value.engine,
+    null,
+    "A retained controller cannot adopt another retry owner's result",
+  );
+  assert.equal(ui.value.getLifecycleState().busy, 0);
+  current = true;
+  await ui.value.refreshEngine(() => current);
+  await ui.flush();
+  assert.equal(reads, 2);
+  assert.equal(ui.value.engine.aiPresets.selectedId, "preset");
+});

@@ -208,3 +208,22 @@ test('an unavailable Agent cannot prevent subsequent plugin management or shutdo
   assert.deepEqual(await host.call('idle_prepare'), { busy: false, resumePresetId: null });
   await host.close();
 });
+
+test('a corrupt store fails card and catalog reads without importing Agent or replacing its bytes', { timeout: 10000 }, async t => {
+  const f = await fixture(t, 'throw new Error("Agent must not be imported for store recovery");');
+  const file = path.join(f.data, 'extensions.json'), bytes = '{broken plugin state';
+  await writeFile(file, bytes);
+  const host = connect(t, f);
+  for (const operation of ['extensions_cards', 'extensions_catalog']) {
+    const reply = await host.rpc(operation, { slot: 'home.banner' });
+    assert.equal(reply.ok, false);
+    assert.match(reply.error, /Extension store unreadable; retained for recovery/);
+    assert.doesNotMatch(reply.error, /Agent must not/);
+  }
+  const listed = await host.call('extensions_list');
+  assert.deepEqual(listed.entries, []);
+  assert.equal(listed.safeMode, true);
+  assert.match(listed.warning, /Extension store unreadable/);
+  assert.equal(await readFile(file, 'utf8'), bytes);
+  await host.close();
+});

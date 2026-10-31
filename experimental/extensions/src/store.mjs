@@ -273,8 +273,8 @@ export class ExtensionStore {
   }
 
   setContext(context) { return this.#host.setContext(context); }
-  cards(slot, filter) { return this.#host.cards(slot, filter); }
-  catalog() { return this.#host.catalog(); }
+  cards(slot, filter) { this.#available(); return this.#host.cards(slot, filter); }
+  catalog() { this.#available(); return this.#host.catalog(); }
   prepareAction(extensionId, cardId, actionId, expected) {
     this.#requestAvailable(); this.#expected(extensionId, expected);
     return this.#host.prepareAction(extensionId, cardId, actionId);

@@ -209,6 +209,8 @@ test('legacy stores restore missing safeMode and malformed stores are retained w
     const text = JSON.stringify(invalid); await writeFile(file, text);
     const store = await ExtensionStore.open({ file });
     assert.ok(store.warning); assert.equal(store.safeMode, true); assert.deepEqual(store.list(), []);
+    assert.throws(() => store.cards('home.banner'), { code: 'STORE_UNREADABLE' });
+    assert.throws(() => store.catalog(), { code: 'STORE_UNREADABLE' });
     assert.throws(() => store.prepareReview(source), { code: 'STORE_UNREADABLE' });
     await assert.rejects(store.setSafeMode(false), { code: 'STORE_UNREADABLE' });
     assert.equal(await readFile(file, 'utf8'), text);
@@ -253,6 +255,8 @@ test('a linked store is rejected and never overwrites its target', async t => {
   }
   const store = await ExtensionStore.open({ file });
   assert.ok(store.warning); assert.equal(store.safeMode, true);
+  assert.throws(() => store.cards('home.banner'), { code: 'STORE_UNREADABLE' });
+  assert.throws(() => store.catalog(), { code: 'STORE_UNREADABLE' });
   await assert.rejects(store.setSafeMode(false), { code: 'STORE_UNREADABLE' });
   assert.equal(await readFile(target, 'utf8'), bytes);
 });

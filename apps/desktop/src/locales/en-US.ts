@@ -14,6 +14,9 @@ const messages = {
   "about.thirdPartyRights":
     "Copyright belongs to the respective authors and contributors",
   "experimental.communityTitle": "Community extensions",
+  "experimental.nodeMissing": "Install Node.js 22.19 or newer, then retry.",
+  "experimental.nodeUnsupported":
+    "Your Node.js version is too old. Upgrade to 22.19 or newer.",
   "experimental.communityHelp":
     "Import data extensions to add cards. PCL N / Nex files provide compatibility reports.",
   "experimental.communityScopeFilter": "Extension scope",

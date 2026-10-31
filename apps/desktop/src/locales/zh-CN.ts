@@ -11,6 +11,9 @@ const messages = {
   "about.thirdPartyLicenses": "按各组件原许可；详见完整清单",
   "about.thirdPartyRights": "版权归各第三方作者与贡献者所有",
   "experimental.communityTitle": "社区扩展",
+  "experimental.nodeMissing": "请安装 Node.js 22.19 或更新版本，然后重试。",
+  "experimental.nodeUnsupported":
+    "Node.js 版本过低，请升级到 22.19 或更新版本。",
   "experimental.communityHelp":
     "导入插件以添加卡片、控件与授权操作；PCL N / Nex 文件仅提供兼容报告。",
   "experimental.communityScopeFilter": "扩展范围",

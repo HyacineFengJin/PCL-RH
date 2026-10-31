@@ -1,6 +1,6 @@
 /** Product shell: native project service and the Cordis registry outlive every
  * split area. The launcher shell neither knows nor mounts individual views. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Settings2, LayoutDashboard, X } from "lucide-react";
 import { CeSelect } from "../CeSelect";
 import { ExperimentalAi } from "../ExperimentalAi";
@@ -16,6 +16,8 @@ import { Plugins } from "./PluginManager";
 import { Workspace } from "./Workspace";
 import { Layouts } from "./Layouts";
 import { label } from "./locale";
+import { serviceError } from "../i18n";
+import { nodeRuntimeError } from "../nodeRuntimeError";
 import { CodeSurfaceVisibility } from "./surface";
 import "./rh-code.css";
 export function RHCode({
@@ -50,6 +52,67 @@ export function RHCode({
     native,
     visible && (section === "code" || settings),
   );
+  const retryLifetime = useRef<object | null>(null);
+  const runtimeRetry = useRef({
+    api,
+    native,
+    visible,
+    section,
+    error: c.error,
+    pending: false,
+  });
+  if (
+    runtimeRetry.current.api !== api ||
+    runtimeRetry.current.native !== native ||
+    runtimeRetry.current.visible !== visible ||
+    runtimeRetry.current.section !== section ||
+    runtimeRetry.current.error !== c.error
+  )
+    runtimeRetry.current = {
+      api,
+      native,
+      visible,
+      section,
+      error: c.error,
+      pending: false,
+    };
+  const retryOwner = runtimeRetry.current;
+  useEffect(() => {
+    retryLifetime.current = {};
+    return () => {
+      retryLifetime.current = null;
+    };
+  }, []);
+  function retryRuntime() {
+    const lifetime = retryLifetime.current;
+    if (
+      !lifetime ||
+      runtimeRetry.current !== retryOwner ||
+      !native ||
+      !visible ||
+      retryOwner.pending
+    )
+      return;
+    retryOwner.pending = true;
+    const current = () =>
+      retryLifetime.current === lifetime && runtimeRetry.current === retryOwner;
+    void c
+      .refreshEngine(current)
+      .then(() => {
+        if (current())
+          c.setError((error) => (error === retryOwner.error ? "" : error));
+      })
+      .catch((error) => {
+        if (current())
+          c.setError((previous) =>
+            previous === retryOwner.error ? String(error) : previous,
+          );
+      })
+      .finally(() => {
+        retryOwner.pending = false;
+      });
+  }
+  const nodeDependency = nodeRuntimeError(c.error) !== null;
   useEffect(() => {
     onController(c);
   });
@@ -91,11 +154,13 @@ export function RHCode({
         >
           {c.error && (
             <div className="rc-error" role="alert">
-              <span>{c.error}</span>
+              <span>{nodeDependency ? serviceError(c.error) : c.error}</span>
               <button
                 className="rc-button"
-                onClick={() =>
-                  void c.read().catch((e) => c.setError(String(e)))
+                onClick={
+                  nodeDependency
+                    ? retryRuntime
+                    : () => void c.read().catch((e) => c.setError(String(e)))
                 }
               >
                 {label("刷新", "Refresh")}

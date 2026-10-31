@@ -7,6 +7,7 @@
 import zhCN from "./locales/zh-CN";
 import enUS from "./locales/en-US";
 import type { LauncherLocale, LauncherPreferences } from "./launcherTypes";
+import { nodeRuntimeError } from "./nodeRuntimeError";
 
 export type LocalizationPreferences = LauncherPreferences["localization"];
 export type MessageKey = keyof typeof zhCN;
@@ -73,6 +74,13 @@ export function createTranslator(
     return new Intl.NumberFormat(region, options).format(value);
   }
   function serviceError(error: unknown): string {
+    const dependency = nodeRuntimeError(error);
+    if (dependency)
+      return t(
+        dependency === "missing"
+          ? "experimental.nodeMissing"
+          : "experimental.nodeUnsupported",
+      );
     return t("common.serviceError", { error: String(error) });
   }
   function formatRelativeDate(

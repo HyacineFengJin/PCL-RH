@@ -3,6 +3,7 @@ import { ExperimentalVersion } from "./ExperimentalVersion";
 import { useEffect, useRef, useState } from "react";
 import type { Api } from "./types";
 import { t, serviceError, type MessageKey } from "./i18n";
+import { nodeRuntimeError } from "./nodeRuntimeError";
 import { InstanceOperationDialog } from "./instanceOperationUi";
 import "./extensionCompatibility.css";
 import {
@@ -151,6 +152,7 @@ export function ExperimentalCards({
     cards: ExtensionCard[];
     summary: Summary | null;
     error: string;
+    nodeDependency: boolean;
     busy: boolean;
     loaded: boolean;
     drafts: Map<ExtensionCard, ExtensionDraft>;
@@ -159,6 +161,7 @@ export function ExperimentalCards({
     cards: [],
     summary: null,
     error: "",
+    nodeDependency: false,
     busy: false,
     loaded: false,
     drafts: new Map(),
@@ -178,6 +181,7 @@ export function ExperimentalCards({
           summary: null,
           busy: false,
           error: "",
+          nodeDependency: false,
           loaded: false,
           drafts: new Map(),
           feedback: null,
@@ -193,6 +197,7 @@ export function ExperimentalCards({
         cards: [],
         summary: null,
         error: "",
+        nodeDependency: false,
         busy: false,
         loaded: false,
         drafts: new Map(),
@@ -213,7 +218,11 @@ export function ExperimentalCards({
             });
         })
         .catch((e) => {
-          if (request.current()) view.update({ error: serviceError(e) });
+          if (request.current())
+            view.update({
+              error: serviceError(e),
+              nodeDependency: nodeRuntimeError(e) !== null,
+            });
         })
         .finally(request.finish);
     }
@@ -332,7 +341,7 @@ export function ExperimentalCards({
   }
   return (
     <>
-      {refreshable && (
+      {(refreshable || view.value.nodeDependency) && (
         <div className="ce-actions">
           <button
             className="ce-button"
@@ -341,7 +350,11 @@ export function ExperimentalCards({
               if (scope.current()) notifyExtensionsChanged();
             }}
           >
-            {t("experimental.refreshPanels")}
+            {t(
+              view.value.nodeDependency
+                ? "about.documentRetry"
+                : "experimental.refreshPanels",
+            )}
           </button>
         </div>
       )}

@@ -658,15 +658,15 @@ export function useController(
         "Source changed while saving; save the newer edits before starting or applying a task",
       );
   }
-  async function refreshEngine() {
-    if (!native || !usable()) return;
+  async function refreshEngine(stillCurrent: () => boolean = () => true) {
+    if (!native || !usable() || !stillCurrent()) return;
     // Plugin management needs the project registry without starting AI. Once
     // requested, the controller keeps ownership of jobs across surface changes.
     setEngineActivated(true);
     const end = lifecycle.begin("read", false);
     try {
       const next = await experimentalCall<EngineStatus>(api, "status", {});
-      if (usable()) setEngine(next);
+      if (usable() && stillCurrent()) setEngine(next);
     } finally {
       end();
       releaseAfterUnmount();
