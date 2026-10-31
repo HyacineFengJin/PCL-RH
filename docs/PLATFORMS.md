@@ -102,13 +102,13 @@ Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约
 
 **Official native candidates** 复用同一流水线，固定 `release` 优化配置并显式传入官方 CF 构建凭据。最近的四平台优化候选已通过实际解压与桌面 `--build-info` 检查，确认版本、提交、目标平台、生产前端特性及内置服务声明一致；CLI 版本另行核对。两种入口均不签名或发布 Release。
 
-各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41196344224)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
+各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41202128364)已在四个原生主机上通过编译与链接。具体功能的业务测试、安装包与实机验证仍需分别完成；RH Code 的源码写回和作者代码隔离限制见上表。
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
-[四个平台的便携测试包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41196344224)已在同一轮构建中通过实际归档、解压、文件哈希、原生可执行架构、CLI 扫描和声明型插件宿主 RPC 检查。[Code 边界回归](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41192854895)也在四个原生主机上通过；Linux 包含实际子进程、namespace init 退出确认、启动前取消和 UTF-8 输出帧顺序检查。这些检查不打开桌面窗口、不启动游戏或模型。下载和依赖要求见[便携测试包说明](BUILDING.md#便携测试包)。
+[四个平台的便携测试包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41202128364)已在同一轮构建中通过实际归档、解压、文件哈希、原生可执行架构、CLI 扫描和声明型插件宿主 RPC 检查。[Code 边界回归](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41201553898)也在四个原生主机上通过，包含空插件投影、运行依赖识别、宿主锁和退役检查；Linux 另有实际子进程、namespace init 退出确认、启动前取消和 UTF-8 输出帧顺序检查。这些检查不打开桌面窗口、不启动游戏或模型。下载和依赖要求见[便携测试包说明](BUILDING.md#便携测试包)。
 
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41193743734)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41192854895)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41196344224)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41193743734)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41201553898)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41202128364)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 

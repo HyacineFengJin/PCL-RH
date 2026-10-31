@@ -1,6 +1,6 @@
 # 发行候选与首发
 
-首发目标为 Linux x64、Windows x64、macOS Intel 与 Apple Silicon。[四平台优化候选包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41196344224)已在同一提交通过原生构建、解压与无界面运行检查，标准安装包与实机验证仍在完善。
+首发目标为 Linux x64、Windows x64、macOS Intel 与 Apple Silicon。[四平台优化候选包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41202128364)已在同一提交通过原生构建、解压与无界面运行检查，标准安装包与实机验证仍在完善。
 
 ## 生成候选
 
