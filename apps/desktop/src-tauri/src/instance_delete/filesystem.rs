@@ -121,7 +121,7 @@ impl Stamp {
     pub(super) fn is_directory(&self) -> bool {
         #[cfg(unix)]
         {
-            self.mode & libc::S_IFMT == libc::S_IFDIR
+            self.mode & libc::S_IFMT as u32 == libc::S_IFDIR as u32
         }
         #[cfg(windows)]
         {
@@ -131,7 +131,7 @@ impl Stamp {
     pub(super) fn is_regular(&self) -> bool {
         #[cfg(unix)]
         {
-            self.mode & libc::S_IFMT == libc::S_IFREG
+            self.mode & libc::S_IFMT as u32 == libc::S_IFREG as u32
         }
         #[cfg(windows)]
         {

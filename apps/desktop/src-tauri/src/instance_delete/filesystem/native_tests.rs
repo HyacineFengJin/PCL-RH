@@ -34,6 +34,10 @@ fn native_scan_move_and_restore_preserve_full_tree_and_all_original_bytes() {
     Fixture::write(&saves, "world.dat", b"irreplaceable synthetic world");
     let before = scan(&instance, None).unwrap();
     assert_eq!(before.files, 2);
+    // Windows refuses moving a directory while a descendant directory handle
+    // remains open. Real scans return metadata/hash records, not live child
+    // handles; retire this fixture writer before exercising the move.
+    drop(saves);
     rename_new(&versions, "example", &store, "instance").unwrap();
     let moved = store.child("instance").unwrap();
     assert!(before.moved_matches(&scan(&moved, None).unwrap()));
