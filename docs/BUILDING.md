@@ -52,19 +52,31 @@ The build script installs locked WebUI and AI runtime dependencies, builds the f
 python tools/build-native.py --jobs 2
 ```
 
-脚本构建当前主机的桌面与 CLI：Windows 结果放在项目根目录，Linux/macOS 放入 `.pcl-rust/bin`；`--build-only` 只保留 `target` 中的产物。Windows 用 `start-native.ps1` 启动，Linux/macOS 用 `start-native.sh`。这仍是可写项目文件夹中的便携布局，不是 Windows 安装器或 macOS `.app` 发行包。当前通过情况与未完成能力以[平台说明](PLATFORMS.md)为准。
+脚本构建当前主机的桌面与 CLI：Windows 结果放在项目根目录，Linux/macOS 放入 `.pcl-rust/bin`；`--build-only` 只保留 `target` 中的产物。Windows 可直接打开 `pcl-desktop.exe`，Linux/macOS 用 `start-native.sh`。此命令准备可写的便携目录；Windows 安装候选由下述工作流另行生成。当前通过情况与未完成能力以[平台说明](PLATFORMS.md)为准。
 
 ## 便携测试包
 
 维护者可在 **Actions → Desktop platform builds → Run workflow** 选择 `debug` 或 `release` 构建配置；平台默认 `all`，也可单独验证某个平台。各原生 runner 构建桌面与 CLI，生成对应的 `portable-preview-*` artifact；只有解压、文件校验和命令行 / 声明型插件宿主检查通过才上传测试包。`release` 是编译优化配置，不代表已经正式发行或签名。
 
-下载对应架构的 artifact 后，继续解压其中的 ZIP（Windows）或 tar.gz（Linux/macOS），保持整个 `PCL-RH` 文件夹完整。Windows 运行 `start-native.ps1`，Linux/macOS 在终端运行 `./start-native.sh`。程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。
+下载对应架构的 artifact 后，继续解压其中的 ZIP（Windows）或 tar.gz（Linux/macOS），保持整个 `PCL-RH` 文件夹完整：
+
+- Windows：双击 `pcl-desktop.exe`。
+- macOS：在 Finder 打开 `Start PCL RH.command`，或在终端运行 `./start-native.sh`。
+- Linux：运行 `./start-native.sh`，可在「设置 → 百宝箱 → 创建快捷方式」创建应用入口。
+
+程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。Mac 的 `.command` 是便携启动入口，`.app` / DMG 分发仍在准备。
 
 便携包包含 Code 与社区声明型插件服务的 npm 依赖，运行这些服务需要单独安装 Node.js 22.19+。首次启动且没有社区插件记录文件时，首页和设置中的社区插槽由 Rust 返回空内容，不为读取空内容启动 Node；插件管理与 RH Code 在实际使用时检查运行依赖。已有插件记录损坏或目录不可读会明确报告原因。系统 WebView / WebKit 依赖同样需要可用；普通测试包不包含官方 CurseForge 服务凭据。签名、标准安装包和实机游戏验证的状态见[平台说明](PLATFORMS.md)。
 
 插件宿主使用系统标准位置的 Node：Linux 为 `/usr/bin/node`，Windows 为系统 Program Files 下的 `nodejs/node.exe`，macOS 为 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node` 及其受支持的 Homebrew 安装。NVM 等用户级目录目前不会自动识别。安装或升级后可直接点击界面中的「重试」，无需重新启动整个启动器；权限、目录替换和存储损坏错误仍需按原原因处理。
 
 维护者使用 **Official native candidates** 可从官方 `master` 构建包含官方 CF 服务凭据的四平台优化候选包，仍只上传 Actions artifact。归档名包含应用版本；解压检查会实际读取桌面程序的 `--build-info` 并核对独立 CLI 版本，避免错装旧二进制或开发配置。候选构建与首发剩余工作见[发行说明](RELEASING.md)。
+
+## Windows 安装候选
+
+Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[独立安装验收的最新候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41211667491)名称为 `windows-user-installer-retest`。解压后运行其中的 `*-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
+
+升级前退出启动器及仍在使用它的游戏，再沿用原目录重新安装。安装器只替换程序清单中的文件，卸载保留运行后产生的实例、设置和工程。发生文件占用等错误时，处理原因后重新运行安装器；程序升级尚不提供完整事务回滚，也不会在升级时清理新版清单中已移除的旧资源。需要清除旧程序资源时，可先卸载再安装，保留的数据仍在原目录。
 
 ## 开发与检查
 
