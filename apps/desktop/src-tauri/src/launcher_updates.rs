@@ -6,6 +6,8 @@
 //! Portable apply owns an immutable journal and append-only phase markers.
 //! Startup recovery and rollback preserve both executable inodes; uncertain
 //! external edits block recovery while retaining every file.
+#[path = "launcher_updates/binary.rs"]
+mod binary;
 #[path = "launcher_updates/files.rs"]
 mod files;
 #[path = "launcher_updates/manifest.rs"]
@@ -15,13 +17,16 @@ mod model;
 #[path = "launcher_updates/provider.rs"]
 mod provider;
 #[cfg(test)]
+#[path = "launcher_updates/test_support.rs"]
+mod test_support;
+#[cfg(test)]
 #[path = "launcher_updates/tests.rs"]
 mod tests;
 #[path = "launcher_updates/transaction.rs"]
 mod transaction;
 
 use files::{Stage, Staging};
-use manifest::{parse_manifest, unique_asset, verify_elf};
+use manifest::{parse_manifest, unique_asset};
 pub use model::*;
 use provider::{hex, safe_tag, GitHubProvider, ReleaseProvider, MANIFEST_NAME, MAX_MANIFEST_BYTES};
 use semver::Version;
@@ -29,7 +34,7 @@ use sha2::{Digest, Sha256};
 use std::{
     cmp::Ordering,
     future::Future,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
         Arc, Mutex,
@@ -48,6 +53,7 @@ enum OperationKind {
     Download,
     Apply,
     Recovery,
+    Discard,
 }
 struct Active {
     id: String,
@@ -66,17 +72,13 @@ pub struct UpdateService {
     project: PathBuf,
     current_version: Version,
     state: Mutex<State>,
+    cleanup: Mutex<Option<files::Cleanup>>,
     #[cfg(test)]
     test_provider: Option<Arc<dyn ReleaseProvider>>,
 }
 impl UpdateService {
     pub fn new(project: &Path, current: CurrentBuild) -> Result<Self, String> {
-        let valid_path = |path: &Path| {
-            path.is_absolute()
-                && path
-                    .components()
-                    .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
-        };
+        let valid_path = |path: &Path| pcl_core::retained_fs::validate_absolute_path(path).is_ok();
         if !valid_path(project)
             || current.executable.len() > 4096
             || !valid_path(Path::new(&current.executable))
@@ -94,6 +96,7 @@ impl UpdateService {
         Ok(Self {
             project: project.into(),
             current_version,
+            cleanup: Mutex::new(None),
             state: Mutex::new(State {
                 view: UpdateView {
                     current,
@@ -144,14 +147,36 @@ impl UpdateService {
         }
     }
     pub fn discard_staged(&self) -> Result<UpdateView, String> {
+        let mut operation = self.start(OperationKind::Discard, None)?;
+        let stage = {
+            let mut state = self.state.lock().map_err(|_| "启动器更新服务锁异常")?;
+            state.view.plan = None;
+            state.staged.take()
+        };
+        let result = stage
+            .map_or(Ok(()), |stage| stage.retire())
+            .and_then(|_| self.cleanup_check());
         let mut state = self.state.lock().map_err(|_| "启动器更新服务锁异常")?;
-        if state.active.is_some() {
-            return Err("更新操作进行中，暂存内容尚不能丢弃".into());
+        match result {
+            Ok(()) => state.view.download = DownloadView::default(),
+            Err(error) => {
+                state.view.download.state = DownloadState::Error;
+                state.view.download.message = Some(error.clone());
+                state.active = None;
+                operation.finished = true;
+                return Err(error);
+            }
         }
-        state.staged = None;
-        state.view.plan = None;
-        state.view.download = DownloadView::default();
+        state.active = None;
+        operation.finished = true;
         Ok(state.view.clone())
+    }
+    fn cleanup_check(&self) -> Result<(), String> {
+        self.cleanup
+            .lock()
+            .map_err(|_| "更新来源状态锁异常")?
+            .as_ref()
+            .map_or(Ok(()), files::Cleanup::check)
     }
     /// Run on startup before other writers. A malformed/external-edited journal
     /// is retained and exposed as recovery_required, never silently discarded.
@@ -273,17 +298,28 @@ impl UpdateService {
         .await;
         let mut state = self.state.lock().map_err(|_| "启动器更新服务锁异常")?;
         if operation.cancelled.load(AtomicOrdering::Acquire) {
-            // Adoption is the final cancellation boundary. The successful
-            // anonymous file is dropped if cancellation won before this lock.
-            result = Err("更新下载已取消，匿名暂存已释放".into());
+            drop(state);
+            let cleanup = match result {
+                Ok((stage, _)) => stage.retire(),
+                Err(_) => Ok(()),
+            }
+            .and_then(|_| self.cleanup_check());
+            result = Err(match cleanup {
+                Ok(()) => "更新下载已取消，生成来源已退役".into(),
+                Err(error) => format!("更新下载已取消；{error}"),
+            });
+            state = self.state.lock().map_err(|_| "启动器更新服务锁异常")?;
         }
         match result {
             Ok((stage, plan)) => {
                 state.staged = Some(stage);
                 state.view.plan = Some(plan);
                 state.view.download.state = DownloadState::Staged;
-                state.view.download.message =
-                    Some("已校验 SHA256 和 Linux ELF；暂存仅保留在本进程，尚未替换启动器".into());
+                state.view.download.message = Some(if cfg!(target_os = "linux") {
+                    "已校验 SHA256 和 Linux ELF；暂存仅保留在本进程，尚未替换启动器".into()
+                } else {
+                    "已校验SHA256与原生程序格式；已登记来源尚未替换启动器".into()
+                });
             }
             Err(error) => {
                 state.staged = None;
@@ -328,16 +364,24 @@ impl UpdateService {
             cancelled: cancelled.clone(),
             cancel_allowed: !matches!(kind, OperationKind::Recovery),
         });
-        if matches!(kind, OperationKind::Check | OperationKind::Download) {
-            state.staged = None;
+        let obsolete = if matches!(kind, OperationKind::Check | OperationKind::Download) {
             state.view.plan = None;
-        }
+            state.staged.take()
+        } else {
+            None
+        };
         match kind {
             OperationKind::Check => {
                 state.candidate = None;
                 state.view.release = None;
                 state.view.state = CheckState::Checking;
-                state.view.message = Some("正在读取本项目的 GitHub 发布与 Linux 校验清单".into());
+                state.view.message = Some(
+                    platform_text(
+                        "正在读取本项目的 GitHub 发布与 Linux 校验清单",
+                        "正在读取本项目的GitHub发布与原生程序校验清单",
+                    )
+                    .into(),
+                );
                 state.view.download = DownloadView::default();
             }
             OperationKind::Download => {
@@ -353,13 +397,20 @@ impl UpdateService {
             OperationKind::Recovery => {
                 state.view.installation.state = InstallationState::RollingBack
             }
+            OperationKind::Discard => {}
         }
-        Ok(Operation {
+        drop(state);
+        let operation = Operation {
             service: self,
             id,
             cancelled,
             finished: false,
-        })
+        };
+        if let Some(stage) = obsolete {
+            stage.retire()?;
+            self.cleanup_check()?;
+        }
+        Ok(operation)
     }
     fn provider(&self) -> Result<Arc<dyn ReleaseProvider>, String> {
         #[cfg(test)]
@@ -375,9 +426,10 @@ impl UpdateService {
     ) -> Result<CheckOutcome, String> {
         let current = self.snapshot().current;
         if current.architecture == Architecture::Unsupported {
-            return Ok(CheckOutcome::none(
+            return Ok(CheckOutcome::none(platform_text(
                 "当前 Linux 架构尚无受支持的启动器更新格式",
-            ));
+                "当前系统架构尚无受支持的启动器更新格式",
+            )));
         }
         let provider = self.provider()?;
         let releases = provider.releases().await?;
@@ -448,7 +500,7 @@ impl UpdateService {
             }
             let mut stream = provider.asset(asset.id, true).await?;
             let header = read_prefix(&mut *stream, cancelled).await?;
-            if verify_elf(&header, &current.architecture).is_err() {
+            if binary::prefix(&header, &current.architecture).is_err() {
                 incompatible_newer |= precedence == Ordering::Greater;
                 continue;
             }
@@ -493,12 +545,16 @@ impl UpdateService {
                         architecture: artifact.architecture,
                         bytes: artifact.size,
                         sha256: artifact.sha256.to_ascii_lowercase(),
-                        elf_header_verified: true,
+                        elf_header_verified: cfg!(target_os = "linux"),
                     },
                 };
                 return Ok(CheckOutcome {
                     state: CheckState::Available,
-                    message: "发现本项目的兼容 Linux 发布；下载前请确认资产、版本和大小".into(),
+                    message: platform_text(
+                        "发现本项目的兼容 Linux 发布；下载前请确认资产、版本和大小",
+                        "发现本项目的兼容发布；下载前请确认资产、版本和大小",
+                    )
+                    .into(),
                     candidate: Some(candidate),
                 });
             }
@@ -509,9 +565,10 @@ impl UpdateService {
             ));
         }
         if incompatible_newer {
-            return Ok(CheckOutcome::none(
+            return Ok(CheckOutcome::none(platform_text(
                 "较新发布缺少匹配的 Linux ELF、校验清单或标签提交，无法安全更新",
-            ));
+                "较新发布缺少匹配的原生程序、校验清单或标签提交，无法安全更新",
+            )));
         }
         if compatible_seen {
             Ok(CheckOutcome {
@@ -520,9 +577,10 @@ impl UpdateService {
                 candidate: None,
             })
         } else {
-            Ok(CheckOutcome::none(
+            Ok(CheckOutcome::none(platform_text(
                 "本项目当前没有包含兼容 Linux ELF 和 SHA256 清单的发布",
-            ))
+                "本项目当前没有包含兼容原生程序与SHA256清单的发布",
+            )))
         }
     }
 
@@ -532,7 +590,9 @@ impl UpdateService {
         cancelled: &AtomicBool,
     ) -> Result<(Stage, ApplyPlan), String> {
         let staging = Staging::prepare(&self.project)?;
+        *self.cleanup.lock().map_err(|_| "更新来源状态锁异常")? = Some(staging.cleanup());
         let mut stage = staging.anonymous()?;
+        let prepared = async {
         let provider = self.provider()?;
         let mut stream = provider.asset(candidate.asset_id, false).await?;
         loop {
@@ -553,7 +613,7 @@ impl UpdateService {
         staging.check_visible()?;
         let current = self.snapshot().current;
         let expected = self.project.join(".pcl-rust/bin/pcl-desktop");
-        let portable = current.install_channel == InstallChannel::Portable
+        let portable = !cfg!(windows) && current.install_channel == InstallChannel::Portable
             && Path::new(&current.executable) == expected;
         let pending = transaction::has_pending(&self.project)?;
         let (destination, original_sha256, reason) = if portable {
@@ -576,6 +636,8 @@ impl UpdateService {
                 None,
                 "启动器由系统包管理安装，请使用对应包管理器升级；此暂存不会替换系统文件".into(),
             )
+        } else if cfg!(windows) {
+            (None,None,"已校验Windows程序；运行中EXE替换需要独立应用器，当前不会改动安装文件".into())
         } else {
             (
                 None,
@@ -585,9 +647,7 @@ impl UpdateService {
         };
         ensure_not_cancelled(cancelled)?;
         let view = &candidate.view;
-        Ok((
-            stage,
-            ApplyPlan {
+        Ok(ApplyPlan {
                 version: view.version.clone(),
                 commit: view.commit.clone(),
                 artifact_name: view.artifact_name.clone(),
@@ -600,8 +660,18 @@ impl UpdateService {
                 can_apply: portable && !pending,
                 restart_required: true,
                 reason,
-            },
-        ))
+            })
+        }.await;
+        match prepared {
+            Ok(plan) => Ok((stage, plan)),
+            Err(error) => {
+                let cleanup = stage.retire().and_then(|_| self.cleanup_check());
+                Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup) => format!("{error}；{cleanup}"),
+                })
+            }
+        }
     }
 }
 
@@ -630,6 +700,7 @@ impl Drop for Operation<'_> {
         if self.finished {
             return;
         }
+        let cleanup_error = self.service.cleanup_check().err();
         let mut state = self
             .service
             .state
@@ -648,13 +719,25 @@ impl Drop for Operation<'_> {
                 }
                 OperationKind::Download => {
                     state.view.download.state = DownloadState::Cancelled;
-                    state.view.download.message = Some("更新下载已中断，匿名暂存已释放".into());
+                    state.view.download.message = Some(if cfg!(target_os = "linux") {
+                        "更新下载已中断，匿名暂存已释放".into()
+                    } else {
+                        "更新下载已中断，已登记生成来源已退役".into()
+                    });
+                }
+                OperationKind::Discard => {
+                    state.view.download.state = DownloadState::Error;
+                    state.view.download.message = Some("更新来源清理中断，请核对登记证据".into());
                 }
                 OperationKind::Apply | OperationKind::Recovery => {
                     state.view.installation.state = InstallationState::RecoveryRequired;
                     state.view.installation.warning =
                         Some("更新安装操作中断，请运行启动恢复后继续".into());
                 }
+            }
+            if let Some(error) = cleanup_error {
+                state.view.download.state = DownloadState::Error;
+                state.view.download.message = Some(error);
             }
             state.active = None;
         }
@@ -709,21 +792,68 @@ async fn read_prefix(
     cancelled: &AtomicBool,
 ) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
-    while bytes.len() < 64 {
+    while bytes.len() < binary::PREFIX {
         ensure_not_cancelled(cancelled)?;
-        let chunk = stream.next_chunk().await?.ok_or("更新 ELF 文件头不完整")?;
+        let Some(chunk) = stream.next_chunk().await? else {
+            if bytes.len() < 64 {
+                return Err("更新程序头不完整".into());
+            }
+            break;
+        };
         if chunk.len() > 1024 * 1024 {
-            return Err("更新 ELF 文件头响应块超过限制".into());
+            return Err(
+                platform_text("更新 ELF 文件头响应块超过限制", "更新程序头响应块超过限制").into(),
+            );
         }
-        bytes.extend_from_slice(&chunk[..chunk.len().min(64 - bytes.len())]);
+        bytes.extend_from_slice(&chunk[..chunk.len().min(binary::PREFIX - bytes.len())]);
     }
     Ok(bytes)
 }
 fn opaque_token() -> Result<String, String> {
     let mut bytes = [0u8; 16];
+    #[cfg(target_os = "linux")]
     let count = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+    #[cfg(target_os = "macos")]
+    let count = if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } == 0 {
+        bytes.len() as isize
+    } else {
+        -1
+    };
+    #[cfg(windows)]
+    let count = {
+        #[link(name = "bcrypt")]
+        extern "system" {
+            fn BCryptGenRandom(
+                provider: *mut std::ffi::c_void,
+                bytes: *mut u8,
+                len: u32,
+                flags: u32,
+            ) -> i32;
+        }
+        if unsafe {
+            BCryptGenRandom(
+                std::ptr::null_mut(),
+                bytes.as_mut_ptr(),
+                bytes.len() as u32,
+                2,
+            )
+        } == 0
+        {
+            bytes.len() as isize
+        } else {
+            -1
+        }
+    };
     if count != bytes.len() as isize {
         return Err("无法生成更新选择标识".into());
     }
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn platform_text(linux: &'static str, native: &'static str) -> &'static str {
+    if cfg!(target_os = "linux") {
+        linux
+    } else {
+        native
+    }
 }

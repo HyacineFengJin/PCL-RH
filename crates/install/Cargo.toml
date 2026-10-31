@@ -25,3 +25,4 @@ windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
 [dev-dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+semver = "1"

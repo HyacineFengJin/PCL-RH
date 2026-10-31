@@ -619,7 +619,31 @@ fn symlinked_resource_directory_is_rejected_without_following() {
         &mut |_, _| {}
     )
     .is_err());
+    #[cfg(target_os = "linux")]
     assert!(fs::read_dir(&f.source).unwrap().next().is_none());
+    #[cfg(not(target_os = "linux"))]
+    {
+        // The caller still owns its registered Input after rejected admission.
+        // No file was published through the alias; only the owned registry and
+        // its source exist. Retire that source and prove no pending payloads.
+        files[0].file.verify_owned().unwrap();
+        assert!(!f.source.join("new.jar").exists());
+        super::super::retire_sources(&mut files).unwrap();
+        let private =
+            pcl_core::retained_fs::Directory::open_absolute(&f.source.join(".pcl-linux")).unwrap();
+        let area = crate::modrinth_install::source::open_area(
+            private.file(),
+            "resource-batch-sources",
+            MAX_BATCH_BYTES * 2,
+        )
+        .unwrap();
+        assert_eq!(area.pending().unwrap(), 0);
+        let names = pcl_core::retained_fs::Directory::open_absolute(&f.source)
+            .unwrap()
+            .names(4)
+            .unwrap();
+        assert_eq!(names, [std::ffi::OsString::from(".pcl-linux")]);
+    }
 }
 #[test]
 fn ownership_receipts_recover_staging_before_next_full_manifest() {

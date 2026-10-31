@@ -383,3 +383,86 @@ fn old_schema_one_and_snapshot_wire_round_trip_without_field_or_byte_changes() {
         .revision
         .starts_with("reset-v1-"));
 }
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn native_journal_replacement_preserves_damaged_future_and_foreign_prior_authority() {
+    use crate::launcher_local::filesystem::{documents::Document, Dir as LocalDir};
+    for case in ["damaged", "future", "foreign-binding"] {
+        let fixture = Fixture::new();
+        let (_root, operation, journal) = fixture.stage();
+        let foreign = Fixture::new();
+        let prior = match case {
+            "damaged" => b"{external evidence, not a reset journal".to_vec(),
+            "future" => {
+                let mut value = serde_json::to_value(&journal).unwrap();
+                value["schema"] = 99.into();
+                serde_json::to_vec(&value).unwrap()
+            }
+            _ => {
+                let mut value = journal.clone();
+                value.root_key = Dir::open(&foreign.path).unwrap().key().unwrap();
+                serde_json::to_vec(&value).unwrap()
+            }
+        };
+        let local = LocalDir(operation.bound_file().unwrap());
+        let document = Document::new(&local, "journal.json", MAX_JOURNAL).unwrap();
+        #[cfg(windows)]
+        {
+            let state = document.state().unwrap();
+            document.compare_write(&state, Some(&prior)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            let state = document.snapshot().unwrap().unwrap();
+            document.replace(Some(&state), &prior).unwrap();
+        }
+        #[cfg(windows)]
+        let before = document.state().unwrap().fact_digest();
+        #[cfg(unix)]
+        let before = pcl_core::retained_fs::metadata(&operation.regular("journal.json").unwrap())
+            .unwrap()
+            .identity;
+        let error = write_journal(&operation, &journal).unwrap_err();
+        assert!(!error.is_empty(), "{case}");
+        #[cfg(windows)]
+        {
+            let mut actual = document.state().unwrap();
+            assert_eq!(
+                actual.fact_digest(),
+                before,
+                "{case}: old logical facts were changed/GCed"
+            );
+            assert_eq!(
+                document.read_state(&mut actual).unwrap().unwrap(),
+                prior,
+                "{case}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            let mut actual = document.snapshot().unwrap().unwrap();
+            assert_eq!(document.bytes(&mut actual).unwrap(), prior, "{case}");
+            assert_eq!(
+                pcl_core::retained_fs::metadata(&operation.regular("journal.json").unwrap())
+                    .unwrap()
+                    .identity,
+                before,
+                "{case}: old physical journal was swapped out"
+            );
+            assert_eq!(
+                fs::read(
+                    fixture
+                        .path
+                        .join(".pcl-linux/instance-resets")
+                        .join(&journal.operation_id)
+                        .join("journal.json")
+                )
+                .unwrap(),
+                prior,
+                "{case}"
+            );
+        }
+        fixture.originals(&journal.files);
+    }
+}

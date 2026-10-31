@@ -22,6 +22,8 @@ use std::{
 pub(super) mod archive;
 #[path = "verified_batch/filesystem.rs"]
 pub(super) mod filesystem;
+#[path = "verified_batch/preflight.rs"]
+pub(crate) mod preflight;
 use filesystem::{Dir, Key, Owned};
 type Result<T> = std::result::Result<T, String>;
 const STORE: &str = "resource-batches";
@@ -332,28 +334,46 @@ fn absent_targets(root: &Dir, j: &Journal, created: bool) -> Result<()> {
     }
     Ok(())
 }
-fn source_tokens(files: &mut [VerifiedImport], cancel: &AtomicBool) -> Result<Vec<String>> {
-    if files.len() > MAX_FILES {
-        return Err("一次最多下载 512 个资源文件".into());
-    }
-    let mut total = 0u64;
+fn prepare_sources<'a>(
+    sources: impl IntoIterator<Item = preflight::SourceSpec<'a>>,
+    cancel: &AtomicBool,
+) -> Result<preflight::PreparedSources<'a>> {
     let mut names = BTreeSet::new();
+    preflight::prepare(
+        sources,
+        preflight::Rules {
+            max_files: MAX_FILES,
+            max_file_bytes: MAX_FILE_BYTES,
+            max_batch_bytes: MAX_BATCH_BYTES,
+            count_error: "一次最多下载 512 个资源文件",
+            file_error: "下载资源重复或大小、SHA512 声明无效",
+            overflow_error: "资源下载批次超过 8 GiB 限制",
+            total_error: "资源下载批次超过 8 GiB 限制",
+        },
+        |source| {
+            check(cancel)?;
+            name_ok(source.kind, source.name)?;
+            if !valid_hash(source.sha512) || !names.insert((source.kind, source.name)) {
+                return Err("下载资源重复或大小、SHA512 声明无效".into());
+            }
+            Ok(())
+        },
+    )
+}
+fn source_tokens(files: &mut [VerifiedImport], cancel: &AtomicBool) -> Result<Vec<String>> {
+    prepare_sources(
+        files.iter().map(|f| preflight::SourceSpec {
+            kind: &f.kind,
+            name: &f.file_name,
+            size: f.size,
+            sha512: &f.sha512,
+        }),
+        cancel,
+    )?;
     let mut keys = BTreeSet::new();
     let mut tokens = Vec::new();
     for f in files {
         check(cancel)?;
-        name_ok(&f.kind, &f.file_name)?;
-        if !valid_hash(&f.sha512)
-            || f.size == 0
-            || f.size > MAX_FILE_BYTES
-            || !names.insert((f.kind.clone(), f.file_name.clone()))
-        {
-            return Err("下载资源重复或大小、SHA512 声明无效".into());
-        }
-        total = total
-            .checked_add(f.size)
-            .filter(|n| *n <= MAX_BATCH_BYTES)
-            .ok_or("资源下载批次超过 8 GiB 限制")?;
         filesystem::anonymous_source(&f.file)?;
         if !keys.insert(filesystem::key_file(&f.file)?) {
             return Err("下载资源描述符重复".into());

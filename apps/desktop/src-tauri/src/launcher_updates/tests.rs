@@ -1,32 +1,17 @@
 //! Generic fixtures only. No test launches an ELF or reads a real installation.
 use super::*;
 use provider::{Asset, AssetStream, BoxFuture, Comparison, Release, REPOSITORY};
-use std::{
-    collections::HashMap,
-    fs,
-    os::unix::fs::{symlink, MetadataExt},
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
-};
+use std::{collections::HashMap, fs, time::Duration};
 
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/launcher-options-2026-10-05/update-tests/fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(path.join(".pcl-rust/bin")).unwrap();
-        fs::write(
-            path.join(".pcl-rust/bin/pcl-desktop"),
-            elf(Architecture::X86_64),
-        )
-        .unwrap();
-        Self(path.canonicalize().unwrap())
+        let (path, temporary) = crate::launcher_updates::test_support::tree();
+        crate::launcher_updates::test_support::write_new(
+            &path.join(".pcl-rust/bin/pcl-desktop"),
+            &elf(Architecture::X86_64),
+        );
+        Self(path, temporary)
     }
     fn binary(&self) -> PathBuf {
         self.0.join(".pcl-rust/bin/pcl-desktop")
@@ -49,17 +34,15 @@ impl Fixture {
         service
     }
     fn no_partial_names(&self) {
-        if self.staging().exists() {
-            assert_eq!(fs::read_dir(self.staging()).unwrap().count(), 0);
-        }
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
+        super::test_support::no_partial(&self.staging());
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+pub(super) fn elf(architecture: Architecture) -> Vec<u8> {
+    super::test_support::native_binary(architecture)
+}
+#[cfg(target_os = "linux")]
 pub(super) fn elf(architecture: Architecture) -> Vec<u8> {
     let mut bytes = vec![0u8; 256];
     bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
@@ -98,8 +81,14 @@ impl FakeProvider {
         let binary = elf(Architecture::X86_64);
         let commit = "b".repeat(40);
         let tag = format!("v{version}");
-        let manifest = serde_json::json!({"schema_version":1,"repository":REPOSITORY,"version":version,"tag":tag,"commit":commit,
+        let mut manifest = serde_json::json!({"schema_version":1,"repository":REPOSITORY,"version":version,"tag":tag,"commit":commit,
             "artifacts":[{"name":"pcl-desktop-linux-x86_64","architecture":"x86_64","format":"elf","size":binary.len(),"sha256":format!("{:x}",Sha256::digest(&binary))}]});
+        if !cfg!(target_os = "linux") {
+            manifest["schema_version"] = 2.into();
+            manifest["artifacts"][0]["os"] = binary::os().into();
+            manifest["artifacts"][0]["format"] = binary::format().into();
+            manifest["artifacts"][0]["name"] = Architecture::X86_64.artifact_name().unwrap().into();
+        }
         let manifest = serde_json::to_vec(&manifest).unwrap();
         let releases = vec![Release {
             id: 10,
@@ -116,7 +105,7 @@ impl FakeProvider {
                 },
                 Asset {
                     id: 2,
-                    name: "pcl-desktop-linux-x86_64".into(),
+                    name: Architecture::X86_64.artifact_name().unwrap().into(),
                     state: "uploaded".into(),
                     size: binary.len() as u64,
                     digest: None,
@@ -171,7 +160,7 @@ impl ReleaseProvider for FakeProvider {
                 Duration::ZERO
             };
             if prefix {
-                bytes.truncate(64);
+                bytes.truncate(binary::PREFIX);
             }
             if id == 2 && !prefix {
                 if let Some(hook) = self.hook.lock().unwrap().take() {
@@ -378,23 +367,37 @@ async fn pe_and_wrong_machine_are_rejected_before_a_download_token_is_issued() {
 #[tokio::test]
 async fn successful_stage_verifies_hash_and_elf_without_replacing_original_inode() {
     let fixture = Fixture::new();
-    let before = fs::metadata(fixture.binary()).unwrap();
+    let before = crate::launcher_updates::test_support::identity(fixture.binary());
     let original = fs::read(fixture.binary()).unwrap();
     let service = fixture.service(FakeProvider::release("0.3.0", false));
     let checked = service.check(UpdateChannel::Stable).await.unwrap();
     let release = checked.release.unwrap();
-    assert!(release.elf_header_verified);
-    assert_eq!(release.artifact_name, "pcl-desktop-linux-x86_64");
+    assert_eq!(release.elf_header_verified, cfg!(target_os = "linux"));
+    assert_eq!(
+        release.artifact_name,
+        Architecture::X86_64.artifact_name().unwrap()
+    );
     let view = service.download(&release.token).await.unwrap();
     assert_eq!(view.download.state, DownloadState::Staged);
-    assert_eq!(view.download.received_bytes, 256);
-    assert!(view.plan.as_ref().unwrap().can_apply);
-    assert!(view.plan.as_ref().unwrap().original_sha256.is_some());
-    assert_eq!(fs::metadata(fixture.binary()).unwrap().ino(), before.ino());
+    assert_eq!(
+        view.download.received_bytes,
+        elf(Architecture::X86_64).len() as u64
+    );
+    assert_eq!(view.plan.as_ref().unwrap().can_apply, !cfg!(windows));
+    assert_eq!(
+        view.plan.as_ref().unwrap().original_sha256.is_some(),
+        !cfg!(windows)
+    );
+    assert_eq!(
+        crate::launcher_updates::test_support::identity(fixture.binary()),
+        before
+    );
     assert_eq!(fs::read(fixture.binary()).unwrap(), original);
+    #[cfg(target_os = "linux")]
     fixture.no_partial_names();
     assert!(service.discard_staged().unwrap().plan.is_none());
     assert!(service.state.lock().unwrap().staged.is_none());
+    fixture.no_partial_names();
 }
 
 #[tokio::test]
@@ -407,7 +410,7 @@ async fn wrong_hash_truncated_or_oversized_downloads_leave_no_partial_file() {
         match case {
             0 => bytes[200] ^= 1,
             1 => {
-                bytes.truncate(128);
+                bytes.truncate(if cfg!(windows) { 256 } else { 128 });
             }
             _ => bytes.push(0),
         }
@@ -435,7 +438,11 @@ async fn full_elf_program_bounds_and_executable_entry_are_checked_after_hash() {
     let fixture = Fixture::new();
     let mut provider = FakeProvider::release("0.3.0", false);
     let mut binary = provider.assets[&2].clone();
-    binary[96..104].copy_from_slice(&4096u64.to_le_bytes());
+    if cfg!(windows) {
+        binary[216..220].copy_from_slice(&4096u32.to_le_bytes());
+    } else {
+        binary[96..104].copy_from_slice(&4096u64.to_le_bytes());
+    }
     let hash = format!("{:x}", Sha256::digest(&binary));
     provider.assets.insert(2, binary);
     provider.edit_manifest(|m| m["artifacts"][0]["sha256"] = hash.into());
@@ -509,7 +516,7 @@ async fn symlink_and_replaced_staging_directory_are_refused_without_writing_targ
     let fixture = Fixture::new();
     let outside = fixture.0.join("outside");
     fs::create_dir(&outside).unwrap();
-    symlink(&outside, fixture.staging()).unwrap();
+    super::test_support::symlink_dir(&outside, fixture.staging()).unwrap();
     let service = fixture.service(FakeProvider::release("0.3.0", false));
     let token = service
         .check(UpdateChannel::Stable)
@@ -523,7 +530,7 @@ async fn symlink_and_replaced_staging_directory_are_refused_without_writing_targ
         DownloadState::Error
     );
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-    fs::remove_file(fixture.staging()).unwrap();
+    super::test_support::unlink_dir_alias(&fixture.staging());
     let provider = FakeProvider::release("0.3.0", false);
     let staging = fixture.staging();
     let old = fixture.0.join("retained-staging");
@@ -544,12 +551,7 @@ async fn symlink_and_replaced_staging_directory_are_refused_without_writing_targ
         DownloadState::Error
     );
     fixture.no_partial_names();
-    assert_eq!(
-        fs::read_dir(fixture.0.join("retained-staging"))
-            .unwrap()
-            .count(),
-        0
-    );
+    super::test_support::no_partial(&fixture.0.join("retained-staging"));
 }
 
 #[tokio::test]
@@ -557,7 +559,15 @@ async fn package_install_has_explicit_package_manager_plan_and_never_reads_syste
     let fixture = Fixture::new();
     let mut build = fixture.build();
     build.install_channel = InstallChannel::PackageManaged;
-    build.executable = "/usr/bin/pcl-desktop".into();
+    build.executable = if cfg!(windows) {
+        fixture
+            .0
+            .join("package-owned-not-read.exe")
+            .display()
+            .to_string()
+    } else {
+        "/usr/bin/pcl-desktop".into()
+    };
     let mut service = UpdateService::new(&fixture.0, build).unwrap();
     service.test_provider = Some(Arc::new(FakeProvider::release("0.3.0", false)));
     let token = service
@@ -601,7 +611,7 @@ async fn stale_token_rejected_and_rechecking_invalidates_previous_selection() {
 #[tokio::test]
 async fn service_apply_and_rollback_keep_running_identity_separate_from_disk() {
     let fixture = Fixture::new();
-    let original_inode = fs::metadata(fixture.binary()).unwrap().ino();
+    let original_inode = crate::launcher_updates::test_support::identity(fixture.binary());
     let service = fixture.service(FakeProvider::release("0.3.0", false));
     let token = service
         .check(UpdateChannel::Stable)
@@ -610,6 +620,18 @@ async fn service_apply_and_rollback_keep_running_identity_separate_from_disk() {
         .release
         .unwrap()
         .token;
+    if cfg!(windows) {
+        let staged = service.download(&token).await.unwrap();
+        assert!(!staged.plan.unwrap().can_apply);
+        assert!(service.apply(&token).is_err());
+        service.discard_staged().unwrap();
+        assert_eq!(
+            crate::launcher_updates::test_support::identity(fixture.binary()),
+            original_inode
+        );
+        fixture.no_partial_names();
+        return;
+    }
     assert!(
         service
             .download(&token)
@@ -636,7 +658,7 @@ async fn service_apply_and_rollback_keep_running_identity_separate_from_disk() {
     assert_eq!(rolled.current.version, "0.2.0");
     assert!(!rolled.installation.restart_required);
     assert_eq!(
-        fs::metadata(fixture.binary()).unwrap().ino(),
+        crate::launcher_updates::test_support::identity(fixture.binary()),
         original_inode
     );
     assert_eq!(
@@ -684,4 +706,53 @@ fn manifest_has_no_arbitrary_url_or_unknown_fields_and_current_requires_full_com
     let mut build = fixture.build();
     build.commit = Some("shortsha".into());
     assert!(UpdateService::new(&fixture.0, build).is_err());
+}
+
+#[tokio::test]
+async fn durable_retirement_runs_without_state_lock_and_keeps_operation_busy() {
+    for discard in [true, false] {
+        let fixture = Fixture::new();
+        let service = Arc::new(fixture.service(FakeProvider::release("0.3.0", false)));
+        let token = service
+            .check(UpdateChannel::Stable)
+            .await
+            .unwrap()
+            .release
+            .unwrap()
+            .token;
+        assert_eq!(
+            service.download(&token).await.unwrap().download.state,
+            DownloadState::Staged
+        );
+        let observed = Arc::new(AtomicBool::new(false));
+        let flag = observed.clone();
+        let weak = Arc::downgrade(&service);
+        service
+            .state
+            .lock()
+            .unwrap()
+            .staged
+            .as_mut()
+            .unwrap()
+            .retire_hook = Some(Box::new(move || {
+            let service = weak.upgrade().unwrap();
+            assert!(
+                service.state.try_lock().is_ok(),
+                "retirement held State mutex"
+            );
+            assert!(
+                service.is_busy(),
+                "admission released before actual retirement"
+            );
+            flag.store(true, AtomicOrdering::Release);
+        }));
+        if discard {
+            service.discard_staged().unwrap();
+        } else {
+            service.check(UpdateChannel::Stable).await.unwrap();
+        }
+        assert!(observed.load(AtomicOrdering::Acquire));
+        fixture.no_partial_names();
+        assert!(!service.is_busy());
+    }
 }

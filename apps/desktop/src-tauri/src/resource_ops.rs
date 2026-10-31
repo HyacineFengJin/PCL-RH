@@ -20,6 +20,7 @@ pub(crate) mod update_batch;
 #[path = "resource_ops/verified_batch.rs"]
 mod verified_batch;
 pub use update_batch::{Replacement, UpdateHistory};
+pub(crate) use verified_batch::preflight;
 pub(crate) use verified_batch::retire_sources;
 pub use verified_batch::VerifiedImport;
 

@@ -21,6 +21,8 @@ pub(super) struct Manifest {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Artifact {
+    #[serde(default)]
+    pub os: Option<String>,
     pub name: String,
     pub architecture: Architecture,
     pub format: String,
@@ -39,20 +41,48 @@ pub(super) fn parse_manifest(
     }
     let manifest: Manifest =
         serde_json::from_slice(bytes).map_err(|_| "更新清单格式无效或包含不支持的字段")?;
-    if manifest.schema_version != 1
+    if !matches!(manifest.schema_version, 1 | 2)
         || manifest.repository != REPOSITORY
         || manifest.tag != release.tag_name
         || manifest.version != version.to_string()
         || !hex(&manifest.commit, 40)
         || manifest.artifacts.is_empty()
-        || manifest.artifacts.len() > 2
+        || manifest.artifacts.len() > if manifest.schema_version == 1 { 2 } else { 6 }
     {
         return Err("更新清单的项目、版本、标签或提交不匹配".into());
     }
     let mut names = std::collections::HashSet::new();
     for artifact in &manifest.artifacts {
-        if artifact.architecture.artifact_name() != Some(artifact.name.as_str())
-            || artifact.format != "elf"
+        let valid_target = if manifest.schema_version == 1 {
+            artifact.os.is_none()
+                && artifact.format == "elf"
+                && match artifact.architecture {
+                    Architecture::X86_64 => artifact.name == "pcl-desktop-linux-x86_64",
+                    Architecture::Aarch64 => artifact.name == "pcl-desktop-linux-aarch64",
+                    _ => false,
+                }
+        } else {
+            let cpu = match artifact.architecture {
+                Architecture::X86_64 => "x86_64",
+                Architecture::Aarch64 => "aarch64",
+                _ => return Err("更新清单架构无效".into()),
+            };
+            match artifact.os.as_deref() {
+                Some("linux") => {
+                    artifact.format == "elf" && artifact.name == format!("pcl-desktop-linux-{cpu}")
+                }
+                Some("macos") => {
+                    artifact.format == "mach-o"
+                        && artifact.name == format!("pcl-desktop-macos-{cpu}")
+                }
+                Some("windows") => {
+                    artifact.format == "pe"
+                        && artifact.name == format!("pcl-desktop-windows-{cpu}.exe")
+                }
+                _ => false,
+            }
+        };
+        if !valid_target
             || artifact.size < 64
             || artifact.size > MAX_BINARY_BYTES
             || !hex(&artifact.sha256, 64)
@@ -61,10 +91,30 @@ pub(super) fn parse_manifest(
             return Err("更新清单的 Linux 资产格式、大小、校验值或唯一性无效".into());
         }
     }
+    if manifest.schema_version == 1 {
+        let raw: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|_| "更新清单格式无效")?;
+        if raw["artifacts"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item.as_object()
+                    .is_some_and(|object| object.contains_key("os"))
+            })
+        }) {
+            return Err("Linux schema1清单不接受原生OS扩展字段".into());
+        }
+    }
     let artifact = manifest
         .artifacts
         .iter()
-        .find(|artifact| &artifact.architecture == architecture)
+        .find(|artifact| {
+            &artifact.architecture == architecture
+                && architecture.artifact_name() == Some(artifact.name.as_str())
+                && if manifest.schema_version == 1 {
+                    super::binary::os() == "linux"
+                } else {
+                    artifact.os.as_deref() == Some(super::binary::os())
+                }
+        })
         .cloned()
         .ok_or("发布不包含当前 Linux 架构的更新资产")?;
     let asset = unique_asset(release, &artifact.name)?.clone();

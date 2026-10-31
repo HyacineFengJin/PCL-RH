@@ -1,7 +1,13 @@
 use super::*;
 use crate::integration_tests::Fixture;
 use memory::GIB;
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
+#[cfg(windows)]
+fn symlink(source: impl AsRef<Path>, target: impl AsRef<Path>) -> std::io::Result<()> {
+    fs::create_dir(target.as_ref())?;
+    super::junction_fixture::set_existing(source.as_ref(), target.as_ref())
+}
 
 fn fixture() -> (Fixture, Shared, Settings, GameRoot) {
     let fixture = Fixture::new();
@@ -106,7 +112,10 @@ fn enabled_mod_count_uses_the_resolved_content_directory_without_following_links
         fs::write(mods.join(name), b"not opened").unwrap();
     }
     fs::create_dir(mods.join("directory.jar")).unwrap();
+    #[cfg(unix)]
     symlink(path.join("mods/shared.jar"), mods.join("linked.jar")).unwrap();
+    #[cfg(windows)]
+    symlink(path.join("mods"), mods.join("linked.jar")).unwrap();
     assert_eq!(
         enabled_mods(path, "Example", IsolationPolicy::Automatic).unwrap(),
         2
@@ -130,7 +139,10 @@ fn unsafe_isolation_markers_and_mod_directories_do_not_silently_mean_zero_mods()
     fs::create_dir(path.join("foreign")).unwrap();
     symlink(path.join("foreign"), instance.join("mods")).unwrap();
     assert!(enabled_mods(path, "Example", IsolationPolicy::Shared).is_err());
+    #[cfg(unix)]
     fs::remove_file(instance.join("mods")).unwrap();
+    #[cfg(windows)]
+    fs::remove_dir(instance.join("mods")).unwrap();
     symlink(path.join("foreign"), path.join("mods")).unwrap();
     assert!(enabled_mods(path, "Example", IsolationPolicy::Shared).is_err());
 }
@@ -153,16 +165,20 @@ fn legacy_root_spellings_preview_the_same_mods_as_the_resolved_launch_root() {
         } else {
             canonical.join("../.minecraft")
         };
-        fs::create_dir(fixture.0.join(".pcl-rust")).unwrap();
-        fs::write(
-            fixture.0.join(".pcl-rust/settings.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "root": exact, "player": "Player", "memory_gib": 4,
-                "selected": "Example", "overrides": {}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+        use std::io::Write;
+        let project = Directory::open_absolute(&fixture.0.canonicalize().unwrap()).unwrap();
+        let app = project
+            .create_private(&Leaf::new(".pcl-rust").unwrap(), Traversal::AllowMounts)
+            .unwrap();
+        let mut initial = app
+            .create_file(&Leaf::new("settings.json").unwrap())
+            .unwrap();
+        initial.write_all(&serde_json::to_vec(&serde_json::json!({
+            "root":exact,"player":"Player","memory_gib":4,"selected":"Example","overrides":{}
+        })).unwrap()).unwrap();
+        initial.sync_all().unwrap();
+        drop(initial);
         let shared = fixture.shared();
         let mut settings = shared.config.snapshot();
         settings.memory_mode = MemoryMode::Auto;

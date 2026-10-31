@@ -14,10 +14,11 @@ PCL RH 的完整桌面应用目前只提供 Linux 实现。Windows、macOS 的�
 | 系统内存信息 | 原生读取 | 原生读取 | 原生读取 |
 | 保留目录句柄、文件身份与暂存发布原语 | 原生 CI 通过，已接安装与修复 | 原生 CI 通过，已接安装与修复 | 两种架构原生 CI 通过，已接安装与修复 |
 | 安装器生产编译与原版 / Fabric 安装、修复事务 | 原生 CI 通过 | 原生 CI 通过 | Intel / Apple Silicon 原生 CI 通过 |
-| 独立游戏子进程生命周期 | 已接生产监控器 | 原生 Job、异步输出与目录租约夹具通过，完整监控器尚未接齐 | 原生进程组夹具通过，界面停止通道未完成 |
+| 独立游戏子进程生命周期 | 已接生产监控器 | 原生 Job、异步输出与目录租约夹具通过；新监控通道待原生验证 | 原生进程组与独立监控夹具通过 |
 | Java 获取、资源另存、实例日志与本机状态存储 | 已实现 | 原生服务检查通过 | Intel / Apple Silicon 原生服务检查通过 |
 | 整合包导入、实例导出与导出预设 | Linux 回归通过 | 已接原生端口，完整业务仍待验证 | 已接原生端口，完整业务仍待验证 |
 | 模组下载、资源安装 / 更新 / 撤销、实例改名与引用重放 | Linux 业务回归通过 | 已接原生端口，业务 CI 待验证 | 已接原生端口，业务 CI 待验证 |
+| 实例重置、启动准备、内存估算与诊断导出 | Linux 回归通过 | 已接原生端口，新增业务 CI 待验证 | 已接原生端口，新增业务 CI 待验证 |
 | WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
 | 完整桌面编译与链接 | 通过，x64 | 尚未完成 | 尚未完成 |
 | 安装与恢复事务、进程监控、发行包 | Linux 实现 | 尚未适配完成 | 尚未适配完成 |
@@ -46,7 +47,7 @@ Java 生命周期检查使用专门的原生可执行夹具，覆盖卡死、输
 cargo test --locked -p pcl-core --test java_probe_lifecycle
 ```
 
-安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口；需要 Java 处理器的 Forge / NeoForge 私有安装仍缺 Windows、macOS 的受限执行后端，会明确拒绝。Java 获取与资源保存已接原生端口；实例改名、引用重放、资源安装与更新已接原生文件接口，新增业务检查仍待原生 CI；实例重置、启动器自身更新与 Code 宿主尚有 Linux 接口，Windows 实例删除的日志事务也未完成。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。其他平台尚无可供日常使用的安装包；当前 `build-native.sh`、`start-native.sh` 与 `install-desktop.sh` 是 Linux 脚本。
+安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口；需要 Java 处理器的 Forge / NeoForge 私有安装仍缺 Windows、macOS 的受限执行后端，会明确拒绝。Java 获取与资源保存已接原生端口；实例改名、重置、引用重放、资源安装与更新已接原生文件接口，新增业务检查仍待原生 CI。启动器自身更新已接 macOS 的原生交换；Windows 能下载、校验与退役更新来源，运行中 EXE 的替换在操作前明确拒绝，尚缺专用 helper。Code 宿主仍有 Linux 接口，Windows 实例删除的日志事务也未完成。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。其他平台尚无可供日常使用的安装包；当前 `build-native.sh`、`start-native.sh` 与 `install-desktop.sh` 是 Linux 脚本。
 
 ## 原生接口
 
@@ -66,7 +67,7 @@ GitHub 的 **Native UI ports** 工作流在四个原生 runner 上独立执行�
 
 `pcl-core::retained_fs` 提供持有目录、字面文件名、原生文件身份和私有暂存的共同接口。Windows 使用完整的卷标识与 128 位文件 ID、真实 SID / DACL；Unix 使用设备与 inode。Linux 暂存保持匿名 `O_TMPFILE`，macOS 使用私有命名租约，Windows 保留拒绝其他写入和删除共享的原始文件句柄。命名租约不会被描述为匿名文件。
 
-封存与发布核对大小、SHA256、身份及元数据，并执行实际文件和目录刷新。发布后核验或刷新失败会返回“可能已发布”的结果与回执，禁止直接重试或删除来假装回滚。这些[原语已在四个原生 runner 通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41167694909)，包含目录换名、Windows 原地 junction 变更、并发冲突、取消及刷新失败的夹具；这仍不代表整个安装器已跨平台。
+封存与发布核对大小、SHA256、身份及元数据，并执行实际文件和目录刷新。发布后核验或刷新失败会返回“可能已发布”的结果与回执，禁止直接重试或删除来假装回滚。这些[原语已在四个原生 runner 通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41170805069)，包含目录换名、Windows 原地 junction 变更、并发冲突、取消及刷新失败的夹具；这仍不代表整个安装器已跨平台。
 
 下载、缓存复制、组件复制与原生库解压使用保留目录的文件流和暂存输出；网络重试不包含发布错误。修复日志的 Unix 字段与 marker 哈希保持兼容，Windows 日志证据另用真实文件 ID 的显式格式。macOS / Windows 的命名修复暂存单独登记在私有 `dependency-staging`，不会混入旧业务日志。分配记录先持久化才开放写入，发布回执记录失败返回“可能已发布”；日志损坏不能授权删除或覆盖业务原件。已验证的旧 intent 仍可恢复原件并提交原有 marker。
 
@@ -86,11 +87,11 @@ Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约
 
 在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面程序；不使用服务密钥、不发布 Release，也不生成供用户安装的发行包。
 
-各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。若依赖安装、接口测试或 WebUI 阶段先失败，应先检查对应步骤日志。最新[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41165453755)已通过安装器并进入桌面宿主：Linux 成功，Windows、macOS 仍暴露实例管理、引用事务、更新与 Code 原生宿主的阻塞。不会通过跳过桌面模块来将结果改成成功。
+各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。若依赖安装、接口测试或 WebUI 阶段先失败，应先检查对应步骤日志。最新[完整桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41170109205)已通过安装器并进入桌面宿主：Linux 成功，Windows、macOS 仍暴露实例管理、引用事务、更新与 Code 原生宿主的阻塞。不会通过跳过桌面模块来将结果改成成功。
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41167694909)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
+构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41170805069)、[原生接口检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40873737517)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/40872209476)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 

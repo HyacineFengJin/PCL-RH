@@ -78,7 +78,7 @@ impl LocalServer {
                         let requests = request_counter.clone();
                         workers.push(thread::spawn(move || {
                             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                            socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                            socket.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
                             let mut request = [0; 2048];
                             let _ = socket.read(&mut request);
                             requests.fetch_add(1, Ordering::Relaxed);
@@ -138,8 +138,11 @@ fn jobs<'a>(
 ) -> VecDeque<Job<'a, super::source::Input>> {
     (0..count)
         .map(|_| {
+            // Source setup is not part of the transport being measured. Native
+            // allocation flushes durable records and must not stall another
+            // fixture socket while its bounded write deadline is running.
+            let mut file = fixture.dir.allocate(body.len() as u64).unwrap();
             Box::pin(async move {
-                let mut file = fixture.dir.allocate(body.len() as u64)?;
                 transfer::response_into_file(
                     provider,
                     provider.client.get(url),

@@ -22,7 +22,7 @@
   "inputs": [
     {
       "path": "Cargo.lock",
-      "sha256": "db6ff8c0ef703de5d31259f00be8ab4b87fc8138e95806c7815ff8ce4c52f0dd"
+      "sha256": "e1fea5f3289d30786fd9c4ed53cbc8653d8e6b4f76ee3d3c549c9aef21815836"
     },
     {
       "path": "Cargo.toml",
@@ -38,7 +38,7 @@
     },
     {
       "path": "apps/desktop/src-tauri/Cargo.toml",
-      "sha256": "656325de22c0e9ee4de61938678b08a918b36ddbd04491f6b9cf68ea0911b527"
+      "sha256": "a52ef82d894c3ad12bf04784ea1d8949279d03680063675dccfaf1573c064bdb"
     },
     {
       "path": "crates/auth/Cargo.toml",
@@ -50,7 +50,7 @@
     },
     {
       "path": "crates/core/Cargo.toml",
-      "sha256": "2fa6f1b3e98fe8ebe0b93464abd18c19a1d5bb4ad2b5410b5ca4571668dbd6a9"
+      "sha256": "d40889d31ddd9db7ea06f530b50cdbf2df39db04cb082fc7638bd33b6db5d4de"
     },
     {
       "path": "crates/desktop-platform/Cargo.toml",
@@ -58,7 +58,7 @@
     },
     {
       "path": "crates/install/Cargo.toml",
-      "sha256": "b9f6e164b9fd4b9b69c7b3ce0eb854113cde4869651969fa2c8cdebf46f801d6"
+      "sha256": "d42160e6e0159a89c75ec193a0cdcf2d2e09f97f7eed47cd71a18ab03e610dfa"
     },
     {
       "path": "crates/network/Cargo.toml",
@@ -12045,6 +12045,11 @@
           {
             "workspace": "pcl-desktop",
             "kind": "normal",
+            "target": null
+          },
+          {
+            "workspace": "pcl-install",
+            "kind": "dev",
             "target": null
           }
         ],

@@ -7,10 +7,7 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    io,
-    os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -149,86 +146,14 @@ pub struct MonitorStarted {
     pub log_path: PathBuf,
     pub log_start: u64,
 }
-pub(super) fn nonblocking(fd: i32) -> Result<(), String> {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        return Err(FAILURE.into());
-    }
-    Ok(())
-}
-fn ready(fd: i32, events: i16, deadline: Instant) -> Result<(), String> {
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(FAILURE.into());
-        }
-        let mut poll = libc::pollfd {
-            fd,
-            events,
-            revents: 0,
-        };
-        let result = unsafe { libc::poll(&mut poll, 1, remaining.as_millis().min(100) as i32) };
-        if result > 0 {
-            return Ok(());
-        }
-        if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-            return Err(FAILURE.into());
-        }
-    }
-}
-fn write_pipe(fd: i32, mut bytes: &[u8], deadline: Instant) -> Result<(), String> {
-    while !bytes.is_empty() {
-        ready(fd, libc::POLLOUT, deadline)?;
-        let count = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if count > 0 {
-            bytes = &bytes[count as usize..];
-        } else if count < 0
-            && matches!(
-                io::Error::last_os_error().kind(),
-                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-            )
-        {
-            continue;
-        } else {
-            return Err(FAILURE.into());
-        }
-    }
-    Ok(())
-}
-fn read_exact(fd: i32, mut bytes: &mut [u8], deadline: Instant) -> Result<(), String> {
-    while !bytes.is_empty() {
-        ready(fd, libc::POLLIN, deadline)?;
-        let count = unsafe { libc::read(fd, bytes.as_mut_ptr().cast(), bytes.len()) };
-        if count > 0 {
-            bytes = &mut bytes[count as usize..];
-        } else if count < 0
-            && matches!(
-                io::Error::last_os_error().kind(),
-                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-            )
-        {
-            continue;
-        } else {
-            return Err(FAILURE.into());
-        }
-    }
-    Ok(())
-}
-fn read_line(fd: i32, deadline: Instant) -> Result<String, String> {
-    let mut bytes = Vec::new();
-    loop {
-        let mut byte = [0];
-        read_exact(fd, &mut byte, deadline)?;
-        if byte[0] == b'\n' {
-            break;
-        }
-        bytes.push(byte[0]);
-        if bytes.len() > 128 {
-            return Err(FAILURE.into());
-        }
-    }
-    String::from_utf8(bytes).map_err(|_| FAILURE.into())
-}
+#[cfg(unix)]
+#[path = "protocol/unix.rs"]
+mod transport;
+#[cfg(windows)]
+#[path = "protocol/windows.rs"]
+mod transport;
+use transport::{Child, Io};
+
 /// Production always launches the current binary; the caller never selects an
 /// external supervisor executable. Only its single fixed mode flag is in argv.
 pub fn spawn_monitor(request: MonitorRequest) -> Result<MonitorStarted, String> {
@@ -261,41 +186,22 @@ fn spawn_with_timeout(
     if bytes.len() > REQUEST_LIMIT {
         return Err("游戏监控请求超过安全上限".into());
     }
-    let mut command = Command::new(executable);
-    command
-        .arg("--game-monitor")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = command.spawn().map_err(|_| FAILURE)?;
+    let (child, io) = transport::spawn(executable)?;
     let mut pending = Pending {
         child: Some(child),
         game: None,
         project,
     };
+    // Drop the transport before Pending on any error: EOF gives the real
+    // uncommitted helper its own cleanup window before owned-handle fallback.
+    let mut io = io;
     let child = pending.child.as_mut().unwrap();
-    let input = child.stdin.take().ok_or(FAILURE)?;
-    let output = child.stdout.take().ok_or(FAILURE)?;
-    nonblocking(input.as_raw_fd())?;
-    nonblocking(output.as_raw_fd())?;
     let deadline = Instant::now() + timeout;
-    write_pipe(
-        input.as_raw_fd(),
-        &(bytes.len() as u32).to_be_bytes(),
-        deadline,
-    )?;
-    write_pipe(input.as_raw_fd(), &bytes, deadline)?;
+    io.write(&(bytes.len() as u32).to_be_bytes(), deadline)?;
+    io.write(&bytes, deadline)?;
     // Launch secrets are no longer needed in the parent-side protocol buffer.
     drop(bytes);
-    let ready = read_line(output.as_raw_fd(), deadline)?;
+    let ready = io.read_line(deadline)?;
     let words = ready.split_whitespace().collect::<Vec<_>>();
     if words.len() != 4 || words[0] != "READY" {
         return Err(FAILURE.into());
@@ -312,15 +218,14 @@ fn spawn_with_timeout(
         return Err(FAILURE.into());
     }
     let supervisor = process::identity(monitor_pid)?.ok_or(FAILURE)?;
-    write_pipe(input.as_raw_fd(), b"COMMIT\n", deadline)?;
-    if read_line(output.as_raw_fd(), deadline)? != "ACK" {
+    io.write(b"COMMIT\n", deadline)?;
+    if io.read_line(deadline)? != "ACK" {
         return Err(FAILURE.into());
     }
     // After ACK the helper holds the lifetime lock and durable process marker.
     // A reaper does not own cancellation and survives until the GUI exits.
     let mut child = pending.child.take().unwrap();
-    drop(input);
-    drop(output);
+    drop(io);
     let _ = std::thread::Builder::new()
         .name("pcl-monitor-reap".into())
         .spawn(move || {
@@ -370,7 +275,7 @@ impl Drop for Pending {
                 Err(_) => break,
             }
         }
-        process::kill_owned(child);
+        transport::kill_owned(child);
     }
 }
 /// Return None for a regular GUI invocation. Every monitor invocation exits
@@ -387,23 +292,23 @@ pub fn dispatch_cli() -> Option<i32> {
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
     }
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
     Some(if helper().is_ok() { 0 } else { 2 })
 }
 fn helper() -> Result<(), String> {
-    nonblocking(0)?;
-    nonblocking(1)?;
+    let mut io = Io::helper()?;
     let deadline = Instant::now() + HANDSHAKE;
     let mut length = [0u8; 4];
-    read_exact(0, &mut length, deadline)?;
+    io.read_exact(&mut length, deadline)?;
     let length = u32::from_be_bytes(length) as usize;
     if length == 0 || length > REQUEST_LIMIT {
         return Err(FAILURE.into());
     }
     let mut bytes = vec![0; length];
-    read_exact(0, &mut bytes, deadline)?;
+    io.read_exact(&mut bytes, deadline)?;
     let wire: WireRequest = serde_json::from_slice(&bytes).map_err(|_| FAILURE)?;
     bytes.fill(0);
     drop(bytes);
@@ -460,15 +365,15 @@ fn helper() -> Result<(), String> {
             let _ = output::stream(stderr, output_log, redactor, Some(output_stop));
         })
         .map_err(|_| FAILURE)?;
-    write_pipe(
-        1,
+    io.write(
         format!("READY {} {} {}\n", game.id(), supervisor, log_start).as_bytes(),
         deadline,
     )?;
-    if read_line(0, deadline)? != "COMMIT" {
+    if io.read_line(deadline)? != "COMMIT" {
         return Err(FAILURE.into());
     }
-    write_pipe(1, b"ACK\n", deadline)?;
+    io.write(b"ACK\n", deadline)?;
+    drop(io);
     // Parent pipes are no longer used. Java/log ownership stays entirely here.
     let mut next_control_poll = Instant::now();
     let result = loop {

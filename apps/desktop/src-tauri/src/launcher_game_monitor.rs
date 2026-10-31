@@ -20,6 +20,6 @@ mod state;
 pub use protocol::{dispatch_cli, spawn_monitor, MonitorRequest};
 pub use state::{read_status, retire_completed, stop_monitor};
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "launcher_game_monitor/tests.rs"]
 mod tests;

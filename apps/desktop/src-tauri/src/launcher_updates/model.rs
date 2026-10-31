@@ -19,8 +19,20 @@ impl Architecture {
     }
     pub(super) fn artifact_name(&self) -> Option<&'static str> {
         match self {
-            Self::X86_64 => Some("pcl-desktop-linux-x86_64"),
-            Self::Aarch64 => Some("pcl-desktop-linux-aarch64"),
+            Self::X86_64 => Some(if cfg!(windows) {
+                "pcl-desktop-windows-x86_64.exe"
+            } else if cfg!(target_os = "macos") {
+                "pcl-desktop-macos-x86_64"
+            } else {
+                "pcl-desktop-linux-x86_64"
+            }),
+            Self::Aarch64 => Some(if cfg!(windows) {
+                "pcl-desktop-windows-aarch64.exe"
+            } else if cfg!(target_os = "macos") {
+                "pcl-desktop-macos-aarch64"
+            } else {
+                "pcl-desktop-linux-aarch64"
+            }),
             Self::Unsupported => None,
         }
     }

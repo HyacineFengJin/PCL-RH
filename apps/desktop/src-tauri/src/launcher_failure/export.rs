@@ -3,14 +3,15 @@
 //! through anonymous no-overwrite publication, just like instance log export.
 use super::PreparedDiagnostic;
 use crate::{
-    launcher_local::filesystem::Dir,
+    launcher_local::filesystem::{Dir, DirectoryIdentity},
     toolbox_images::publish::{self, ExportOutcome},
     Shared,
 };
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::{
     fs::File,
     os::fd::{AsRawFd, FromRawFd},
-    path::{Path, PathBuf},
 };
 
 impl PreparedDiagnostic {
@@ -44,13 +45,13 @@ impl PreparedDiagnostic {
 struct Destination {
     parent: PathBuf,
     folder: Dir,
-    source_root: (u64, u64),
+    source_root: DirectoryIdentity,
 }
 impl Destination {
-    fn capture(target: &Path, source_root: (u64, u64)) -> Result<Self, String> {
+    fn capture(target: &Path, source_root: DirectoryIdentity) -> Result<Self, String> {
         let parent = target.parent().ok_or("保存目录无效")?.to_owned();
         let folder = Dir::absolute(&parent)?;
-        outside_source(&folder, source_root)?;
+        outside_source(&folder, source_root.clone())?;
         Ok(Self {
             parent,
             folder,
@@ -61,13 +62,14 @@ impl Destination {
         if Dir::absolute(&self.parent)?.identity()? != self.folder.identity()? {
             return Err("保存目录已被替换，请重新选择".into());
         }
-        outside_source(&self.folder, self.source_root)
+        outside_source(&self.folder, self.source_root.clone())
     }
 }
 
 /// Follow real directory parents via FDs: lexical prefixes cannot reject a
 /// bind-mount alias or a selected folder moved into the game root while staging.
-fn outside_source(folder: &Dir, source_root: (u64, u64)) -> Result<(), String> {
+#[cfg(target_os = "linux")]
+fn outside_source(folder: &Dir, source_root: DirectoryIdentity) -> Result<(), String> {
     let mut current = Dir(folder.0.try_clone().map_err(|_| "无法检查保存目录")?);
     for _ in 0..4096 {
         let identity = current.identity()?;
@@ -86,6 +88,30 @@ fn outside_source(folder: &Dir, source_root: (u64, u64)) -> Result<(), String> {
         }
         let parent = Dir(unsafe { File::from_raw_fd(fd) });
         if parent.identity()? == identity {
+            return Ok(());
+        }
+        current = parent;
+    }
+    Err("保存目录祖先层级超过安全上限".into())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn outside_source(folder: &Dir, source_root: DirectoryIdentity) -> Result<(), String> {
+    use pcl_core::retained_fs::Directory;
+    let mut current = Directory::from_file(folder.0.try_clone().map_err(|_| "无法检查保存目录")?)
+        .map_err(|e| e.to_string())?;
+    for _ in 0..4096 {
+        let observed = Dir(current.try_clone_file().map_err(|e| e.to_string())?);
+        let identity = observed.identity()?;
+        if identity == source_root {
+            return Err("请将诊断报告保存到游戏根目录以外的位置".into());
+        }
+        let parent = current
+            .parent_snapshot()
+            .map_err(|e| format!("无法检查保存目录的真实祖先：{e}"))?;
+        if parent.identity().map_err(|e| e.to_string())?
+            == current.identity().map_err(|e| e.to_string())?
+        {
             return Ok(());
         }
         current = parent;

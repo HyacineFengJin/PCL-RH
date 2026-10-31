@@ -541,14 +541,35 @@ fn limits_reject_without_allocating_large_files() {
     let mut files = vec![f.file("mods", "big.jar")];
     files[0].size = MAX_FILE_BYTES + 1;
     assert!(run(&f, &mut files, &c, &mut || panic!("commit"), &mut |_, _| {}).is_err());
-    let mut many: Vec<_> = (0..MAX_FILES + 1)
-        .map(|n| f.file("mods", &format!("test{n}.jar")))
-        .collect();
-    assert!(
-        run(&f, &mut many, &c, &mut || panic!("commit"), &mut |_, _| {})
-            .unwrap_err()
-            .contains("512")
-    );
+    let names: Vec<_> = (0..MAX_FILES + 1).map(|n| format!("test{n}.jar")).collect();
+    let allocations = std::cell::Cell::new(0);
+    // The same complete-batch admission and consuming allocator pipeline as
+    // the real producer. If admission regresses, this closure allocates real
+    // generated inputs rather than manufacturing descriptor placeholders.
+    let many = prepare_sources(
+        names.iter().map(|name| preflight::SourceSpec {
+            kind: "mods",
+            name,
+            size: 1,
+            sha512: &files[0].sha512,
+        }),
+        &c,
+    )
+    .and_then(|prepared| {
+        prepared
+            .into_permits()
+            .map(|permit| {
+                permit.allocate_with(|source| {
+                    allocations.set(allocations.get() + 1);
+                    Ok(f.file(source.kind, source.name))
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    });
+    assert_eq!(many.err().unwrap(), "一次最多下载 512 个资源文件");
+    assert_eq!(allocations.get(), 0);
+    assert!(!f.root.join("mods").exists());
+    assert!(!f.root.join(".pcl-rust").exists());
     f.clean();
 }
 #[test]

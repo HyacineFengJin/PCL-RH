@@ -5,6 +5,8 @@
 //! marker. Rollback intent is persisted before its exchange. The two executable
 //! inodes are never overwritten or unlinked by this service. Phase markers are
 //! append-only, avoiding a journal rewrite that could lose an external edit.
+#[cfg(not(target_os = "linux"))]
+use super::files;
 use super::{
     files::{c, Directory, FileToken, Identity, Stage},
     model::*,
@@ -13,19 +15,23 @@ use super::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
-    io::{Read, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::fs::MetadataExt,
-    },
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
+use std::{
+    fs::File,
+    io::{Read, Write},
+    os::fd::FromRawFd,
+    os::unix::fs::MetadataExt,
+};
 const JOURNAL: &str = "launcher-update-journal.json";
 const LOCK: &str = ".launcher-updates.lock";
 const BINARY: &str = "pcl-desktop";
+const SCHEMA: u32 = if cfg!(target_os = "linux") { 1 } else { 2 };
 const MAX_JOURNAL: u64 = 8 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,20 +49,14 @@ struct Journal {
 }
 impl Journal {
     fn validate(&self) -> Result<(), String> {
-        let valid_file = |file: &FileToken| {
-            file.size >= 64
-                && file.size <= MAX_BINARY_BYTES
-                && file.inode != 0
-                && hex(&file.sha256, 64)
-                && file.mode & !0o777 == 0
-        };
+        let valid_file = |file: &FileToken| file.valid();
         let valid_build = |build: &DiskBuild| {
             build.version.len() <= 128
                 && semver::Version::parse(&build.version).is_ok()
                 && build.commit.as_ref().is_none_or(|commit| hex(commit, 40))
                 && hex(&build.sha256, 64)
         };
-        if self.schema_version != 1
+        if self.schema_version != SCHEMA
             || !hex(&self.nonce, 32)
             || !valid_file(&self.original)
             || !valid_file(&self.replacement)
@@ -64,8 +64,7 @@ impl Journal {
             || !valid_build(&self.replacement_build)
             || self.original.sha256 != self.original_build.sha256
             || self.replacement.sha256 != self.replacement_build.sha256
-            || self.original.inode == self.replacement.inode
-                && self.original.device == self.replacement.device
+            || self.original.same_identity(&self.replacement)
         {
             return Err("启动器更新日志格式、身份或版本无效；所有文件已保留".into());
         }
@@ -87,7 +86,11 @@ struct Marker {
     phase: String,
 }
 
+#[cfg(target_os = "linux")]
 struct Lock(File);
+#[cfg(not(target_os = "linux"))]
+struct Lock(#[allow(dead_code)] pcl_core::retained_fs::Lock);
+#[cfg(target_os = "linux")]
 impl Drop for Lock {
     fn drop(&mut self) {
         unsafe {
@@ -137,40 +140,52 @@ impl Fs {
         self.check_visible()
     }
     fn lock(&self) -> Result<Lock, String> {
-        self.check_visible()?;
-        let fd = unsafe {
-            libc::openat(
-                self.storage.0.as_raw_fd(),
-                c(LOCK)?.as_ptr(),
-                libc::O_RDWR
-                    | libc::O_CREAT
-                    | libc::O_CLOEXEC
-                    | libc::O_NOFOLLOW
-                    | libc::O_NONBLOCK,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err("无法打开启动器更新锁".into());
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        let meta = file.metadata().map_err(|_| "无法检查启动器更新锁")?;
-        if !meta.is_file() || meta.nlink() != 1 || meta.uid() != unsafe { libc::geteuid() } {
-            return Err("启动器更新锁不是独立的当前用户普通文件".into());
-        }
-        if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err("另一个进程正在处理启动器更新".into());
-        }
-        let lock = Lock(file);
-        let visible = entry_stat(&self.storage, LOCK)?.ok_or("启动器更新锁已消失")?;
-        if visible.st_dev != meta.dev()
-            || visible.st_ino != meta.ino()
-            || visible.st_nlink != 1
-            || visible.st_mode & libc::S_IFMT != libc::S_IFREG
+        #[cfg(target_os = "linux")]
         {
-            return Err("启动器更新锁被外部替换".into());
+            self.check_visible()?;
+            let fd = unsafe {
+                libc::openat(
+                    self.storage.0.as_raw_fd(),
+                    c(LOCK)?.as_ptr(),
+                    libc::O_RDWR
+                        | libc::O_CREAT
+                        | libc::O_CLOEXEC
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK,
+                    0o600,
+                )
+            };
+            if fd < 0 {
+                return Err("无法打开启动器更新锁".into());
+            }
+            let file = unsafe { File::from_raw_fd(fd) };
+            let meta = file.metadata().map_err(|_| "无法检查启动器更新锁")?;
+            if !meta.is_file() || meta.nlink() != 1 || meta.uid() != unsafe { libc::geteuid() } {
+                return Err("启动器更新锁不是独立的当前用户普通文件".into());
+            }
+            if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err("另一个进程正在处理启动器更新".into());
+            }
+            let lock = Lock(file);
+            let visible = entry_stat(&self.storage, LOCK)?.ok_or("启动器更新锁已消失")?;
+            if visible.st_dev != meta.dev()
+                || visible.st_ino != meta.ino()
+                || visible.st_nlink != 1
+                || visible.st_mode & libc::S_IFMT != libc::S_IFREG
+            {
+                return Err("启动器更新锁被外部替换".into());
+            }
+            Ok(lock)
         }
-        Ok(lock)
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.check_visible()?;
+            self.storage
+                .held()?
+                .lock(&pcl_core::retained_fs::Leaf::new(LOCK).map_err(|e| e.to_string())?)
+                .map(Lock)
+                .map_err(|e| e.to_string())
+        }
     }
     fn journal(&self) -> Result<Option<Journal>, String> {
         let Some((_, bytes)) = read_named(&self.storage, JOURNAL, MAX_JOURNAL, None)? else {
@@ -232,30 +247,45 @@ impl Fs {
         Ok(())
     }
     fn publish(&self, dir: &Directory, name: &str, bytes: &[u8]) -> Result<(), String> {
-        self.check_visible()?;
-        let fd = unsafe {
-            libc::openat(
-                dir.0.as_raw_fd(),
-                c(".")?.as_ptr(),
-                libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err("文件系统不支持安全匿名更新日志".into());
+        #[cfg(target_os = "linux")]
+        {
+            self.check_visible()?;
+            let fd = unsafe {
+                libc::openat(
+                    dir.0.as_raw_fd(),
+                    c(".")?.as_ptr(),
+                    libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+                    0o600,
+                )
+            };
+            if fd < 0 {
+                return Err("文件系统不支持安全匿名更新日志".into());
+            }
+            let mut file = unsafe { File::from_raw_fd(fd) };
+            file.write_all(bytes)
+                .map_err(|_| "无法写入启动器更新日志")?;
+            file.sync_all().map_err(|_| "无法同步启动器更新日志")?;
+            link_anonymous(&file, dir, name)?;
+            dir.0.sync_all().map_err(|_| "无法同步启动器更新日志目录")?;
+            self.check_visible()?;
+            let (_, actual) =
+                read_named(dir, name, MAX_JOURNAL, None)?.ok_or("更新日志保存后消失")?;
+            if actual != bytes {
+                return Err("更新日志保存期间被外部修改".into());
+            }
+            Ok(())
         }
-        let mut file = unsafe { File::from_raw_fd(fd) };
-        file.write_all(bytes)
-            .map_err(|_| "无法写入启动器更新日志")?;
-        file.sync_all().map_err(|_| "无法同步启动器更新日志")?;
-        link_anonymous(&file, dir, name)?;
-        dir.0.sync_all().map_err(|_| "无法同步启动器更新日志目录")?;
-        self.check_visible()?;
-        let (_, actual) = read_named(dir, name, MAX_JOURNAL, None)?.ok_or("更新日志保存后消失")?;
-        if actual != bytes {
-            return Err("更新日志保存期间被外部修改".into());
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.check_visible()?;
+            files::publish_bytes(&self.path, dir, name, bytes)?;
+            let (_, actual) =
+                read_named(dir, name, MAX_JOURNAL, None)?.ok_or("更新记录发布后消失")?;
+            if actual != bytes {
+                return Err("MayHavePublished：更新记录发布后改变，证据保留".into());
+            }
+            self.check_visible()
         }
-        Ok(())
     }
     fn tokens(&self, journal: &Journal) -> Result<(Option<FileToken>, Option<FileToken>), String> {
         self.assert_journal(journal)?;
@@ -266,27 +296,59 @@ impl Fs {
         Ok((current, swap))
     }
     fn exchange(&self, journal: &Journal) -> Result<(), String> {
-        self.assert_journal(journal)?;
-        if unsafe {
-            libc::renameat2(
-                self.bin.0.as_raw_fd(),
-                c(BINARY)?.as_ptr(),
-                self.bin.0.as_raw_fd(),
-                c(&journal.swap_name())?.as_ptr(),
-                libc::RENAME_EXCHANGE,
-            )
-        } != 0
+        #[cfg(target_os = "linux")]
         {
-            return Err("无法原子交换启动器文件；原文件和暂存均已保留".into());
+            self.assert_journal(journal)?;
+            if unsafe {
+                libc::renameat2(
+                    self.bin.0.as_raw_fd(),
+                    c(BINARY)?.as_ptr(),
+                    self.bin.0.as_raw_fd(),
+                    c(&journal.swap_name())?.as_ptr(),
+                    libc::RENAME_EXCHANGE,
+                )
+            } != 0
+            {
+                return Err("无法原子交换启动器文件；原文件和暂存均已保留".into());
+            }
+            self.bin
+                .sync()
+                .map_err(|_| "无法同步启动器交换结果；需要启动恢复")?;
+            self.check_visible()
         }
-        self.bin
-            .0
-            .sync_all()
-            .map_err(|_| "无法同步启动器交换结果；需要启动恢复")?;
-        self.check_visible()
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.assert_journal(journal)?;
+            #[cfg(target_os = "macos")]
+            {
+                if unsafe {
+                    libc::renameatx_np(
+                        self.bin.0.as_raw_fd(),
+                        c(BINARY)?.as_ptr(),
+                        self.bin.0.as_raw_fd(),
+                        c(&journal.swap_name())?.as_ptr(),
+                        libc::RENAME_SWAP,
+                    )
+                } != 0
+                {
+                    return Err("无法原子交换启动器，原件保留".into());
+                }
+                self.bin
+                    .held()?
+                    .sync()
+                    .map_err(|e| format!("MayHavePublished：启动器已交换但目录同步未确认：{e}"))?;
+                self.check_visible()
+                    .map_err(|e| format!("MayHavePublished：{e}"))
+            }
+            #[cfg(windows)]
+            {
+                Err("Windows运行中EXE没有受支持的原子交换能力；未开始替换，需要独立应用器".into())
+            }
+        }
     }
 }
 
+#[cfg(target_os = "linux")]
 fn entry_stat(dir: &Directory, name: &str) -> Result<Option<libc::stat>, String> {
     let mut stat = std::mem::MaybeUninit::uninit();
     if unsafe {
@@ -312,87 +374,95 @@ fn read_named(
     max: u64,
     cancel: Option<&AtomicBool>,
 ) -> Result<Option<(FileToken, Vec<u8>)>, String> {
-    let Some(visible) = entry_stat(dir, name)? else {
-        return Ok(None);
-    };
-    if visible.st_mode & libc::S_IFMT != libc::S_IFREG
-        || visible.st_nlink != 1
-        || visible.st_size < 0
-        || visible.st_size as u64 > max
-        || visible.st_uid != unsafe { libc::geteuid() }
+    #[cfg(target_os = "linux")]
     {
-        return Err("启动器更新文件不是受支持的独立当前用户普通文件；所有内容已保留".into());
+        let Some(visible) = entry_stat(dir, name)? else {
+            return Ok(None);
+        };
+        if visible.st_mode & libc::S_IFMT != libc::S_IFREG
+            || visible.st_nlink != 1
+            || visible.st_size < 0
+            || visible.st_size as u64 > max
+            || visible.st_uid != unsafe { libc::geteuid() }
+        {
+            return Err("启动器更新文件不是受支持的独立当前用户普通文件；所有内容已保留".into());
+        }
+        let fd = unsafe {
+            libc::openat(
+                dir.0.as_raw_fd(),
+                c(name)?.as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+            )
+        };
+        if fd < 0 {
+            return Err("无法读取启动器更新文件".into());
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let before = file.metadata().map_err(|_| "无法检查启动器更新文件")?;
+        if before.dev() != visible.st_dev
+            || before.ino() != visible.st_ino
+            || before.nlink() != 1
+            || !before.is_file()
+        {
+            return Err("启动器更新文件在打开期间被外部替换".into());
+        }
+        let mut digest = Sha256::new();
+        let mut bytes = Vec::new();
+        let mut total = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+                return Err("启动器更新应用已取消".into());
+            }
+            let count = file
+                .read(&mut buffer)
+                .map_err(|_| "无法读取启动器更新文件")?;
+            if count == 0 {
+                break;
+            }
+            total += count as u64;
+            if total > max {
+                return Err("启动器更新文件在读取期间超过大小限制".into());
+            }
+            digest.update(&buffer[..count]);
+            if max <= MAX_JOURNAL {
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+        }
+        let after = file.metadata().map_err(|_| "无法重新检查启动器更新文件")?;
+        let now = entry_stat(dir, name)?.ok_or("启动器更新文件在读取期间消失")?;
+        let token = FileToken::from_meta(&after, format!("{:x}", digest.finalize()));
+        if before.dev() != after.dev()
+            || before.ino() != after.ino()
+            || before.len() != after.len()
+            || before.mtime() != after.mtime()
+            || before.mtime_nsec() != after.mtime_nsec()
+            || before.ctime() != after.ctime()
+            || before.ctime_nsec() != after.ctime_nsec()
+            || total != after.len()
+            || after.nlink() != 1
+            || before.mode() != after.mode()
+            || now.st_dev != after.dev()
+            || now.st_ino != after.ino()
+            || now.st_size < 0
+            || now.st_size as u64 != after.len()
+            || now.st_mtime != after.mtime()
+            || now.st_mtime_nsec != after.mtime_nsec()
+            || now.st_ctime != after.ctime()
+            || now.st_ctime_nsec != after.ctime_nsec()
+            || now.st_nlink != 1
+            || now.st_mode & libc::S_IFMT != libc::S_IFREG
+        {
+            return Err("启动器更新文件在读取期间被外部修改；所有内容已保留".into());
+        }
+        Ok(Some((token, bytes)))
     }
-    let fd = unsafe {
-        libc::openat(
-            dir.0.as_raw_fd(),
-            c(name)?.as_ptr(),
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-        )
-    };
-    if fd < 0 {
-        return Err("无法读取启动器更新文件".into());
-    }
-    let mut file = unsafe { File::from_raw_fd(fd) };
-    let before = file.metadata().map_err(|_| "无法检查启动器更新文件")?;
-    if before.dev() != visible.st_dev
-        || before.ino() != visible.st_ino
-        || before.nlink() != 1
-        || !before.is_file()
+    #[cfg(not(target_os = "linux"))]
     {
-        return Err("启动器更新文件在打开期间被外部替换".into());
+        files::read_named(dir, name, max, cancel)
     }
-    let mut digest = Sha256::new();
-    let mut bytes = Vec::new();
-    let mut total = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
-            return Err("启动器更新应用已取消".into());
-        }
-        let count = file
-            .read(&mut buffer)
-            .map_err(|_| "无法读取启动器更新文件")?;
-        if count == 0 {
-            break;
-        }
-        total += count as u64;
-        if total > max {
-            return Err("启动器更新文件在读取期间超过大小限制".into());
-        }
-        digest.update(&buffer[..count]);
-        if max <= MAX_JOURNAL {
-            bytes.extend_from_slice(&buffer[..count]);
-        }
-    }
-    let after = file.metadata().map_err(|_| "无法重新检查启动器更新文件")?;
-    let now = entry_stat(dir, name)?.ok_or("启动器更新文件在读取期间消失")?;
-    let token = FileToken::from_meta(&after, format!("{:x}", digest.finalize()));
-    if before.dev() != after.dev()
-        || before.ino() != after.ino()
-        || before.len() != after.len()
-        || before.mtime() != after.mtime()
-        || before.mtime_nsec() != after.mtime_nsec()
-        || before.ctime() != after.ctime()
-        || before.ctime_nsec() != after.ctime_nsec()
-        || total != after.len()
-        || after.nlink() != 1
-        || before.mode() != after.mode()
-        || now.st_dev != after.dev()
-        || now.st_ino != after.ino()
-        || now.st_size < 0
-        || now.st_size as u64 != after.len()
-        || now.st_mtime != after.mtime()
-        || now.st_mtime_nsec != after.mtime_nsec()
-        || now.st_ctime != after.ctime()
-        || now.st_ctime_nsec != after.ctime_nsec()
-        || now.st_nlink != 1
-        || now.st_mode & libc::S_IFMT != libc::S_IFREG
-    {
-        return Err("启动器更新文件在读取期间被外部修改；所有内容已保留".into());
-    }
-    Ok(Some((token, bytes)))
 }
+#[cfg(target_os = "linux")]
 fn link_anonymous(file: &File, dir: &Directory, name: &str) -> Result<(), String> {
     let name = c(name)?;
     let result = unsafe {
@@ -512,15 +582,30 @@ fn recover_locked(
 }
 
 pub(super) fn has_pending(project: &Path) -> Result<bool, String> {
-    let root = Directory::open(project)?;
-    let Some(stat) = entry_stat(&root, ".pcl-rust")? else {
-        return Ok(false);
-    };
-    if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
-        return Err("启动器数据目录不是普通目录".into());
+    #[cfg(target_os = "linux")]
+    {
+        let root = Directory::open(project)?;
+        let Some(stat) = entry_stat(&root, ".pcl-rust")? else {
+            return Ok(false);
+        };
+        if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err("启动器数据目录不是普通目录".into());
+        }
+        let storage = root.child(&c(".pcl-rust")?)?;
+        Ok(entry_stat(&storage, JOURNAL)?.is_some())
     }
-    let storage = root.child(&c(".pcl-rust")?)?;
-    Ok(entry_stat(&storage, JOURNAL)?.is_some())
+    #[cfg(not(target_os = "linux"))]
+    {
+        let root = Directory::open(project)?;
+        let Some(entry) = files::entry(&root, ".pcl-rust")? else {
+            return Ok(false);
+        };
+        if entry.kind != pcl_core::retained_fs::Kind::Directory || entry.reparse_tag.is_some() {
+            return Err("启动器数据目录不是literal目录".into());
+        }
+        let storage = root.child(&c(".pcl-rust")?)?;
+        Ok(files::entry(&storage, JOURNAL)?.is_some())
+    }
 }
 
 pub(super) fn recover(project: &Path, current: &CurrentBuild) -> InstallationView {
@@ -552,6 +637,11 @@ pub(super) fn apply(
     close_cancellation: &dyn Fn() -> bool,
 ) -> InstallationView {
     let mut run = || -> Result<InstallationView, String> {
+        if cfg!(windows) {
+            return Err(
+                "Windows运行中EXE当前需要独立应用器，尚未开始替换；校验来源将安全退役".into(),
+            );
+        }
         if !owned_portable(project, current) {
             return Err("当前启动器不是本项目管理的便携安装，不能应用更新".into());
         }
@@ -571,24 +661,38 @@ pub(super) fn apply(
             return Err("原启动器在生成计划后已被外部修改，未应用更新".into());
         }
         stage.finish(release.bytes, &release.sha256, &release.architecture)?;
-        let mode = (original.mode & 0o777) | 0o100;
-        if unsafe { libc::fchmod(stage.file.as_raw_fd(), mode) } != 0 {
+        let nonce = super::opaque_token()?;
+        #[cfg(not(target_os = "linux"))]
+        stage.bind_target(&fs.bin, &format!(".pcl-desktop-update-{nonce}.swap"))?;
+        #[cfg(unix)]
+        let mode = if cfg!(target_os = "macos") {
+            0o700
+        } else {
+            (original.mode & 0o777) | 0o100
+        };
+        #[cfg(unix)]
+        if unsafe { libc::fchmod(stage.file().as_raw_fd(), mode as libc::mode_t) } != 0 {
             return Err("无法设置更新 ELF 的可执行权限".into());
         }
-        stage.file.sync_all().map_err(|_| "无法同步更新 ELF")?;
-        let metadata = stage.file.metadata().map_err(|_| "无法检查更新 ELF")?;
-        let replacement = FileToken::from_meta(&metadata, release.sha256.clone());
-        if replacement.device != fs.bin.0.metadata().map_err(|_| "无法检查安装目录")?.dev()
-            || metadata.nlink() != 0
-        {
+        stage.file().sync_all().map_err(|_| "无法同步更新 ELF")?;
+        let replacement = FileToken::from_file(stage.file(), release.sha256.clone())?;
+        #[cfg(target_os = "linux")]
+        let new_links_ok = stage.file().metadata().map_err(|e| e.to_string())?.nlink() == 0;
+        #[cfg(not(target_os = "linux"))]
+        let new_links_ok = pcl_core::retained_fs::metadata(stage.file())
+            .map_err(|e| e.to_string())?
+            .links
+            == 1;
+        if !replacement.same_filesystem(&fs.bin)? || !new_links_ok {
             return Err("更新暂存与便携安装不在同一文件系统，无法安全交换".into());
         }
+        #[cfg(unix)]
         if original.mode & !0o777 != 0 {
             return Err("原启动器含特殊权限，不能应用内替换".into());
         }
         let journal = Journal {
-            schema_version: 1,
-            nonce: super::opaque_token()?,
+            schema_version: SCHEMA,
+            nonce,
             project: fs.project.identity()?,
             storage: fs.storage.identity()?,
             bin: fs.bin.identity()?,
@@ -613,8 +717,11 @@ pub(super) fn apply(
                 return Err("更新应用已取消，原启动器保留".into());
             }
             fs.assert_journal(&journal)?;
-            link_anonymous(&stage.file, &fs.bin, &journal.swap_name())?;
-            fs.bin.0.sync_all().map_err(|_| "无法同步更新发布目录")?;
+            #[cfg(target_os = "linux")]
+            link_anonymous(stage.file(), &fs.bin, &journal.swap_name())?;
+            #[cfg(not(target_os = "linux"))]
+            stage.publish(&fs.bin, &journal.swap_name())?;
+            fs.bin.sync().map_err(|_| "无法同步更新发布目录")?;
             let (visible, swap) = fs.tokens(&journal)?;
             if visible.as_ref() != Some(&journal.original)
                 || swap.as_ref() != Some(&journal.replacement)
@@ -706,6 +813,7 @@ pub(super) fn acknowledge(project: &Path, current: &CurrentBuild, token: &str) -
         }
         fs.assert_journal(&journal)?;
         let history = format!("launcher-update-journal-{}.json", journal.nonce);
+        #[cfg(target_os = "linux")]
         if unsafe {
             libc::renameat2(
                 fs.storage.0.as_raw_fd(),
@@ -718,10 +826,15 @@ pub(super) fn acknowledge(project: &Path, current: &CurrentBuild, token: &str) -
         {
             return Err("无法归档更新日志，未覆盖任何文件".into());
         }
-        fs.storage
-            .0
-            .sync_all()
-            .map_err(|_| "无法同步更新日志归档")?;
+        #[cfg(not(target_os = "linux"))]
+        pcl_core::file_ops::rename_noreplace_at(
+            &fs.storage.0,
+            std::ffi::OsStr::new(JOURNAL),
+            &fs.storage.0,
+            std::ffi::OsStr::new(&history),
+        )
+        .map_err(|e| format!("MayHavePublished：更新日志归档需要复核：{e}"))?;
+        fs.storage.sync().map_err(|_| "无法同步更新日志归档")?;
         let (_, bytes) =
             read_named(&fs.storage, &history, MAX_JOURNAL, None)?.ok_or("归档更新日志已消失")?;
         if bytes != serde_json::to_vec(&journal).map_err(|_| "无法验证归档更新日志")? {

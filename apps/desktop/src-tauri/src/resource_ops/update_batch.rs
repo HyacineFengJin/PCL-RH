@@ -13,6 +13,7 @@
 use super::verified_batch::{
     archive,
     filesystem::{self, Dir, Key, Owned},
+    preflight,
 };
 use super::{MutationResult, VerifiedImport};
 use pcl_core::content_scope::IsolationPolicy;
@@ -193,27 +194,43 @@ fn validate_sources(
     if files.len() > MAX_FILES || replacements.len() > MAX_FILES {
         return Err("一次最多更新 512 个资源文件".into());
     }
-    let mut total = 0u64;
     let mut names = BTreeSet::new();
+    preflight::prepare(
+        files.iter().map(|f| preflight::SourceSpec {
+            kind: &f.kind,
+            name: &f.file_name,
+            size: f.size,
+            sha512: &f.sha512,
+        }),
+        preflight::Rules {
+            max_files: MAX_FILES,
+            max_file_bytes: MAX_FILE_BYTES,
+            max_batch_bytes: MAX_BATCH_BYTES,
+            count_error: "一次最多更新 512 个资源文件",
+            file_error: "更新下载文件重复或大小、SHA512 无效",
+            overflow_error: "资源更新下载超过 8 GiB",
+            total_error: "资源更新下载超过 8 GiB",
+        },
+        |source| {
+            check(cancel)?;
+            name_ok(source.kind, source.name)?;
+            if !valid_hash(source.sha512)
+                || names.contains(&(source.kind.to_owned(), counterpart(source.name)))
+                || !names.insert((source.kind.to_owned(), source.name.to_owned()))
+            {
+                return Err("更新下载文件重复或大小、SHA512 无效".into());
+            }
+            Ok(())
+        },
+    )?;
     let mut keys = BTreeSet::new();
     let mut tokens = Vec::new();
     for f in files.iter_mut() {
         check(cancel)?;
-        name_ok(&f.kind, &f.file_name)?;
         filesystem::anonymous_source(&f.file)?;
-        if f.size == 0
-            || f.size > MAX_FILE_BYTES
-            || !valid_hash(&f.sha512)
-            || names.contains(&(f.kind.clone(), counterpart(&f.file_name)))
-            || !names.insert((f.kind.clone(), f.file_name.clone()))
-            || !keys.insert(filesystem::key_file(&f.file)?)
-        {
+        if !keys.insert(filesystem::key_file(&f.file)?) {
             return Err("更新下载文件重复或大小、SHA512 无效".into());
         }
-        total = total
-            .checked_add(f.size)
-            .filter(|n| *n <= MAX_BATCH_BYTES)
-            .ok_or("资源更新下载超过 8 GiB")?;
         filesystem::anonymous_source(&f.file)?;
         let token = super::token_for(&f.file)?;
         filesystem::verify_file(&mut f.file, None, f.size, &f.sha512, Some(cancel))?;

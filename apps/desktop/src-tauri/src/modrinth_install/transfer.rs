@@ -2,6 +2,7 @@
 //! publication. Linux keeps anonymous FDs; native cancellation records durable
 //! discard, while unknown/unconfirmed evidence is preserved and reported.
 use super::{provider::HttpProvider, target::Dir, *};
+use crate::resource_ops::preflight;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -199,6 +200,97 @@ fn transfer_error(cancel: &AtomicBool, error: String) -> String {
         error
     }
 }
+fn prepare_sources<'a>(
+    sources: impl IntoIterator<Item = preflight::SourceSpec<'a>>,
+    cancel: &AtomicBool,
+) -> Result<preflight::PreparedSources<'a>> {
+    let mut names = std::collections::BTreeSet::new();
+    preflight::prepare(
+        sources,
+        preflight::Rules {
+            max_files: MAX_FILES,
+            max_file_bytes: MAX_FILE_BYTES,
+            max_batch_bytes: MAX_BATCH_BYTES,
+            count_error: "依赖文件数量超过128项",
+            file_error: "Modrinth文件重复、为空或超过大小限制",
+            overflow_error: "资源文件总大小过大",
+            total_error: "资源下载总大小超过8GiB限制",
+        },
+        |source| {
+            target::cancelled(cancel)?;
+            provider::file_name(source.name)?;
+            provider::sha512(source.sha512)?;
+            if !names.insert((source.kind, source.name)) {
+                return Err("Modrinth文件重复、为空或超过大小限制".into());
+            }
+            Ok(())
+        },
+    )
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::*;
+
+    fn allocate_metadata(
+        count: usize,
+        size: u64,
+        calls: &std::cell::Cell<usize>,
+    ) -> Result<Vec<u64>> {
+        let names: Vec<_> = (0..count).map(|i| format!("file-{i}.jar")).collect();
+        let hash = "a".repeat(128);
+        let cancel = AtomicBool::new(false);
+        prepare_sources(
+            names.iter().map(|name| preflight::SourceSpec {
+                kind: "mods",
+                name,
+                size,
+                sha512: &hash,
+            }),
+            &cancel,
+        )?
+        .into_permits()
+        .map(|permit| {
+            permit.allocate_with(|source| {
+                calls.set(calls.get() + 1);
+                Ok(source.size)
+            })
+        })
+        .collect()
+    }
+
+    #[test]
+    fn modrinth_metadata_limit_remains_128_before_allocator() {
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            allocate_metadata(129, 1, &calls).unwrap_err(),
+            "依赖文件数量超过128项"
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(allocate_metadata(128, 1, &calls).unwrap().len(), 128);
+        assert_eq!(calls.get(), 128);
+    }
+
+    #[test]
+    fn modrinth_complete_size_admission_precedes_every_allocator() {
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            allocate_metadata(1, MAX_FILE_BYTES + 1, &calls).unwrap_err(),
+            "Modrinth文件重复、为空或超过大小限制"
+        );
+        assert_eq!(
+            allocate_metadata(5, MAX_FILE_BYTES, &calls).unwrap_err(),
+            "资源下载总大小超过8GiB限制"
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            allocate_metadata(4, MAX_FILE_BYTES, &calls).unwrap(),
+            vec![MAX_FILE_BYTES; 4]
+        );
+        assert_eq!(calls.get(), 4);
+    }
+}
+
 pub(super) async fn download(
     provider: &HttpProvider<'_>,
     plan: InstallPlan,
@@ -207,6 +299,17 @@ pub(super) async fn download(
 ) -> Result<VerifiedBatch> {
     target::cancelled(cancel)?;
     target::check(&plan.target, cancel)?;
+    // Include reused entries in the original 128-file/8-GiB plan limits, and
+    // admit the complete metadata batch before creating a source namespace.
+    let prepared = prepare_sources(
+        plan.files.iter().map(|file| preflight::SourceSpec {
+            kind: &file.kind,
+            name: &file.file_name,
+            size: file.size,
+            sha512: &file.sha512,
+        }),
+        cancel,
+    )?;
     let project = Dir::open(&plan.target.project)?;
     if project.key() != Ok(plan.target.project_key.clone()) {
         return Err("应用目录已被替换，资源目标未改动".into());
@@ -241,12 +344,12 @@ pub(super) async fn download(
         completed,
         0,
     );
-    let jobs = plan
-        .files
-        .iter()
-        .enumerate()
-        .filter(|(_, file)| !file.reused)
-        .map(|(index, file)| {
+    let jobs = prepared
+        .into_permits()
+        .filter(|permit| !plan.files[permit.index()].reused)
+        .map(|permit| {
+            let index = permit.index();
+            let file = &plan.files[index];
             let counters = &counters;
             let plan = &plan;
             let report = &report;
@@ -256,7 +359,8 @@ pub(super) async fn download(
             Box::pin(async move {
                 target::cancelled(cancel)?;
                 let url = provider::cdn_url(&file.url)?;
-                let mut destination = staging.allocate(file.size)?;
+                let mut destination =
+                    permit.allocate_with(|source| staging.allocate(source.size))?;
                 response_into_file(
                     provider,
                     provider

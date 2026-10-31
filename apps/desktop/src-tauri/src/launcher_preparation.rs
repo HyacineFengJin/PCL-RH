@@ -12,8 +12,7 @@ use crate::{
 use pcl_core::content_scope::IsolationPolicy;
 use pcl_install::{Installer, MissingRepair, MissingRepairReport};
 use std::{
-    fs::{self, File, OpenOptions},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    fs::File,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,6 +20,17 @@ use std::{
     },
 };
 
+use crate::launcher_local::filesystem::DirectoryIdentity;
+#[cfg(not(target_os = "linux"))]
+use pcl_core::retained_fs::Directory;
+#[cfg(target_os = "linux")]
+use std::{
+    fs::{self, OpenOptions},
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+};
+
+#[cfg(all(test, not(target_os = "linux")))]
+use std::fs;
 const CHANGED: &str = "启动准备期间实例、游戏目录或设置已变化，请重新启动";
 
 mod java;
@@ -34,7 +44,7 @@ pub(super) struct PreparedLaunch {
     generation: Generation,
     isolation: IsolationPolicy,
     directory: File,
-    identity: (u64, u64),
+    identity: DirectoryIdentity,
     ready: AtomicBool,
 }
 
@@ -55,12 +65,33 @@ pub(super) fn capture(
     isolation: IsolationPolicy,
 ) -> Result<PreparedLaunch, String> {
     pcl_core::identifier(id)?;
+    #[cfg(target_os = "linux")]
     let directory = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&root.path)
         .map_err(|error| format!("无法固定启动目录：{error}"))?;
-    let metadata = directory.metadata().map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    let identity = {
+        let metadata = directory.metadata().map_err(|error| error.to_string())?;
+        (metadata.dev(), metadata.ino())
+    };
+    #[cfg(not(target_os = "linux"))]
+    let (directory, identity) = {
+        let directory = Directory::open_absolute(Path::new(&root.path))
+            .map_err(|error| format!("无法固定启动目录：{error}"))?;
+        let local = crate::launcher_local::filesystem::Dir(
+            directory
+                .try_clone_file()
+                .map_err(|error| error.to_string())?,
+        );
+        (
+            directory
+                .try_clone_file()
+                .map_err(|error| error.to_string())?,
+            local.identity()?,
+        )
+    };
     let captured = PreparedLaunch {
         id: id.into(),
         root: root.clone(),
@@ -70,7 +101,7 @@ pub(super) fn capture(
         generation,
         isolation,
         directory,
-        identity: (metadata.dev(), metadata.ino()),
+        identity,
         ready: AtomicBool::new(false),
     };
     captured.verify_fast(shared)?;
@@ -134,13 +165,31 @@ impl PreparedLaunch {
         if shared.config.resolve(Some(&self.root.id))? != self.root {
             return Err(CHANGED.into());
         }
-        let actual = fs::symlink_metadata(&self.root.path).map_err(|_| CHANGED.to_owned())?;
-        let held = self.directory.metadata().map_err(|_| CHANGED.to_owned())?;
-        if !actual.is_dir()
-            || (actual.dev(), actual.ino()) != self.identity
-            || (held.dev(), held.ino()) != self.identity
+        #[cfg(target_os = "linux")]
         {
-            return Err(CHANGED.into());
+            let actual = fs::symlink_metadata(&self.root.path).map_err(|_| CHANGED.to_owned())?;
+            let held = self.directory.metadata().map_err(|_| CHANGED.to_owned())?;
+            if !actual.is_dir()
+                || (actual.dev(), actual.ino()) != self.identity
+                || (held.dev(), held.ino()) != self.identity
+            {
+                return Err(CHANGED.into());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let actual = crate::launcher_local::filesystem::Dir(
+                Directory::open_absolute(Path::new(&self.root.path))
+                    .map_err(|_| CHANGED.to_owned())?
+                    .try_clone_file()
+                    .map_err(|_| CHANGED.to_owned())?,
+            );
+            let held = crate::launcher_local::filesystem::Dir(
+                self.directory.try_clone().map_err(|_| CHANGED.to_owned())?,
+            );
+            if actual.identity()? != self.identity || held.identity()? != self.identity {
+                return Err(CHANGED.into());
+            }
         }
         let path = Path::new(&self.root.path);
         resource_ops::ensure_ready(path)?;

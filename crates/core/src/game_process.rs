@@ -24,6 +24,10 @@ mod platform;
 #[cfg(windows)]
 use platform as owned;
 
+#[cfg(windows)]
+#[path = "game_process/helper_transport.rs"]
+pub mod helper_transport;
+
 /// Compatible with the original Linux monitor marker. The boot UUID prevents
 /// a marker from an earlier boot naming a new process with a repeated PID/time.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

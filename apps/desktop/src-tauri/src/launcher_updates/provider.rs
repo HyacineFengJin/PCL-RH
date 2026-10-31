@@ -158,7 +158,14 @@ impl ReleaseProvider for GitHubProvider {
                     .header(header::ACCEPT, "application/octet-stream")
                     .header("X-GitHub-Api-Version", "2022-11-28");
                 if prefix_only {
-                    request = request.header(header::RANGE, "bytes=0-63");
+                    request = request.header(
+                        header::RANGE,
+                        if cfg!(target_os = "linux") {
+                            "bytes=0-63"
+                        } else {
+                            "bytes=0-65535"
+                        },
+                    );
                 }
                 let response = request.send().await.map_err(|_| {
                     "GitHub 更新资产请求失败（未记录下载地址或代理信息）".to_string()

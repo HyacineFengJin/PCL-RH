@@ -1,34 +1,26 @@
 //! Installation fixtures use generic fake ELF data and never launch a process.
 use super::*;
 use crate::launcher_updates::{files::Staging, tests::elf};
-use std::{
-    fs,
-    os::unix::fs::{symlink, PermissionsExt},
-    sync::atomic::{AtomicU64, Ordering as CountOrdering},
-};
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Fixture(PathBuf);
+use std::fs;
+#[cfg(target_os = "macos")]
+use std::fs::File;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+struct Fixture(PathBuf, tempfile::TempDir);
 impl Fixture {
     fn new() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../work/launcher-options-2026-10-05/update-tests/transaction-fixtures")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, CountOrdering::Relaxed)
-            ));
-        fs::create_dir_all(path.join(".pcl-rust/bin")).unwrap();
-        fs::write(
-            path.join(".pcl-rust/bin/pcl-desktop"),
-            elf(Architecture::X86_64),
-        )
-        .unwrap();
+        let (path, temporary) = crate::launcher_updates::test_support::tree();
+        crate::launcher_updates::test_support::write_new(
+            &path.join(".pcl-rust/bin/pcl-desktop"),
+            &elf(Architecture::X86_64),
+        );
+        #[cfg(unix)]
         fs::set_permissions(
             path.join(".pcl-rust/bin/pcl-desktop"),
             fs::Permissions::from_mode(0o755),
         )
         .unwrap();
-        Self(path.canonicalize().unwrap())
+        Self(path, temporary)
     }
     fn binary(&self) -> PathBuf {
         self.0.join(".pcl-rust/bin/pcl-desktop")
@@ -83,18 +75,28 @@ impl Fixture {
         (view, journal)
     }
     fn interrupted(&self, publish: bool, exchange: bool) -> Journal {
-        let (release, stage) = self.stage();
-        unsafe {
-            libc::fchmod(stage.file.as_raw_fd(), 0o755);
-        }
-        stage.file.sync_all().unwrap();
+        let (release, mut stage) = self.stage();
+        let nonce = super::super::opaque_token().unwrap();
         let fs = Fs::open(&self.0).unwrap();
+        #[cfg(not(target_os = "linux"))]
+        stage
+            .bind_target(&fs.bin, &format!(".pcl-desktop-update-{nonce}.swap"))
+            .unwrap();
+        #[cfg(unix)]
+        stage
+            .file_mut()
+            .set_permissions(fs::Permissions::from_mode(if cfg!(target_os = "linux") {
+                0o755
+            } else {
+                0o700
+            }))
+            .unwrap();
+        stage.file().sync_all().unwrap();
         let original = stage.original.clone().unwrap();
-        let replacement =
-            FileToken::from_meta(&stage.file.metadata().unwrap(), release.sha256.clone());
+        let replacement = FileToken::from_file(stage.file(), release.sha256.clone()).unwrap();
         let journal = Journal {
-            schema_version: 1,
-            nonce: super::super::opaque_token().unwrap(),
+            schema_version: SCHEMA,
+            nonce,
             project: fs.project.identity().unwrap(),
             storage: fs.storage.identity().unwrap(),
             bin: fs.bin.identity().unwrap(),
@@ -114,8 +116,11 @@ impl Fixture {
         fs.publish(&fs.storage, JOURNAL, &serde_json::to_vec(&journal).unwrap())
             .unwrap();
         if publish {
-            link_anonymous(&stage.file, &fs.bin, &journal.swap_name()).unwrap();
-            fs.bin.0.sync_all().unwrap();
+            #[cfg(target_os = "linux")]
+            link_anonymous(stage.file(), &fs.bin, &journal.swap_name()).unwrap();
+            #[cfg(not(target_os = "linux"))]
+            stage.publish(&fs.bin, &journal.swap_name()).unwrap();
+            fs.bin.sync().unwrap();
         }
         if exchange {
             fs.exchange(&journal).unwrap();
@@ -123,16 +128,12 @@ impl Fixture {
         journal
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
-    }
-}
 
 #[test]
+#[cfg(not(windows))]
 fn apply_preserves_original_inode_and_running_build_then_rollback_restores_it() {
     let fixture = Fixture::new();
-    let before = fs::metadata(fixture.binary()).unwrap();
+    let before = crate::launcher_updates::test_support::identity(fixture.binary());
     let original = fs::read(fixture.binary()).unwrap();
     let (view, journal) = fixture.applied();
     assert!(view.restart_required);
@@ -140,11 +141,11 @@ fn apply_preserves_original_inode_and_running_build_then_rollback_restores_it() 
     let fs = Fs::open(&fixture.0).unwrap();
     let (current, backup) = fs.tokens(&journal).unwrap();
     assert_eq!(current.unwrap(), journal.replacement);
-    assert_eq!(backup.unwrap().inode, before.ino());
+    assert_eq!(backup.unwrap().identity(), before);
     assert_eq!(
-        fs::metadata(fixture.0.join(".pcl-rust/bin").join(journal.swap_name()))
-            .unwrap()
-            .nlink(),
+        crate::launcher_updates::test_support::links(
+            fixture.0.join(".pcl-rust/bin").join(journal.swap_name())
+        ),
         1
     );
     let rolled = rollback(&fixture.0, &fixture.current(), &journal.nonce);
@@ -155,18 +156,22 @@ fn apply_preserves_original_inode_and_running_build_then_rollback_restores_it() 
         rolled.warning
     );
     assert!(!rolled.restart_required);
-    assert_eq!(fs::metadata(fixture.binary()).unwrap().ino(), before.ino());
+    assert_eq!(
+        crate::launcher_updates::test_support::identity(fixture.binary()),
+        before
+    );
     assert_eq!(fs::read(fixture.binary()).unwrap(), original);
     assert!(fs.marker(&journal, "rollback-requested").unwrap());
     assert!(fs.marker(&journal, "rolled-back").unwrap());
 }
 
 #[test]
+#[cfg(not(windows))]
 fn startup_before_publish_after_publish_and_after_exchange_restores_original() {
     for (publish, exchange) in [(false, false), (true, false), (true, true)] {
         let fixture = Fixture::new();
         let original = fs::read(fixture.binary()).unwrap();
-        let original_inode = fs::metadata(fixture.binary()).unwrap().ino();
+        let original_inode = crate::launcher_updates::test_support::identity(fixture.binary());
         let journal = fixture.interrupted(publish, exchange);
         let view = recover(&fixture.0, &fixture.current());
         assert_eq!(
@@ -176,7 +181,7 @@ fn startup_before_publish_after_publish_and_after_exchange_restores_original() {
             view.warning
         );
         assert_eq!(
-            fs::metadata(fixture.binary()).unwrap().ino(),
+            crate::launcher_updates::test_support::identity(fixture.binary()),
             original_inode
         );
         assert_eq!(fs::read(fixture.binary()).unwrap(), original);
@@ -192,6 +197,7 @@ fn startup_before_publish_after_publish_and_after_exchange_restores_original() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn committed_startup_keeps_new_disk_build_and_new_process_can_acknowledge() {
     let fixture = Fixture::new();
     let (_, journal) = fixture.applied();
@@ -222,6 +228,7 @@ fn committed_startup_keeps_new_disk_build_and_new_process_can_acknowledge() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn persisted_rollback_intent_recovers_crash_on_each_side_of_exchange() {
     for exchange in [false, true] {
         let fixture = Fixture::new();
@@ -243,6 +250,7 @@ fn persisted_rollback_intent_recovers_crash_on_each_side_of_exchange() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn external_destination_or_backup_content_edit_blocks_recovery_without_overwrite() {
     for backup in [false, true] {
         let fixture = Fixture::new();
@@ -255,16 +263,20 @@ fn external_destination_or_backup_content_edit_blocks_recovery_without_overwrite
         let mut bytes = fs::read(&edited).unwrap();
         bytes[201] = 23;
         fs::write(&edited, &bytes).unwrap();
-        let before_inode = fs::metadata(&edited).unwrap().ino();
+        let before_inode = crate::launcher_updates::test_support::identity(&edited);
         let view = rollback(&fixture.0, &fixture.current(), &journal.nonce);
         assert_eq!(view.state, InstallationState::RecoveryRequired);
-        assert_eq!(fs::metadata(&edited).unwrap().ino(), before_inode);
+        assert_eq!(
+            crate::launcher_updates::test_support::identity(&edited),
+            before_inode
+        );
         assert_eq!(fs::read(&edited).unwrap(), bytes);
         assert!(fixture.0.join(".pcl-rust").join(JOURNAL).exists());
     }
 }
 
 #[test]
+#[cfg(not(windows))]
 fn external_inode_replacement_and_symlink_are_retained() {
     for use_link in [false, true] {
         let fixture = Fixture::new();
@@ -273,7 +285,8 @@ fn external_inode_replacement_and_symlink_are_retained() {
         fs::write(&replacement, b"external user content").unwrap();
         fs::rename(fixture.binary(), fixture.0.join("retained-new")).unwrap();
         if use_link {
-            symlink(&replacement, fixture.binary()).unwrap();
+            crate::launcher_updates::test_support::symlink_file(&replacement, fixture.binary())
+                .unwrap();
         } else {
             fs::rename(&replacement, fixture.binary()).unwrap();
         }
@@ -299,6 +312,7 @@ fn external_inode_replacement_and_symlink_are_retained() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn original_edit_after_plan_refuses_apply_before_journal_and_stage_is_released() {
     let fixture = Fixture::new();
     let (release, stage) = fixture.stage();
@@ -325,6 +339,7 @@ fn original_edit_after_plan_refuses_apply_before_journal_and_stage_is_released()
 }
 
 #[test]
+#[cfg(not(windows))]
 fn malformed_future_or_externally_reformatted_journal_is_retained() {
     for change in [0, 1, 2] {
         let fixture = Fixture::new();
@@ -356,6 +371,7 @@ fn malformed_future_or_externally_reformatted_journal_is_retained() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn directory_substitution_and_marker_collision_preserve_external_data() {
     let fixture = Fixture::new();
     let journal = fixture.interrupted(true, true);
@@ -386,6 +402,7 @@ fn directory_substitution_and_marker_collision_preserve_external_data() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn process_lock_is_nonblocking_and_explicitly_unlocks_duplicated_description() {
     let fixture = Fixture::new();
     let fs = Fs::open(&fixture.0).unwrap();
@@ -412,9 +429,10 @@ fn no_journal_startup_does_not_create_launcher_data_or_touch_package_binary() {
 }
 
 #[test]
+#[cfg(not(windows))]
 fn cancellation_wins_final_commit_gate_and_original_inode_is_preserved() {
     let fixture = Fixture::new();
-    let before = fs::metadata(fixture.binary()).unwrap().ino();
+    let before = crate::launcher_updates::test_support::identity(fixture.binary());
     let (release, stage) = fixture.stage();
     let view = apply(
         &fixture.0,
@@ -430,9 +448,91 @@ fn cancellation_wins_final_commit_gate_and_original_inode_is_preserved() {
         "{:?}",
         view.warning
     );
-    assert_eq!(fs::metadata(fixture.binary()).unwrap().ino(), before);
+    assert_eq!(
+        crate::launcher_updates::test_support::identity(fixture.binary()),
+        before
+    );
     let fs = Fs::open(&fixture.0).unwrap();
     let journal = fs.journal().unwrap().unwrap();
     assert!(!fs.marker(&journal, "committed").unwrap());
     assert!(fs.marker(&journal, "rolled-back").unwrap());
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn native_process_lock_is_nonblocking_and_releases_after_drop() {
+    let fixture = Fixture::new();
+    let fs = Fs::open(&fixture.0).unwrap();
+    let lock = fs.lock().unwrap();
+    assert!(Fs::open(&fixture.0).unwrap().lock().is_err());
+    drop(lock);
+    assert!(Fs::open(&fixture.0).unwrap().lock().is_ok());
+}
+#[cfg(windows)]
+#[test]
+fn native_windows_apply_refuses_before_creating_installation_journal_or_swap() {
+    let fixture = Fixture::new();
+    let original = fs::read(fixture.binary()).unwrap();
+    let identity = crate::launcher_updates::test_support::identity(fixture.binary());
+    let (release, stage) = fixture.stage();
+    let result = apply(
+        &fixture.0,
+        &fixture.current(),
+        &release,
+        stage,
+        &AtomicBool::new(false),
+        &|| panic!("no Windows exchange admission"),
+    );
+    assert_eq!(result.state, InstallationState::Error);
+    assert!(result.warning.unwrap().contains("独立应用器"));
+    assert_eq!(fs::read(fixture.binary()).unwrap(), original);
+    assert_eq!(
+        crate::launcher_updates::test_support::identity(fixture.binary()),
+        identity
+    );
+    assert!(!has_pending(&fixture.0).unwrap());
+    crate::launcher_updates::test_support::no_partial(
+        &fixture.0.join(".pcl-rust/launcher-update-staging"),
+    );
+}
+#[cfg(windows)]
+#[test]
+fn native_windows_recovers_known_pre_exchange_evidence_without_touching_original() {
+    for published in [false, true] {
+        let fixture = Fixture::new();
+        let original = fs::read(fixture.binary()).unwrap();
+        let identity = crate::launcher_updates::test_support::identity(fixture.binary());
+        let journal = fixture.interrupted(published, false);
+        let result = recover(&fixture.0, &fixture.current());
+        assert_eq!(
+            result.state,
+            InstallationState::RolledBack,
+            "{:?}",
+            result.warning
+        );
+        assert_eq!(fs::read(fixture.binary()).unwrap(), original);
+        assert_eq!(
+            crate::launcher_updates::test_support::identity(fixture.binary()),
+            identity
+        );
+        let fs = Fs::open(&fixture.0).unwrap();
+        assert!(fs.marker(&journal, "rolled-back").unwrap());
+    }
+}
+#[cfg(target_os = "macos")]
+#[test]
+fn native_macos_published_executable_has_actual_owner_only_mode_and_retains_original() {
+    let fixture = Fixture::new();
+    let original = fs::read(fixture.binary()).unwrap();
+    let (_, journal) = fixture.applied();
+    let metadata = pcl_core::retained_fs::metadata(&File::open(fixture.binary()).unwrap()).unwrap();
+    metadata.require_private().unwrap();
+    match metadata.security {
+        pcl_core::retained_fs::Security::Unix { mode, .. } => assert_eq!(mode & 0o7777, 0o700),
+        _ => panic!("Mac security"),
+    };
+    assert_eq!(
+        fs::read(fixture.0.join(".pcl-rust/bin").join(journal.swap_name())).unwrap(),
+        original
+    );
 }

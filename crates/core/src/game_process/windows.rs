@@ -35,9 +35,9 @@ use windows_sys::Win32::{
     },
 };
 type Result<T> = std::result::Result<T, String>;
-struct Handle(HANDLE);
+pub(super) struct Handle(pub(super) HANDLE);
 impl Handle {
-    fn take(raw: HANDLE, context: &str) -> Result<Self> {
+    pub(super) fn take(raw: HANDLE, context: &str) -> Result<Self> {
         if raw.is_null() || raw == INVALID_HANDLE_VALUE {
             Err(win_error(context))
         } else {
@@ -189,14 +189,14 @@ fn pipe_named(name: &[u16], retire: Retire) -> Result<Pipe> {
 #[repr(C, align(16))]
 #[derive(Clone)]
 struct AttributeBlock([u8; 16]);
-struct Attributes {
+pub(super) struct Attributes {
     storage: Vec<AttributeBlock>,
     // UpdateProcThreadAttribute retains this pointer through CreateProcessW.
     // Heap storage is stable even if this guard is moved by its constructor.
     _handles: Box<[HANDLE; 3]>,
 }
 impl Attributes {
-    fn new(handles: [HANDLE; 3]) -> Result<Self> {
+    pub(super) fn new(handles: [HANDLE; 3]) -> Result<Self> {
         let mut bytes = 0;
         unsafe {
             InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut bytes);
@@ -229,7 +229,7 @@ impl Attributes {
         }
         Ok(attributes)
     }
-    fn pointer(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+    pub(super) fn pointer(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
         self.storage.as_mut_ptr().cast()
     }
 }

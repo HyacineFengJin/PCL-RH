@@ -233,7 +233,41 @@ pub(super) fn journal_bytes(operation: &Dir) -> Result<Option<Vec<u8>>> {
         document.bytes(&mut current).map(Some)
     }
 }
+// A fresh opaque document CAS only proves that bytes have not changed since
+// this read. It does not authorize replacing an unknown business record.
+fn validate_previous_journal(bytes: &[u8], next: &Journal) -> Result<()> {
+    let previous: Journal =
+        serde_json::from_slice(bytes).map_err(|_| "原有实例重置日志损坏，未知原文已保留")?;
+    super::validate_journal(&previous, &next.operation_id)?;
+    if previous.root != next.root
+        || previous.root_key != next.root_key
+        || previous.versions_key != next.versions_key
+        || previous.instance_key != next.instance_key
+        || previous.operation_key != next.operation_key
+        || previous.instance_id != next.instance_id
+        || previous.files.len() != next.files.len()
+        || previous
+            .files
+            .iter()
+            .zip(&next.files)
+            .any(|(old, new)| old.name != new.name || old.original != new.original)
+    {
+        return Err("原有实例重置日志授权绑定不同，未知原文已保留".into());
+    }
+    // State, replacement snapshots and stage/incoming/backup registrations are
+    // legitimate phase progress. Their absence/presence is validated per record,
+    // rather than frozen across every recovery write.
+    Ok(())
+}
 pub(super) fn publish_journal(operation: &Dir, bytes: &[u8]) -> Result<()> {
+    if bytes.len() as u64 > MAX_JOURNAL {
+        return Err("实例重置日志超过安全上限".into());
+    }
+    let next: Journal = serde_json::from_slice(bytes).map_err(|_| "新实例重置日志格式无效")?;
+    super::validate_journal(&next, &next.operation_id)?;
+    if operation.key()? != next.operation_key {
+        return Err("新实例重置日志与操作目录绑定不同".into());
+    }
     let local = operation.local()?;
     let document = Document::new(&local, "journal.json", MAX_JOURNAL)?;
     #[cfg(windows)]
@@ -242,12 +276,17 @@ pub(super) fn publish_journal(operation: &Dir, bytes: &[u8]) -> Result<()> {
         if state.presence() == DocumentPresence::Tombstone {
             return Err("实例重置记录被逻辑删除，已保留全部证据".into());
         }
-        document.read_state(&mut state)?;
+        if let Some(previous) = document.read_state(&mut state)? {
+            validate_previous_journal(&previous, &next)?;
+        }
         document.compare_write(&state, Some(bytes))
     }
     #[cfg(unix)]
     {
-        let current = document.snapshot()?;
+        let mut current = document.snapshot()?;
+        if let Some(previous) = current.as_mut() {
+            validate_previous_journal(&document.bytes(previous)?, &next)?;
+        }
         document.replace(current.as_ref(), bytes)
     }
 }

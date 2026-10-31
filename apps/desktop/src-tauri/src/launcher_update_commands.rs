@@ -105,12 +105,11 @@ pub fn launcher_update_cancel(state: State<'_, Arc<Shared>>) -> bool {
     state.launcher_updates.service.cancel()
 }
 #[tauri::command]
-pub fn launcher_update_discard(state: State<'_, Arc<Shared>>) -> Result<UpdateView, String> {
-    let _operation = state.operations.lock().unwrap();
-    if state.launcher_updates.busy() {
-        return Err("请等待更新操作结束后丢弃暂存".into());
-    }
-    state.launcher_updates.service.discard_staged()
+pub async fn launcher_update_discard(state: State<'_, Arc<Shared>>) -> Result<UpdateView, String> {
+    let permit = admit(state.inner().clone())?;
+    tauri::async_runtime::spawn_blocking(move || permit.0.launcher_updates.service.discard_staged())
+        .await
+        .map_err(|_| "更新暂存清理任务意外退出，请核对保留证据".to_string())?
 }
 
 enum InstallationAction {
