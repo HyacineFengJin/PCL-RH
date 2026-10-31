@@ -143,6 +143,9 @@ impl TaskScope {
     /// its original ancestor remains fixed and the whole future subtree was
     /// already reserved. Call only when this task may actually install Java.
     pub fn managed_runtime_store(project: &Path) -> Result<Self> {
+        // Validate the submitted spelling before a verbatim Windows join can
+        // normalize explicit parent components out of the derived store path.
+        validate_path(project)?;
         let path = project.join(".pcl-rust/java");
         validate_path(&path)?;
         let mut directory = open_directory(project)?;

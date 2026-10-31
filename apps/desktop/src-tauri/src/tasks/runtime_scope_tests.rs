@@ -338,7 +338,18 @@ fn managed_store_capture_rejects_unsafe_paths_without_creating_anything() {
     let alias = f.path.join("project-alias");
     symlink(&project, &alias).unwrap();
     assert!(TaskScope::managed_runtime_store(&alias).is_err());
-    assert!(TaskScope::managed_runtime_store(&project.join("../project")).is_err());
+    // PathBuf::join normalizes '..' on Windows verbatim paths, so build the
+    // literal invalid input without path joining before testing admission.
+    let mut spelling = project.as_os_str().to_owned();
+    spelling.push(std::path::MAIN_SEPARATOR_STR);
+    spelling.push("..");
+    spelling.push(std::path::MAIN_SEPARATOR_STR);
+    spelling.push("project");
+    let parent_hop = PathBuf::from(spelling);
+    assert!(parent_hop
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir)));
+    assert!(TaskScope::managed_runtime_store(&parent_hop).is_err());
     assert!(TaskScope::managed_runtime_store(Path::new("relative")).is_err());
     assert!(TaskScope::managed_runtime_store(&project.join("x".repeat(MAX_PATH_BYTES))).is_err());
     assert!(!project.join(".pcl-rust").exists());
