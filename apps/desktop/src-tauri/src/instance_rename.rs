@@ -388,7 +388,18 @@ fn prepare_bound(
         }
         for field in ["inheritsFrom", "jar"] {
             if let Some(value) = data.get(field) {
-                name_ok(value.as_str().ok_or("版本引用标识无效")?)?;
+                let reference = value.as_str().ok_or("版本引用标识无效")?;
+                name_ok(reference)?;
+                #[cfg(windows)]
+                if reference != id {
+                    if let Some(referenced) = versions.optional(reference)? {
+                        if referenced.key()? == instance_key {
+                            return Err(format!(
+                                "版本 {name} 的 {field} 引用 {reference} 是待改名实例的目录别名，请先改为精确标识 {id}"
+                            ));
+                        }
+                    }
+                }
             }
         }
         if let Some(field) = ambiguous(

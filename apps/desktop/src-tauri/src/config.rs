@@ -13,7 +13,7 @@ use pcl_core::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -428,7 +428,9 @@ fn add_java_path(config: &mut Persisted, path: &str) -> Result<(), String> {
 /// Resolve existing symlinks without requiring the executable to exist. A
 /// missing tail stays attached to its resolved parent, including dangling
 /// symlink targets. This reads path metadata only and never executes Java.
+#[cfg(unix)]
 fn java_path_points_into(path: &Path, folder: &Path) -> Result<bool, String> {
+    use std::collections::VecDeque;
     if path.starts_with(folder) {
         return Ok(true);
     }
@@ -478,6 +480,258 @@ fn java_path_points_into(path: &Path, folder: &Path) -> Result<bool, String> {
         }
     }
     Ok(resolved.starts_with(folder))
+}
+
+// This is a read-only dependency observation, not filesystem write authority.
+// Compare actual full directory identities, including every original prefix:
+// canonicalizing only the executable would miss a link leaving the instance.
+#[cfg(windows)]
+fn java_path_points_into(path: &Path, folder: &Path) -> Result<bool, String> {
+    windows_java_dependency::points_into(path, folder)
+}
+
+#[cfg(windows)]
+mod windows_java_dependency {
+    use pcl_core::retained_fs::{Directory, Identity, Leaf, Traversal};
+    use std::{
+        collections::VecDeque,
+        ffi::{OsStr, OsString},
+        fs, io,
+        os::windows::{ffi::OsStrExt, fs::MetadataExt},
+        path::{Component, Path, PathBuf, Prefix},
+    };
+    use windows_sys::Win32::Globalization::CompareStringOrdinal;
+
+    fn error(value: impl std::fmt::Display) -> String {
+        format!("无法确认 Java 路径指向，请修复路径后再重命名：{value}")
+    }
+    struct Target {
+        anchor: Directory,
+        identity: Identity,
+        missing: Vec<OsString>,
+    }
+    fn target(folder: &Path) -> Result<Target, String> {
+        let mut path = folder.to_path_buf();
+        let mut missing = Vec::new();
+        loop {
+            match fs::canonicalize(&path) {
+                Ok(actual) => {
+                    let anchor = Directory::open_absolute(&actual).map_err(error)?;
+                    let identity = anchor.identity().map_err(error)?;
+                    missing.reverse();
+                    return Ok(Target {
+                        anchor,
+                        identity,
+                        missing,
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    let name = path.file_name().ok_or_else(|| error("目录祖先不可解析"))?;
+                    Leaf::new(name).map_err(error)?;
+                    missing.push(name.to_os_string());
+                    if !path.pop() || missing.len() > 64 {
+                        return Err(error("目录祖先不可解析"));
+                    }
+                }
+                Err(e) => return Err(error(e)),
+            }
+        }
+    }
+    fn equal_name(left: &OsStr, right: &OsStr) -> Result<bool, String> {
+        let left: Vec<_> = left.encode_wide().collect();
+        let right: Vec<_> = right.encode_wide().collect();
+        let result = unsafe {
+            CompareStringOrdinal(
+                left.as_ptr(),
+                left.len() as i32,
+                right.as_ptr(),
+                right.len() as i32,
+                1,
+            )
+        };
+        if result == 0 {
+            return Err(error("路径名称比较失败"));
+        }
+        // Only missing leaves use ordinal matching, bound to the same actual
+        // existing parent. Case-sensitive directories may conservatively block.
+        Ok(result == 2)
+    }
+    fn root_parts(path: &Path) -> Result<(PathBuf, VecDeque<OsString>), String> {
+        let mut parts = path.components();
+        let prefix = match parts.next() {
+            Some(Component::Prefix(prefix))
+                if matches!(
+                    prefix.kind(),
+                    Prefix::Disk(_)
+                        | Prefix::VerbatimDisk(_)
+                        | Prefix::UNC(_, _)
+                        | Prefix::VerbatimUNC(_, _)
+                ) =>
+            {
+                prefix
+            }
+            _ => return Err(error("Java 路径不是受支持的绝对路径")),
+        };
+        if !matches!(parts.next(), Some(Component::RootDir)) {
+            return Err(error("Java 路径没有绝对目录根"));
+        }
+        let mut root = PathBuf::from(prefix.as_os_str());
+        root.push(std::path::MAIN_SEPARATOR.to_string());
+        Ok((
+            root,
+            parts.map(|part| part.as_os_str().to_os_string()).collect(),
+        ))
+    }
+    fn open(path: &Path) -> Result<(PathBuf, Directory), String> {
+        let actual = fs::canonicalize(path).map_err(error)?;
+        let directory = Directory::open_absolute(&actual).map_err(error)?;
+        Ok((actual, directory))
+    }
+    fn inside(directory: &Directory, target: &Target, budget: &mut usize) -> Result<bool, String> {
+        if !target.missing.is_empty() {
+            return Ok(false);
+        }
+        let mut current = directory.clone();
+        loop {
+            *budget = budget
+                .checked_sub(1)
+                .ok_or_else(|| error("路径祖先检查超过上限"))?;
+            let identity = current.identity().map_err(error)?;
+            if identity == target.identity {
+                return Ok(true);
+            }
+            let parent = current.parent_snapshot().map_err(error)?;
+            if parent.identity().map_err(error)? == identity {
+                return Ok(false);
+            }
+            current = parent;
+        }
+    }
+    fn missing_inside(
+        directory: &Directory,
+        tail: &VecDeque<OsString>,
+        target: &Target,
+    ) -> Result<bool, String> {
+        if target.missing.is_empty() || directory.identity().map_err(error)? != target.identity {
+            return Ok(false);
+        }
+        if tail.len() < target.missing.len() {
+            return Ok(false);
+        }
+        for (actual, expected) in tail.iter().zip(&target.missing) {
+            if !equal_name(actual, expected)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    pub(super) fn points_into(path: &Path, folder: &Path) -> Result<bool, String> {
+        let protected = target(folder)?;
+        let (root, mut pending) = root_parts(path)?;
+        let (mut resolved, mut directory) = open(&root)?;
+        let mut budget = 4096usize;
+        let mut links = 0;
+        loop {
+            if inside(&directory, &protected, &mut budget)? {
+                return Ok(true);
+            }
+            let Some(part) = pending.pop_front() else {
+                break;
+            };
+            budget = budget
+                .checked_sub(1)
+                .ok_or_else(|| error("路径检查超过上限"))?;
+            if part == "." {
+                continue;
+            }
+            if part == ".." {
+                let parent = directory.parent_snapshot().map_err(error)?;
+                let (actual, named) = open(resolved.parent().unwrap_or(&resolved))?;
+                if parent.identity().map_err(error)? != named.identity().map_err(error)? {
+                    return Err(error("路径祖先在检查中变化"));
+                }
+                resolved = actual;
+                directory = parent;
+                continue;
+            }
+            let leaf = Leaf::new(&part).map_err(error)?;
+            if open(&resolved)?.1.identity().map_err(error)?
+                != directory.identity().map_err(error)?
+            {
+                return Err(error("路径祖先在检查中变化"));
+            }
+            let candidate = resolved.join(&part);
+            match fs::symlink_metadata(&candidate) {
+                Ok(metadata) if metadata.file_attributes() & 0x400 != 0 => {
+                    links += 1;
+                    if links > 40 {
+                        return Err(error("链接层数超过上限"));
+                    }
+                    let before = directory.entry(&leaf).map_err(error)?;
+                    if !before
+                        .as_ref()
+                        .is_some_and(|entry| entry.reparse_tag.is_some())
+                    {
+                        return Err(error("链接在检查中变化"));
+                    }
+                    let link = fs::read_link(&candidate).map_err(error)?;
+                    if directory.entry(&leaf).map_err(error)? != before
+                        || open(&resolved)?.1.identity().map_err(error)?
+                            != directory.identity().map_err(error)?
+                    {
+                        return Err(error("链接在检查中变化"));
+                    }
+                    let parts = if link.is_absolute() {
+                        let (root, parts) = root_parts(&link)?;
+                        (resolved, directory) = open(&root)?;
+                        parts
+                    } else {
+                        link.components()
+                            .map(|part| part.as_os_str().to_os_string())
+                            .collect()
+                    };
+                    for part in parts.into_iter().rev() {
+                        pending.push_front(part);
+                    }
+                }
+                Ok(metadata) if metadata.is_dir() => {
+                    let held = directory
+                        .child(&leaf, Traversal::AllowMounts)
+                        .map_err(error)?;
+                    let (actual, named) = open(&candidate)?;
+                    if held.identity().map_err(error)? != named.identity().map_err(error)? {
+                        return Err(error("目录在检查中变化"));
+                    }
+                    resolved = actual;
+                    directory = held;
+                }
+                Ok(metadata) if metadata.is_file() && pending.is_empty() => break,
+                Ok(_) => return Err(error("Java 路径包含非目录节点")),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    pending.push_front(part);
+                    if missing_inside(&directory, &pending, &protected)? {
+                        return Ok(true);
+                    }
+                    for part in &pending {
+                        Leaf::new(part).map_err(error)?;
+                    }
+                    break;
+                }
+                Err(e) => return Err(error(e)),
+            }
+        }
+        // A missing old instance is normal during refs' post-move validation.
+        // Do not silently use a different directory if it appeared meanwhile.
+        let after = target(folder)?;
+        if open(&resolved)?.1.identity().map_err(error)? != directory.identity().map_err(error)?
+            || after.identity != protected.identity
+            || after.missing != protected.missing
+            || protected.anchor.identity().map_err(error)? != protected.identity
+        {
+            return Err(error("实例目录在检查中变化"));
+        }
+        Ok(false)
+    }
 }
 
 fn decode_settings(bytes: &[u8]) -> Result<(Persisted, Option<Migration>), String> {

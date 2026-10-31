@@ -454,12 +454,42 @@ fn undo_missing_target_dirs_keeps_binding_until_durable_restored() {
 fn root_marker_detects_external_instance_move_even_missing_json() {
     let f = Fixture::new(true, true);
     let mut files = vec![f.file("mods", "new.jar", b"new")];
-    let (_c, _j) = prepared(&f, &mut files, &[]);
+    let (c, j) = prepared(&f, &mut files, &[]);
+    let instance = f.root.join("versions/test");
+    let moved = f.source.join("moved");
+    let marker = f
+        .root
+        .join(".pcl-linux")
+        .join(MARKERS)
+        .join(format!("{}.json", j.id));
+    let marker_bytes = fs::read(&marker).unwrap();
     fs::remove_file(f.root.join("versions/test/test.json")).unwrap();
-    fs::rename(f.root.join("versions/test"), f.source.join("moved")).unwrap();
+    #[cfg(windows)]
+    {
+        // A live Context retains descendant directory capabilities. Windows
+        // refuses moving their ancestor; this is not a crashed-owner fixture.
+        let blocked = fs::rename(&instance, &moved)
+            .expect_err("live update capabilities must block the ancestor move");
+        assert!(
+            matches!(blocked.raw_os_error(), Some(5 | 32)),
+            "unexpected live-capability move failure: {blocked}"
+        );
+        assert!(instance.is_dir());
+        assert!(!moved.exists());
+        c.check(&j).unwrap();
+        assert_eq!(c.instance.key().unwrap(), j.scope.instance);
+        assert_eq!(fs::read(&marker).unwrap(), marker_bytes);
+    }
+    // Simulate losing the old owner before an external move. Recovery below
+    // must reopen the durable marker/history, with no old Context helping it.
+    drop(c);
+    fs::rename(&instance, &moved).unwrap();
     assert!(super::super::ensure_ready(&f.root).is_err());
     assert!(recover_root(&f.root).is_err());
-    fs::rename(f.source.join("moved"), f.root.join("versions/test")).unwrap();
+    assert_eq!(fs::read(&marker).unwrap(), marker_bytes);
+    assert!(moved.is_dir());
+    assert!(!instance.exists());
+    fs::rename(&moved, &instance).unwrap();
     recover_root(&f.root).unwrap();
     f.clean();
 }
@@ -745,21 +775,43 @@ fn interrupted_journal_temp_retries_without_overwrite() {
     let mut files = vec![f.file("mods", "new.jar", b"new")];
     let (c, j) = prepared(&f, &mut files, &[]);
     let op = c.operation.as_ref().unwrap();
-    fs::copy(
-        f.root
-            .join("versions/test")
-            .join(HISTORY)
-            .join(&j.id)
-            .join("journal.json"),
-        f.root
-            .join("versions/test")
-            .join(HISTORY)
-            .join(&j.id)
-            .join("journal.next"),
-    )
-    .unwrap();
+    let bytes = serde_json::to_vec(&j).unwrap();
+    {
+        // Model an interrupted private writer, not CopyFile's inherited owner
+        // or the Windows logical document's physical base fence.
+        let directory = pcl_core::retained_fs::Directory::open_absolute(
+            &f.root.join("versions/test").join(HISTORY).join(&j.id),
+        )
+        .unwrap();
+        assert_eq!(
+            filesystem::key_file(directory.file()).unwrap(),
+            op.key().unwrap()
+        );
+        let mut next = directory
+            .create_file(&pcl_core::retained_fs::Leaf::new("journal.next").unwrap())
+            .unwrap();
+        next.write_all(&bytes).unwrap();
+        next.sync_all().unwrap();
+        pcl_core::retained_fs::metadata(&next)
+            .unwrap()
+            .require_private()
+            .unwrap();
+        directory.sync().unwrap();
+    }
     assert!(op.stat("journal.next").unwrap().is_some());
+    assert_eq!(
+        fs::read(
+            f.root
+                .join("versions/test")
+                .join(HISTORY)
+                .join(&j.id)
+                .join("journal.next")
+        )
+        .unwrap(),
+        bytes
+    );
     journal::write(&c, &j).unwrap();
+    assert_eq!(journal::read(&c).unwrap().id, j.id);
     recover_root(&f.root).unwrap();
     f.clean();
 }
@@ -800,6 +852,7 @@ fn undo_external_original_slot_conflict_retains_history() {
 
 #[test]
 fn maximum_replacements_have_bounded_phase_writes_and_readable_inventory() {
+    let started = std::time::Instant::now();
     let f = Fixture::new(false, true);
     let mut replacements = Vec::new();
     let mut files = Vec::new();
@@ -807,15 +860,40 @@ fn maximum_replacements_have_bounded_phase_writes_and_readable_inventory() {
         let r = f.old("mods", &format!("old-{index:04}.jar"), b"old");
         files.push(f.file("mods", &r.new_file_name, b"new"));
         replacements.push(r);
+        if files.len() % 64 == 0 {
+            eprintln!(
+                "max512 phase=setup count={} elapsed_ms={}",
+                files.len(),
+                started.elapsed().as_millis()
+            );
+        }
     }
+    let report = |phase: &str, event: &str, phase_started: std::time::Instant| {
+        eprintln!(
+            "max512 phase={phase} event={event} count={MAX_FILES} elapsed_ms={} phase_ms={}",
+            started.elapsed().as_millis(),
+            phase_started.elapsed().as_millis()
+        );
+    };
     journal::FULL_WRITES.with(|n| n.set(0));
+    let publishing = std::time::Instant::now();
+    report("publish", "begin", publishing);
     let id = f.run(&mut files, &replacements).undo_id.unwrap();
+    report("publish", "end", publishing);
+    // The UI retires downloaded sources immediately after publication. Keep
+    // the same real ownership order instead of deferring 512 Tickets to Drop.
+    let retiring = std::time::Instant::now();
+    report("retire_sources", "begin", retiring);
+    super::super::retire_sources(&mut files).unwrap();
+    report("retire_sources", "end", retiring);
     assert_eq!(journal::FULL_WRITES.with(|n| n.get()), 4);
     assert_eq!(
         updates_history(&f.root, "test").unwrap()[0].files.len(),
         MAX_FILES
     );
     f.clean();
+    let restoring = std::time::Instant::now();
+    report("restore", "begin", restoring);
     restore_update(
         &f.root,
         "test",
@@ -824,6 +902,7 @@ fn maximum_replacements_have_bounded_phase_writes_and_readable_inventory() {
         &mut || Ok(()),
     )
     .unwrap();
+    report("restore", "end", restoring);
     f.clean();
 }
 #[test]

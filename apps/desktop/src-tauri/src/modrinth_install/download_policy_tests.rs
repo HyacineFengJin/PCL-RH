@@ -77,6 +77,10 @@ impl LocalServer {
                         let peak = peak_counter.clone();
                         let requests = request_counter.clone();
                         workers.push(thread::spawn(move || {
+                            // BSD/Windows accepted sockets can inherit the
+                            // listener's nonblocking mode. This worker uses
+                            // bounded blocking read/write_all, not a reactor.
+                            socket.set_nonblocking(false).unwrap();
                             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                             socket.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
                             let mut request = [0; 2048];
@@ -240,7 +244,9 @@ fn one_bad_hash_drops_ready_and_stalled_files_before_queue_returns() {
     let live = Arc::new(AtomicUsize::new(0));
     let mut workers = Vec::new();
     let mut jobs = VecDeque::<Job<'_, OwnedAnonymous>>::new();
-    for (body, delay) in [(b"good", 0), (b"bad!", 100), (b"good", 600)] {
+    let ready = Arc::new(AtomicBool::new(false));
+    let stalled = Arc::new(AtomicBool::new(false));
+    for (body, delay) in [(b"good", 0), (b"bad!", 100)] {
         let response = [
             b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".as_slice(),
             body,
@@ -248,15 +254,16 @@ fn one_bad_hash_drops_ready_and_stalled_files_before_queue_returns() {
         .concat();
         let (url, worker) = tests::server(&response, Duration::from_millis(delay));
         workers.push(worker);
+        let file = fixture.dir.allocate(4).unwrap();
+        live.fetch_add(1, Ordering::Relaxed);
         let live = live.clone();
         let provider = &provider;
-        let fixture = &fixture;
         let cancel = &cancel;
+        let ready = ready.clone();
+        let stalled = stalled.clone();
+        let mut owned = OwnedAnonymous { file, live };
         jobs.push_back(Box::pin(async move {
-            let file = fixture.dir.allocate(4)?;
-            live.fetch_add(1, Ordering::Relaxed);
-            let mut owned = OwnedAnonymous { file, live };
-            transfer::response_into_file(
+            let result = transfer::response_into_file(
                 provider,
                 provider.client.get(url),
                 4,
@@ -265,17 +272,45 @@ fn one_bad_hash_drops_ready_and_stalled_files_before_queue_returns() {
                 cancel,
                 |_| {},
             )
-            .await?;
+            .await;
+            if body == b"good" {
+                result?;
+                ready.store(true, Ordering::SeqCst);
+            } else {
+                // Make the case deterministic: rejection happens only after
+                // one verified result and a polled, non-completing owner exist.
+                while !ready.load(Ordering::SeqCst) || !stalled.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+                result?;
+            }
             Ok(owned)
         }));
     }
-    let start = Instant::now();
-    let error = match tests::run(transfer::collect_bounded(jobs, 2)) {
-        Ok(_) => panic!("bad hash must reject entire anonymous batch"),
+    let file = fixture.dir.allocate(4).unwrap();
+    live.fetch_add(1, Ordering::Relaxed);
+    let owned = OwnedAnonymous {
+        file,
+        live: live.clone(),
+    };
+    let started = stalled.clone();
+    jobs.push_back(Box::pin(async move {
+        started.store(true, Ordering::SeqCst);
+        std::future::pending::<()>().await;
+        Ok(owned)
+    }));
+    let result = tests::run(async {
+        tokio::time::timeout(Duration::from_secs(10), transfer::collect_bounded(jobs, 3))
+            .await
+            .expect("queue waited for a non-completing owner after rejection")
+    });
+    let error = match result {
+        Ok(_) => panic!("bad hash must reject entire owned batch"),
         Err(error) => error,
     };
     assert!(error.contains("SHA512"));
-    assert!(start.elapsed() < Duration::from_millis(400));
+    assert!(ready.load(Ordering::SeqCst));
+    assert!(stalled.load(Ordering::SeqCst));
     assert_eq!(live.load(Ordering::Relaxed), 0);
     assert_eq!(scheduler.status().active_transfers, 0);
     assert_eq!(scheduler.status().queued_transfers, 0);

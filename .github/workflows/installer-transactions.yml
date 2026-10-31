@@ -23,7 +23,10 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Full-sized native batches retain all 512 real inputs and undo checks.
+    # Registry inventory/prefix verification is still quadratic; keep evidence
+    # instead of losing Windows results to the earlier 20-minute limit.
+    timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: '1'
@@ -62,6 +65,7 @@ jobs:
         # private synthetic files or loopback HTTP.
         run: cargo +stable test --locked -p pcl-install --test modrinth_target --test instance_rename --test instance_reset --no-fail-fast -- --test-threads=2 --nocapture
       - name: Test launcher update sources, format checks and recovery
+        if: ${{ !cancelled() }}
         run: cargo +stable test --locked -p pcl-install --test launcher_updates -- --test-threads=2
       - name: Report host toolchain
         run: rustc +stable -vV

@@ -1528,3 +1528,162 @@ fn mode_only_deleted_instance_reference_stays_reserved_in_its_own_root() {
         .is_ok());
     assert_eq!(fixture.read(), bytes);
 }
+
+#[cfg(windows)]
+fn java_dependency_tree(parent: &Path, relative: &str) -> PathBuf {
+    use pcl_core::retained_fs::{Directory, Leaf, Traversal};
+    let mut directory = Directory::open_absolute(parent).unwrap();
+    let mut path = parent.to_path_buf();
+    for part in Path::new(relative).components() {
+        let leaf = Leaf::new(part.as_os_str()).unwrap();
+        directory = match directory.child(&leaf, Traversal::AllowMounts) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => directory
+                .create_private(&leaf, Traversal::AllowMounts)
+                .unwrap(),
+            Err(error) => panic!("Java dependency fixture directory: {error}"),
+        };
+        path.push(part);
+    }
+    path
+}
+
+#[cfg(windows)]
+fn java_dependency_file(parent: &Path) -> PathBuf {
+    use pcl_core::retained_fs::{Directory, Leaf};
+    use std::io::Write;
+    let mut file = Directory::open_absolute(parent)
+        .unwrap()
+        .create_file(&Leaf::new("java.exe").unwrap())
+        .unwrap();
+    file.write_all(b"fixture Java, never executed").unwrap();
+    file.sync_all().unwrap();
+    parent.join("java.exe")
+}
+
+#[cfg(windows)]
+fn dos_spelling(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+    let mut parts = path.components();
+    let Some(Component::Prefix(prefix)) = parts.next() else {
+        panic!("Windows fixture must have an absolute prefix");
+    };
+    let Prefix::VerbatimDisk(drive) = prefix.kind() else {
+        panic!("canonical fixture must use a verbatim disk prefix");
+    };
+    assert!(matches!(parts.next(), Some(Component::RootDir)));
+    let mut result = PathBuf::from(format!("{}:\\", char::from(drive)));
+    for part in parts {
+        result.push(part);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn assert_java_dependency_blocked(config: &Persisted, root: &Path, java: &Path) {
+    let mut config = config.clone();
+    config.java = JavaSelection::Manual {
+        path: java.to_str().unwrap().into(),
+    };
+    let bytes = encode(&config).unwrap();
+    let root_id = &config.roots[0].id;
+    assert!(
+        rename_bytes(&bytes, root_id, root, "Old", "New")
+            .unwrap_err()
+            .contains("Java 位于待改名实例内"),
+        "Java dependency was missed: {}",
+        java.display()
+    );
+    assert!(check_delete_dependencies(&bytes, root_id, root, "Old")
+        .unwrap_err()
+        .contains("Java 位于待删除实例内"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_java_dependency_uses_full_identity_for_dos_verbatim_case_and_missing_tail() {
+    let fixture = Fixture::new();
+    let config = defaults(&fixture.0);
+    fixture.write(&encode(&config).unwrap());
+    let original = fixture.read();
+    let root = canonical_root(&config.roots[0].path).unwrap();
+    let bin = java_dependency_tree(&root, "versions/Old/runtime/bin");
+    let java = java_dependency_file(&bin);
+    assert_java_dependency_blocked(&config, &root, &java);
+    assert_java_dependency_blocked(&config, &root, &dos_spelling(&java));
+    let case_alias = root.join("VERSIONS/old/RUNTIME/BIN/java.exe");
+    assert_eq!(
+        pcl_core::retained_fs::metadata(&fs::File::open(&java).unwrap())
+            .unwrap()
+            .identity,
+        pcl_core::retained_fs::metadata(&fs::File::open(&case_alias).unwrap())
+            .unwrap()
+            .identity,
+        "fixture must observe a real NTFS case alias"
+    );
+    assert_java_dependency_blocked(&config, &root, &case_alias);
+    assert_java_dependency_blocked(
+        &config,
+        &root,
+        &dos_spelling(&bin.join("missing/bin/java.exe")),
+    );
+    assert_eq!(fixture.read(), original);
+    assert_eq!(fs::read(java).unwrap(), b"fixture Java, never executed");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_java_dependency_checks_alias_targets_and_prefix_before_link_leaves_instance() {
+    let fixture = Fixture::new();
+    let config = defaults(&fixture.0);
+    let root = canonical_root(&config.roots[0].path).unwrap();
+    let bin = java_dependency_tree(&root, "versions/Old/runtime/bin");
+    java_dependency_file(&bin);
+    let runtime_alias = fixture.0.join("runtime-alias");
+    directory_alias(&bin, &runtime_alias);
+    assert_java_dependency_blocked(&config, &root, &runtime_alias.join("java.exe"));
+    assert_java_dependency_blocked(&config, &root, &runtime_alias.join("missing/java.exe"));
+    let outside = java_dependency_tree(&fixture.0, "outside/bin");
+    let outside_java = java_dependency_file(&outside);
+    let bridge = root.join("versions/Old/bridge");
+    directory_alias(&outside, &bridge);
+    let through_instance = bridge.join("java.exe");
+    assert_eq!(fs::canonicalize(&through_instance).unwrap(), outside_java);
+    assert_java_dependency_blocked(&config, &root, &through_instance);
+    // Standalone aliases outside the instance remain valid Java choices.
+    let outside_alias = fixture.0.join("outside-alias");
+    directory_alias(&outside, &outside_alias);
+    assert!(
+        !java_path_points_into(&outside_alias.join("java.exe"), &root.join("versions/Old"))
+            .unwrap()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_java_dependency_missing_old_directory_keeps_post_move_refs_validation_working() {
+    let fixture = Fixture::new();
+    let mut config = defaults(&fixture.0);
+    let root = canonical_root(&config.roots[0].path).unwrap();
+    let old = java_dependency_tree(&root, "versions/Old");
+    let outside = java_dependency_tree(&fixture.0, "outside/bin");
+    let outside_java = java_dependency_file(&outside);
+    config.java = JavaSelection::Manual {
+        path: dos_spelling(&outside_java).to_str().unwrap().into(),
+    };
+    fs::rename(&old, root.join("versions/New")).unwrap();
+    let bytes = encode(&config).unwrap();
+    rename_bytes(&bytes, &config.roots[0].id, &root, "Old", "New").unwrap();
+    check_delete_dependencies(&bytes, &config.roots[0].id, &root, "Old").unwrap();
+    // The missing suffix is bound to the actual versions directory, including
+    // a DOS spelling and case alias, rather than a lexical absolute prefix.
+    assert_java_dependency_blocked(
+        &config,
+        &root,
+        &dos_spelling(&root.join("VERSIONS/old/missing/java.exe")),
+    );
+    assert_eq!(
+        fs::read(outside_java).unwrap(),
+        b"fixture Java, never executed"
+    );
+}

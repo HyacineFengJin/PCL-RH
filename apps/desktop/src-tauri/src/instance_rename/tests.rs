@@ -1018,3 +1018,43 @@ fn linux_snapshot_and_directory_key_keep_schema_one_field_order_and_integer_valu
     assert_eq!(SCHEMA, 1);
     assert_eq!(REVISION_PREFIX, "rename-v1-");
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_reference_case_alias_of_victim_is_rejected_before_any_mutation() {
+    for field in ["inheritsFrom", "jar"] {
+        let fixture = Fixture::new();
+        let mut profile = json!({"id":"case-user","libraries":[]});
+        profile[field] = json!("OLD");
+        fixture.profile("case-user", profile);
+        let versions = Dir::open(&fixture.root).unwrap().child("versions").unwrap();
+        assert_eq!(
+            versions.child("OLD").unwrap().key().unwrap(),
+            versions.child("old").unwrap().key().unwrap(),
+            "fixture must observe a real Windows directory alias"
+        );
+        drop(versions);
+        let files: Vec<_> = ["old", "child", "jar-user", "case-user"]
+            .into_iter()
+            .map(|id| {
+                let path = fixture.instance(id).join(format!("{id}.json"));
+                (path.clone(), fs::read(&path).unwrap(), identity(&path))
+            })
+            .collect();
+        let settings = fixture.settings_bytes();
+        let error = match prepare(&fixture.root, "old", "renamed") {
+            Ok(_) => panic!("directory alias reference must be refused"),
+            Err(error) => error,
+        };
+        assert!(error.contains("待改名实例的目录别名"), "{error}");
+        assert!(error.contains(field), "{error}");
+        assert!(!fixture.root.join(".pcl-linux/instance-renames").exists());
+        assert!(!fixture.instance("renamed").exists());
+        for (path, bytes, key) in files {
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(identity(path), key);
+        }
+        assert_eq!(fixture.settings_bytes(), settings);
+        fixture.assert_content("old");
+    }
+}
