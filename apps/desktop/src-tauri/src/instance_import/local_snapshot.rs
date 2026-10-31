@@ -100,14 +100,9 @@ impl LocalSnapshot {
             files: Vec::new(),
             directories: BTreeSet::from([format!("{prefix}/config")]),
         };
-        let mut generated = root.anonymous()?;
-        generated.write_all(&metadata).map_err(error)?;
-        outputs.files.push(VerifiedFile::from_fd(
+        outputs.files.push(VerifiedFile::generated(
             format!("{prefix}/{name}.json"),
-            generated,
-            metadata.len() as u64,
-            &format!("{:x}", Sha256::digest(&metadata)),
-            &AtomicBool::new(false),
+            metadata,
         )?);
         let mut add_file = |target: String, entry: &ArchiveEntry| -> Result<()> {
             let path = entry

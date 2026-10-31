@@ -363,6 +363,15 @@ impl Store {
 
 pub(super) fn snapshot(parent: &Dir, name: &str, max: u64) -> Result<Option<Snapshot>, String> {
     let max = max.min(document_limit(name));
+    snapshot_owned(parent, name, max)
+}
+// Internal capability callers supply their own bounded, app-owned namespace.
+// This never expands the basename heuristic of ordinary filesystem readers.
+pub(super) fn snapshot_owned(
+    parent: &Dir,
+    name: &str,
+    max: u64,
+) -> Result<Option<Snapshot>, String> {
     if let Some(store) = Store::open(parent, name, max, false)? {
         // Only the ordinary READ/WRITE/DELETE-sharing snapshot survives. Strong
         // leases end here so a cached reader cannot block the next CAS/GC.
@@ -372,6 +381,37 @@ pub(super) fn snapshot(parent: &Dir, name: &str, max: u64) -> Result<Option<Snap
         Some(_) => Snapshot::physical(parent, name, max).map(Some),
         None => Ok(None),
     }
+}
+pub(super) fn auxiliary_names_owned(
+    parent: &Dir,
+    name: &str,
+    max: u64,
+) -> Result<Vec<String>, String> {
+    let store = Store::open(parent, name, max, false)?;
+    let mut names = Vec::new();
+    if store.is_some() {
+        names.push(sidecar(name));
+    }
+    let lock_name = format!("{}.lock", sidecar(name));
+    if let Some(file) = parent.file(&lock_name)? {
+        let metadata = native(retained_fs::metadata(&file))?;
+        metadata.require_private().map_err(fail)?;
+        if metadata.kind != Kind::Regular || metadata.links != 1 || metadata.len != 0 {
+            return Err(fail("文档锁不是受管的空私有文件"));
+        }
+        native(
+            parent
+                .native()?
+                .recheck(&leaf(&lock_name)?, &metadata.identity),
+        )?;
+        names.push(lock_name);
+    }
+    // Keep immutable header/record/current leases through the returned list's
+    // final literal-namespace and payload-graph check.
+    if let Some(store) = store {
+        store.recheck(parent, name)?;
+    }
+    Ok(names)
 }
 fn initialize(parent: &Dir, name: &str, max: u64) -> Result<(), String> {
     let base = phase("initialize/base-lease", lease(parent, name, false))?;
@@ -518,6 +558,15 @@ pub(super) fn replace(
     let max = max.min(document_limit(name));
     replace_with_hook(parent, name, expected, bytes, max, || Ok(()))
 }
+pub(super) fn replace_owned(
+    parent: &Dir,
+    name: &str,
+    expected: Option<&Snapshot>,
+    bytes: &[u8],
+    max: u64,
+) -> Result<(), String> {
+    replace_with_hook(parent, name, expected, bytes, max, || Ok(()))
+}
 fn replace_with_hook(
     parent: &Dir,
     name: &str,
@@ -535,7 +584,7 @@ fn replace_with_hook(
         parent.lock(&format!(".local-versions-{name}.lock")),
     )?;
     let token = |snapshot: &Snapshot| (snapshot.stamp.clone(), snapshot.digest.clone());
-    let fresh = phase("replace/read-current", snapshot(parent, name, max))?;
+    let fresh = phase("replace/read-current", snapshot_owned(parent, name, max))?;
     if fresh.as_ref().map(token) != expected.map(token) {
         return Err(fail("CAS 冲突；本地文件已被外部修改"));
     }

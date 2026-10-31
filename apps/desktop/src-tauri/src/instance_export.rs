@@ -7,18 +7,22 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::{CStr, CString},
-    fs::{File, Metadata},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStrExt, fs::MetadataExt},
-    },
-    path::{Component, Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+#[cfg(target_os = "linux")]
+#[path = "instance_export/linux.rs"]
+mod filesystem;
+#[cfg(not(target_os = "linux"))]
+#[path = "instance_export/native.rs"]
+mod filesystem;
+use filesystem::{Dir, Stage, Stamp};
+#[cfg(all(test, target_os = "linux"))]
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
 const MAX_FILES: usize = 200_000;
 const MAX_NODES: usize = 400_000;
@@ -26,7 +30,8 @@ const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_JSON_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_DEPTH: usize = 96;
 const MAX_EXCLUSIONS: usize = 20_000;
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -202,57 +207,13 @@ impl ExportPlan {
         // remain bound. The copy adapter also checks the top-level name set.
         let actual = Dir::open_absolute(&self.root)?.stamp()?;
         if actual.identity() != self.nodes[""].stamp.identity()
-            || actual.mode != self.nodes[""].stamp.mode
+            || !actual.same_kind(&self.nodes[""].stamp)
         {
             return Err(changed());
         }
         let mut checked = self.clone();
         checked.nodes.get_mut("").ok_or_else(changed)?.stamp = actual;
         validate_snapshot(&checked, cancel, hashes, None::<&fn(Progress)>)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct Stamp {
-    device: u64,
-    inode: u64,
-    mode: u32,
-    bytes: u64,
-    modified: (i64, i64),
-    changed: (i64, i64),
-}
-
-impl Stamp {
-    fn metadata(metadata: &Metadata) -> Self {
-        Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            mode: metadata.mode(),
-            bytes: metadata.len(),
-            modified: (metadata.mtime(), metadata.mtime_nsec()),
-            changed: (metadata.ctime(), metadata.ctime_nsec()),
-        }
-    }
-
-    fn stat(stat: &libc::stat) -> Self {
-        Self {
-            device: stat.st_dev,
-            inode: stat.st_ino,
-            mode: stat.st_mode,
-            bytes: stat.st_size.max(0) as u64,
-            modified: (stat.st_mtime, stat.st_mtime_nsec),
-            changed: (stat.st_ctime, stat.st_ctime_nsec),
-        }
-    }
-
-    fn is_dir(&self) -> bool {
-        self.mode & libc::S_IFMT == libc::S_IFDIR
-    }
-    fn is_file(&self) -> bool {
-        self.mode & libc::S_IFMT == libc::S_IFREG
-    }
-    fn identity(&self) -> (u64, u64) {
-        (self.device, self.inode)
     }
 }
 
@@ -267,8 +228,6 @@ enum Entry {
     Directory,
     File,
 }
-
-struct Dir(File);
 
 fn component(value: &str) -> Result<(), String> {
     if value.is_empty()
@@ -297,211 +256,6 @@ fn relative(value: &str) -> Result<Vec<&str>, String> {
     Ok(pieces)
 }
 
-fn cstring(value: &str) -> Result<CString, String> {
-    CString::new(value).map_err(|_| "路径含有无效字符".into())
-}
-
-fn last_error(context: &str) -> String {
-    format!("{context}：{}", std::io::Error::last_os_error())
-}
-
-impl Dir {
-    fn open_absolute(path: &Path) -> Result<Self, String> {
-        if !path.is_absolute() {
-            return Err("导出目录必须是绝对路径".into());
-        }
-        let slash = cstring("/")?;
-        let fd = unsafe {
-            libc::open(
-                slash.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(last_error("无法打开导出目录"));
-        }
-        let mut dir = Self(unsafe { File::from_raw_fd(fd) });
-        for part in path.components() {
-            match part {
-                Component::RootDir => {}
-                Component::Normal(name) => {
-                    let name = name.to_str().ok_or("导出目录名称必须是 UTF-8")?;
-                    // Existing absolute path components may include colons;
-                    // they are never used as archive paths.
-                    if name.contains(['\\', '\0']) || name.chars().any(char::is_control) {
-                        return Err("导出目录路径无效".into());
-                    }
-                    dir = dir.child(name)?;
-                }
-                _ => return Err("导出目录不能包含相对路径跳转".into()),
-            }
-        }
-        Ok(dir)
-    }
-
-    fn clone_dir(&self) -> Result<Self, String> {
-        self.0
-            .try_clone()
-            .map(Self)
-            .map_err(|error| format!("无法复制目录句柄：{error}"))
-    }
-
-    fn child(&self, name: &str) -> Result<Self, String> {
-        let name = cstring(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(last_error("无法打开目录（符号链接不允许导出）"));
-        }
-        Ok(Self(unsafe { File::from_raw_fd(fd) }))
-    }
-
-    fn parent(&self, path: &str) -> Result<(Self, String), String> {
-        let pieces = relative(path)?;
-        let name = pieces.last().ok_or("文件路径不能为空")?.to_string();
-        let mut dir = self.clone_dir()?;
-        for part in &pieces[..pieces.len() - 1] {
-            dir = dir.child(part)?;
-        }
-        Ok((dir, name))
-    }
-
-    fn stamp(&self) -> Result<Stamp, String> {
-        self.0
-            .metadata()
-            .map(|metadata| Stamp::metadata(&metadata))
-            .map_err(|error| error.to_string())
-    }
-
-    fn metadata(&self, name: &str) -> Result<Option<Stamp>, String> {
-        let name = cstring(name)?;
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        if unsafe {
-            libc::fstatat(
-                self.0.as_raw_fd(),
-                name.as_ptr(),
-                stat.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } == 0
-        {
-            return Ok(Some(Stamp::stat(&unsafe { stat.assume_init() })));
-        }
-        let error = std::io::Error::last_os_error();
-        if error.kind() == std::io::ErrorKind::NotFound {
-            Ok(None)
-        } else {
-            Err(format!("无法读取导出文件信息：{error}"))
-        }
-    }
-
-    fn regular_file(&self, name: &str) -> Result<File, String> {
-        let name = cstring(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
-            )
-        };
-        if fd < 0 {
-            return Err(last_error("无法打开导出文件（符号链接不允许导出）"));
-        }
-        let file = unsafe { File::from_raw_fd(fd) };
-        if !file
-            .metadata()
-            .map_err(|error| error.to_string())?
-            .is_file()
-        {
-            return Err("导出只允许普通文件和目录".into());
-        }
-        Ok(file)
-    }
-
-    fn open_file(&self, path: &str) -> Result<File, String> {
-        let (dir, name) = self.parent(path)?;
-        dir.regular_file(&name)
-    }
-
-    fn create_file(&self, name: &str) -> Result<File, String> {
-        let name = cstring(name)?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                0o600,
-            )
-        };
-        if fd < 0 {
-            return Err(last_error("无法创建 ZIP 暂存文件"));
-        }
-        Ok(unsafe { File::from_raw_fd(fd) })
-    }
-
-    fn names(&self) -> Result<Vec<String>, String> {
-        // Use a fresh open file description: dup shares readdir's seek offset.
-        let dot = cstring(".")?;
-        let fd = unsafe {
-            libc::openat(
-                self.0.as_raw_fd(),
-                dot.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if fd < 0 {
-            return Err(last_error("无法读取导出目录"));
-        }
-        let stream = unsafe { libc::fdopendir(fd) };
-        if stream.is_null() {
-            unsafe { libc::close(fd) };
-            return Err(last_error("无法读取导出目录"));
-        }
-        struct Stream(*mut libc::DIR);
-        impl Drop for Stream {
-            fn drop(&mut self) {
-                unsafe { libc::closedir(self.0) };
-            }
-        }
-        let stream = Stream(stream);
-        let mut names = Vec::new();
-        loop {
-            unsafe { *libc::__errno_location() = 0 };
-            let entry = unsafe { libc::readdir(stream.0) };
-            if entry.is_null() {
-                if std::io::Error::last_os_error().raw_os_error() != Some(0) {
-                    return Err(last_error("读取导出目录失败"));
-                }
-                break;
-            }
-            let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-            if bytes == b"." || bytes == b".." {
-                continue;
-            }
-            let name = std::str::from_utf8(bytes)
-                .map_err(|_| "导出文件名必须是 UTF-8")?
-                .to_owned();
-            names.push(name);
-            if names.len() > MAX_NODES {
-                return Err("导出目录包含过多文件".into());
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
-
-    fn sync(&self) -> Result<(), String> {
-        self.0
-            .sync_all()
-            .map_err(|error| format!("无法保存导出目录：{error}"))
-    }
-}
-
 fn changed() -> String {
     "导出源文件已经变化，请重新检查内容后再导出".into()
 }
@@ -514,7 +268,19 @@ fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static HASH_OBSERVATION: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 fn hash_file(file: &mut File, cancel: Option<&AtomicBool>) -> Result<String, String> {
+    #[cfg(test)]
+    HASH_OBSERVATION.with(|observed| {
+        let (starts, bytes) = observed.get();
+        observed.set((starts + 1, bytes));
+    });
+    let expected = file.metadata().map_err(|error| error.to_string())?.len();
+    let mut total = 0u64;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 128 * 1024];
     file.seek(SeekFrom::Start(0))
@@ -529,9 +295,96 @@ fn hash_file(file: &mut File, cancel: Option<&AtomicBool>) -> Result<String, Str
         if count == 0 {
             break;
         }
+        #[cfg(test)]
+        HASH_OBSERVATION.with(|observed| {
+            let (starts, bytes) = observed.get();
+            observed.set((starts, bytes + count as u64));
+        });
+        total = total.checked_add(count as u64).ok_or_else(changed)?;
+        if total > expected {
+            return Err(changed());
+        }
         digest.update(&buffer[..count]);
     }
+    if total != expected {
+        return Err(changed());
+    }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Decode the completed archive to EOF before it can become a chosen file.
+/// ZipFile verifies each member CRC; SHA-256 and exact member names bind it to
+/// the selected source and generated manifest. Memory stays bounded per stream.
+fn verify_archive(file: &mut File, plan: &ExportPlan, cancel: &AtomicBool) -> Result<(), String> {
+    let before = Stamp::from_file(file)?;
+    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    {
+        let mut zip = zip::ZipArchive::new(&mut *file).map_err(|e| format!("无法复核 ZIP：{e}"))?;
+        if zip.len() != plan.entries.len() + 1 {
+            return Err("ZIP 条目数量与导出选择不符".into());
+        }
+        let mut seen = BTreeSet::new();
+        let mut buffer = [0u8; 128 * 1024];
+        for index in 0..zip.len() {
+            check_cancel(cancel)?;
+            let mut entry = zip
+                .by_index(index)
+                .map_err(|e| format!("无法复核 ZIP 条目：{e}"))?;
+            let name = entry.name().to_owned();
+            if !seen.insert(name.clone()) {
+                return Err("ZIP 含有重复条目".into());
+            }
+            let (expected_bytes, expected_hash, directory) = if name == "pcl-export.json" {
+                (
+                    plan.manifest.len() as u64,
+                    format!("{:x}", Sha256::digest(&plan.manifest)),
+                    false,
+                )
+            } else {
+                let path = name
+                    .strip_prefix(".minecraft/")
+                    .ok_or("ZIP 条目超出导出目录")?;
+                let key = path.strip_suffix('/').unwrap_or(path);
+                match plan.entries.get(key).ok_or("ZIP 含有未选择的条目")? {
+                    Entry::Directory if path.ends_with('/') => (0, String::new(), true),
+                    Entry::File if !path.ends_with('/') => (
+                        plan.nodes[key].stamp.bytes,
+                        plan.nodes[key].digest.clone().ok_or("ZIP 缺少源哈希")?,
+                        false,
+                    ),
+                    _ => return Err("ZIP 条目类型与导出选择不符".into()),
+                }
+            };
+            if entry.is_dir() != directory || entry.size() != expected_bytes {
+                return Err("ZIP 条目类型或大小与导出选择不符".into());
+            }
+            let mut bytes = 0u64;
+            let mut digest = Sha256::new();
+            loop {
+                check_cancel(cancel)?;
+                let count = entry
+                    .read(&mut buffer)
+                    .map_err(|e| format!("ZIP 条目 CRC 或数据校验失败：{e}"))?;
+                if count == 0 {
+                    break;
+                }
+                bytes = bytes.checked_add(count as u64).ok_or("ZIP 条目长度无效")?;
+                if bytes > expected_bytes {
+                    return Err("ZIP 条目超过预期大小".into());
+                }
+                digest.update(&buffer[..count]);
+            }
+            if bytes != expected_bytes
+                || (!directory && format!("{:x}", digest.finalize()) != expected_hash)
+            {
+                return Err("ZIP 条目哈希与导出选择不符".into());
+            }
+        }
+    }
+    if Stamp::from_file(file)? != before {
+        return Err("ZIP 在复核期间发生变化".into());
+    }
+    Ok(())
 }
 
 struct Scanner {
@@ -625,8 +478,23 @@ impl Scanner {
     }
 
     fn add_file(&mut self, path: &str) -> Result<(), String> {
-        if self.entries.contains_key(path) {
+        self.add_file_limited(path, MAX_TOTAL_BYTES, "导出内容超过 256 GiB 限制")
+    }
+
+    fn add_file_limited(&mut self, path: &str, limit: u64, size_error: &str) -> Result<(), String> {
+        if let Some(entry) = self.entries.get(path) {
+            let node = self.nodes.get(path).ok_or_else(changed)?;
+            if !matches!(entry, Entry::File) || !node.stamp.is_file() {
+                return Err(format!("导出只允许普通文件（不允许符号链接）：{path}"));
+            }
+            if node.stamp.bytes > limit {
+                return Err(size_error.into());
+            }
             return Ok(());
+        }
+        // Count and byte budgets admit the payload before the first hash read.
+        if self.files >= MAX_FILES {
+            return Err("导出文件数量过多".into());
         }
         let expected = self
             .metadata(path)?
@@ -634,13 +502,24 @@ impl Scanner {
         if !expected.is_file() {
             return Err(format!("导出只允许普通文件（不允许符号链接）：{path}"));
         }
+        if expected.bytes > limit {
+            return Err(size_error.into());
+        }
+        if !self.nodes.contains_key(path) && self.nodes.len() >= MAX_NODES {
+            return Err("导出包含过多文件或目录".into());
+        }
+        // Apply the source budget before any potentially large hashing pass.
+        self.bytes
+            .checked_add(expected.bytes)
+            .filter(|size| *size <= MAX_TOTAL_BYTES)
+            .ok_or("导出内容超过 256 GiB 限制")?;
         let mut file = self.root.open_file(path)?;
-        let before = Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?);
+        let before = Stamp::from_file(&file)?;
         if before != expected {
             return Err(changed());
         }
         let digest = hash_file(&mut file, None)?;
-        if Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?) != expected {
+        if Stamp::from_file(&file)? != expected {
             return Err(changed());
         }
         self.remember(
@@ -656,21 +535,18 @@ impl Scanner {
             .filter(|size| *size <= MAX_TOTAL_BYTES)
             .ok_or("导出内容超过 256 GiB 限制")?;
         self.files += 1;
-        if self.files > MAX_FILES {
-            return Err("导出文件数量过多".into());
-        }
         self.entries.insert(path.into(), Entry::File);
         Ok(())
     }
 
     fn json(&mut self, path: &str) -> Result<Value, String> {
-        self.add_file(path)?;
+        self.add_file_limited(path, MAX_JSON_BYTES, "版本或资源索引 JSON 文件过大")?;
         let expected = &self.nodes[path];
         if expected.stamp.bytes > MAX_JSON_BYTES {
             return Err("版本或资源索引 JSON 文件过大".into());
         }
         let mut file = self.root.open_file(path)?;
-        let before = Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?);
+        let before = Stamp::from_file(&file)?;
         let mut bytes = Vec::new();
         Read::by_ref(&mut file)
             .take(MAX_JSON_BYTES + 1)
@@ -678,7 +554,7 @@ impl Scanner {
             .map_err(|error| error.to_string())?;
         if bytes.len() as u64 > MAX_JSON_BYTES
             || before != expected.stamp
-            || Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?) != before
+            || Stamp::from_file(&file)? != before
             || Some(format!("{:x}", Sha256::digest(&bytes))) != expected.digest
         {
             return Err(changed());
@@ -866,7 +742,11 @@ fn should_traverse(category: Category, checks: &ExportChecks) -> bool {
         // Fine-grained overrides inside config must be examined even when
         // generic mod settings are off.
         Category::ModSettings => {
-            checks.mods && (checks.mod_settings || checks.jei_personal || checks.guide_personal)
+            checks.mods
+                && (checks.mod_settings
+                    || checks.maps
+                    || checks.jei_personal
+                    || checks.guide_personal)
         }
         _ => selected(category, checks),
     }
@@ -1061,6 +941,16 @@ fn maven_path(name: &str) -> Result<String, String> {
     Ok(path)
 }
 
+fn host_label() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Windows"
+    } else if cfg!(target_os = "macos") {
+        "macOS"
+    } else {
+        "Linux"
+    }
+}
+
 fn library_applies(library: &Value) -> Result<bool, String> {
     let Some(rules) = library.get("rules") else {
         return Ok(true);
@@ -1069,7 +959,10 @@ fn library_applies(library: &Value) -> Result<bool, String> {
     let mut allowed = false;
     for rule in rules {
         let os = &rule["os"];
-        let mut matches = os["name"].as_str().is_none_or(|name| name == "linux");
+        let host = pcl_core::platform::Platform::current()?;
+        let mut matches = os["name"]
+            .as_str()
+            .is_none_or(|name| name == host.os.minecraft_name());
         if let Some(arch) = os["arch"].as_str() {
             matches &= match std::env::consts::ARCH {
                 "x86_64" => matches!(arch, "x86_64" | "amd64" | "x64"),
@@ -1128,7 +1021,10 @@ fn bundle_assets(scanner: &mut Scanner, versions: &BTreeMap<String, Value>) -> R
             {
                 add_library(scanner, &Value::Null, library["name"].as_str())?;
             }
-            if let Some(classifier) = library["natives"]["linux"].as_str() {
+            if let Some(classifier) = library["natives"]
+                [pcl_core::platform::Platform::current()?.os.minecraft_name()]
+            .as_str()
+            {
                 let classifier = classifier.replace(
                     "${arch}",
                     if cfg!(target_pointer_width = "64") {
@@ -1139,7 +1035,10 @@ fn bundle_assets(scanner: &mut Scanner, versions: &BTreeMap<String, Value>) -> R
                 );
                 let artifact = &downloads["classifiers"][&classifier];
                 if artifact.is_null() {
-                    return Err("Linux 本地库缺少文件声明，无法完整打包资源".into());
+                    return Err(format!(
+                        "{} 本地库缺少文件声明，无法完整打包资源",
+                        host_label()
+                    ));
                 }
                 add_library(scanner, artifact, None)?;
             }
@@ -1344,7 +1243,7 @@ pub fn prepare_with_isolation(
         serde_json::to_vec(&(policy, settings_revision)).map_err(|error| error.to_string())?,
     );
     // Include the captured physical scope, but expose only its opaque hash.
-    digest.update(root.as_os_str().as_bytes());
+    digest.update(root.as_os_str().as_encoded_bytes());
     digest.update(id.as_bytes());
     digest.update(serde_json::to_vec(&request).map_err(|error| error.to_string())?);
     digest.update(serde_json::to_vec(&scanner.nodes).map_err(|error| error.to_string())?);
@@ -1356,9 +1255,10 @@ pub fn prepare_with_isolation(
     }
     if request.checks.bundle_assets {
         warnings.push("为保留 Forge / NeoForge 生成的运行文件，打包资源包含整个本地 libraries 目录，可能包含其他实例的依赖。".into());
-        warnings.push(
-            "打包资源包含当前 Linux 平台声明的本地依赖；其他平台的原生库可能仍需下载。".into(),
-        );
+        warnings.push(format!(
+            "打包资源包含当前 {} 平台声明的本地依赖；其他平台的原生库可能仍需下载。",
+            host_label()
+        ));
     }
     let plan = ExportPlan {
         revision: format!("{:x}", digest.finalize()),
@@ -1400,10 +1300,9 @@ fn validate_snapshot(
         }
         if hashes && node.digest.is_some() {
             let mut file = root.open_file(path).map_err(|_| changed())?;
-            if Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?) != node.stamp
+            if Stamp::from_file(&file)? != node.stamp
                 || Some(hash_file(&mut file, Some(cancel))?) != node.digest
-                || Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?)
-                    != node.stamp
+                || Stamp::from_file(&file)? != node.stamp
             {
                 return Err(changed());
             }
@@ -1497,73 +1396,6 @@ fn progress(
     }
 }
 
-struct Stage {
-    parent: Dir,
-    name: String,
-    identity: (u64, u64),
-    armed: bool,
-}
-
-impl Stage {
-    fn cleanup(&mut self) -> Result<(), String> {
-        if !self.armed {
-            return Ok(());
-        }
-        let Some(stamp) = self.parent.metadata(&self.name)? else {
-            self.armed = false;
-            return Ok(());
-        };
-        if stamp.identity() != self.identity {
-            return Err("ZIP 暂存文件被外部替换，请检查目标目录".into());
-        }
-        let name = cstring(&self.name)?;
-        if unsafe { libc::unlinkat(self.parent.0.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-            return Err(last_error("无法清理 ZIP 暂存文件"));
-        }
-        self.armed = false;
-        self.parent.sync()
-    }
-
-    fn publish(&mut self, destination: &str) -> Result<(), String> {
-        if self
-            .parent
-            .metadata(&self.name)?
-            .is_none_or(|stamp| stamp.identity() != self.identity || !stamp.is_file())
-        {
-            return Err("ZIP 暂存文件已变化，无法发布".into());
-        }
-        let source = cstring(&self.name)?;
-        let destination = cstring(destination)?;
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_renameat2,
-                self.parent.0.as_raw_fd(),
-                source.as_ptr(),
-                self.parent.0.as_raw_fd(),
-                destination.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        if result != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::EEXIST) {
-                return Err("目标文件已经存在，请使用新的文件名".into());
-            }
-            return Err(format!(
-                "无法原子发布 ZIP 文件（目标文件系统须支持不覆盖重命名）：{error}"
-            ));
-        }
-        self.armed = false;
-        Ok(())
-    }
-}
-
-impl Drop for Stage {
-    fn drop(&mut self) {
-        let _ = self.cleanup();
-    }
-}
-
 fn destination_parent(plan: &ExportPlan, destination: &Path) -> Result<(Dir, String), String> {
     if !destination.is_absolute() {
         return Err("ZIP 目标必须是绝对路径".into());
@@ -1586,14 +1418,24 @@ fn destination_parent(plan: &ExportPlan, destination: &Path) -> Result<(Dir, Str
         .nodes
         .values()
         .filter(|node| node.stamp.is_dir())
-        .map(|node| node.stamp.identity())
+        .map(|node| node.stamp.identity_key())
         .collect();
-    let mut ancestor = Some(parent_path);
-    while let Some(path) = ancestor {
-        if input_ids.contains(&Dir::open_absolute(path)?.stamp()?.identity()) {
+    let mut ancestor = parent.clone_dir()?;
+    let mut reached_root = false;
+    for _ in 0..4096 {
+        let identity = ancestor.stamp()?.identity();
+        if input_ids.contains(&ancestor.stamp()?.identity_key()) {
             return Err("ZIP 目标目录与导出源目录重合".into());
         }
-        ancestor = path.parent();
+        let upper = ancestor.ancestor()?;
+        if upper.stamp()?.identity() == identity {
+            reached_root = true;
+            break;
+        }
+        ancestor = upper;
+    }
+    if !reached_root {
+        return Err("ZIP 目标目录祖先层级超过安全上限".into());
     }
     if parent.metadata(name)?.is_some() {
         return Err("目标文件已经存在，请使用新的文件名".into());
@@ -1620,6 +1462,7 @@ pub fn execute_with_guard<G>(
     callback: impl Fn(Progress) + Send + Sync,
     authorize: impl Fn() -> Result<G, String>,
 ) -> Result<Value, String> {
+    plan.request.validate()?;
     check_cancel(cancel)?;
     callback(progress(
         "export-scan",
@@ -1633,20 +1476,7 @@ pub fn execute_with_guard<G>(
     validate_snapshot(&plan, cancel, true, Some(&callback))?;
     let (parent, filename) = destination_parent(&plan, destination)?;
     check_cancel(cancel)?;
-    let nonce = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let name = format!(".pcl-export-{}-{now}-{nonce}.tmp", std::process::id());
-    let file = parent.create_file(&name)?;
-    let identity = Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?).identity();
-    let mut stage = Stage {
-        parent,
-        name,
-        identity,
-        armed: true,
-    };
+    let (mut stage, file) = Stage::new(parent)?;
     let result = (|| {
         let root = Dir::open_absolute(&plan.root)?;
         let mut zip = ZipWriter::new(file);
@@ -1676,9 +1506,7 @@ pub fn execute_with_guard<G>(
                 Entry::File => {
                     let node = &plan.nodes[path];
                     let mut file = root.open_file(path).map_err(|_| changed())?;
-                    if Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?)
-                        != node.stamp
-                    {
+                    if Stamp::from_file(&file)? != node.stamp {
                         return Err(changed());
                     }
                     zip.start_file(&archive_path, options)
@@ -1714,8 +1542,7 @@ pub fn execute_with_guard<G>(
                     }
                     if copied != node.stamp.bytes
                         || Some(format!("{:x}", digest.finalize())) != node.digest
-                        || Stamp::metadata(&file.metadata().map_err(|error| error.to_string())?)
-                            != node.stamp
+                        || Stamp::from_file(&file)? != node.stamp
                     {
                         return Err(changed());
                     }
@@ -1744,6 +1571,12 @@ pub fn execute_with_guard<G>(
             .map_err(|error| format!("无法保存 ZIP 文件：{error}"))?;
         let archive_bytes = file.metadata().map_err(|error| error.to_string())?.len();
         let archive_hash = hash_file(&mut file, Some(cancel))?;
+        verify_archive(&mut file, &plan, cancel)?;
+        #[cfg(target_os = "linux")]
+        stage.bind_verified(&file, archive_bytes, &archive_hash)?;
+        drop(file);
+        #[cfg(not(target_os = "linux"))]
+        stage.seal(archive_bytes, &archive_hash)?;
         // Rehash after archiving: a file that was changed after its own copy
         // cannot silently leave an otherwise successful snapshot behind.
         validate_snapshot(&plan, cancel, true, None::<&fn(Progress)>)?;
@@ -1757,6 +1590,12 @@ pub fn execute_with_guard<G>(
             let _authority = authorize()?;
             validate_snapshot(&plan, cancel, false, None::<&fn(Progress)>)?;
             check_cancel(cancel)?;
+            // A moved chosen directory must be observed again under admission;
+            // native publication still uses its retained capability.
+            let (visible_parent, _) = destination_parent(&plan, destination)?;
+            if visible_parent.stamp()?.identity() != stage.parent.stamp()?.identity() {
+                return Err("ZIP 目标目录已经变化".into());
+            }
             stage.publish(&filename)?;
         }
         let mut warnings = plan.warnings.clone();
@@ -1765,6 +1604,8 @@ pub fn execute_with_guard<G>(
             // success rather than falsely claiming that no output was made.
             format!("ZIP 已创建，但目标目录同步失败：{error}")
         });
+        #[cfg(not(target_os = "linux"))]
+        let warning = warning.or_else(|| stage.warning.clone());
         if let Some(warning) = &warning {
             warnings.push(warning.clone());
         }
@@ -1792,7 +1633,7 @@ pub fn execute_with_guard<G>(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::{fs, sync::Mutex};
@@ -2462,3 +2303,7 @@ mod tests {
         assert!(prepare(&fixture.root, "example", request()).is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "instance_export/native_tests.rs"]
+mod native_tests;

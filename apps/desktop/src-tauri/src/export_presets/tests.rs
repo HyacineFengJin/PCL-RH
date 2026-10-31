@@ -236,7 +236,7 @@ fn native_unix_updates_existing_preset_with_cas_and_private_permissions() {
 }
 #[cfg(windows)]
 #[test]
-fn windows_existing_dynamic_preset_is_explicitly_unsupported_and_original_is_preserved() {
+fn windows_existing_dynamic_preset_updates_logically_and_preserves_original_fence() {
     let fixture = Fixture::new();
     save(
         &fixture.1,
@@ -249,10 +249,16 @@ fn windows_existing_dynamic_preset_is_explicitly_unsupported_and_original_is_pre
     let original = fs::read(fixture.file()).unwrap();
     let mut request = Fixture::request();
     request.version = "2.0".into();
-    let error = save(&fixture.1, "a", Path::new("/game"), "Example", request).unwrap_err();
-    assert!(error.contains("尚未实现"), "{error}");
+    save(&fixture.1, "a", Path::new("/game"), "Example", request).unwrap();
+    assert_eq!(
+        read(&fixture.1, "a", Path::new("/game"), "Example")
+            .unwrap()
+            .unwrap()
+            .version,
+        "2.0"
+    );
     assert_eq!(fs::read(fixture.file()).unwrap(), original);
-    assert!(!fixture
+    assert!(fixture
         .1
         .join(".pcl-rust/export-presets")
         .join(format!(".local-versions-{}", name("a", "Example")))

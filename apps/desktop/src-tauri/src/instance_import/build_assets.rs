@@ -79,10 +79,10 @@ pub(super) fn namespace_index(
             return Err("构建中的资源索引命名发生冲突，拒绝发布".into());
         }
     } else {
-        let mut output = indexes.anonymous()?;
+        let mut output = indexes.stage_for(&renamed, pcl_core::repair::MAX_ASSET_INDEX_BYTES)?;
         output.write_all(&index).map_err(error)?;
         output.sync_all().map_err(error)?;
-        link_anonymous(&output, &indexes, &renamed)?;
+        link_anonymous(&mut output, &indexes, &renamed)?;
     }
     if hash_file(
         indexes.regular(&original)?,
@@ -92,7 +92,7 @@ pub(super) fn namespace_index(
     {
         return Err("资源索引重命名期间原索引已变化".into());
     }
-    indexes.unlink(&original, false)?;
+    indexes.unlink_snapshot(&original, &source)?;
     indexes.sync()?;
     if metadata["assetIndex"].is_object() {
         metadata["assetIndex"]["id"] = Value::String(alias.clone());
@@ -101,7 +101,7 @@ pub(super) fn namespace_index(
         metadata["assets"] = Value::String(alias);
     }
     let (parent, leaf) = build.parent(&metadata_path)?;
-    let mut output = parent.anonymous()?;
+    let mut output = parent.stage_for(&leaf, MAX_JSON)?;
     serde_json::to_writer(&mut output, &metadata).map_err(error)?;
     output.flush().map_err(error)?;
     output.sync_all().map_err(error)?;
@@ -113,7 +113,7 @@ pub(super) fn namespace_index(
     operation.verify_binding()?;
     // Only the durably owned, unsealed build is edited. A failure between these
     // two operations leaves a recoverable build, never a partial real instance.
-    parent.unlink(&leaf, false)?;
-    link_anonymous(&output, &parent, &leaf)?;
+    parent.unlink_snapshot(&leaf, &before)?;
+    link_anonymous(&mut output, &parent, &leaf)?;
     parent.sync()
 }

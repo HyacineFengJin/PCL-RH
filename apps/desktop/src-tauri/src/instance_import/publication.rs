@@ -61,7 +61,12 @@ pub(super) fn publish_prepared(
     // whether recovery retains the completed instance or removes owned output.
     j.state = State::Committed;
     if let Err(e) = write_journal(operation, j) {
-        j.state = State::Prepared;
+        // A logical/native commit may already be durable when only its
+        // verification, directory sync or generated-version GC failed. Preserve
+        // the completed output in that case; recovery reopens the actual state.
+        if !e.starts_with("MayHaveCommitted") && !e.starts_with("MayHavePublished") {
+            j.state = State::Prepared;
+        }
         return Err(e);
     }
     Ok(())
@@ -73,9 +78,12 @@ pub(super) fn publish_prepared(
 pub(crate) struct VerifiedFile {
     target: String,
     source: InputSource,
-    expected: Snapshot,
+    expected: Option<Snapshot>,
+    size: u64,
+    hash: String,
 }
 enum InputSource {
+    Generated(Vec<u8>),
     #[allow(dead_code)]
     // Native FD inputs are also used by callers outside the private build tree.
     Held(File),
@@ -97,8 +105,23 @@ impl VerifiedFile {
         Self {
             target,
             source: InputSource::Build { root, path },
-            expected,
+            size: expected.stamp.size,
+            hash: expected.hash.clone(),
+            expected: Some(expected),
         }
+    }
+    pub(super) fn generated(target: String, bytes: Vec<u8>) -> Result<Self> {
+        relative(&target)?;
+        if bytes.len() as u64 > MAX_FILE {
+            return Err("构建输入超过大小限制".into());
+        }
+        Ok(Self {
+            target,
+            size: bytes.len() as u64,
+            hash: format!("{:x}", Sha256::digest(&bytes)),
+            expected: None,
+            source: InputSource::Generated(bytes),
+        })
     }
     #[allow(dead_code)] // Keep this native capability entry point available to streaming callers.
     pub(crate) fn from_fd(
@@ -124,17 +147,19 @@ impl VerifiedFile {
         Ok(Self {
             target,
             source: InputSource::Held(source),
-            expected,
+            size: expected.stamp.size,
+            hash: expected.hash.clone(),
+            expected: Some(expected),
         })
     }
     pub(crate) fn target(&self) -> &str {
         &self.target
     }
     pub(crate) fn size(&self) -> u64 {
-        self.expected.stamp.size
+        self.size
     }
     pub(crate) fn sha256(&self) -> &str {
-        &self.expected.hash
+        &self.hash
     }
     pub(super) fn from_build_snapshot(target: String, root: Arc<Dir>, expected: Snapshot) -> Self {
         Self {
@@ -143,17 +168,40 @@ impl VerifiedFile {
                 path: target.clone(),
             },
             target,
-            expected,
+            size: expected.stamp.size,
+            hash: expected.hash.clone(),
+            expected: Some(expected),
         }
     }
     fn open_source(&self) -> Result<File> {
         match &self.source {
+            InputSource::Generated(_) => Err("内存构建输入没有文件路径权限".into()),
             InputSource::Held(file) => file.try_clone().map_err(error),
             InputSource::Build { root, path } => root.file(path),
         }
     }
+    fn reader(&self) -> Result<Box<dyn Read + '_>> {
+        if let InputSource::Generated(bytes) = &self.source {
+            return Ok(Box::new(std::io::Cursor::new(bytes.as_slice())));
+        }
+        let mut file = self.open_source()?;
+        file.seek(SeekFrom::Start(0)).map_err(error)?;
+        Ok(Box::new(file))
+    }
     fn verify(&self, cancel: Option<&AtomicBool>) -> Result<()> {
-        if hash_file(self.open_source()?, MAX_FILE, cancel)? != self.expected {
+        if let Some(cancel) = cancel {
+            check(cancel)?;
+        }
+        if let InputSource::Generated(bytes) = &self.source {
+            if bytes.len() as u64 == self.size
+                && format!("{:x}", Sha256::digest(bytes)) == self.hash
+                && self.expected.is_none()
+            {
+                return Ok(());
+            }
+            return Err("内存构建输入发生变化".into());
+        }
+        if Some(hash_file(self.open_source()?, MAX_FILE, cancel)?) != self.expected {
             return Err("已校验的构建来源在发布前发生变化".into());
         }
         Ok(())
@@ -313,9 +361,8 @@ pub(super) fn stage_native(
         if j.files[index].reuse {
             continue;
         }
-        let mut source = input.open_source()?;
-        source.seek(SeekFrom::Start(0)).map_err(error)?;
-        let mut file = stage.anonymous()?;
+        let mut source = input.reader()?;
+        let mut file = stage.stage_for(&slot(index), input.size())?;
         let mut hash = Sha256::new();
         let mut written = 0u64;
         let mut buffer = [0u8; 128 * 1024];
@@ -350,7 +397,7 @@ pub(super) fn stage_native(
         )?;
         j.files[index].staged = Some(snapshot);
         check(cancel)?;
-        link_anonymous(&file, &stage, &slot(index))?;
+        link_anonymous(&mut file, &stage, &slot(index))?;
     }
     Ok(())
 }

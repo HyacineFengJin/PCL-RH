@@ -3,10 +3,10 @@
 //! One captured network factory and download scheduler serve the submission.
 //! A permit spans all headers/bodies of one file, including mirror failover.
 //! There are no detached HTTP tasks: cancelling/dropping the future drops its
-//! response, queued permit wait and owned anonymous descriptor before returning.
-//! Partial bytes never gain a name; successful descriptors are rewound and
-//! passed to the publication service, which retains transaction ownership.
-use super::{mirror, Result};
+//! response and queued permit wait before returning. The destination is an
+//! anonymous Linux inode or a native registered lease with an immutable target.
+//! Successful inputs are rewound and retain their ownership through publication.
+use super::{mirror, Result, StageFile};
 use sha1::Sha1;
 use sha2::{Digest, Sha512};
 use std::{
@@ -14,7 +14,6 @@ use std::{
     fs::File,
     future::Future,
     io::{Seek, SeekFrom, Write},
-    os::unix::fs::MetadataExt,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
@@ -34,7 +33,7 @@ pub(super) struct Remote<'a> {
     pub sha512: &'a str,
 }
 pub(super) struct VerifiedFile {
-    pub file: File,
+    pub file: StageFile,
     pub size: u64,
     pub sha1: String,
     pub sha512: String,
@@ -126,13 +125,13 @@ impl Client {
         }
         logical.clone()
     }
-    /// `destination` must be a fresh, empty anonymous regular file with no
-    /// aliases retained by the caller. Failure consumes/closes it; mirror retry
-    /// truncates this same owned inode. Only final effective remotes belong here.
+    /// `destination` is a fresh owned stage, with no aliases retained by the
+    /// caller. Linux requires an anonymous inode; named hosts retain a registry
+    /// Ticket. Mirror retries truncate this same allocated object.
     pub(super) async fn download(
         &self,
         remote: Remote<'_>,
-        destination: File,
+        destination: StageFile,
         cancel: &AtomicBool,
         report: impl Fn(TransferProgress),
     ) -> Result<VerifiedFile> {
@@ -143,7 +142,7 @@ impl Client {
     pub(super) async fn download_curseforge(
         &self,
         file: &super::curseforge::ResolvedFile,
-        destination: File,
+        destination: StageFile,
         cancel: &AtomicBool,
         report: impl Fn(TransferProgress),
     ) -> Result<VerifiedFile> {
@@ -166,7 +165,7 @@ impl Client {
     async fn download_with(
         &self,
         remote: Remote<'_>,
-        mut destination: File,
+        mut destination: StageFile,
         cancel: &AtomicBool,
         report: impl Fn(TransferProgress),
         source: Source,
@@ -191,7 +190,7 @@ impl Client {
         let metadata = destination
             .metadata()
             .map_err(|_| "无法检查 mrpack 匿名暂存文件")?;
-        if !metadata.is_file() || metadata.nlink() != 0 || metadata.len() != 0 {
+        if !metadata.is_file() || !super::is_anonymous(&destination)? || metadata.len() != 0 {
             return Err("mrpack 下载目标必须是空的匿名普通文件".into());
         }
         let candidates = remote

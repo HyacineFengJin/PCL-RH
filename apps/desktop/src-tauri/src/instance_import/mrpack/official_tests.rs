@@ -13,6 +13,7 @@ use crate::{
 };
 use serde_json::{json, Value};
 use sha2::Sha512;
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     io::{Cursor, Read, Write},

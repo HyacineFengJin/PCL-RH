@@ -6,14 +6,18 @@
 //! service may resolve official core metadata before issuing a one-use native
 //! confirmation. The public DTO is never Deserialize/install authority; its
 //! token refers to captured source, target, choices and provider evidence.
-use super::{filesystem::Stamp, hash_file, name_ok, open_source, Dir, Key, Result, Snapshot};
+#[cfg(all(test, unix))]
+use super::filesystem::Stamp;
+use super::{
+    file_stamp, hash_file, is_anonymous, name_ok, open_source, Dir, Key, Result, Snapshot,
+    StageFile,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Seek, SeekFrom},
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::atomic::AtomicBool,
 };
@@ -107,7 +111,7 @@ struct Binding {
     inner: Option<InnerBinding>,
 }
 /// Local paths are re-opened to detect replacement. Official inputs have no
-/// pathname authority: their opaque ID refers to a held, verified anonymous FD.
+/// pathname authority: their opaque ID refers to a held, verified owned input.
 #[derive(Clone, Serialize, PartialEq, Eq)]
 enum Source {
     Local(PathBuf),
@@ -151,7 +155,7 @@ impl Output {
 
 fn source_file(source: &Path, limit: u64) -> Result<File> {
     let file = open_source(source)?;
-    let stamp = Stamp::of(&file.metadata().map_err(super::error)?);
+    let stamp = file_stamp(&file)?;
     if !stamp.regular() || stamp.size > limit {
         return Err(format!(
             "整合包源必须为普通文件且不超过 {} MiB",
@@ -186,7 +190,7 @@ fn recognizes_cancellable(source: &Path, cancel: &AtomicBool) -> Result<bool> {
     // Dispatch retains the original PCL ZIP source bounds. The smaller mrpack
     // budget applies only after its root marker selects this parser.
     let file = open_source(source)?;
-    let before = Stamp::of(&file.metadata().map_err(super::error)?);
+    let before = file_stamp(&file)?;
     if !before.regular() || before.size > super::MAX_BYTES {
         return Err("导入文件类型无效或超过大小限制".into());
     }
@@ -206,9 +210,7 @@ fn recognizes_cancellable(source: &Path, cancel: &AtomicBool) -> Result<bool> {
             pcl = true;
         }
     }
-    if Stamp::of(&file.metadata().map_err(super::error)?) != before
-        || Stamp::of(&open_source(source)?.metadata().map_err(super::error)?) != before
-    {
+    if file_stamp(&file)? != before || file_stamp(&open_source(source)?)? != before {
         return Err(super::changed());
     }
     if index && pcl {
@@ -243,7 +245,7 @@ struct CheckedPack {
 /// The original selected source is always `CheckedPack.file`. The inner input
 /// is process-owned anonymous content authority; no pathname can recreate it.
 struct HeldInnerArchive {
-    file: File,
+    file: StageFile,
     snapshot: Snapshot,
     outer_entry: OverrideFile,
 }
@@ -278,7 +280,7 @@ fn prepare_checked_with_stage(
     name: &str,
     optional_paths: Option<&[String]>,
     cancel: &AtomicBool,
-    allocate_inner: impl FnOnce(u64) -> Result<File>,
+    allocate_inner: impl FnOnce(u64) -> Result<StageFile>,
 ) -> Result<CheckedPack> {
     super::check(cancel)?;
     let format = formats::classify_cancellable(source, cancel)?;
@@ -298,7 +300,7 @@ fn prepare_checked_with_stage(
         let entry = formats::nested_entry(&file, cancel)?;
         let mut destination = allocate_inner(entry.size)?;
         let metadata = destination.metadata().map_err(super::error)?;
-        if !metadata.is_file() || metadata.len() != 0 || metadata.nlink() != 0 {
+        if !metadata.is_file() || metadata.len() != 0 || !is_anonymous(&destination)? {
             return Err("内层整合包目标必须是空的匿名普通文件".into());
         }
         destination.seek(SeekFrom::Start(0)).map_err(super::error)?;
@@ -432,7 +434,7 @@ fn prepare_checked_with_stage(
     super::check(cancel)?;
     plan.recheck_cancellable(cancel)?;
     if let Some(inner) = &inner {
-        if inner.file.metadata().map_err(super::error)?.nlink() != 0
+        if !is_anonymous(&inner.file)?
             || hash_file(
                 inner.file.try_clone().map_err(super::error)?,
                 2 * 1024 * 1024 * 1024,
@@ -706,13 +708,17 @@ impl CheckedPack {
                         Some(cancel),
                     )? != *before
                 }
-                Source::Official(_) => self.file.metadata().map_err(super::error)?.nlink() != 0,
+                Source::Official(_) => !self
+                    .official
+                    .as_ref()
+                    .ok_or("官方整合包缺少来源所有权")?
+                    .owns(&self.file)?,
             }
         {
             return Err(super::changed());
         }
         if let Some(inner) = &self.inner {
-            if inner.file.metadata().map_err(super::error)?.nlink() != 0
+            if !is_anonymous(&inner.file)?
                 || hash_file(
                     inner.file.try_clone().map_err(super::error)?,
                     2 * 1024 * 1024 * 1024,
@@ -726,19 +732,20 @@ impl CheckedPack {
     }
     fn recheck_source_stamp(&self) -> Result<()> {
         let expected = &self.plan.binding.source_snapshot.stamp;
-        if Stamp::of(&self.file.metadata().map_err(super::error)?) != *expected
+        if file_stamp(&self.file)? != *expected
             || match &self.plan.binding.source {
-                Source::Local(path) => {
-                    Stamp::of(&open_source(path)?.metadata().map_err(super::error)?) != *expected
-                }
-                Source::Official(_) => self.file.metadata().map_err(super::error)?.nlink() != 0,
+                Source::Local(path) => file_stamp(&open_source(path)?)? != *expected,
+                Source::Official(_) => !self
+                    .official
+                    .as_ref()
+                    .ok_or("官方整合包缺少来源所有权")?
+                    .owns(&self.file)?,
             }
         {
             return Err(super::changed());
         }
         if let Some(inner) = &self.inner {
-            let metadata = inner.file.metadata().map_err(super::error)?;
-            if Stamp::of(&metadata) != inner.snapshot.stamp || metadata.nlink() != 0 {
+            if file_stamp(&inner.file)? != inner.snapshot.stamp || !is_anonymous(&inner.file)? {
                 return Err(super::changed());
             }
         }

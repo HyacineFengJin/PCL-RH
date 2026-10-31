@@ -18,10 +18,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::CString,
     fs::File,
     io::{Read, Write},
-    os::fd::AsRawFd,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -35,7 +33,10 @@ pub(crate) mod local_snapshot;
 pub(crate) mod mrpack;
 pub(crate) mod publication;
 use archive::{checked_zip, legacy_resources, resolve_version, scan_archive, ArchiveEntry};
-use filesystem::{hash_file, open_source, source_snapshot, Dir, Key, Snapshot};
+use filesystem::{
+    file_stamp, hash_file, is_anonymous, link_anonymous, link_file, lock, move_new, open_source,
+    source_snapshot, Dir, ImportLock, Key, Snapshot, StageFile,
+};
 use journal::{BuildRegistration, Journal, State};
 
 type Result<T> = std::result::Result<T, String>;
@@ -107,6 +108,7 @@ enum FileSource {
 fn error(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
+#[cfg(target_os = "linux")]
 fn os_error(context: &str) -> String {
     format!("{context}：{}", std::io::Error::last_os_error())
 }
@@ -129,7 +131,9 @@ fn component(name: &str) -> Result<()> {
     {
         Err("导入包包含危险或无效路径".into())
     } else {
-        Ok(())
+        pcl_core::retained_fs::Leaf::new(name)
+            .map(|_| ())
+            .map_err(error)
     }
 }
 fn relative(path: &str) -> Result<Vec<&str>> {
@@ -153,8 +157,9 @@ fn name_ok(name: &str) -> Result<()> {
     }
     Ok(())
 }
-fn cstring(name: &str) -> Result<CString> {
-    CString::new(name).map_err(error)
+#[cfg(target_os = "linux")]
+fn cstring(name: &str) -> Result<std::ffi::CString> {
+    std::ffi::CString::new(name).map_err(error)
 }
 fn nonce() -> String {
     format!(
@@ -642,10 +647,10 @@ fn register_ownership(operation: &Dir, j: &Journal, record: OwnershipRecord) -> 
         record,
     };
     let bytes = serde_json::to_vec(&owned).map_err(error)?;
-    let mut file = operation.anonymous()?;
+    let mut file = operation.stage_for(&name, MAX_JOURNAL)?;
     file.write_all(&bytes).map_err(error)?;
     file.sync_all().map_err(error)?;
-    link_anonymous(&file, operation, &name)
+    link_anonymous(&mut file, operation, &name)
 }
 fn hydrate_ownership(operation: &Dir, j: &mut Journal) -> Result<()> {
     for name in operation.names()? {
@@ -672,23 +677,6 @@ fn storage(root: &Dir, create: bool) -> Result<Option<Dir>> {
             }
         }
     }
-}
-struct ImportLock(File);
-impl Drop for ImportLock {
-    fn drop(&mut self) {
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-fn lock(store: &Dir) -> Result<ImportLock> {
-    let file = if store.stat(".lock")?.is_some() {
-        store.regular(".lock")?
-    } else {
-        store.create(".lock")?
-    };
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("其他进程正在导入或恢复实例，请稍后重试".into());
-    }
-    Ok(ImportLock(file))
 }
 fn valid_snapshot(snapshot: &Snapshot) -> Result<()> {
     if !snapshot.stamp.regular()
@@ -803,18 +791,24 @@ fn validate_journal(j: &Journal, name: &str) -> Result<()> {
     Ok(())
 }
 fn read_journal(operation: &Dir, name: &str, filename: &str) -> Result<Journal> {
-    let mut file = operation.regular(filename)?;
-    if file.metadata().map_err(error)?.len() > MAX_JOURNAL {
-        return Err("导入恢复记录过大".into());
-    }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_JOURNAL + 1)
-        .read_to_end(&mut bytes)
-        .map_err(error)?;
-    if bytes.len() as u64 > MAX_JOURNAL {
-        return Err("导入恢复记录过大".into());
-    }
+    #[cfg(not(target_os = "linux"))]
+    let bytes = operation.read_journal_bytes(filename)?;
+    #[cfg(target_os = "linux")]
+    let bytes = {
+        let mut file = operation.regular(filename)?;
+        if file.metadata().map_err(error)?.len() > MAX_JOURNAL {
+            return Err("导入恢复记录过大".into());
+        }
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take(MAX_JOURNAL + 1)
+            .read_to_end(&mut bytes)
+            .map_err(error)?;
+        if bytes.len() as u64 > MAX_JOURNAL {
+            return Err("导入恢复记录过大".into());
+        }
+        bytes
+    };
     let mut j = journal::decode(&bytes)?;
     validate_journal(&j, name)?;
     if operation.key() != Ok(j.operation_key.clone()) {
@@ -823,24 +817,6 @@ fn read_journal(operation: &Dir, name: &str, filename: &str) -> Result<Journal> 
     hydrate_ownership(operation, &mut j)?;
     validate_journal(&j, name)?;
     Ok(j)
-}
-fn link_anonymous(file: &File, dir: &Dir, name: &str) -> Result<()> {
-    component(name)?;
-    let source = cstring(&format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-    let name = cstring(name)?;
-    if unsafe {
-        libc::linkat(
-            libc::AT_FDCWD,
-            source.as_ptr(),
-            dir.0.as_raw_fd(),
-            name.as_ptr(),
-            libc::AT_SYMLINK_FOLLOW,
-        )
-    } != 0
-    {
-        return Err(os_error("无法发布已登记的导入暂存文件"));
-    }
-    dir.sync()
 }
 fn validate_next(operation: &Dir, j: &Journal) -> Result<bool> {
     if operation.stat("journal.next")?.is_some() {
@@ -863,8 +839,11 @@ fn validate_next(operation: &Dir, j: &Journal) -> Result<bool> {
     Ok(false)
 }
 fn cleanup_next(operation: &Dir, j: &Journal) -> Result<()> {
-    if validate_next(operation, j)? {
-        operation.unlink("journal.next", false)?;
+    if operation.stat("journal.next")?.is_some() {
+        let expected = hash_file(operation.regular("journal.next")?, MAX_JOURNAL, None)?;
+        if validate_next(operation, j)? {
+            operation.unlink_snapshot("journal.next", &expected)?;
+        }
     }
     Ok(())
 }
@@ -880,38 +859,41 @@ fn write_journal(operation: &Dir, j: &Journal) -> Result<()> {
     if bytes.len() as u64 > MAX_JOURNAL {
         return Err("导入恢复记录超过大小限制".into());
     }
-    cleanup_next(operation, j)?;
-    let mut file = operation.anonymous()?;
-    file.write_all(&bytes).map_err(error)?;
-    file.sync_all().map_err(error)?;
-    if operation.stat("journal.json")?.is_none() {
-        link_anonymous(&file, operation, "journal.json")?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        operation.write_journal_bytes(&bytes)?;
         #[cfg(test)]
         FULL_JOURNAL_WRITES.with(|n| n.set(n.get() + 1));
         return Ok(());
     }
-    link_anonymous(&file, operation, "journal.next")?;
-    let source = cstring("journal.next")?;
-    let target = cstring("journal.json")?;
-    // Existing journal replacement is the sole overwrite in this module; its
-    // directory and old schema are checked first, and neither holds user data.
-    read_journal(operation, &j.operation_id, "journal.json")?;
-    if unsafe {
-        libc::renameat(
-            operation.0.as_raw_fd(),
-            source.as_ptr(),
-            operation.0.as_raw_fd(),
-            target.as_ptr(),
-        )
-    } != 0
+    #[cfg(target_os = "linux")]
     {
-        return Err(os_error("无法保存导入恢复状态"));
+        cleanup_next(operation, j)?;
+        let initial = operation.stat("journal.json")?.is_none();
+        let leaf = if initial {
+            "journal.json"
+        } else {
+            "journal.next"
+        };
+        let mut file = operation.stage_for(leaf, MAX_JOURNAL)?;
+        file.write_all(&bytes).map_err(error)?;
+        file.sync_all().map_err(error)?;
+        if initial {
+            link_anonymous(&mut file, operation, "journal.json")?;
+            #[cfg(test)]
+            FULL_JOURNAL_WRITES.with(|n| n.set(n.get() + 1));
+            return Ok(());
+        }
+        link_anonymous(&mut file, operation, "journal.next")?;
+        // This replacement concerns only the validated launcher-owned journal.
+        read_journal(operation, &j.operation_id, "journal.json")?;
+        filesystem::replace_journal(operation)?;
+        #[cfg(test)]
+        FULL_JOURNAL_WRITES.with(|n| n.set(n.get() + 1));
+        Ok(())
     }
-    operation.sync()?;
-    #[cfg(test)]
-    FULL_JOURNAL_WRITES.with(|n| n.set(n.get() + 1));
-    Ok(())
 }
+
 fn bound_root(j: &Journal) -> Result<Dir> {
     let root = Dir::open(&j.root)?;
     if root.key() != Ok(j.root_key.clone()) {
@@ -944,7 +926,7 @@ fn slot(index: usize) -> String {
 }
 fn setup(root: &Dir, store: &Dir, plan: &ImportPlan) -> Result<(Dir, Journal)> {
     let operation_id = nonce();
-    let operation = store.mkdir(&operation_id)?;
+    let operation = store.mkdir(&operation_id)?.with_journal()?;
     let file_targets: BTreeSet<_> = plan.files.iter().map(|f| f.target.as_str()).collect();
     let destination_dirs = plan
         .targets
@@ -999,7 +981,7 @@ fn setup(root: &Dir, store: &Dir, plan: &ImportPlan) -> Result<(Dir, Journal)> {
     // Initial journal has no pathname until complete and durable. A crash in
     // mkdir -> journal publication leaves only an empty removable operation.
     if let Err(e) = write_journal(&operation, &j) {
-        return match store.unlink(&j.operation_id, true) {
+        return match store.unlink_key(&j.operation_id, &j.operation_key) {
             Ok(()) => Err(e),
             Err(c) => Err(format!("取消清理失败：{c}；原错误：{e}")),
         };
@@ -1019,45 +1001,6 @@ fn setup(root: &Dir, store: &Dir, plan: &ImportPlan) -> Result<(Dir, Journal)> {
     }
     Ok((operation, j))
 }
-fn link_file(from: &Dir, source: &str, to: &Dir, target: &str) -> Result<()> {
-    component(source)?;
-    component(target)?;
-    let source = cstring(source)?;
-    let target = cstring(target)?;
-    if unsafe {
-        libc::linkat(
-            from.0.as_raw_fd(),
-            source.as_ptr(),
-            to.0.as_raw_fd(),
-            target.as_ptr(),
-            0,
-        )
-    } != 0
-    {
-        return Err(os_error("目标已存在或无法发布导入文件"));
-    }
-    to.sync()
-}
-fn move_new(from: &Dir, source: &str, to: &Dir, target: &str) -> Result<()> {
-    component(source)?;
-    component(target)?;
-    let source = cstring(source)?;
-    let target = cstring(target)?;
-    if unsafe {
-        libc::renameat2(
-            from.0.as_raw_fd(),
-            source.as_ptr(),
-            to.0.as_raw_fd(),
-            target.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        )
-    } != 0
-    {
-        return Err(os_error("目标已存在或无法发布新实例目录"));
-    }
-    from.sync()?;
-    to.sync()
-}
 fn stage_file(
     operation: &Dir,
     j: &mut Journal,
@@ -1069,8 +1012,8 @@ fn stage_file(
     notify: &impl Fn(u64),
 ) -> Result<()> {
     let stage = owned_dir(operation, "files", &j.files_key)?.ok_or("导入文件暂存目录缺失")?;
-    let mut file = stage.anonymous()?;
     let expected = &j.files[index];
+    let mut file = stage.stage_for(&slot(index), expected.size)?;
     let mut written = 0u64;
     let mut hash = Sha256::new();
     let mut copy = |input: &mut dyn Read| -> Result<()> {
@@ -1123,7 +1066,7 @@ fn stage_file(
     )?;
     j.files[index].staged = Some(snapshot);
     check(cancel)?;
-    link_anonymous(&file, &stage, &slot(index))
+    link_anonymous(&mut file, &stage, &slot(index))
 }
 fn ordered_paths<'a>(paths: impl Iterator<Item = &'a String>, reverse: bool) -> Vec<String> {
     let mut result: Vec<_> = paths.cloned().collect();
@@ -1258,7 +1201,7 @@ fn remove_instance_tree(instance: &Dir, j: &Journal) -> Result<()> {
                 {
                     return Err("导入内容已变化，拒绝清理".into());
                 }
-                parent.unlink(&name, false)?;
+                parent.unlink_snapshot(&name, &snap)?;
             }
         }
     }
@@ -1274,7 +1217,7 @@ fn remove_instance_tree(instance: &Dir, j: &Journal) -> Result<()> {
             {
                 return Err("导入内容目录已变化，拒绝清理".into());
             }
-            parent.unlink(&name, true)?;
+            parent.unlink_key(&name, &child.key()?)?;
         }
     }
     if !instance.names()?.is_empty() {
@@ -1393,7 +1336,7 @@ fn cleanup_stage(operation: &Dir, j: &Journal) -> Result<()> {
         if j.instance_key.is_some() {
             remove_instance_tree(&instance, j)?;
         }
-        operation.unlink("instance", true)?;
+        operation.unlink_key("instance", &instance.key()?)?;
     }
     if let Some(files) = owned_dir(operation, "files", &j.files_key)? {
         // Unknown entries are preserved. Journal-before-link makes every
@@ -1423,15 +1366,16 @@ fn cleanup_stage(operation: &Dir, j: &Journal) -> Result<()> {
             if !expected.owned_matches(&hash_file(files.regular(&name)?, MAX_FILE, None)?) {
                 return Err("导入暂存内容在清理前已经变化".into());
             }
-            files.unlink(&name, false)?;
+            files.unlink_snapshot(&name, expected)?;
         }
-        operation.unlink("files", true)?;
+        operation.unlink_key("files", &files.key()?)?;
     }
     cleanup_next(operation, j)?;
     for name in operation.names()? {
         if name.starts_with("owned-") {
+            let expected = hash_file(operation.regular(&name)?, MAX_JOURNAL, None)?;
             read_ownership(operation, &name, j)?;
-            operation.unlink(&name, false)?;
+            operation.unlink_snapshot(&name, &expected)?;
         }
     }
     let names = operation.names()?;
@@ -1450,7 +1394,7 @@ fn rollback(root: &Dir, operation: &Dir, j: &Journal) -> Result<()> {
                 return Err("目标实例已经被其他内容占用，拒绝清理".into());
             }
             remove_instance_tree(&instance, j)?;
-            versions.unlink(&j.name, true)?;
+            versions.unlink_key(&j.name, &instance.key()?)?;
         }
     }
     for f in &j.files {
@@ -1467,7 +1411,7 @@ fn rollback(root: &Dir, operation: &Dir, j: &Journal) -> Result<()> {
                 return Err("目标共享资源已变化，拒绝清理".into());
             }
             let (parent, name) = root.parent(&f.target)?;
-            parent.unlink(&name, false)?;
+            parent.unlink_snapshot(&name, &current)?;
         }
     }
     for path in ordered_paths(j.destination_dirs.keys(), true) {
@@ -1489,7 +1433,7 @@ fn rollback(root: &Dir, operation: &Dir, j: &Journal) -> Result<()> {
             {
                 return Err("导入创建的共享目录已变化，拒绝清理".into());
             }
-            parent.unlink(&name, true)?;
+            parent.unlink_key(&name, &child.key()?)?;
         }
     }
     cleanup_stage(operation, j)
@@ -1521,9 +1465,10 @@ fn recover_one(operation: &Dir, j: &mut Journal) -> Result<()> {
             if j.schema == 2 {
                 build::verify_terminal_operation(operation, j)?;
             }
-            return Ok(());
+            return operation.check_source_cleanup();
         }
     }
+    operation.check_source_cleanup()?;
     write_journal(operation, j)
 }
 
@@ -1549,7 +1494,7 @@ pub(crate) fn ensure_ready_except_build(root: &Path, active_operation: Option<&s
         if !operation_ok(&name) {
             return Err("导入记录目录包含未知内容".into());
         }
-        let operation = store.child(&name)?;
+        let operation = store.child(&name)?.with_journal()?;
         if operation.stat("journal.json")?.is_none() {
             return Err("存在未完成的实例导入，请先恢复再操作或启动".into());
         }
@@ -1584,9 +1529,11 @@ pub(crate) fn ensure_ready_except_build(root: &Path, active_operation: Option<&s
 pub fn recover_pending(root: &Path) -> Result<Value> {
     let path = root.canonicalize().map_err(error)?;
     let dir = Dir::open(&path)?;
-    let Some(store) = storage(&dir, false)? else {
+    if storage(&dir, false)?.is_none() {
         return Ok(json!({"recovered":0}));
-    };
+    }
+    filesystem::require_mutation_support()?;
+    let store = storage(&dir, false)?.ok_or("导入记录目录缺失")?;
     let _lock = lock(&store)?;
     let mut recovered = 0usize;
     for name in store.names()? {
@@ -1596,10 +1543,10 @@ pub fn recover_pending(root: &Path) -> Result<Value> {
         if !operation_ok(&name) {
             return Err("导入记录目录包含未知内容".into());
         }
-        let operation = store.child(&name)?;
+        let operation = store.child(&name)?.with_journal()?;
         if operation.stat("journal.json")?.is_none() {
             if operation.names()?.is_empty() {
-                store.unlink(&name, true)?;
+                store.unlink_key(&name, &operation.key()?)?;
                 recovered += 1;
                 continue;
             }
@@ -1617,6 +1564,7 @@ pub fn recover_pending(root: &Path) -> Result<Value> {
         }
     }
     ensure_ready(&path)?;
+    dir.reconcile_sources()?;
     Ok(json!({"recovered":recovered,"message":"实例导入恢复完成"}))
 }
 fn progress(
@@ -1689,6 +1637,7 @@ pub fn execute_checked(
     callback: impl Fn(Progress) + Send + Sync,
     commit_check: impl FnOnce() -> Result<()>,
 ) -> Result<Value> {
+    filesystem::require_mutation_support()?;
     check(cancel)?;
     guards(&plan.root)?;
     crate::instance_delete::ensure_name_available(&plan.root, &plan.name)?;
@@ -1700,13 +1649,14 @@ pub fn execute_checked(
         0,
         plan.bytes,
     ));
-    let root = Dir::open(&plan.root)?;
+    let mut root = Dir::open(&plan.root)?;
     if root.key() != Ok(plan.root_key.clone())
         || source_snapshot(&plan.source, Some(cancel))? != plan.source_snapshot
     {
         return Err(changed());
     }
     validate_targets(&root, &plan.targets)?;
+    root = root.with_sources()?;
     let store = storage(&root, true)?.ok_or("导入记录目录缺失")?;
     let _lock = lock(&store)?;
     let (operation, mut j) = setup(&root, &store, &plan)?;

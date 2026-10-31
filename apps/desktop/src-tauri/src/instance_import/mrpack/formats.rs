@@ -108,17 +108,13 @@ pub(super) fn classify(source: &Path) -> Result<Format> {
 }
 pub(super) fn classify_cancellable(source: &Path, cancel: &AtomicBool) -> Result<Format> {
     let file = super::super::open_source(source)?;
-    let before = super::Stamp::of(&file.metadata().map_err(super::super::error)?);
+    let before = super::file_stamp(&file)?;
     if !before.regular() || before.size > super::super::MAX_BYTES {
         return Err("导入文件类型无效或超过大小限制".into());
     }
     let format = classify_held(&file, cancel)?;
-    if super::Stamp::of(&file.metadata().map_err(super::super::error)?) != before
-        || super::Stamp::of(
-            &super::super::open_source(source)?
-                .metadata()
-                .map_err(super::super::error)?,
-        ) != before
+    if super::file_stamp(&file)? != before
+        || super::file_stamp(&super::super::open_source(source)?)? != before
     {
         return Err(super::super::changed());
     }
@@ -150,7 +146,7 @@ pub(super) fn nested_entry(file: &File, cancel: &AtomicBool) -> Result<NestedEnt
 }
 fn classification(file: &File, cancel: &AtomicBool) -> Result<Layout> {
     super::super::check(cancel)?;
-    let before = super::Stamp::of(&file.metadata().map_err(super::super::error)?);
+    let before = super::file_stamp(&file)?;
     let mut zip =
         super::super::archive::checked_zip(file.try_clone().map_err(super::super::error)?)?;
     let mut nodes = BTreeMap::new();
@@ -216,7 +212,7 @@ fn classification(file: &File, cancel: &AtomicBool) -> Result<Layout> {
     if layout.format != Format::Pcl && paths > PATH_BYTES {
         return Err("ZIP 路径文本超过 8 MiB 限制".into());
     }
-    if super::Stamp::of(&file.metadata().map_err(super::super::error)?) != before {
+    if super::file_stamp(&file)? != before {
         return Err(super::super::changed());
     }
     super::super::check(cancel)?;
@@ -428,14 +424,8 @@ fn scan(
         let directory = entry.is_dir();
         if entry.is_symlink()
             || entry.unix_mode().is_some_and(|mode| {
-                let kind = mode & libc::S_IFMT;
-                kind != 0
-                    && kind
-                        != if directory {
-                            libc::S_IFDIR
-                        } else {
-                            libc::S_IFREG
-                        }
+                let kind = mode & 0o170000;
+                kind != 0 && kind != if directory { 0o040000 } else { 0o100000 }
             })
         {
             return Err("整合包 ZIP 包含链接或特殊文件".into());

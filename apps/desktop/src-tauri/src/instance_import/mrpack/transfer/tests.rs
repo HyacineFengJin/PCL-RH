@@ -4,6 +4,7 @@
 use super::*;
 use crate::instance_import::Dir;
 use pcl_network::{DownloadPolicy, DownloadScheduler};
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     io::Read,

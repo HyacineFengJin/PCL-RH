@@ -82,14 +82,8 @@ pub(super) fn scan_cancellable(
         super::super::relative(&path)?;
         if entry.is_symlink()
             || entry.unix_mode().is_some_and(|mode| {
-                let kind = mode & libc::S_IFMT;
-                kind != 0
-                    && kind
-                        != if directory {
-                            libc::S_IFDIR
-                        } else {
-                            libc::S_IFREG
-                        }
+                let kind = mode & 0o170000;
+                kind != 0 && kind != if directory { 0o040000 } else { 0o100000 }
             })
         {
             return Err("mrpack ZIP 包含链接或特殊文件".into());

@@ -261,8 +261,9 @@ impl ConfirmationCache {
                 let (fds, bytes) = (lease.fds + 1, lease.bytes);
                 self.resize_lease(lease, fds, bytes, size)?;
                 super::super::check(cancel)?;
-                // Capture ancestors without following links. The file stays
-                // anonymous; no persistent input cache or game-root write exists.
+                // Capture ancestors without following links. Inputs stay outside
+                // the game root: anonymous on Linux, registry-owned on native
+                // named hosts. No input pathname becomes installation authority.
                 input_staging(project, Path::new(&root.path))?.anonymous()
             },
         )?;
@@ -449,13 +450,13 @@ pub(super) fn input_staging(project: &Path, game_root: &Path) -> Result<Dir> {
         return Err("整合包匿名暂存目录与游戏目录重叠，请选择项目之外的游戏目录".into());
     }
     match inputs {
-        Some(inputs) => Ok(inputs),
+        Some(inputs) => inputs.with_input_sources(),
         None => {
             let namespace = match namespace {
                 Some(namespace) => namespace,
                 None => project_dir.ensure(".pcl-linux")?,
             };
-            namespace.ensure("pack-inputs")
+            namespace.ensure("pack-inputs")?.with_input_sources()
         }
     }
 }
@@ -826,10 +827,10 @@ fn execute(
             Some(route) => client.with_test_route(route.clone())?,
             None => client,
         };
-        let store = Dir(operation.root_fd()?);
+        let store = operation.root_directory()?;
         let completed = AtomicU64::new(0);
         let total = authority.checked.outputs.len() as u64;
-        let finish = |path: &str, file: File| -> Result<()> {
+        let finish = |path: &str, file: StageFile| -> Result<()> {
             super::super::check(&cancel)?;
             if let Some(java) = &java {
                 java.verify_fast(shared, task)?;
@@ -859,6 +860,16 @@ fn execute(
             );
             Ok(())
         };
+        // Resolve shared build parents serially before independent downloads.
+        // Each registered writer then captures its actual final parent/leaf.
+        for path in authority.checked.outputs.keys() {
+            let target = format!("versions/{}/{path}", authority.checked.plan.name);
+            let parts = super::super::relative(&target)?;
+            if parts.len() > 1 {
+                ensure_directory(&store, &parts[..parts.len() - 1].join("/"))?;
+            }
+        }
+        let instance_name = authority.checked.plan.name.as_str();
         let jobs = authority
             .checked
             .outputs
@@ -894,9 +905,13 @@ fn execute(
                             ),
                         );
                     };
-                    // Each polled file owns one anonymous inode. An error drops
-                    // every other borrowed future before the build can abort.
-                    let fd = store.anonymous()?;
+                    // Each polled file owns one registered/anonymous writer.
+                    // Drop all other borrowed futures before aborting the build.
+                    let fd = output_stage(
+                        store,
+                        &format!("versions/{instance_name}/{path}"),
+                        output.size(),
+                    )?;
                     let verified = match output {
                         Output::Remote {
                             size,
@@ -956,7 +971,16 @@ fn execute(
             if let Some(java) = &java {
                 java.verify_fast(shared, task)?;
             }
-            let file = extract_override(&authority.checked, file, store.anonymous()?, &cancel)?;
+            let file = extract_override(
+                &authority.checked,
+                file,
+                output_stage(
+                    &store,
+                    &format!("versions/{}/{path}", authority.checked.plan.name),
+                    file.size,
+                )?,
+                &cancel,
+            )?;
             finish(path, file)?;
         }
         authority.checked.recheck_source(&cancel)?;
@@ -1063,9 +1087,9 @@ fn pack_progress(
 fn extract_override(
     checked: &CheckedPack,
     f: &OverrideFile,
-    mut destination: File,
+    mut destination: StageFile,
     cancel: &AtomicBool,
-) -> Result<File> {
+) -> Result<StageFile> {
     // try_clone shares the input offset. All readers of an official input,
     // including concurrent re-confirmations, participate in the same gate.
     let _reader = checked
@@ -1116,7 +1140,17 @@ fn ensure_directory(root: &Dir, path: &str) -> Result<Dir> {
     }
     Ok(parent)
 }
-fn stage_file(root: &Dir, path: &str, file: File, cancel: &AtomicBool) -> Result<()> {
+fn output_stage(root: &Dir, path: &str, max: u64) -> Result<StageFile> {
+    let parts = super::super::relative(path)?;
+    let (name, parents) = parts.split_last().ok_or("构建输出路径无效")?;
+    let parent = if parents.is_empty() {
+        root.duplicate()?
+    } else {
+        ensure_directory(root, &parents.join("/"))?
+    };
+    parent.stage_for(name, max)
+}
+fn stage_file(root: &Dir, path: &str, mut file: StageFile, cancel: &AtomicBool) -> Result<()> {
     super::super::check(cancel)?;
     let parts = super::super::relative(path)?;
     let (leaf, parents) = parts.split_last().ok_or("构建输出路径无效")?;
@@ -1126,7 +1160,7 @@ fn stage_file(root: &Dir, path: &str, file: File, cancel: &AtomicBool) -> Result
         ensure_directory(root, &parents.join("/"))?
     };
     file.sync_all().map_err(super::super::error)?;
-    super::super::link_anonymous(&file, &parent, leaf)?;
+    super::super::link_anonymous(&mut file, &parent, leaf)?;
     parent.sync()
 }
 
@@ -1162,17 +1196,26 @@ fn stage_bundled(
     cancel: &AtomicBool,
 ) -> Result<()> {
     let bundled = checked.bundled.as_ref().ok_or("整合包缺少游戏构建来源")?;
-    let root = Dir(operation.root_fd()?);
+    let root = operation.root_directory()?;
     let prefix = format!("versions/{0}/{0}", checked.plan.name);
-    let mut metadata = root.anonymous()?;
+    let mut metadata = output_stage(
+        &root,
+        &format!("{prefix}.json"),
+        bundled.metadata.len() as u64,
+    )?;
     metadata
         .write_all(&bundled.metadata)
         .map_err(super::super::error)?;
     stage_file(&root, &format!("{prefix}.json"), metadata, cancel)?;
-    let jar = extract_override(checked, &bundled.jar, root.anonymous()?, cancel)?;
+    let jar = extract_override(
+        checked,
+        &bundled.jar,
+        output_stage(&root, &format!("{prefix}.jar"), bundled.jar.size)?,
+        cancel,
+    )?;
     stage_file(&root, &format!("{prefix}.jar"), jar, cancel)?;
     for (path, fact) in &bundled.shared {
-        let file = extract_override(checked, fact, root.anonymous()?, cancel)?;
+        let file = extract_override(checked, fact, output_stage(&root, path, fact.size)?, cancel)?;
         stage_file(&root, path, file, cancel)?;
     }
     ensure_directory(&root, &format!("versions/{}/config", checked.plan.name))?;

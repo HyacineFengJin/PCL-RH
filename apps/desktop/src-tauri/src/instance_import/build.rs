@@ -56,9 +56,10 @@ impl BuildOperation {
         expected_root_key: Option<&Key>,
         expected_versions_key: Option<&Key>,
     ) -> Result<Self> {
+        filesystem::require_mutation_support()?;
         name_ok(name)?;
         let path = root.canonicalize().map_err(error)?;
-        let root = Dir::open(&path)?;
+        let mut root = Dir::open(&path)?;
         if expected_root_key.is_some_and(|expected| root.key().as_ref() != Ok(expected)) {
             return Err(changed());
         }
@@ -84,6 +85,7 @@ impl BuildOperation {
         if Dir::open(&path)?.key()? != root.key()? {
             return Err(changed());
         }
+        root = root.with_sources()?;
         let store = storage(&root, true)?.ok_or("构建记录目录缺失")?;
         let lock = lock(&store)?;
         // Recheck after acquiring the cross-process lock, before creating an
@@ -91,7 +93,7 @@ impl BuildOperation {
         ensure_ready(&path)?;
         validate_targets(&root, &targets)?;
         let id = nonce();
-        let operation = store.mkdir(&id)?;
+        let operation = store.mkdir(&id)?.with_journal()?;
         let mut journal = Journal {
             schema: 2,
             build: Some(BuildRegistration { key: None }),
@@ -115,7 +117,7 @@ impl BuildOperation {
             instance_dirs: BTreeMap::new(),
         };
         if let Err(original) = write_journal(&operation, &journal) {
-            return match store.unlink(&journal.operation_id, true) {
+            return match store.unlink_key(&journal.operation_id, &journal.operation_key) {
                 Ok(()) => Err(original),
                 Err(cleanup) => Err(format!("取消清理失败：{cleanup}；原错误：{original}")),
             };
@@ -161,6 +163,9 @@ impl BuildOperation {
     }
     pub(crate) fn operation_id(&self) -> &str {
         &self.journal.operation_id
+    }
+    pub(super) fn root_directory(&self) -> Result<Dir> {
+        self.build_dir()
     }
     pub(crate) fn root_fd(&self) -> Result<File> {
         self.build_dir()?.0.try_clone().map_err(error)
@@ -526,7 +531,7 @@ pub(super) fn cleanup_build(operation: &Dir, j: &Journal) -> Result<()> {
                 inspect(&child, &path, entries)?;
             } else if stamp.regular() {
                 let file = dir.regular(&name)?;
-                if Stamp::of(&file.metadata().map_err(error)?) != stamp {
+                if file_stamp(&file)? != stamp {
                     return Err("私有构建文件在清理前发生变化".into());
                 }
             } else {
@@ -546,7 +551,7 @@ pub(super) fn cleanup_build(operation: &Dir, j: &Journal) -> Result<()> {
         let (parent, name) = root.parent(&path)?;
         let expected = &entries[&path];
         let current = parent.stat(&name)?.ok_or("私有构建在清理期间发生变化")?;
-        if current.key != expected.key || current.mode != expected.mode {
+        if current.key != expected.key || !current.same_type_security(expected) {
             return Err("私有构建节点在清理期间已被替换，拒绝清理".into());
         }
         if expected.directory() {
@@ -555,17 +560,25 @@ pub(super) fn cleanup_build(operation: &Dir, j: &Journal) -> Result<()> {
             }
         } else {
             let file = parent.regular(&name)?;
-            let actual = Stamp::of(&file.metadata().map_err(error)?);
-            if actual.key != expected.key || actual.mode != expected.mode {
+            let actual = file_stamp(&file)?;
+            if actual.key != expected.key || !actual.same_type_security(expected) {
                 return Err(changed());
             }
         }
-        parent.unlink(&name, expected.directory())?;
+        if expected.directory() {
+            parent.unlink_key(&name, &expected.key)?;
+        } else {
+            let snapshot = hash_file(parent.regular(&name)?, MAX_FILE, None)?;
+            if snapshot.stamp.key != expected.key || !snapshot.stamp.same_type_security(expected) {
+                return Err(changed());
+            }
+            parent.unlink_snapshot(&name, &snapshot)?;
+        }
     }
     if operation.child("build")?.key()? != key {
         return Err("私有构建清理期间已被替换".into());
     }
-    operation.unlink("build", true)
+    operation.unlink_key("build", &key)
 }
 
 #[cfg(test)]

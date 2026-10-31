@@ -30,6 +30,8 @@ use std::{
 mod windows_versions;
 
 pub(crate) const MAX_ENTRIES: usize = 4096;
+#[path = "documents.rs"]
+pub(crate) mod documents;
 pub(crate) fn component(name: &str) -> Result<(), String> {
     if name.is_empty()
         || matches!(name, "." | "..")

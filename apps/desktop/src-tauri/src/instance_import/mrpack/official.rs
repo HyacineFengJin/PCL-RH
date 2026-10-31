@@ -31,7 +31,7 @@ pub(crate) struct Input {
     root_key: Key,
     project: PathBuf,
     evidence: SavePlan,
-    file: File,
+    file: super::StageFile,
     snapshot: Snapshot,
     // dup/try_clone shares the file position. Serializing readers prevents a
     // re-confirmation from moving an installation worker's ZIP/hash cursor.
@@ -252,7 +252,7 @@ struct Capture {
 struct PendingDownload {
     capture: Capture,
     authority: crate::resource_save::authority::Authority,
-    file: File,
+    file: super::StageFile,
     preparation: service::Preparation,
 }
 async fn download(
@@ -302,14 +302,7 @@ async fn download_checked(
         MAX_ARCHIVE,
         Some(cancel),
     )?;
-    if snapshot.stamp.size != pending.authority.file.size
-        || pending
-            .file
-            .metadata()
-            .map_err(super::super::error)?
-            .nlink()
-            != 0
-    {
+    if snapshot.stamp.size != pending.authority.file.size || !super::is_anonymous(&pending.file)? {
         return Err("整合包匿名输入身份无效".into());
     }
     let current = resolve_pack(metadata, pending.authority.plan.request.clone()).await?;
@@ -371,7 +364,7 @@ fn prepare_checked(
         MAX_ARCHIVE,
         Some(cancel),
     )? != input.snapshot
-        || file.metadata().map_err(super::super::error)?.nlink() != 0
+        || !input.owns(&file)?
     {
         return Err(super::super::changed());
     }
@@ -453,3 +446,9 @@ pub(crate) fn start(
 #[cfg(test)]
 #[path = "official_tests.rs"]
 mod tests;
+
+impl Input {
+    pub(super) fn owns(&self, file: &File) -> Result<bool> {
+        super::super::filesystem::owns_stage(&self.file, file)
+    }
+}

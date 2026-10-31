@@ -1,6 +1,9 @@
 //! Launcher-owned export choices, separate from the files being exported.
 use crate::instance_export::ExportRequest;
-use crate::launcher_local::filesystem::{self as local, Scope, Snapshot};
+use crate::launcher_local::filesystem::{
+    documents::{Document, DocumentSnapshot},
+    Scope,
+};
 use pcl_core::retained_fs::{Directory, Leaf, Lock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,15 +41,16 @@ fn directory(project: &Path, create: bool) -> Result<Option<Scope>, String> {
         Ok(None)
     }
 }
-fn read_at(scope: &Scope, filename: &str) -> Result<Option<(Snapshot, Preset)>, String> {
+fn read_at(scope: &Scope, filename: &str) -> Result<Option<(DocumentSnapshot, Preset)>, String> {
     scope.recheck()?;
     let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
-    let Some(mut snapshot) = local::optional_snapshot(dir, filename, LIMIT)? else {
+    let document = Document::new(dir, filename, LIMIT)?;
+    let Some(mut snapshot) = document.snapshot()? else {
         scope.recheck()?;
         return Ok(None);
     };
-    let bytes = snapshot.bytes(dir, filename)?;
-    if format!("{:x}", Sha256::digest(&bytes)) != snapshot.digest {
+    let bytes = document.bytes(&mut snapshot)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != snapshot.digest() {
         return Err("导出配置在读取期间已变化，原文件已保留".into());
     }
     scope.recheck()?;
@@ -131,20 +135,14 @@ fn save_checked(
     before_publish()?;
     scope.recheck()?;
     let dir = scope.folder.as_ref().ok_or("导出配置目录已消失")?;
-    // The native local writer owns no-replace creation and Unix CAS exchange.
-    // Windows permits genuine new files, and explicitly refuses an existing
-    // dynamic document until its typed logical-document scope is implemented.
-    dir.replace(
-        &filename,
-        current.as_ref().map(|(snapshot, _)| snapshot),
-        &data,
-        LIMIT,
-    )?;
+    // This explicit document capability does not alter arbitrary file readers.
+    Document::new(dir, &filename, LIMIT)?
+        .replace(current.as_ref().map(|(snapshot, _)| snapshot), &data)?;
     scope.recheck()?;
     let Some((after, preset)) = read_at(&scope, &filename)? else {
         return Err("导出配置可能已保存，但发布后的文件已消失，请重新读取".into());
     };
-    if after.digest != format!("{:x}", Sha256::digest(&data)) {
+    if after.digest() != format!("{:x}", Sha256::digest(&data)) {
         return Err("导出配置可能已保存，但发布后被修改，原件与证据已保留".into());
     }
     check(&preset, root_id, root, id)
