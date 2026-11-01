@@ -313,7 +313,7 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
         2,
         &selected,
         &[],
-        &pcl_core::LaunchOptions {
+        &pcl_core::launch_options::LaunchOptions {
             jvm_args: "-Duser.dir=explicit-user-choice".into(),
             ..Default::default()
         },
