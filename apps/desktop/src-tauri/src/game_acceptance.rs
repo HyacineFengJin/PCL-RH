@@ -136,6 +136,28 @@ struct Workspace {
     name: Leaf,
     path: PathBuf,
 }
+
+fn traversal_cap(parent: &Directory, name: &Leaf, created: Directory) -> Result<Directory> {
+    // Native creation capabilities may retain DELETE access for rollback.
+    // Windows' sealed cwd lease must exclude such access for its entire graph.
+    // Reopen from the original parent (not from `created`, whose parent chain
+    // would keep that capability alive), bind the same object, then release it.
+    let identity = created.identity().map_err(|e| e.to_string())?;
+    let child = parent
+        .child(name, Traversal::SameFilesystem)
+        .map_err(|e| e.to_string())?;
+    if child.identity().map_err(|e| e.to_string())? != identity {
+        return Err("New acceptance directory changed during capability handoff".into());
+    }
+    parent.recheck(name, &identity).map_err(|e| e.to_string())?;
+    drop(created);
+    child
+        .metadata()
+        .and_then(|metadata| metadata.require_private())
+        .map_err(|e| e.to_string())?;
+    Ok(child)
+}
+
 impl Workspace {
     fn new(parent: &Path) -> Result<Self> {
         let directory = Directory::open_absolute(parent).map_err(|e| e.to_string())?;
@@ -143,9 +165,10 @@ impl Workspace {
         // random private child. A system-owned temporary parent need not be
         // owned by TokenUser; the child itself must pass the native private
         // policy and retained identity checks before any game data is written.
-        let (name, child) = directory
+        let (name, created) = directory
             .create_private_workspace()
             .map_err(|e| e.to_string())?;
+        let child = traversal_cap(&directory, &name, created)?;
         // Production launch planning canonicalizes its game root. Keep the
         // same native representation here too (notably Windows' verbatim
         // prefix), so containment checks compare names in one namespace. The
@@ -320,13 +343,12 @@ fn run_pipeline(
 ) -> Result<()> {
     let cancel = Arc::new(AtomicBool::new(false));
     let deadline = Deadline::new(cancel.clone());
-    let game = workspace
+    let game_name = Leaf::new("game").map_err(|e| e.to_string())?;
+    let created_game = workspace
         .child
-        .create_private(
-            &Leaf::new("game").map_err(|e| e.to_string())?,
-            Traversal::SameFilesystem,
-        )
+        .create_private(&game_name, Traversal::SameFilesystem)
         .map_err(|e| e.to_string())?;
+    let game = traversal_cap(&workspace.child, &game_name, created_game)?;
     let root = workspace.path.join("game");
     let id = if request.fabric.is_some() {
         "acceptance-fabric"

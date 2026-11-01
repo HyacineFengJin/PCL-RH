@@ -8,7 +8,7 @@ mod junction_fixture;
 
 use pcl_core::{
     game_process::{self, GameChild},
-    retained_fs::{self, Directory, Identity, Kind},
+    retained_fs::{self, Directory, Identity, Kind, Leaf, Traversal},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,7 +16,7 @@ use std::{
     env,
     ffi::OsString,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
     os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -383,6 +383,89 @@ fn set_junction_attributes(target: &Path, directory: &Path) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+#[test]
+fn created_directory_delete_access_requires_identity_checked_read_caps() {
+    let temporary = tempfile::tempdir().unwrap();
+    let parent = Directory::open_absolute(&fs::canonicalize(temporary.path()).unwrap()).unwrap();
+    let (workspace_name, created_workspace) = parent.create_private_workspace().unwrap();
+    let workspace_identity = created_workspace.identity().unwrap();
+    let workspace = parent
+        .child(&workspace_name, Traversal::SameFilesystem)
+        .unwrap();
+    assert_eq!(workspace.identity().unwrap(), workspace_identity);
+    workspace.metadata().unwrap().require_private().unwrap();
+    parent
+        .recheck(&workspace_name, &workspace_identity)
+        .unwrap();
+
+    // Build descendants through the fresh read cap, so they cannot keep the
+    // original workspace's DELETE access alive through Directory::_parent.
+    let game_name = Leaf::new("game").unwrap();
+    let created_game = workspace
+        .create_private(&game_name, Traversal::SameFilesystem)
+        .unwrap();
+    let game_identity = created_game.identity().unwrap();
+    let game = workspace
+        .child(&game_name, Traversal::SameFilesystem)
+        .unwrap();
+    assert_eq!(game.identity().unwrap(), game_identity);
+    game.metadata().unwrap().require_private().unwrap();
+    workspace.recheck(&game_name, &game_identity).unwrap();
+    let image = env::current_exe().unwrap();
+    let arguments = [OsString::from("--list")];
+    let spawn = || GameChild::spawn_in_directory(&image, &arguments, game.file());
+
+    // Both creation FILE_OBJECTs request DELETE. A read-only cwd input does
+    // not make them compatible with the launcher's retained NoDelete graph.
+    assert!(
+        spawn().is_err(),
+        "creation caps bypassed NoDelete admission"
+    );
+    parent
+        .recheck(&workspace_name, &workspace_identity)
+        .unwrap();
+    drop(created_workspace);
+    workspace.metadata().unwrap().require_private().unwrap();
+    assert!(
+        spawn().is_err(),
+        "game creation cap bypassed NoDelete admission"
+    );
+    workspace.recheck(&game_name, &game_identity).unwrap();
+    drop(created_game);
+    game.metadata().unwrap().require_private().unwrap();
+
+    let mut child = spawn().expect("identity-checked read caps must permit pinned cwd startup");
+    let mut stdout = child.take_stdout().unwrap();
+    let mut stderr = child.take_stderr().unwrap();
+    let deadline = Instant::now() + WAIT;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native --list child did not exit"
+        );
+        pause();
+    };
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(child.wait().unwrap(), status);
+    let mut listed = String::new();
+    stdout.read_to_string(&mut listed).unwrap();
+    assert!(listed
+        .contains("created_directory_delete_access_requires_identity_checked_read_caps: test"));
+    let mut errors = String::new();
+    stderr.read_to_string(&mut errors).unwrap();
+    assert!(errors.is_empty(), "native --list stderr: {errors}");
+    parent
+        .recheck(&workspace_name, &workspace_identity)
+        .unwrap();
+    workspace.recheck(&game_name, &game_identity).unwrap();
+    assert_eq!(game.identity().unwrap(), game_identity);
+    workspace.metadata().unwrap().require_private().unwrap();
+    game.metadata().unwrap().require_private().unwrap();
 }
 
 #[test]
