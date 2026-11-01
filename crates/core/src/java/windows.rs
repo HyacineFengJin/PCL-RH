@@ -4,17 +4,23 @@
 //! this is lifecycle management, not a sandbox for arbitrary executable code.
 use super::*;
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     mem::size_of,
-    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt},
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::OpenOptionsExt,
+    },
     path::{Component, Prefix},
     ptr,
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Globalization::{CompareStringOrdinal, CSTR_EQUAL},
+    Globalization::{
+        CompareStringOrdinal, GetACP, MultiByteToWideChar, WideCharToMultiByte, CP_UTF8,
+        CSTR_EQUAL, MB_ERR_INVALID_CHARS, WC_ERR_INVALID_CHARS, WC_NO_BEST_FIT_CHARS,
+    },
     Security::SECURITY_ATTRIBUTES,
     Storage::FileSystem::*,
     System::{Environment::*, JobObjects::*, Pipes::*, Threading::*},
@@ -24,6 +30,8 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_ENV_UNITS: usize = 1024 * 1024;
 const STOP_CODE: u32 = 1;
 const INVALID_PE: &str = "Java 文件必须是普通的 Windows PE 可执行程序，不能是脚本或 DLL";
+const MAX_PATH_UNITS: usize = 32768;
+const PATH_ENCODING: &str = "当前 Java/Windows 系统代码页不能无损表示此路径，且没有指向同一对象的可用短路径；请选择当前代码页可表示的位置（例如 ASCII 目录）";
 
 fn check_pe_header(image: &mut (impl Read + Seek), bytes: u64) -> Result<()> {
     let mut dos = [0u8; 64];
@@ -164,6 +172,103 @@ fn ordinary_path_name(canonical: &Path) -> Result<PathBuf> {
     Ok(ordinary)
 }
 
+fn code_page_roundtrip(units: &[u16], code_page: u32) -> bool {
+    if units.is_empty() || units.len() > MAX_PATH_UNITS || units.contains(&0) {
+        return false;
+    }
+    // UTF-8/GB18030 accept WC_ERR_INVALID_CHARS, not WC_NO_BEST_FIT_CHARS.
+    // They represent all valid Unicode, and UTF-8 forbids default-char args.
+    let unicode_page = code_page == CP_UTF8 || code_page == 54936;
+    let flags = if unicode_page {
+        WC_ERR_INVALID_CHARS
+    } else {
+        WC_NO_BEST_FIT_CHARS
+    };
+    let mut used_default = 0;
+    let default_result = if unicode_page {
+        ptr::null_mut()
+    } else {
+        &mut used_default as *mut _
+    };
+    let count = unsafe {
+        WideCharToMultiByte(
+            code_page,
+            flags,
+            units.as_ptr(),
+            units.len() as i32,
+            ptr::null_mut(),
+            0,
+            ptr::null(),
+            default_result,
+        )
+    };
+    if count <= 0 || count as usize > MAX_PATH_UNITS * 4 || used_default != 0 {
+        return false;
+    }
+    let mut encoded = vec![0u8; count as usize];
+    used_default = 0;
+    if unsafe {
+        WideCharToMultiByte(
+            code_page,
+            flags,
+            units.as_ptr(),
+            units.len() as i32,
+            encoded.as_mut_ptr(),
+            count,
+            ptr::null(),
+            default_result,
+        )
+    } != count
+        || used_default != 0
+    {
+        return false;
+    }
+    let mut decoded = vec![0u16; units.len()];
+    let count = unsafe {
+        MultiByteToWideChar(
+            code_page,
+            MB_ERR_INVALID_CHARS,
+            encoded.as_ptr(),
+            encoded.len() as i32,
+            decoded.as_mut_ptr(),
+            decoded.len() as i32,
+        )
+    };
+    count == units.len() as i32 && decoded == units
+}
+
+fn checked_short_path(canonical: &Path, code_page: u32) -> Result<PathBuf> {
+    let mut source: Vec<u16> = canonical.as_os_str().encode_wide().collect();
+    if source.is_empty() || source.len() >= MAX_PATH_UNITS || source.contains(&0) {
+        return Err(PATH_ENCODING.into());
+    }
+    source.push(0);
+    let mut buffer = vec![0u16; 512];
+    for _ in 0..3 {
+        let count =
+            unsafe { GetShortPathNameW(source.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) }
+                as usize;
+        if count == 0 || count > MAX_PATH_UNITS {
+            return Err(PATH_ENCODING.into());
+        }
+        if count < buffer.len() {
+            let short = PathBuf::from(OsString::from_wide(&buffer[..count]));
+            let ordinary = ordinary_path_name(&short).map_err(|_| PATH_ENCODING.to_string())?;
+            let units = ordinary.as_os_str().encode_wide().collect::<Vec<_>>();
+            if !code_page_roundtrip(&units, code_page)
+                || fs::canonicalize(&ordinary).map_err(|_| PATH_ENCODING.to_string())? != canonical
+            {
+                return Err(PATH_ENCODING.into());
+            }
+            // Preserve the checked alias: canonicalizing the returned spelling
+            // would restore the long name that the Java launcher cannot encode.
+            return Ok(ordinary);
+        }
+        buffer.resize(count, 0);
+    }
+    Err(PATH_ENCODING.into())
+}
+
 pub(super) fn callable_path(canonical: &Path) -> Result<PathBuf> {
     let ordinary = ordinary_path_name(canonical)?;
     // OpenJDK can reject a verbatim argv[0] while locating its runtime image.
@@ -176,7 +281,18 @@ pub(super) fn callable_path(canonical: &Path) -> Result<PathBuf> {
     if roundtrip != canonical {
         return Err("Java 标准 Win32 路径指向不同文件".into());
     }
-    Ok(ordinary)
+    let code_page = unsafe { GetACP() };
+    if code_page_roundtrip(
+        &ordinary.as_os_str().encode_wide().collect::<Vec<_>>(),
+        code_page,
+    ) {
+        return Ok(ordinary);
+    }
+    // OpenJDK's Windows launcher and -D properties use the active ANSI code
+    // page before file.encoding/sun.jnu.encoding overrides could help. Existing
+    // short names are optional, may still contain Unicode, and are never made
+    // or enabled here. Admit one only after the same syntax/identity checks.
+    checked_short_path(canonical, code_page)
 }
 
 struct Handle(HANDLE);
@@ -655,6 +771,17 @@ pub(super) fn probe(path: &Path, deadline: Instant) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn java_path_code_page_checks_reject_loss_and_best_fit_and_accept_utf8() {
+        let wide = |value: &str| value.encode_utf16().collect::<Vec<_>>();
+        assert!(code_page_roundtrip(&wide(r"C:\Java 21\café"), 1252));
+        assert!(!code_page_roundtrip(&wide(r"C:\游戏 cwd"), 1252));
+        assert!(!code_page_roundtrip(&wide(r"C:\∞"), 1252));
+        assert!(code_page_roundtrip(&wide(r"C:\游戏 😀 cwd"), CP_UTF8));
+        assert!(!code_page_roundtrip(&[0xd800], CP_UTF8));
+        assert!(!code_page_roundtrip(&[0], CP_UTF8));
+    }
+
     #[test]
     fn executable_header_checks_reject_scripts_dlls_and_unbounded_or_truncated_headers() {
         let mut valid = vec![0u8; 64 + 24 + 112];

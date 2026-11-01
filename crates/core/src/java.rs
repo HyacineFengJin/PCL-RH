@@ -74,10 +74,13 @@ pub struct JavaCatalog {
 
 /// Path spelling accepted by the JVM for an existing file or directory.
 /// Windows requires an absolute path and verifies that converting a canonical
-/// disk/UNC name to ordinary Win32 syntax resolves to the same object. Other
-/// platforms preserve the supplied spelling. This does not grant managed-store
-/// authority or pin an executable; nonexistent suffixes must be derived from a
-/// separately checked existing root by the caller.
+/// disk/UNC name to ordinary Win32 syntax resolves to the same object and can
+/// round-trip through the current Windows ANSI code page without substitution
+/// or best-fit conversion. Otherwise an existing, same-object short-name alias
+/// must pass both checks; missing aliases fail without enabling 8.3 names.
+/// Other platforms preserve the supplied spelling. This does not grant
+/// managed-store authority or pin an executable; nonexistent suffixes must be
+/// derived from a separately checked existing root by the caller.
 pub fn invocation_path(path: &Path) -> Result<PathBuf> {
     #[cfg(windows)]
     {

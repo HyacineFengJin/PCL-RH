@@ -594,13 +594,43 @@ fn java21_pinned_volume_guid_cwd_requires_java_user_dir() {
     workspace.metadata().unwrap().require_private().unwrap();
     drop(created);
     let workspace_path = base.join(name.as_os_str());
+    let compile_cwd = pcl_core::java::invocation_path(&workspace_path).unwrap();
+    let (version_status, version_stdout, version_stderr) = collect(
+        GameChild::spawn(
+            &java,
+            &["-XshowSettings:properties".into(), "-version".into()],
+            &compile_cwd,
+        )
+        .unwrap(),
+        || {},
+    );
+    println!("JDK native version/property probe:\n{version_stdout}{version_stderr}");
+    println!("Windows launcher ACP: {}", unsafe {
+        windows_sys::Win32::Globalization::GetACP()
+    });
+    assert!(
+        version_status.success(),
+        "JDK 21 version/property probe failed"
+    );
     let game_name = Leaf::new("游戏 cwd").unwrap();
     let game = private_child(&workspace, &game_name);
     let _control = private_child(&workspace, &Leaf::new("control").unwrap());
     let _outside = private_child(&workspace, &Leaf::new("outside").unwrap());
     let game_identity = game.identity().unwrap();
     let game_path = workspace_path.join(game_name.as_os_str());
-    let java_cwd = pcl_core::java::invocation_path(&game_path).unwrap();
+    let java_cwd = pcl_core::java::invocation_path(&game_path)
+        .expect("Chinese cwd needs a lossless code-page spelling or an existing same-object 8.3 alias; do not enable 8.3 or replace this fixture with an ASCII directory");
+    assert_eq!(
+        java_cwd.canonicalize().unwrap(),
+        game_path.canonicalize().unwrap()
+    );
+    assert_eq!(
+        Directory::open_absolute(&java_cwd)
+            .unwrap()
+            .identity()
+            .unwrap(),
+        game_identity
+    );
     let control = pcl_core::java::invocation_path(&workspace_path.join("control")).unwrap();
     let ready = control.join("java-ready");
     let finish = control.join("java-finish");
@@ -636,7 +666,6 @@ public final class PinnedCwd {
         control.as_os_str().to_owned(),
         source.into_os_string(),
     ];
-    let compile_cwd = pcl_core::java::invocation_path(&workspace_path).unwrap();
     let (status, stdout, stderr) = collect(
         GameChild::spawn(&javac, &compile_args, &compile_cwd).unwrap(),
         || {},
@@ -657,6 +686,10 @@ public final class PinnedCwd {
     let (status, stdout, stderr) = collect(
         GameChild::spawn_in_directory(&java, &arguments, game.file()).unwrap(),
         || {},
+    );
+    println!(
+        "GUID cwd negative probe (exit={:?}):\n{stdout}{stderr}",
+        status.code()
     );
     assert_eq!(
         status.code(),
@@ -715,6 +748,10 @@ public final class PinnedCwd {
         checked = true;
         fs::write(&finish, b"finish").unwrap();
     });
+    println!(
+        "Chinese cwd positive probe (exit={:?}):\n{stdout}{stderr}",
+        status.code()
+    );
     assert!(
         checked,
         "real JDK never completed its relative IO fixture: {stdout}{stderr}"
@@ -735,6 +772,10 @@ public final class PinnedCwd {
         b"relative Java write"
     );
     assert_eq!(game.identity().unwrap(), game_identity);
+    assert_eq!(
+        java_cwd.canonicalize().unwrap(),
+        game_path.canonicalize().unwrap()
+    );
     workspace.recheck(&game_name, &game_identity).unwrap();
     parent.recheck(&name, &workspace_identity).unwrap();
     game.metadata().unwrap().require_private().unwrap();
