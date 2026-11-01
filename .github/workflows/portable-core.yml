@@ -34,7 +34,7 @@ jobs:
       - name: Test portable crates on their native host
         run: cargo +stable test --locked -p pcl-core -p pcl-network -p pcl-auth
       - name: Test real JDK 21 with pinned Windows cwd
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !cancelled()
         timeout-minutes: 5
         shell: pwsh
         run: |

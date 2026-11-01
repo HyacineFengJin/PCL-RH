@@ -186,6 +186,74 @@ fn assert_stopped(directory: &Path, name: &str) {
 }
 
 #[cfg(windows)]
+fn diagnose_java_directory(path: &Path) {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, SetLastError},
+        Globalization::GetACP,
+        Storage::FileSystem::GetShortPathNameW,
+    };
+    println!("Java path diagnostic: original={path:?} ACP={}", unsafe {
+        GetACP()
+    });
+    let canonical = match fs::canonicalize(path) {
+        Ok(path) => path,
+        Err(error) => {
+            println!("Java path diagnostic: original canonical error={error}");
+            return;
+        }
+    };
+    let original_directory = match pcl_core::retained_fs::Directory::open_absolute(&canonical) {
+        Ok(directory) => directory,
+        Err(error) => {
+            println!("Java path diagnostic: original native open error={error}");
+            return;
+        }
+    };
+    let original_identity = original_directory.identity();
+    println!("Java path diagnostic: original canonical={canonical:?} native_identity={original_identity:?}");
+    let mut source = canonical.as_os_str().encode_wide().collect::<Vec<_>>();
+    if source.is_empty() || source.len() >= 32768 || source.contains(&0) {
+        println!("Java path diagnostic: source exceeded native path bound");
+        return;
+    }
+    source.push(0);
+    let mut buffer = vec![0u16; 512];
+    for attempt in 1..=3 {
+        unsafe { SetLastError(0) };
+        let count =
+            unsafe { GetShortPathNameW(source.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) }
+                as usize;
+        let error = unsafe { GetLastError() };
+        println!("Java path diagnostic: short attempt={attempt} capacity={} count={count} last_error={error}", buffer.len());
+        if count == 0 || count > 32768 {
+            return;
+        }
+        if count < buffer.len() {
+            let alias = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..count]));
+            let alias_canonical = fs::canonicalize(&alias);
+            let alias_directory = match pcl_core::retained_fs::Directory::open_absolute(&alias) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    println!("Java path diagnostic: alias={alias:?} canonical={alias_canonical:?} native open error={error}");
+                    return;
+                }
+            };
+            let alias_identity = alias_directory.identity();
+            let same_identity = match (&original_identity, &alias_identity) {
+                (Ok(original), Ok(alias)) => Some(original == alias),
+                _ => None,
+            };
+            println!("Java path diagnostic: alias={alias:?} canonical={alias_canonical:?} canonical_equal={:?}", alias_canonical.as_ref().ok().map(|value| value == &canonical));
+            println!("Java path diagnostic: alias native_identity={alias_identity:?} same_native_identity={same_identity:?}");
+            return;
+        }
+        buffer.resize(count, 0);
+    }
+    println!("Java path diagnostic: short path exceeded attempt bound");
+}
+
+#[cfg(windows)]
 fn windows_launch_plan(directory: &Path, image: &Path) {
     use pcl_core::java::{invocation_path, JavaSelection};
     use serde_json::json;
@@ -223,6 +291,7 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
     let selected = JavaSelection::Manual {
         path: image.canonicalize().unwrap().display().to_string(),
     };
+    diagnose_java_directory(&canonical);
     let plan = pcl_core::build_launch_plan_with_java(
         &canonical,
         directory,
