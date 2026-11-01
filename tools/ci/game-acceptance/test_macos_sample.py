@@ -59,9 +59,10 @@ class SamplingTests(unittest.TestCase):
                         SAMPLER._paths(java, wrong)
 
     def test_wrong_parent_is_rejected_before_executable_lookup(self):
-        identity = {"pid": 100, "ppid": 17, "uid": os.geteuid(), "start_sec": int(time.time()) - 12, "start_usec": 0}
+        identity = {"pid": 100, "ppid": 17, "uid": 1234, "start_sec": int(time.time()) - 12, "start_usec": 0}
         native = mock.Mock()
-        with mock.patch.object(SAMPLER, "_process_info", return_value=identity):
+        with mock.patch.object(SAMPLER, "_process_info", return_value=identity), \
+             mock.patch.object(SAMPLER.os, "geteuid", return_value=1234, create=True):
             with self.assertRaisesRegex(ValueError, "selected monitor"):
                 SAMPLER._identity(native, 100, 99, Path("/unused/java"))
         native.proc_pidpath.assert_not_called()
@@ -82,6 +83,8 @@ class SamplingTests(unittest.TestCase):
             self.assertFalse(result["identity_unchanged"])
             self.assertFalse(output.exists())
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "O_NOFOLLOW"),
+                         "The macOS sampler publishes through a native Unix O_NOFOLLOW descriptor")
     def test_report_prefix_is_capped_and_existing_output_is_never_truncated(self):
         with tempfile.TemporaryDirectory() as temporary:
             raw, output = Path(temporary) / "raw.log", Path(temporary) / "kept.log"
@@ -94,6 +97,7 @@ class SamplingTests(unittest.TestCase):
                 SAMPLER._publish(raw, output)
             self.assertEqual(output.stat().st_size, SAMPLER.REPORT_LIMIT)
 
+    @unittest.skipUnless(os.name == "posix", "The macOS sampler uses POSIX selector-readable pipes")
     def test_console_is_drained_but_only_a_bounded_prefix_is_retained(self):
         real_popen = subprocess.Popen
         with tempfile.TemporaryDirectory() as temporary:
@@ -109,6 +113,7 @@ class SamplingTests(unittest.TestCase):
         self.assertTrue(result["console_truncated"])
         self.assertLessEqual(len(result["console"].encode()), SAMPLER.CONSOLE_LIMIT)
 
+    @unittest.skipUnless(os.name == "posix", "The macOS sampler uses POSIX selector-readable pipes")
     def test_timeout_reaps_only_the_owned_synthetic_helper(self):
         real_popen = subprocess.Popen
         children = []
