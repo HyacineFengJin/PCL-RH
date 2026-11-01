@@ -358,6 +358,20 @@ def preflight(parent: Path, probe_opengl: bool = False) -> dict:
     }
 
 
+def write_report(report: dict, destination: Path | None) -> None:
+    payload = json.dumps(report, ensure_ascii=True, indent=2) + "\n"
+    if destination is None:
+        print(payload, end="")
+        return
+    # Some Xvfb wrappers merge a command's stderr into stdout. Keep machine
+    # evidence on an explicit, newly created file rather than parsing that
+    # console stream, which legitimately also contains installer progress.
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as outgoing:
+        outgoing.write(payload)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--parent", type=Path, required=True,
@@ -370,6 +384,7 @@ def main() -> int:
     parser.add_argument("--fabric", help="Exact official Fabric loader version; omitted selects vanilla")
     parser.add_argument("--duration", type=int, choices=range(30, 121), metavar="30..120", default=120)
     parser.add_argument("--prepare-only", action="store_true", help="Download and prepare through production engines without starting Java Minecraft")
+    parser.add_argument("--report", type=Path, help="Write JSON evidence to a new file, independently of console output")
     args = parser.parse_args()
     try:
         result = preflight(args.parent, args.probe_opengl)
@@ -394,7 +409,7 @@ def main() -> int:
                 if attempt.get("render_assessment", {}).get("status") == "pass" else "incomplete"
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, f"Acceptance failed: {error}\n")
-    print(json.dumps(result, ensure_ascii=True, indent=2))
+    write_report(result, args.report)
     # An observed limitation is a real result, not a fake success or a fatal
     # preflight crash. Consumers must check run_readiness before starting Java.
     if args.desktop:

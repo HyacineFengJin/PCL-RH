@@ -20,10 +20,13 @@ def collect(report: Path, parent: Path, output: Path) -> dict:
     if not isinstance(workspace_name, str):
         return {"collected": False, "reason": "No allocated game workspace was reported"}
     path = Path(workspace_name)
-    if path.is_symlink():
+    if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise ValueError("Game workspace became a symbolic link")
     workspace = path.resolve(strict=True)
-    if workspace.parent != parent:
+    # Rust's canonical Windows path keeps a verbatim prefix; Python may retain
+    # or remove it depending on the caller's spelling. Compare the immediate
+    # parent's real filesystem identity, not those two textual namespaces.
+    if not workspace.parent.samefile(parent):
         raise ValueError("Game workspace is not a direct child of the private test parent")
     marker = workspace / "game-acceptance-owner.json"
     metadata = marker.lstat()
@@ -44,8 +47,10 @@ def collect(report: Path, parent: Path, output: Path) -> dict:
         if len(files) >= 32:
             raise ValueError("Unexpected number of game log files")
         relative = source.relative_to(workspace)
-        target = output / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # Monitor logs live under .pcl-linux. Flatten the bounded selected files
+        # so artifact upload's hidden-directory filter cannot silently omit the
+        # native stderr needed to diagnose failures before a window is created.
+        target = output / f"{len(files):02d}-{source.name.lstrip('.')}"
         with source.open("rb") as incoming, target.open("xb") as outgoing:
             incoming.seek(max(0, metadata.st_size - 2 * 1024**2))
             remaining = 2 * 1024**2
@@ -55,7 +60,7 @@ def collect(report: Path, parent: Path, output: Path) -> dict:
                     break
                 outgoing.write(chunk)
                 remaining -= len(chunk)
-        files.append({"path": relative.as_posix(), "source_bytes": metadata.st_size,
+        files.append({"path": relative.as_posix(), "collected_path": target.name, "source_bytes": metadata.st_size,
                       "collected_bytes": target.stat().st_size})
     evidence = {"collected": True, "files": files, "workspace_retained_until_runner_teardown": True}
     (output / "collection.json").write_text(json.dumps(evidence, indent=2) + "\n")

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,9 +12,65 @@ from unittest import mock
 SPEC = importlib.util.spec_from_file_location("game_acceptance", Path(__file__).parents[1] / "game-acceptance.py")
 ACCEPTANCE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ACCEPTANCE)
+COLLECT_SPEC = importlib.util.spec_from_file_location("collect_game", Path(__file__).parents[1] / "collect-game-evidence.py")
+COLLECT = importlib.util.module_from_spec(COLLECT_SPEC)
+COLLECT_SPEC.loader.exec_module(COLLECT)
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_report_is_separate_from_console_and_cannot_overwrite_an_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "reports/space & report.json"
+            with mock.patch("builtins.print") as console:
+                ACCEPTANCE.write_report({"game_acceptance": "incomplete"}, report)
+            console.assert_not_called()
+            self.assertEqual(json.loads(report.read_bytes()), {"game_acceptance": "incomplete"})
+            with self.assertRaises(FileExistsError):
+                ACCEPTANCE.write_report({"replacement": True}, report)
+            self.assertEqual(json.loads(report.read_bytes()), {"game_acceptance": "incomplete"})
+
+    def collector_fixture(self, temporary, *, extended=False):
+        root = Path(temporary)
+        parent = root / "parent"
+        workspace = parent / "workspace"
+        logs = workspace / "game/.pcl-linux/logs"
+        logs.mkdir(parents=True)
+        (workspace / "game-acceptance-owner.json").write_text(json.dumps(
+            {"schema_version": 1, "purpose": "disposable-game-acceptance"}))
+        (logs / "stderr.log").write_bytes(b"native fixture error\n")
+        spelling = str(workspace.resolve())
+        if extended and not spelling.startswith("\\\\?\\"):
+            spelling = "\\\\?\\" + spelling
+        report = root / "report.json"
+        report.write_text(json.dumps({"client_attempt": {"client": {"workspace": spelling}}}))
+        return report, parent, root / "collected"
+
+    def test_monitor_logs_are_collected_outside_hidden_artifact_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report, parent, output = self.collector_fixture(temporary)
+            result = COLLECT.collect(report, parent, output)
+            self.assertTrue(result["collected"])
+            entry = result["files"][0]
+            self.assertEqual(entry["path"], "game/.pcl-linux/logs/stderr.log")
+            self.assertEqual(entry["collected_path"], "00-stderr.log")
+            self.assertEqual((output / entry["collected_path"]).read_bytes(), b"native fixture error\n")
+
+    def test_collector_refuses_a_marker_bearing_workspace_under_another_parent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report, parent, output = self.collector_fixture(temporary)
+            other = parent.parent / "other"
+            other.mkdir()
+            with self.assertRaisesRegex(ValueError, "direct child"):
+                COLLECT.collect(report, other, output)
+            self.assertFalse(output.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows native path namespaces")
+    def test_windows_verbatim_workspace_keeps_the_same_real_parent_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report, parent, output = self.collector_fixture(temporary, extended=True)
+            result = COLLECT.collect(report, parent, output)
+            self.assertTrue(result["collected"])
+
     def test_display_presence_and_preflight_cannot_pass_game_stages(self):
         with tempfile.TemporaryDirectory() as parent, \
              mock.patch.object(ACCEPTANCE, "memory_available", return_value=8 * ACCEPTANCE.GIB), \
