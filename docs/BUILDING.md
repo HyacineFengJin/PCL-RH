@@ -52,7 +52,7 @@ The build script installs locked WebUI and AI runtime dependencies, builds the f
 python tools/build-native.py --jobs 2
 ```
 
-脚本构建当前主机的桌面与 CLI：Windows 结果放在项目根目录，Linux/macOS 放入 `.pcl-rust/bin`；`--build-only` 只保留 `target` 中的产物。Windows 可直接打开 `pcl-desktop.exe`，Linux/macOS 用 `start-native.sh`。此命令准备可写的便携目录；Windows 安装候选由下述工作流另行生成。当前通过情况与未完成能力以[平台说明](PLATFORMS.md)为准。
+脚本构建当前主机的桌面与 CLI：Windows 结果放在项目根目录，Linux/macOS 放入 `.pcl-rust/bin`；`--build-only` 只保留 `target` 中的产物。Windows 可直接打开 `pcl-desktop.exe`，Linux/macOS 用 `start-native.sh`。此命令准备可写的便携目录；Windows 安装器、macOS `.app` / DMG 与 Linux `.deb` 由下述独立工作流生成。当前通过情况以[平台说明](PLATFORMS.md)为准。
 
 ## 便携测试包
 
@@ -64,25 +64,51 @@ python tools/build-native.py --jobs 2
 - macOS：在 Finder 打开 `Start PCL RH.command`，或在终端运行 `./start-native.sh`。
 - Linux：运行 `./start-native.sh`，可在「设置 → 百宝箱 → 创建快捷方式」创建应用入口。
 
-程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。Mac 的 `.command` 是便携启动入口，另有下述 DMG 候选，独立 `.app` 仍在准备。
+程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。Mac 的 `.command` 是便携启动入口，与下述独立 `.app` 使用不同的数据布局。
 
 便携包包含 Code 与社区声明型插件服务的 npm 依赖，运行这些服务需要单独安装 Node.js 22.19+。首次启动且没有社区插件记录文件时，首页和设置中的社区插槽由 Rust 返回空内容，不为读取空内容启动 Node；插件管理与 RH Code 在实际使用时检查运行依赖。已有插件记录损坏或目录不可读会明确报告原因。系统 WebView / WebKit 依赖同样需要可用；普通测试包不包含官方 CurseForge 服务凭据。签名、标准安装包和实机游戏验证的状态见[平台说明](PLATFORMS.md)。
 
 插件宿主使用系统标准位置的 Node：Linux 为 `/usr/bin/node`，Windows 为系统 Program Files 下的 `nodejs/node.exe`，macOS 为 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node` 及其受支持的 Homebrew 安装。NVM 等用户级目录目前不会自动识别。安装或升级后可直接点击界面中的「重试」，无需重新启动整个启动器；权限、目录替换和存储损坏错误仍需按原原因处理。
 
-维护者使用 **Official native candidates** 可从官方 `master` 构建包含官方 CF 服务凭据的四平台优化候选包，仍只上传 Actions artifact。归档名包含应用版本；解压检查会实际读取桌面程序的 `--build-info` 并核对独立 CLI 版本，避免错装旧二进制或开发配置。候选构建与首发剩余工作见[发行说明](RELEASING.md)。
+维护者使用 **Official native candidates** 可从官方 `master` 构建包含官方 CF 服务凭据的四平台优化候选包，仍只上传 Actions artifact。[当前四平台优化候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)已全部成功。归档名包含应用版本；解压检查会实际读取桌面程序的 `--build-info` 并核对独立 CLI 版本，避免错装旧二进制或开发配置。候选构建与首发剩余工作见[发行说明](RELEASING.md)。
 
 ## Windows 安装候选
 
-Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[独立安装验收的最新候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267266213)名称为 `windows-user-installer-retest`。解压后运行其中的 `*-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
+Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[最新 Windows 候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41273494801)已通过安装验收，可下载其中的 [windows-user-installer-release](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41273494801/artifacts/13071275536)。解压后运行其中的 `*-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
 
 升级前退出启动器及仍在使用它的游戏，再沿用原目录重新安装。安装器只替换程序清单中的文件，卸载保留运行后产生的实例、设置和工程。发生文件占用等错误时，处理原因后重新运行安装器；程序升级尚不提供完整事务回滚，也不会在升级时清理新版清单中已移除的旧资源。需要清除旧程序资源时，可先卸载再安装，保留的数据仍在原目录。
 
-## macOS 磁盘映像候选
+## macOS 独立应用候选
 
-[磁盘映像验证流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267794638)分别提供 Apple Silicon（`macos-portable-dmg-macos-15`）与 Intel（`macos-portable-dmg-macos-15-intel`）产物。解压 artifact 并打开其中的 `.dmg`，将整个 `PCL-RH` 文件夹复制到自己可写的位置，再打开副本里的 `Start PCL RH.command`。请勿从只读映像直接启动，也不要只复制一个程序文件。
+[macOS 独立应用与 DMG 验收](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933)已在 Apple Silicon 和 Intel 两种原生主机通过。检查包含只读应用资源、独立用户数据、真实插件宿主调用与退役、LaunchServices 入口，以及启动器自有原生窗口连续可见并正常退出。DMG 还通过只读挂载后直接运行应用诊断、复制应用、保留数据与卸载映像的检查。
 
-DMG 保留现有便携布局；独立 `.app`、签名与 Apple 公证仍待完成。更新时先关闭启动器，并保留原目录中的 `.pcl-rust`、`Minecraft` 和自建工程；不要用全新文件夹替换来丢弃原数据。
+| 架构 | 应用 DMG artifact | 应用归档 artifact |
+| --- | --- | --- |
+| Apple Silicon | [macos-app-dmg-macos-15](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13070867662) | [macos-app-macos-15](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13071236999) |
+| Intel | [macos-app-dmg-macos-15-intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13070668626) | [macos-app-macos-15-intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13070923080) |
+
+下载后先解压对应架构的 Actions artifact，再打开其中的 `.dmg`，把 `PCL RH.app` 拖到 Applications 或复制到个人应用目录，再打开副本；也可从 `mac-app.tar.gz` 解压完整 `.app`。程序与 CLI 位于应用的 `Contents/MacOS`，生产资源位于 `Contents/Resources/PCL-RH`，运行数据默认保存在 `~/Library/Application Support/PCL RH`，不写入应用包。移动或更新应用时，这个数据位置保持不变。
+
+更新前退出启动器并替换完整 `.app`，保留外部用户数据和游戏目录。独立应用与 DMG 均未签名、未经 Apple 公证；最低系统声明按实际原生二进制的部署目标生成，两个架构的验收宿主为 macOS 15。
+
+### 旧版便携 DMG
+
+[旧便携映像验证](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267794638)通过的是完整文件夹布局，artifact 名为 `macos-portable-dmg-macos-15` 和 `macos-portable-dmg-macos-15-intel`。使用这些旧包时，仍须将整个 `PCL-RH` 文件夹复制到可写位置，再打开其中的 `Start PCL RH.command`，并保留原目录中的 `.pcl-rust`、`Minecraft` 和自建工程。
+
+## Linux Debian 包候选
+
+[Linux 系统包验收](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702)已通过真实安装、升级、移除、重装和 purge，验证生产资源、默认及显式数据目录、真实插件宿主调用与退役，并确认保留用户数据。下载 [linux-debian-package](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702/artifacts/13071036014) artifact，其中的包名为 `pcl-rh_0.2.0-1_amd64.deb`。目标为 Ubuntu 24.04 x64 ABI；系统库依赖由 `dpkg-shlibdeps` 根据实际 ELF 和构建系统的库信息生成，其他 Debian 系发行版须满足包中声明的库与版本要求。当前没有 RPM 或 Arch 系统包。
+
+解压 artifact 后，用包管理器安装；后续候选请将命令中的文件名替换为下载的包名：
+
+```sh
+sudo apt install ./pcl-rh_0.2.0-1_amd64.deb
+pcl-rh
+```
+
+应用菜单和 `/usr/bin/pcl-rh` 使用同一入口，由包装脚本定位 `/usr/lib/pcl-rh` 的程序与只读生产资源。用户数据默认在 `$XDG_DATA_HOME/pcl-rh`；未设置 `XDG_DATA_HOME` 时为 `~/.local/share/pcl-rh`。升级时先退出启动器，再用同一安装命令安装更高包版本。`apt remove pcl-rh` 或 `apt purge pcl-rh` 只移除包管理的程序文件，保留用户数据、存档和工程；软件包更新由包管理器完成。
+
+macOS `.app` 和 Linux 安装版都可用 `PCL_RH_DATA_ROOT` 选择另一个绝对数据目录，该目录须位于程序与发行资源之外。它们不会自动迁移旧便携版的设置、账号记录或已保存凭据；原数据仍在原目录，已有 Minecraft 目录可在新安装版中重新添加。Node.js、游戏 Java、桌面门户和凭据服务的要求仍适用，包不会附带完整 Node.js 或 JDK。
 
 ## 开发与检查
 
