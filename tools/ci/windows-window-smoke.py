@@ -34,6 +34,9 @@ class Windows:
         self.user.GetClientRect.restype = wintypes.BOOL
         self.user.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         self.user.PostMessageW.restype = wintypes.BOOL
+        self.user.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+            wintypes.LPARAM, wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+        self.user.SendMessageTimeoutW.restype = wintypes.LPARAM
 
     def owned(self, hwnd: int, pid: int) -> bool:
         actual = wintypes.DWORD()
@@ -78,22 +81,105 @@ class Windows:
         if not self.user.PostMessageW(hwnd, 0x0010, 0, 0):  # WM_CLOSE, never SendMessage
             raise ctypes.WinError(ctypes.get_last_error())
 
+    def responsiveness(self, hwnd: int, pid: int, timeout_ms: int) -> dict:
+        require(type(timeout_ms) is int and 1 <= timeout_ms <= 50, "Invalid bounded WM_NULL probe timeout")
+        if not self.owned(hwnd, pid):
+            raise RuntimeError("Observed window no longer belongs to the owned process")
+        reply = ctypes.c_size_t()
+        ctypes.set_last_error(0)
+        # WM_NULL is observational. ABORTIFHUNG | ERRORONEXIT retains a finite
+        # timeout; NOTIMEOUTIFNOTHUNG would make the declared budget unreliable.
+        answered = bool(self.user.SendMessageTimeoutW(hwnd, 0, 0, 0, 0x0002 | 0x0020,
+                                                     timeout_ms, ctypes.byref(reply)))
+        return {"responsive": answered, "timeout_ms": timeout_ms,
+                "error_code": 0 if answered else ctypes.get_last_error()}
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
 
 
+def close_snapshot(process: subprocess.Popen, api: Windows, hwnd: int,
+                   started: float, deadline: float) -> dict:
+    windows = api.windows(process.pid)
+    require(len(windows) <= 32, "Owned close snapshot exceeded its window bound")
+    present = api.owned(hwnd, process.pid)
+    main = next((window for window in windows if window["hwnd"] == hwnd), None)
+    result = {"elapsed_seconds": round(time.monotonic() - started, 6),
+              "main_hwnd_still_owned": present, "main_window_visible": main is not None,
+              "visible_owned_hwnds": [window["hwnd"] for window in windows]}
+    if main is not None:
+        result["main_client_width"], result["main_client_height"] = main["client_width"], main["client_height"]
+    # Never probe a replacement window, including a different owned HWND. A
+    # direct child remains unreaped until poll; an exited/reaped PID is refused.
+    if present and process.poll() is None and deadline - time.monotonic() >= 0.075:
+        try:
+            result["wm_null"] = api.responsiveness(hwnd, process.pid, 50)
+        except (OSError, RuntimeError) as error:
+            result["wm_null_error"] = str(error)[:512]
+    return result
+
+
+def close_observation(trace: list[dict], exited: bool) -> str:
+    if exited:
+        return "process_exited_after_wm_close"
+    if not trace:
+        return "no_close_window_observation"
+    last = trace[-1]
+    if last.get("main_hwnd_still_owned") is False:
+        return "main_window_no_longer_owned_process_still_alive"
+    if last.get("main_hwnd_still_owned") is True:
+        # A final metadata sample can have too little time left for WM_NULL.
+        # Preserve the last actual probe for this continuous owned-HWND span;
+        # its timestamp remains in the trace rather than inventing a new reply.
+        for sample in reversed(trace):
+            if sample.get("main_hwnd_still_owned") is not True:
+                break
+            if sample.get("wm_null", {}).get("responsive") is False:
+                return "main_window_still_owned_last_wm_null_unanswered"
+            if sample.get("wm_null", {}).get("responsive") is True:
+                return "main_window_still_owned_last_wm_null_responded"
+        return "main_window_still_owned_response_unknown"
+    return "close_window_observation_unavailable"
+
+
 def cleanup(process: subprocess.Popen, api: Windows, hwnd: int | None,
             deadline: float) -> dict:
-    result = {"wm_close_sent": False, "terminated": False, "exit_code": process.poll()}
+    result = {"wm_close_sent": False, "terminated": False, "exit_code": process.poll(),
+              "close_trace": [], "close_trace_interval_seconds": 0.5}
     if result["exit_code"] is not None:
         return result
     if hwnd is not None:
         try:
             api.close(hwnd, process.pid)
             result["wm_close_sent"] = True
-            process.wait(timeout=max(0.0, min(7.0, deadline - time.monotonic() - 2.0)))
+            started = time.monotonic()
+            close_deadline = min(started + 7.0, deadline - 2.0)
+            result["close_budget_seconds"] = max(0.0, close_deadline - started)
+            next_snapshot = started
+            while process.poll() is None and time.monotonic() < close_deadline:
+                now = time.monotonic()
+                if now >= next_snapshot and len(result["close_trace"]) < 16:
+                    try:
+                        sample = close_snapshot(process, api, hwnd, started, close_deadline)
+                    except (OSError, RuntimeError) as error:
+                        sample = {"elapsed_seconds": round(time.monotonic() - started, 6),
+                                  "observation_error": str(error)[:512]}
+                    result["close_trace"].append(sample)
+                    next_snapshot = time.monotonic() + 0.5
+                remaining = close_deadline - time.monotonic()
+                if remaining > 0 and process.poll() is None:
+                    time.sleep(min(0.05, remaining))
+            result["close_elapsed_seconds"] = round(time.monotonic() - started, 6)
+            exited = process.poll() is not None
+            result["close_observation"] = close_observation(result["close_trace"], exited)
+            if result["close_trace"]:
+                result["last_observation_age_seconds"] = round(
+                    time.monotonic() - started - result["close_trace"][-1]["elapsed_seconds"], 6)
+            if not exited:
+                result["close_timed_out"] = True
+                result["close_error"] = "Owned desktop did not exit within its WM_CLOSE deadline"
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             result["close_error"] = str(error)
     if process.poll() is None:
@@ -192,6 +278,7 @@ def smoke(executable: Path, root: Path, output: Path, report: dict) -> None:
     if failure is not None:
         raise failure
     require(report["cleanup"]["wm_close_sent"] and not report["cleanup"]["terminated"]
+            and not report["cleanup"].get("close_timed_out", False)
             and report["cleanup"]["exit_code"] == 0,
             "Desktop did not exit successfully after closing its owned window")
     require(stdout.stat().st_size <= 8 * 1024 * 1024 and stderr.stat().st_size <= 8 * 1024 * 1024,
