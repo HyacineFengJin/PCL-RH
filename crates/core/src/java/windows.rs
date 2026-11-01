@@ -5,9 +5,10 @@
 use super::*;
 use std::{
     ffi::OsStr,
-    io,
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom},
     mem::size_of,
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::{Component, Prefix},
     ptr,
 };
@@ -22,6 +23,70 @@ use windows_sys::Win32::{
 const CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const MAX_ENV_UNITS: usize = 1024 * 1024;
 const STOP_CODE: u32 = 1;
+const INVALID_PE: &str = "Java 文件必须是普通的 Windows PE 可执行程序，不能是脚本或 DLL";
+
+fn check_pe_header(image: &mut (impl Read + Seek), bytes: u64) -> Result<()> {
+    let mut dos = [0u8; 64];
+    image
+        .read_exact(&mut dos)
+        .map_err(|_| INVALID_PE.to_string())?;
+    if &dos[..2] != b"MZ" {
+        return Err(INVALID_PE.into());
+    }
+    let offset = u32::from_le_bytes(dos[60..64].try_into().unwrap()) as u64;
+    if !(64..=1024 * 1024).contains(&offset) || offset + 26 > bytes {
+        return Err(INVALID_PE.into());
+    }
+    image
+        .seek(SeekFrom::Start(offset))
+        .map_err(|_| INVALID_PE.to_string())?;
+    let mut pe = [0u8; 26];
+    image
+        .read_exact(&mut pe)
+        .map_err(|_| INVALID_PE.to_string())?;
+    let characteristics = u16::from_le_bytes([pe[22], pe[23]]);
+    let optional_bytes = u16::from_le_bytes([pe[20], pe[21]]) as u64;
+    let minimum_optional = match u16::from_le_bytes([pe[24], pe[25]]) {
+        0x10b => 96,  // PE32 standard and Windows-specific fields.
+        0x20b => 112, // PE32+ standard and Windows-specific fields.
+        _ => return Err(INVALID_PE.into()),
+    };
+    if &pe[..4] != b"PE\0\0"
+        || characteristics & 0x0002 == 0 // IMAGE_FILE_EXECUTABLE_IMAGE
+        || characteristics & 0x2000 != 0 // IMAGE_FILE_DLL
+        || optional_bytes < minimum_optional
+        || offset + 24 + optional_bytes > bytes
+    {
+        return Err(INVALID_PE.into());
+    }
+    Ok(())
+}
+
+fn executable_image(path: &Path) -> Result<File> {
+    if !path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("exe"))
+    {
+        return Err(INVALID_PE.into());
+    }
+    // An ordinary filename alone does not exclude Win32 batch/script launch
+    // behavior. Inspect the actual file while denying writes and deletion;
+    // retain this non-inherited handle until process creation/job assignment.
+    let mut image = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+        .map_err(|e| format!("无法保留 Java 可执行文件：{e}"))?;
+    let metadata = image
+        .metadata()
+        .map_err(|e| format!("无法检查 Java 可执行文件：{e}"))?;
+    if !metadata.is_file() {
+        return Err(INVALID_PE.into());
+    }
+    check_pe_header(&mut image, metadata.len())?;
+    Ok(image)
+}
 
 fn ordinary_component(name: &OsStr) -> Result<()> {
     let name = name.to_str().ok_or("Java 路径不是有效的 UTF-8 文本")?;
@@ -371,6 +436,7 @@ fn spawn(path: &Path, deadline: Instant) -> Result<(ChildOwner, Handle, Handle)>
     {
         return Err("Java 可执行文件路径无效或过长".into());
     }
+    let image_guard = executable_image(path)?;
     let mut command = vec![b'"' as u16];
     command.extend_from_slice(&image);
     command.push(b'"' as u16);
@@ -433,7 +499,7 @@ fn spawn(path: &Path, deadline: Instant) -> Result<(ChildOwner, Handle, Handle)>
         return Err("Java 检测超时".into());
     }
     let mut information = PROCESS_INFORMATION::default();
-    // An explicit application name never invokes cmd.exe or a batch fallback.
+    // Only a held, checked PE executable reaches process creation.
     // The only inherited handles are NUL/stdout/stderr, not launcher services.
     if unsafe {
         CreateProcessW(
@@ -478,6 +544,7 @@ fn spawn(path: &Path, deadline: Instant) -> Result<(ChildOwner, Handle, Handle)>
     if unsafe { ResumeThread(child.thread.0) } == u32::MAX {
         return Err(win_error("无法运行 Java 检测进程"));
     }
+    drop(image_guard);
     Ok((child, out, err))
 }
 
@@ -588,6 +655,54 @@ pub(super) fn probe(path: &Path, deadline: Instant) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn executable_header_checks_reject_scripts_dlls_and_unbounded_or_truncated_headers() {
+        let mut valid = vec![0u8; 64 + 24 + 112];
+        valid[..2].copy_from_slice(b"MZ");
+        valid[60..64].copy_from_slice(&64u32.to_le_bytes());
+        valid[64..68].copy_from_slice(b"PE\0\0");
+        valid[84..86].copy_from_slice(&112u16.to_le_bytes());
+        valid[86..88].copy_from_slice(&2u16.to_le_bytes());
+        valid[88..90].copy_from_slice(&0x20bu16.to_le_bytes());
+        assert!(check_pe_header(&mut io::Cursor::new(&valid), valid.len() as u64).is_ok());
+        let mut cases = vec![b"@echo unexpected > injected\r\n".to_vec()];
+        for (start, replacement) in [
+            (60, (1024 * 1024 + 1u32).to_le_bytes().to_vec()),
+            (64, b"NE\0\0".to_vec()),
+            (86, 0x2002u16.to_le_bytes().to_vec()),
+            (86, 0u16.to_le_bytes().to_vec()),
+            (88, 0x107u16.to_le_bytes().to_vec()),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[start..start + replacement.len()].copy_from_slice(&replacement);
+            cases.push(invalid);
+        }
+        cases.push(valid[..valid.len() - 1].to_vec());
+        for invalid in cases {
+            assert!(check_pe_header(&mut io::Cursor::new(&invalid), invalid.len() as u64).is_err());
+        }
+    }
+
+    #[test]
+    fn verified_image_handle_blocks_write_and_delete_until_released() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../work/core-java-pe-tests");
+        fs::create_dir_all(&base).unwrap();
+        let directory = tempfile::tempdir_in(base).unwrap();
+        let path = directory.path().join("java.exe");
+        fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+        let held = executable_image(&path).unwrap();
+        assert!(OpenOptions::new().write(true).open(&path).is_err());
+        assert!(fs::remove_file(&path).is_err());
+        drop(held);
+        fs::remove_file(&path).unwrap();
+        let script = directory.path().join("java.cmd");
+        fs::write(&script, b"echo unexpected > injected\r\n").unwrap();
+        assert!(executable_image(&script).is_err());
+        fs::rename(script, &path).unwrap();
+        assert!(executable_image(&path).is_err());
+        assert!(!directory.path().join("injected").exists());
+    }
+
     #[test]
     fn only_unambiguous_disk_and_unc_executable_names_are_mapped() {
         for (source, expected) in [
