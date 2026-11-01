@@ -220,7 +220,7 @@ def validate_build(build: dict, expected_commit: str) -> None:
 
 
 def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | None,
-               duration: int, prepare_only: bool) -> dict:
+               duration: int, prepare_only: bool, macos_sample: Path | None = None) -> dict:
     """Drive the real pre-GUI role, observing only its ACKed Java PID's windows."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("acceptance_native_window", Path(__file__).with_name("game-acceptance") / "native_window.py")
@@ -261,7 +261,8 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
             messages.put(None, timeout=5)
     reader = threading.Thread(target=read_events, daemon=True)
     reader.start()
-    pid, result, observations, errors = None, None, [], []
+    pid, monitor_pid, prepared_java, spawned_at = None, None, None, None
+    result, observations, errors, native_sample = None, [], [], None
     first_visible, longest, last_window = None, 0.0, None
     started = time.monotonic()
     # The Rust role owns the 900-second download cancellation and the at-most
@@ -273,12 +274,18 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
             event = messages.get(timeout=0.25)
             if event is None:
                 eof = True
+            elif event.get("event") == "prepared":
+                java = event["data"].get("java")
+                if isinstance(java, str):
+                    prepared_java = Path(java)
             elif event.get("event") == "spawned":
                 raw_pid = event["data"].get("pid")
                 if type(raw_pid) is not int or not 0 < raw_pid < 2 ** 32 or pid is not None:
                     errors.append("Invalid or duplicate spawned-PID event")
                 else:
                     pid = raw_pid
+                    monitor_pid = event["data"].get("monitor_pid")
+                    spawned_at = time.monotonic()
             elif event.get("event") == "result":
                 result = event["data"]
             elif event.get("event") in ("request_error", "protocol_error"):
@@ -301,6 +308,22 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
             if not observations or observation != observations[-1]:
                 if len(observations) < 64:
                     observations.append(observation)
+            if macos_sample is not None and native_sample is None and spawned_at is not None \
+                    and now - spawned_at >= 12 and longest < 2:
+                # The optional CI diagnostic independently validates the exact
+                # Java image, parent monitor and process birth identity. It
+                # samples only that acknowledged child and never supplies game
+                # success evidence or changes the rendered/world verdict.
+                try:
+                    if prepared_java is None:
+                        raise ValueError("No prepared Java image was acknowledged")
+                    sample_spec = importlib.util.spec_from_file_location("acceptance_macos_sample",
+                        Path(__file__).with_name("game-acceptance") / "macos_sample.py")
+                    sample = importlib.util.module_from_spec(sample_spec)
+                    sample_spec.loader.exec_module(sample)
+                    native_sample = sample.capture(pid, monitor_pid, prepared_java, macos_sample)
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                    native_sample = {"status": "diagnostic_failed", "reason": str(error)[:512]}
         if time.monotonic() - started > 1200:
             # Preserve the returned workspace and any exact session evidence.
             # Killing the role here could orphan its detached Java process.
@@ -312,6 +335,7 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
                "screenshots_taken": False, "focus_changed": False}
     client = result or {"attempt_status": "fail", "stages": {}, "reason": "The selected binary did not return acceptance evidence"}
     return {"build": build, "client": client, "native_window": windows, "protocol_errors": errors,
+            "native_sample": native_sample,
             "role_exit_code": returncode, "render_assessment": render_assessment(client, windows)}
 
 
@@ -385,6 +409,7 @@ def main() -> int:
     parser.add_argument("--duration", type=int, choices=range(30, 121), metavar="30..120", default=120)
     parser.add_argument("--prepare-only", action="store_true", help="Download and prepare through production engines without starting Java Minecraft")
     parser.add_argument("--report", type=Path, help="Write JSON evidence to a new file, independently of console output")
+    parser.add_argument("--macos-sample", type=Path, help="On a disposable Mac CI host, sample the owned Java process if its window is not observed")
     args = parser.parse_args()
     try:
         result = preflight(args.parent, args.probe_opengl)
@@ -400,7 +425,7 @@ def main() -> int:
                 result["client_attempt"] = stage("blocked", "The current resource budget does not permit a real game attempt.")
             elif args.prepare_only or result["run_readiness"] == "candidate" or args.attempt_client:
                 result["client_attempt"] = run_client(args.desktop, args.parent, args.expected_commit, args.fabric,
-                                                      args.duration, args.prepare_only)
+                                                      args.duration, args.prepare_only, args.macos_sample)
             else:
                 result["client_attempt"] = stage("blocked", "Use --attempt-client for a bounded real attempt on an unverified graphics host.")
             attempt = result["client_attempt"]

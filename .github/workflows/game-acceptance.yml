@@ -15,6 +15,11 @@ on:
         type: choice
         default: all
         options: [all, linux, windows, macos-arm64, macos-x64]
+      observation_seconds:
+        description: Client observation budget; 30 is useful for native diagnostics
+        type: choice
+        default: '120'
+        options: ['120', '30']
 
 permissions:
   contents: read
@@ -78,8 +83,13 @@ jobs:
       - name: Test the real vanilla client and disposable singleplayer world
         id: vanilla
         continue-on-error: true
+        env:
+          OBSERVATION_SECONDS: ${{ inputs.observation_seconds }}
         run: |
-          args=(--parent "$PCL_ACCEPTANCE_PARENT" --desktop "$PCL_ACCEPTANCE_DESKTOP" --expected-commit "$PCL_NATIVE_SOURCE_COMMIT" --attempt-client --duration 120)
+          args=(--parent "$PCL_ACCEPTANCE_PARENT" --desktop "$PCL_ACCEPTANCE_DESKTOP" --expected-commit "$PCL_NATIVE_SOURCE_COMMIT" --attempt-client --duration "$OBSERVATION_SECONDS")
+          if [ "$RUNNER_OS" = macOS ]; then
+            args+=(--macos-sample target/game-evidence/vanilla-native-stack.log)
+          fi
           if [ "$RUNNER_OS" = Linux ]; then
             xvfb-run -a -s '-screen 0 1024x768x24 +extension GLX +render -noreset' env LIBGL_ALWAYS_SOFTWARE=1 python tools/ci/game-acceptance.py "${args[@]}" --probe-opengl --report target/game-evidence/vanilla.json
           else
@@ -92,8 +102,13 @@ jobs:
         id: fabric
         if: always() && steps.vanilla.outcome != 'skipped'
         continue-on-error: true
+        env:
+          OBSERVATION_SECONDS: ${{ inputs.observation_seconds }}
         run: |
-          args=(--parent "$PCL_ACCEPTANCE_PARENT" --desktop "$PCL_ACCEPTANCE_DESKTOP" --expected-commit "$PCL_NATIVE_SOURCE_COMMIT" --attempt-client --duration 120 --fabric 0.20.1)
+          args=(--parent "$PCL_ACCEPTANCE_PARENT" --desktop "$PCL_ACCEPTANCE_DESKTOP" --expected-commit "$PCL_NATIVE_SOURCE_COMMIT" --attempt-client --duration "$OBSERVATION_SECONDS" --fabric 0.20.1)
+          if [ "$RUNNER_OS" = macOS ]; then
+            args+=(--macos-sample target/game-evidence/fabric-native-stack.log)
+          fi
           if [ "$RUNNER_OS" = Linux ]; then
             xvfb-run -a -s '-screen 0 1024x768x24 +extension GLX +render -noreset' env LIBGL_ALWAYS_SOFTWARE=1 python tools/ci/game-acceptance.py "${args[@]}" --probe-opengl --report target/game-evidence/fabric.json
           else
