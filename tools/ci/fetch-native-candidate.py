@@ -107,7 +107,10 @@ def fetch(run_id: str, destination: Path, evidence: Path) -> None:
                     'Artifact contents exceed extraction bounds')
             names = set()
             for entry in entries:
-                name = entry.filename.rstrip('/')
+                # ZipInfo.filename normalizes backslashes on Windows and
+                # truncates NULs. Validate the original spelling before the
+                # extractor can erase evidence of aliases or control bytes.
+                name = entry.orig_filename.rstrip('/')
                 parts = name.split('/')
                 reserved = {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'}
                 mode = entry.external_attr >> 16

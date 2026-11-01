@@ -27,6 +27,9 @@ def archive(system="windows", arch="x86_64", member="package-manifest.json", sym
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as source:
         entry = zipfile.ZipInfo(member)
+        # Windows ZipInfo construction normalizes os.sep. Retain the requested
+        # raw ZIP spelling so this actually tests an archive with a backslash.
+        entry.filename = entry.orig_filename = member
         entry.create_system = 3
         entry.external_attr = (0o120777 if symlink else 0o100644) << 16
         source.writestr(entry, json.dumps({"platform": system, "arch": arch,

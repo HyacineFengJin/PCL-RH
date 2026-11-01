@@ -22,6 +22,7 @@ SPEC.loader.exec_module(DMG)
 COMMIT = "a" * 40
 
 
+@unittest.skipUnless(os.name == "posix", "DMG fixtures need Unix executable modes; both native macOS runners execute them")
 class NativeDiskImageTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="dmg fixture space & 项目-")
