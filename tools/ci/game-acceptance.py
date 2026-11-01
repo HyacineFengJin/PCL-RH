@@ -309,7 +309,7 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
                 if len(observations) < 64:
                     observations.append(observation)
             if macos_sample is not None and native_sample is None and spawned_at is not None \
-                    and now - spawned_at >= 12 and longest < 2:
+                    and now - spawned_at >= min(45, max(12, duration - 15)) and longest < 2:
                 # The optional CI diagnostic independently validates the exact
                 # Java image, parent monitor and process birth identity. It
                 # samples only that acknowledged child and never supplies game

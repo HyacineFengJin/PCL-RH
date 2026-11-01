@@ -130,6 +130,90 @@ class SamplingTests(unittest.TestCase):
         self.assertTrue(result["helper_reaped"])
         self.assertTrue(all(child.poll() is not None for child in children))
 
+    def test_child_inventory_uses_only_selected_parent_and_has_a_hard_count_bound(self):
+        native = mock.Mock()
+        def children(flavor, parent, buffer, size):
+            self.assertEqual((flavor, parent), (6, 100))
+            self.assertEqual(size, 17 * ctypes.sizeof(ctypes.c_int))
+            buffer[0], buffer[1] = 101, 102
+            return 2 * ctypes.sizeof(ctypes.c_int)
+        native.proc_listpids.side_effect = children
+        self.assertEqual(SAMPLER._children(native, 100), [101, 102])
+        native.proc_listpids.side_effect = lambda *_: 17 * ctypes.sizeof(ctypes.c_int)
+        with self.assertRaises(ValueError):
+            SAMPLER._children(native, 100)
+
+    def test_foreign_descendant_parent_never_grants_argv_read(self):
+        root = {"pid": 100, "ppid": 99, "uid": 1234, "start_sec": 10, "start_usec": 0}
+        wrong = {"pid": 101, "ppid": 88, "uid": 1234, "start_sec": 11, "start_usec": 0}
+        with mock.patch.object(SAMPLER, "_process_info", side_effect=lambda _, pid: root if pid == 100 else wrong), \
+             mock.patch.object(SAMPLER, "_children", return_value=[101]), \
+             mock.patch.object(SAMPLER, "_command") as command:
+            result = SAMPLER._child_arguments(None, root, time.monotonic() + 3)
+        self.assertEqual(result["children"], [])
+        command.assert_not_called()
+
+    def test_native_child_query_error_is_not_an_empty_observation(self):
+        native = mock.Mock()
+        def denied(*_):
+            ctypes.set_errno(13)
+            return 0
+        native.proc_listpids.side_effect = denied
+        with self.assertRaises(OSError):
+            SAMPLER._children(native, 100)
+
+    def test_owned_argv_query_is_explicit_and_keeps_birth_evidence(self):
+        root = {"pid": 100, "ppid": 99, "uid": 1234, "start_sec": 10, "start_usec": 0}
+        child = {"pid": 101, "ppid": 100, "uid": 1234, "start_sec": 11, "start_usec": 0}
+        image = mock.Mock()
+        image.samefile.return_value = True
+        response = ({"helper_exit_code": 0, "helper_timed_out": False, "stdout_truncated": False},
+                    b"/bin/sh -c osascript -e 'fixture GLFW error'\n")
+        with mock.patch.object(SAMPLER, "_process_info", side_effect=lambda _, pid: root if pid == 100 else child), \
+             mock.patch.object(SAMPLER, "_children", side_effect=lambda _, pid: [101] if pid == 100 else []), \
+             mock.patch.object(SAMPLER, "_process_path", return_value=image), \
+             mock.patch.object(SAMPLER, "_command", return_value=response) as command:
+            result = SAMPLER._child_arguments(None, root, time.monotonic() + 3)
+        self.assertEqual(command.call_args.args[0], ["/bin/ps", "-ww", "-p", "101", "-o", "command="])
+        self.assertEqual(result["children"][0]["identity_before"], result["children"][0]["identity_after"])
+        self.assertIn("fixture GLFW error", result["children"][0]["command"])
+
+    def test_missing_preinstalled_jcmd_does_not_install_or_execute_anything(self):
+        with mock.patch.object(SAMPLER, "_select_jcmd", return_value=None), \
+             mock.patch.object(SAMPLER, "_command") as command:
+            result = SAMPLER._java_threads(None, 100, 99, Path("/fixture/java"), Path("/fixture/dump.log"), {}, time.monotonic() + 8)
+        self.assertEqual(result["status"], "not_available")
+        command.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "The macOS sampler validates native Unix executable ownership/modes")
+    def test_jcmd_discovery_requires_major21_and_a_trusted_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            home = root / "jdk"
+            (home / "bin").mkdir(parents=True)
+            (home / "release").write_text('JAVA_VERSION="17.0.8"\n')
+            tool = home / "bin/jcmd"
+            tool.write_bytes(b"fixture, never executed")
+            tool.chmod(0o755)
+            self.assertIsNone(SAMPLER._jdk_tool(home, [root]))
+            (home / "release").write_text('JAVA_VERSION="21.0.7"\n')
+            self.assertIsNone(SAMPLER._jdk_tool(home, [root / "different"]))
+            self.assertEqual(SAMPLER._jdk_tool(home, [root]), tool)
+
+    @unittest.skipUnless(os.name == "posix", "The macOS sampler uses POSIX selector-readable pipes")
+    def test_auxiliary_helper_drains_both_bounded_streams(self):
+        real_popen = subprocess.Popen
+        def own_fixture(_args, **options):
+            code = "import sys; sys.stdout.buffer.write(b't'*4000); sys.stdout.flush(); sys.stderr.buffer.write(b'e'*70000)"
+            return real_popen([sys.executable, "-c", code], **options)
+        with mock.patch.object(SAMPLER.subprocess, "Popen", side_effect=own_fixture):
+            result, body = SAMPLER._command(["/fixture/helper"], time.monotonic() + 8, 1024)
+        self.assertEqual(result["helper_exit_code"], 0)
+        self.assertEqual(len(body), 1024)
+        self.assertTrue(result["stdout_truncated"])
+        self.assertTrue(result["console_truncated"])
+        self.assertLessEqual(len(result["console"].encode()), SAMPLER.CONSOLE_LIMIT)
+
 
 if __name__ == "__main__":
     unittest.main()
