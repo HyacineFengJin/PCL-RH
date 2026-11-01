@@ -1,0 +1,70 @@
+name: macOS disk-image verification
+
+# Repackage an authenticated portable producer, without rebuilding Rust or
+# requesting credentials. Mount/copy checks use only disposable runner storage.
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Completed official-native run containing both macOS release portable artifacts
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: macos-distribution-${{ github.ref }}-${{ inputs.source_run }}
+  cancel-in-progress: false
+
+jobs:
+  dmg:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Download the authenticated native portable producer
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/ci/fetch-native-candidate.py --source-run "$SOURCE_RUN" --evidence target/native-dmg/source-run.json
+      - name: Verify original native binaries and runtime resources
+        run: python tools/ci/verify-native-package.py --directory target/native-packages
+      - name: Build the portable disk image
+        run: python tools/dmg-native.py --directory target/native-packages --output target/native-dmg
+      - name: Mount, verify and run the copied Finder entry
+        run: python tools/ci/verify-native-dmg.py --directory target/native-dmg --portable target/native-packages
+      - name: Save the verified disk image
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-portable-dmg-${{ matrix.os }}
+          path: |
+            target/native-dmg/*.dmg
+            target/native-dmg/*.sha256
+            target/native-dmg/*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Save distribution diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-distribution-diagnostics-${{ matrix.os }}
+          path: target/native-dmg/*.json
+          if-no-files-found: ignore
+          retention-days: 7
