@@ -67,6 +67,70 @@ fn never_used_suspend_does_not_start_or_create_data() {
 }
 
 #[test]
+fn separate_resources_supply_esm_while_the_host_writes_only_submitted_user_data() {
+    let resources = Fixture::new();
+    let temporary = tempfile::tempdir().unwrap();
+    let data = temporary.path().canonicalize().unwrap();
+    fs::write(
+        resources.0.join("experimental/resource-only.mjs"),
+        "export const identity = 'installed-resource';\n",
+    )
+    .unwrap();
+    fs::write(
+        resources.0.join("experimental/host.mjs"),
+        r#"
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import readline from 'node:readline';
+import { identity } from './resource-only.mjs';
+const store = path.resolve(process.argv[2]);
+await fs.writeFile(path.join(store, 'installation-proof'), identity);
+for await (const line of readline.createInterface({input: process.stdin})) {
+  const request = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ok: true, result: {
+    entries: [], identity, store, cwd: process.cwd()
+  }}) + '\n');
+  if (request.operation === 'shutdown') break;
+}
+"#,
+    )
+    .unwrap();
+    let host = Arc::new(Host::with_resources(data.clone(), resources.0.clone()));
+    assert_eq!(
+        host.call("extensions_cards", json!({"slot":"home.secondary"}))
+            .unwrap(),
+        json!([])
+    );
+    assert!(!data.join(".pcl-rust").exists());
+    let result = host.installation_check();
+    host.shutdown();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !host.is_stopped() {
+        assert!(
+            Instant::now() < deadline,
+            "separate-resource host did not retire"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let result = result.unwrap();
+    assert_eq!(result["identity"], "installed-resource");
+    assert_eq!(
+        fs::canonicalize(result["cwd"].as_str().unwrap()).unwrap(),
+        data
+    );
+    assert_eq!(
+        fs::canonicalize(result["store"].as_str().unwrap()).unwrap(),
+        data.join(".pcl-rust/experimental")
+    );
+    assert_eq!(
+        fs::read(data.join(".pcl-rust/experimental/installation-proof")).unwrap(),
+        b"installed-resource"
+    );
+    assert!(!data.join("experimental").exists());
+    assert!(!resources.0.join(".pcl-rust").exists());
+}
+
+#[test]
 fn absent_passive_projections_have_no_session_store_lock_or_authority_token() {
     let fixture = Fixture::new();
     let host = Host::new(fixture.0.clone());

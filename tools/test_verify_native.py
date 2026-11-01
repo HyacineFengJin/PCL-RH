@@ -31,6 +31,14 @@ def desktop() -> dict:
 
 
 class NativeCandidateVerifierTests(unittest.TestCase):
+    def test_schema_two_binds_the_installed_layout_and_old_reports_stay_closed(self) -> None:
+        current = {**desktop(), "schema_version": 2, "runtime_layout": "split-v1"}
+        self.assertEqual(VERIFY.verify_desktop_build(json.dumps(current), manifest()), current)
+        for value in (None, "portable", True, 1):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                VERIFY.verify_desktop_build(json.dumps({**current, "runtime_layout": value}), manifest())
+        with self.assertRaises(ValueError):
+            VERIFY.verify_desktop_build(json.dumps({**desktop(), "runtime_layout": "split-v1"}), manifest())
     def test_actual_pe_optional_header_subsystem_is_read_with_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "native.exe"

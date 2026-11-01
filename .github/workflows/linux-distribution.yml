@@ -1,0 +1,64 @@
+name: Linux system-package verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Completed official-native run containing the Linux release portable artifact
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: linux-distribution-${{ github.ref }}-${{ inputs.source_run }}
+  cancel-in-progress: false
+
+jobs:
+  deb:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare system libraries on the disposable runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libdbus-1-dev librsvg2-dev dpkg-dev desktop-file-utils
+      - name: Prepare the native host's fixed Node runtime
+        run: python3 tools/ci/prepare-system-node.py
+      - name: Fetch the authenticated native candidate
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/fetch-native-candidate.py --source-run "$SOURCE_RUN" --destination "$RUNNER_TEMP/pcl-rh-distribution/portable" --evidence "$RUNNER_TEMP/pcl-rh-distribution/packages/source-run.json"
+      - name: Verify native binaries and portable resources
+        run: python3 tools/ci/verify-native-package.py --directory "$RUNNER_TEMP/pcl-rh-distribution/portable"
+      - name: Build the Debian package
+        run: python3 tools/linux-package-native.py --directory "$RUNNER_TEMP/pcl-rh-distribution/portable" --output "$RUNNER_TEMP/pcl-rh-distribution/packages"
+      - name: Install, upgrade, remove and purge while preserving user data
+        run: python3 tools/ci/verify-linux-package.py --directory "$RUNNER_TEMP/pcl-rh-distribution/packages" --portable "$RUNNER_TEMP/pcl-rh-distribution/portable"
+      - name: Save the verified system package
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-debian-package
+          path: ${{ runner.temp }}/pcl-rh-distribution/packages/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Save package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-package-diagnostics
+          path: ${{ runner.temp }}/pcl-rh-distribution/packages/*.json
+          if-no-files-found: ignore
+          retention-days: 7

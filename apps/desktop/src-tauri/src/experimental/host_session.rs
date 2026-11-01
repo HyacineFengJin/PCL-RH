@@ -18,9 +18,14 @@ pub(super) struct Session {
     pub(super) broken: bool,
 }
 impl Session {
-    pub(super) fn start(project: &Path, lifecycle: Lifecycle) -> Result<Self, String> {
+    pub(super) fn start(
+        project: &Path,
+        resources: &Path,
+        lifecycle: Lifecycle,
+    ) -> Result<Self, String> {
         let lease = Arc::new(
-            Lease::open(project).map_err(|error| format!("无法取得实验功能宿主锁：{error}"))?,
+            Lease::open_with_resources(project, resources)
+                .map_err(|error| format!("无法取得实验功能宿主资源与数据锁：{error}"))?,
         );
         let node = Node::discover().map_err(|error| {
             let message = error.to_string();

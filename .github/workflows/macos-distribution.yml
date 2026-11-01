@@ -1,7 +1,7 @@
-name: macOS disk-image verification
+name: macOS app distribution
 
-# Repackage an authenticated portable producer, without rebuilding Rust or
-# requesting credentials. Mount/copy checks use only disposable runner storage.
+# Build a standalone app and disk image from an authenticated native producer.
+# All launches and system-runtime preparation use disposable runner storage.
 on:
   workflow_dispatch:
     inputs:
@@ -26,7 +26,7 @@ jobs:
       matrix:
         os: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         shell: bash
@@ -43,16 +43,45 @@ jobs:
           SOURCE_RUN: ${{ inputs.source_run }}
           GH_TOKEN: ${{ github.token }}
         run: python tools/ci/fetch-native-candidate.py --source-run "$SOURCE_RUN" --evidence target/native-dmg/source-run.json
+      - name: Prepare the native host's fixed Node runtime on this disposable runner
+        run: python tools/ci/prepare-system-node.py
       - name: Verify original native binaries and runtime resources
         run: python tools/ci/verify-native-package.py --directory target/native-packages
-      - name: Build the portable disk image
-        run: python tools/dmg-native.py --directory target/native-packages --output target/native-dmg
-      - name: Mount, verify and run the copied Finder entry
-        run: python tools/ci/verify-native-dmg.py --directory target/native-dmg --portable target/native-packages
+      - name: Build the standalone application
+        run: python tools/app-native.py --directory target/native-packages --output target/native-app
+      - name: Verify read-only resources, separate data and the LaunchServices entry
+        run: python tools/ci/verify-native-app.py --directory target/native-app --portable target/native-packages
+      - name: Open and normally close the owned native application window
+        run: |
+          python - <<'PY'
+          import importlib.util, json, os, subprocess, sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('app', 'tools/app-native.py')
+          app = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(app)
+          root = Path(os.environ['RUNNER_TEMP']) / 'pcl-rh-native-gui'
+          root.mkdir(mode=0o700)
+          bundle = app.unpack(Path('target/native-app/mac-app.tar.gz').resolve(), root)
+          subprocess.run([sys.executable, 'tools/ci/macos-window-smoke.py', '--bundle', str(bundle),
+                          '--data', str(root / 'data'), '--output', str(root / 'evidence')], check=True)
+          app.verify_bundle(bundle, json.loads(Path('target/native-app/app-manifest.json').read_bytes()))
+          PY
+      - name: Build the application disk image
+        run: python tools/dmg-native.py --directory target/native-packages --output target/native-dmg --app-directory target/native-app
+      - name: Mount and verify the copied installed application
+        run: python tools/ci/verify-native-dmg.py --directory target/native-dmg --portable target/native-packages --app-directory target/native-app
+      - name: Save the verified standalone application
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-app-${{ matrix.os }}
+          path: target/native-app/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Save the verified disk image
         uses: actions/upload-artifact@v7
         with:
-          name: macos-portable-dmg-${{ matrix.os }}
+          name: macos-app-dmg-${{ matrix.os }}
           path: |
             target/native-dmg/*.dmg
             target/native-dmg/*.sha256
@@ -65,6 +94,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: macos-distribution-diagnostics-${{ matrix.os }}
-          path: target/native-dmg/*.json
+          path: |
+            target/native-dmg/*.json
+            target/native-app/*.json
+            ${{ runner.temp }}/pcl-rh-native-gui/evidence/*
           if-no-files-found: ignore
           retention-days: 7

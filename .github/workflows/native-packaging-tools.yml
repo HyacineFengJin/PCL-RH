@@ -3,9 +3,9 @@ name: Native packaging tools
 on:
   push:
     branches: [master]
-    paths: ['tools/*native.py', 'tools/ci/verify-native-*.py', 'tools/ci/fetch-native-candidate.py', 'tools/installer-languages/**', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml', '.github/workflows/macos-distribution.yml', '.github/workflows/windows-installer.yml']
+    paths: ['tools/*native.py', 'tools/ci/verify-native-*.py', 'tools/ci/fetch-native-candidate.py', 'tools/ci/prepare-system-node.py', 'tools/ci/prepare-game-installation.py', 'tools/ci/verify-linux-package.py', 'tools/ci/macos-window-smoke.py', 'tools/ci/collect-game-evidence.py', 'tools/ci/game-acceptance.py', 'tools/ci/game-acceptance/**', 'tools/installer-languages/**', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml', '.github/workflows/macos-distribution.yml', '.github/workflows/windows-installer.yml', '.github/workflows/linux-distribution.yml', '.github/workflows/game-acceptance.yml']
   pull_request:
-    paths: ['tools/*native.py', 'tools/ci/verify-native-*.py', 'tools/ci/fetch-native-candidate.py', 'tools/installer-languages/**', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml', '.github/workflows/macos-distribution.yml', '.github/workflows/windows-installer.yml']
+    paths: ['tools/*native.py', 'tools/ci/verify-native-*.py', 'tools/ci/fetch-native-candidate.py', 'tools/ci/prepare-system-node.py', 'tools/ci/prepare-game-installation.py', 'tools/ci/verify-linux-package.py', 'tools/ci/macos-window-smoke.py', 'tools/ci/collect-game-evidence.py', 'tools/ci/game-acceptance.py', 'tools/ci/game-acceptance/**', 'tools/installer-languages/**', 'tools/licenses/**', 'apps/desktop/src-tauri/build.rs', 'apps/desktop/src-tauri/build_metadata.rs', 'start-native.*', '.gitattributes', '.github/workflows/native-packaging-tools.yml', '.github/workflows/macos-distribution.yml', '.github/workflows/windows-installer.yml', '.github/workflows/linux-distribution.yml', '.github/workflows/game-acceptance.yml']
   workflow_dispatch:
 
 permissions:
@@ -34,6 +34,8 @@ jobs:
         run: python -m unittest discover -s tools -p 'test_*native.py'
       - name: Verify attribution bytes on this native checkout
         run: python tools/licenses/release.py --check
+      - name: Test client evidence assessment without starting a game
+        run: python -m unittest discover -s tools/ci/game-acceptance -p 'test_*.py'
       - name: Parse the Windows launcher entry
         if: runner.os == 'Windows'
         shell: pwsh

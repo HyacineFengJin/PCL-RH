@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PCL RH disposable client pipeline result",
+  "description": "The result event's data. A pass in an individual stage is scoped to that stage. Complete interactive gameplay and authenticated account acceptance require separate evidence.",
+  "type": "object",
+  "required": ["schema_version", "kind", "workspace", "workspace_retained", "source", "request", "identity", "production_engines", "stages", "attempt_status", "game_acceptance", "limitations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "game_acceptance_client"},
+    "workspace": {"type": "string"},
+    "workspace_retained": {"const": true},
+    "source": {"type": "object", "required": ["commit", "profile", "target", "version"]},
+    "request": {"type": "object", "required": ["minecraft", "fabric", "duration_seconds"]},
+    "identity": {"type": "object", "required": ["kind", "accounts_opened"], "properties": {"kind": {"const": "offline"}, "accounts_opened": {"const": false}}},
+    "production_engines": {"type": "array", "items": {"type": "string"}},
+    "stages": {
+      "type": "object",
+      "required": ["official_install", "official_java_download", "launch_readiness", "launch_plan", "world_prepare", "supervised_spawn", "game_initialization", "visible_render", "singleplayer_join", "owned_shutdown", "microsoft_login", "authenticated_launch"],
+      "additionalProperties": {"$ref": "#/$defs/stage"}
+    },
+    "attempt_status": {"enum": ["complete", "fail"]},
+    "game_acceptance": {"enum": ["not_run", "awaiting_native_window_evidence"]},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "stage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "evidence"],
+      "properties": {"status": {"enum": ["not_run", "pass", "fail", "observed", "not_observed"]}, "evidence": {"type": ["object", "null"]}}
+    }
+  }
+}

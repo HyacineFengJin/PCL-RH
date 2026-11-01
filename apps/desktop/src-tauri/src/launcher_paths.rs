@@ -9,6 +9,9 @@ use std::{
 };
 
 const PORTABLE_MARKER: &str = "pcl-rh.json";
+#[path = "launcher_paths/installed.rs"]
+mod installed;
+pub(crate) use installed::Layout;
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PortableMarker {
@@ -16,7 +19,7 @@ struct PortableMarker {
     product_id: String,
 }
 
-pub(crate) fn resolve() -> Result<PathBuf, String> {
+pub(crate) fn resolve() -> Result<Layout, String> {
     let home = std::env::var_os("PCL_RH_HOME");
     let legacy = std::env::var_os("PCL_LINUX_HOME");
     let executable = std::env::current_exe().ok();
@@ -27,12 +30,15 @@ pub(crate) fn resolve() -> Result<PathBuf, String> {
     let development_manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     #[cfg(not(debug_assertions))]
     let development_manifest = Path::new("");
-    resolve_from(
-        home.as_deref(),
-        legacy.as_deref(),
-        executable.as_deref(),
-        development_manifest,
-    )
+    let portable = || {
+        resolve_from(
+            home.as_deref(),
+            legacy.as_deref(),
+            executable.as_deref(),
+            development_manifest,
+        )
+    };
+    installed::resolve(executable.as_deref(), portable)
 }
 
 fn marker(root: &Path, relative: &str, limit: u64) -> Result<Vec<u8>, String> {

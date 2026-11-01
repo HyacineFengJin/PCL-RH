@@ -1,6 +1,8 @@
-//! Retained launcher-owned host resources and the real native single-host lock.
+//! Retained host resources and the real native single-host data lock.
 //! Existing Linux data directories retain their original permissions; no
-//! permission repair or recursive pathname writer is used here.
+//! permission repair or recursive pathname writer is used here. Installed
+//! resources may live on a different, read-only filesystem from user data;
+//! each root keeps its own retained identity and descendant checks.
 use pcl_core::retained_fs::{self, Directory, Kind, Leaf, Links, Lock, Metadata, Traversal};
 use std::{
     fs::File,
@@ -10,8 +12,10 @@ use std::{
 
 pub(super) struct Lease {
     project_path: PathBuf,
+    resource_root_path: PathBuf,
     data_path: PathBuf,
     project: Directory,
+    resource_root: Directory,
     app: Directory,
     data: Directory,
     resources: Directory,
@@ -220,19 +224,32 @@ fn ensure(
     Ok(directory)
 }
 impl Lease {
+    #[cfg(test)]
     pub(super) fn open(project_path: &Path) -> io::Result<Self> {
+        Self::open_with_resources(project_path, project_path)
+    }
+    pub(super) fn open_with_resources(
+        project_path: &Path,
+        resource_root_path: &Path,
+    ) -> io::Result<Self> {
+        // Resource lookup never creates directories or requires user ownership:
+        // package managers own system resources. SameFilesystem is evaluated
+        // only within this resource tree, independently of the data tree.
+        let resource_root = Directory::open_absolute(resource_root_path)?;
+        let resources = resource_root.child(&leaf("experimental")?, Traversal::SameFilesystem)?;
+        let script = resources.open_regular(&leaf("host.mjs")?, Links::Single)?;
+        let script_stamp = retained_fs::metadata(&script)?;
         let project = Directory::open_absolute(project_path)?;
         let app = ensure(&project, ".pcl-rust", app_security)?;
         let data = ensure(&app, "experimental", data_security)?;
         let lock = data.lock(&leaf("host.lock")?)?;
         let lock_stamp = retained_fs::metadata(lock.file())?;
-        let resources = project.child(&leaf("experimental")?, Traversal::SameFilesystem)?;
-        let script = resources.open_regular(&leaf("host.mjs")?, Links::Single)?;
-        let script_stamp = retained_fs::metadata(&script)?;
         let lease = Self {
             project_path: project_path.to_owned(),
+            resource_root_path: resource_root_path.to_owned(),
             data_path: project_path.join(".pcl-rust/experimental"),
             project,
+            resource_root,
             app,
             data,
             resources,
@@ -251,7 +268,7 @@ impl Lease {
         &self.data_path
     }
     pub(super) fn script_path(&self) -> PathBuf {
-        self.project_path.join("experimental/host.mjs")
+        self.resource_root_path.join("experimental/host.mjs")
     }
     pub(super) fn recheck(&self) -> io::Result<()> {
         if Directory::open_absolute(&self.project_path)?.identity()? != self.project.identity()? {
@@ -259,11 +276,18 @@ impl Lease {
                 "Experimental host project directory changed",
             ));
         }
+        if Directory::open_absolute(&self.resource_root_path)?.identity()?
+            != self.resource_root.identity()?
+        {
+            return Err(io::Error::other(
+                "Experimental host resource directory changed",
+            ));
+        }
         self.project
             .recheck(&leaf(".pcl-rust")?, &self.app.identity()?)?;
         self.app
             .recheck(&leaf("experimental")?, &self.data.identity()?)?;
-        self.project
+        self.resource_root
             .recheck(&leaf("experimental")?, &self.resources.identity()?)?;
         app_security(&self.app)?;
         data_security(&self.data)?;
@@ -396,6 +420,84 @@ mod tests {
             .unwrap();
         data.create_file(&leaf("extensions.json").unwrap()).unwrap();
         assert!(!proof.recheck().unwrap());
+    }
+
+    fn resource_file(path: &Path) {
+        let root = Directory::open_absolute(path).unwrap();
+        let resources = root
+            .create_private(&leaf("experimental").unwrap(), Traversal::SameFilesystem)
+            .unwrap();
+        resources
+            .create_file(&leaf("host.mjs").unwrap())
+            .unwrap()
+            .write_all(b"// never executed")
+            .unwrap();
+    }
+
+    #[test]
+    fn separate_resource_lookup_never_populates_or_reads_the_data_resource_tree() {
+        let (_data_temporary, data) = fixture();
+        let (_resource_temporary, resources) = fixture();
+        assert!(Lease::open_with_resources(&data, &resources).is_err());
+        assert!(!data.join(".pcl-rust").exists());
+        resource_file(&resources);
+        let lease = Lease::open_with_resources(&data, &resources).unwrap();
+        assert_eq!(lease.project_path(), data);
+        assert_eq!(lease.data_path(), data.join(".pcl-rust/experimental"));
+        assert_eq!(lease.script_path(), resources.join("experimental/host.mjs"));
+        assert!(data.join(".pcl-rust/experimental/host.lock").is_file());
+        assert!(!data.join("experimental").exists());
+        assert!(!resources.join(".pcl-rust").exists());
+        assert!(!extensions_absent(&data).unwrap());
+        lease.recheck().unwrap();
+        drop(lease);
+        assert!(extensions_absent(&data).unwrap());
+    }
+
+    #[test]
+    fn separate_lease_rechecks_both_roots_and_the_resource_descendants() {
+        for target in ["data", "resources", "experimental", "host.mjs"] {
+            let (_data_temporary, data) = fixture();
+            let (_resource_temporary, resources) = fixture();
+            resource_file(&resources);
+            let lease = Lease::open_with_resources(&data, &resources).unwrap();
+            let path = match target {
+                "data" => data.clone(),
+                "resources" => resources.clone(),
+                "experimental" => resources.join("experimental"),
+                _ => resources.join("experimental/host.mjs"),
+            };
+            let retained = path.with_file_name(format!("retained-{target}"));
+            fs::rename(&path, &retained).unwrap();
+            if target == "host.mjs" {
+                fs::write(&path, b"// replacement").unwrap();
+            } else {
+                fs::create_dir(&path).unwrap();
+            }
+            assert!(lease.recheck().is_err(), "rebound {target} was accepted");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_resources_remain_readonly_and_never_receive_host_state() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_data_temporary, data) = fixture();
+        let (_resource_temporary, resources) = fixture();
+        resource_file(&resources);
+        for path in [&resources, &resources.join("experimental")] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let result = Lease::open_with_resources(&data, &resources);
+        // Restore fixture permissions before assertions, so even a failed
+        // regression leaves its temporary tree removable by its owner.
+        for path in [&resources, &resources.join("experimental")] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let lease = result.unwrap();
+        lease.recheck().unwrap();
+        assert!(!resources.join(".pcl-rust").exists());
+        assert!(data.join(".pcl-rust/experimental/host.lock").is_file());
     }
 
     #[cfg(target_os = "macos")]

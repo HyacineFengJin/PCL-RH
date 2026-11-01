@@ -103,6 +103,7 @@ use host_session::Session;
 
 pub struct Host {
     project: PathBuf,
+    resources: PathBuf,
     session: Mutex<Option<Session>>,
     closing: AtomicBool,
     stopped: Arc<AtomicBool>,
@@ -142,9 +143,14 @@ impl Host {
         }
         Ok(admission)
     }
+    #[cfg(test)]
     pub fn new(project: PathBuf) -> Self {
+        Self::with_resources(project.clone(), project)
+    }
+    pub fn with_resources(project: PathBuf, resources: PathBuf) -> Self {
         Self {
             project,
+            resources,
             session: Mutex::new(None),
             closing: AtomicBool::new(false),
             stopped: Arc::new(AtomicBool::new(true)),
@@ -159,6 +165,7 @@ impl Host {
         }
         let mut session = Session::start(
             &self.project,
+            &self.resources,
             host_process::Lifecycle {
                 retiring: self.retiring.clone(),
                 stopped: self.stopped.clone(),
@@ -178,6 +185,13 @@ impl Host {
     }
     fn call(&self, operation: &str, args: Value) -> Result<Value, String> {
         self.call_with_effect(operation, args, None, |result, _| Ok(result))
+    }
+    /// Explicit installation verification must exercise the real stdio host.
+    /// Unlike passive cards/catalog projections, this operation always starts
+    /// Node and opens its store. The caller owns the fresh data root and must
+    /// request shutdown, then wait for is_stopped before reporting success.
+    pub(crate) fn installation_check(&self) -> Result<Value, String> {
+        self.call("extensions_list", json!({}))
     }
     // Releasing one volatile source token never starts a host for cleanup.
     fn release_source(&self, args: Value) -> Result<Value, String> {

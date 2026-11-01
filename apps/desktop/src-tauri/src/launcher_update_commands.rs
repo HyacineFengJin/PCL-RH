@@ -72,6 +72,19 @@ pub fn current_build(project: &Path) -> CurrentBuild {
         architecture: Architecture::current(),
     }
 }
+pub fn current_build_for(project: &Path, installed: bool) -> CurrentBuild {
+    let mut build = current_build(project);
+    if installed {
+        // A system package or app bundle is replaced by its original
+        // distributor, never by the portable executable transaction.
+        build.install_channel = if cfg!(target_os = "linux") {
+            InstallChannel::PackageManaged
+        } else {
+            InstallChannel::Unmanaged
+        };
+    }
+    build
+}
 #[tauri::command]
 pub fn launcher_update_status(state: State<'_, Arc<Shared>>) -> UpdateView {
     state.launcher_updates.service.snapshot()

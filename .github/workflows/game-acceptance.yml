@@ -1,0 +1,138 @@
+name: Native client acceptance
+
+# Real offline clients in new private roots. Success requires rendered own
+# windows, a game-written QuickPlay record, integrated-server join and cleanup.
+# Microsoft login and human interaction remain separate, unverified stages.
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Completed official-native run containing split-v1 release candidates
+        type: string
+        required: true
+      platform:
+        description: Native client platform
+        type: choice
+        default: all
+        options: [all, linux, windows, macos-arm64, macos-x64]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: game-acceptance-${{ github.ref }}-${{ inputs.source_run }}-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  client:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: >-
+          ${{ fromJSON(
+            inputs.platform == 'linux' && '["ubuntu-24.04"]' ||
+            inputs.platform == 'windows' && '["windows-2025"]' ||
+            inputs.platform == 'macos-arm64' && '["macos-15"]' ||
+            inputs.platform == 'macos-x64' && '["macos-15-intel"]' ||
+            '["ubuntu-24.04","windows-2025","macos-15","macos-15-intel"]'
+          ) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Prepare Linux desktop and software OpenGL on the disposable runner
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libssl-dev libdbus-1-dev librsvg2-dev dpkg-dev desktop-file-utils xvfb xauth mesa-utils
+      - name: Download the authenticated native producer
+        env:
+          SOURCE_RUN: ${{ inputs.source_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/ci/fetch-native-candidate.py --source-run "$SOURCE_RUN" --evidence target/game-evidence/source-run.json
+      - name: Verify actual native program and runtime resources
+        run: python tools/ci/verify-native-package.py --directory target/native-packages
+      - name: Put the executable in its actual system-package or application layout
+        run: python tools/ci/prepare-game-installation.py --portable target/native-packages --root "$RUNNER_TEMP/pcl-rh-game-installation" --report target/game-evidence/installation.json
+      - name: Prepare a private client-test parent
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          parent = Path(os.environ['RUNNER_TEMP']) / 'pcl-rh-client-acceptance'
+          parent.mkdir(mode=0o700)
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
+              env.write('PCL_ACCEPTANCE_PARENT=' + str(parent) + '\n')
+          PY
+      - name: Test the real vanilla client and disposable singleplayer world
+        id: vanilla
+        continue-on-error: true
+        run: |
+          args=(--parent "$PCL_ACCEPTANCE_PARENT" --desktop "$PCL_ACCEPTANCE_DESKTOP" --expected-commit "$PCL_NATIVE_SOURCE_COMMIT" --attempt-client --duration 120)
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s '-screen 0 1024x768x24 +extension GLX +render -noreset' env LIBGL_ALWAYS_SOFTWARE=1 python tools/ci/game-acceptance.py "${args[@]}" --probe-opengl > target/game-evidence/vanilla.json
+          else
+            python tools/ci/game-acceptance.py "${args[@]}" > target/game-evidence/vanilla.json
+          fi
+      - name: Collect bounded vanilla game logs
+        if: always() && steps.vanilla.outcome != 'skipped'
+        run: python tools/ci/collect-game-evidence.py --report target/game-evidence/vanilla.json --parent "$PCL_ACCEPTANCE_PARENT" --output target/game-evidence/vanilla-logs
+      - name: Test the real Fabric client and disposable singleplayer world
+        id: fabric
+        if: always() && steps.vanilla.outcome != 'skipped'
+        continue-on-error: true
+        run: |
+          args=(--parent "$PCL_ACCEPTANCE_PARENT" --desktop "$PCL_ACCEPTANCE_DESKTOP" --expected-commit "$PCL_NATIVE_SOURCE_COMMIT" --attempt-client --duration 120 --fabric 0.20.1)
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s '-screen 0 1024x768x24 +extension GLX +render -noreset' env LIBGL_ALWAYS_SOFTWARE=1 python tools/ci/game-acceptance.py "${args[@]}" --probe-opengl > target/game-evidence/fabric.json
+          else
+            python tools/ci/game-acceptance.py "${args[@]}" > target/game-evidence/fabric.json
+          fi
+      - name: Collect bounded Fabric game logs
+        if: always() && steps.fabric.outcome != 'skipped'
+        run: python tools/ci/collect-game-evidence.py --report target/game-evidence/fabric.json --parent "$PCL_ACCEPTANCE_PARENT" --output target/game-evidence/fabric-logs
+      - name: Require both actual client attempts to pass
+        if: always()
+        env:
+          VANILLA_OUTCOME: ${{ steps.vanilla.outcome }}
+          FABRIC_OUTCOME: ${{ steps.fabric.outcome }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          results = {}
+          for name in ('vanilla', 'fabric'):
+              path = Path('target/game-evidence') / (name + '.json')
+              try:
+                  report = json.loads(path.read_bytes())
+              except (OSError, ValueError):
+                  report = {}
+              results[name] = {'step': os.environ[name.upper() + '_OUTCOME'],
+                               'game_acceptance': report.get('game_acceptance', 'no_result'),
+                               'microsoft_login': 'not_run', 'interactive_gameplay': 'not_run'}
+          target = Path('target/game-evidence/summary.json')
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(json.dumps(results, indent=2) + '\n')
+          print(json.dumps(results, indent=2))
+          assert all(value['step'] == 'success' and value['game_acceptance'] == 'singleplayer_join_observed'
+                     for value in results.values()), 'Actual client acceptance is incomplete; inspect the retained evidence.'
+          PY
+      - name: Save actual client evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-client-evidence-${{ matrix.os }}
+          path: target/game-evidence/
+          if-no-files-found: ignore
+          retention-days: 7

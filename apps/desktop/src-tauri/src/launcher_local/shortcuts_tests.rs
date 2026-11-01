@@ -296,6 +296,192 @@ fn desktop_exec_escapes_both_parser_layers_and_percent_field_codes() {
     assert!(desktop_exec(Path::new("/project=unsupported/start.sh")).is_err());
     assert!(desktop_exec(Path::new("/project\n/start.sh")).is_err());
 }
+
+fn installed_store(f: &Fixture) -> ShortcutStore {
+    let project = f.0.join("data 中文 & $value`tick\"quote%f");
+    fs::rename(f.0.join("project"), &project).unwrap();
+    let resources = f.0.join("resources 中文 & $value`tick\"quote%f");
+    let executable = resources.join("bin/pcl-desktop");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o555)).unwrap();
+    ShortcutStore::with_resources(project, resources, executable, f.store().paths)
+}
+
+#[test]
+fn installed_entries_bind_environment_to_data_and_resources_and_keep_exact_undo() {
+    let f = Fixture::new();
+    let mut store = installed_store(&f);
+    let project = store
+        .project
+        .with_file_name("data = 中文 & $value`tick\"quote%f");
+    fs::rename(&store.project, &project).unwrap();
+    store.project = project;
+    let original = fs::read(&store.executable).unwrap();
+    let plan = store.prepare_create(ShortcutTarget::Applications).unwrap();
+    store
+        .create(ShortcutTarget::Applications, &plan.revision)
+        .unwrap();
+    let path = store.paths.applications.join(NAME);
+    let bytes = fs::read(&path).unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let exec = format!(
+        "Exec=\"/usr/bin/env\" {} {} {}",
+        desktop_argument(&format!(
+            "PCL_RH_RESOURCE_ROOT={}",
+            store.resources.display()
+        ))
+        .unwrap(),
+        desktop_argument(&format!("PCL_RH_DATA_ROOT={}", store.project.display())).unwrap(),
+        desktop_exec(&store.executable).unwrap(),
+    );
+    assert!(text.lines().any(|line| line == exec));
+    assert!(text.lines().any(|line| line
+        == format!(
+            "Path={}",
+            desktop_value(store.project.to_str().unwrap()).unwrap()
+        )));
+    assert!(text.lines().any(|line| line
+        == format!(
+            "Icon={}",
+            desktop_value(
+                &store
+                    .resources
+                    .join("assets/pcl-rh.png")
+                    .display()
+                    .to_string()
+            )
+            .unwrap()
+        )));
+    assert!(text.contains(&format!("X-PCL-Linux-Project={}\n", store.project_key())));
+    assert!(!store.resources.join(".pcl-rust").exists());
+    assert_eq!(fs::read(&store.executable).unwrap(), original);
+    let withdraw = store.prepare_withdraw().unwrap();
+    store.withdraw(&withdraw.revision).unwrap();
+    let reopened = ShortcutStore::with_resources(
+        store.project.clone(),
+        store.resources.clone(),
+        store.executable.clone(),
+        store.paths.clone(),
+    );
+    let row = reopened.recovery().unwrap().remove(0);
+    reopened.restore(&row.operation_id, &row.revision).unwrap();
+    assert_eq!(fs::read(path).unwrap(), bytes);
+    let invented = String::from_utf8(store.contents().unwrap())
+        .unwrap()
+        .replace(CURRENT_NAMES, FORMER_NAMES);
+    fs::write(store.paths.applications.join(NAME), invented).unwrap();
+    assert!(store.prepare_withdraw().unwrap().entries.is_empty());
+}
+
+#[test]
+fn installed_layout_keeps_portable_history_but_never_claims_invented_installed_history() {
+    let f = Fixture::new();
+    let store = installed_store(&f);
+    fs::create_dir_all(&store.paths.applications).unwrap();
+    let path = store.paths.applications.join(NAME);
+    for bytes in [
+        store
+            .registered_contents(CURRENT_NAMES, CURRENT_COMMENTS, "pcl-rh.png")
+            .unwrap(),
+        store
+            .registered_contents(CURRENT_NAMES, FORMER_COMMENTS, "pcl-linux.png")
+            .unwrap(),
+        historical_entry(&store, FORMER_NAMES, false),
+    ] {
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(store.prepare_withdraw().unwrap().entries.len(), 1);
+    }
+    let invented = String::from_utf8(store.contents().unwrap())
+        .unwrap()
+        .replace(CURRENT_NAMES, FORMER_NAMES);
+    fs::write(&path, &invented).unwrap();
+    let plan = store.prepare_withdraw().unwrap();
+    assert!(plan.entries.is_empty());
+    assert!(!plan.warnings.is_empty());
+    assert_eq!(fs::read(path).unwrap(), invented.as_bytes());
+}
+
+#[test]
+fn installed_executable_rejects_outside_links_and_nonexecutable_files_before_data_writes() {
+    for invalid in ["outside", "link", "nonexecutable"] {
+        let f = Fixture::new();
+        let mut store = installed_store(&f);
+        match invalid {
+            "outside" => store.executable = store.project.join("start-native.sh"),
+            "link" => {
+                fs::remove_file(&store.executable).unwrap();
+                symlink(store.project.join("start-native.sh"), &store.executable).unwrap();
+            }
+            _ => fs::set_permissions(&store.executable, fs::Permissions::from_mode(0o644)).unwrap(),
+        }
+        let plan = store.prepare_create(ShortcutTarget::Applications);
+        if let Ok(plan) = plan {
+            assert!(store
+                .create(ShortcutTarget::Applications, &plan.revision)
+                .is_err());
+        }
+        assert!(!store.project.join(".pcl-rust").exists());
+        assert!(!store.resources.join(".pcl-rust").exists());
+        assert!(!store.paths.applications.exists());
+    }
+}
+
+#[test]
+fn installed_resource_proof_rejects_root_parent_and_executable_replacement() {
+    for target in ["root", "parent", "file"] {
+        let f = Fixture::new();
+        let store = installed_store(&f);
+        let proof = InstalledLauncher::open(&store.resources, &store.executable).unwrap();
+        let path = match target {
+            "root" => store.resources.clone(),
+            "parent" => store.executable.parent().unwrap().to_path_buf(),
+            _ => store.executable.clone(),
+        };
+        let retained = path.with_file_name(format!("retained-{target}"));
+        fs::rename(&path, &retained).unwrap();
+        symlink(&retained, &path).unwrap();
+        assert!(proof.recheck().is_err(), "rebound {target} was accepted");
+    }
+}
+
+#[test]
+fn installed_creation_revision_binds_the_resource_location() {
+    let f = Fixture::new();
+    let store = installed_store(&f);
+    let plan = store.prepare_create(ShortcutTarget::Applications).unwrap();
+    let other = ShortcutStore::with_resources(
+        store.project.clone(),
+        store.resources.with_file_name("different-installation"),
+        store
+            .resources
+            .with_file_name("different-installation")
+            .join("bin/pcl-desktop"),
+        store.paths.clone(),
+    );
+    assert!(other
+        .create(ShortcutTarget::Applications, &plan.revision)
+        .is_err());
+    assert!(!store.project.join(".pcl-rust").exists());
+}
+
+#[test]
+fn system_owned_executable_is_readable_without_relaxing_user_data_ownership() {
+    let f = Fixture::new();
+    // /usr/bin/env is also the fixed command used in the generated Exec. Its
+    // real system file may be root-owned; the shortcut only reads its identity.
+    let executable = fs::canonicalize("/usr/bin/env").unwrap();
+    let resources = executable.parent().unwrap().to_path_buf();
+    let store =
+        ShortcutStore::with_resources(f.0.join("project"), resources, executable, f.store().paths);
+    let plan = store.prepare_create(ShortcutTarget::Applications).unwrap();
+    store
+        .create(ShortcutTarget::Applications, &plan.revision)
+        .unwrap();
+    assert!(store.paths.applications.join(NAME).is_file());
+    assert!(store.project.join(".pcl-rust/launcher-local").is_dir());
+    assert!(store.prepare_withdraw().unwrap().warnings.is_empty());
+}
 #[test]
 fn unknown_recovery_files_are_retained() {
     let f = Fixture::new();

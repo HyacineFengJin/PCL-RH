@@ -3,12 +3,14 @@
 //! or foreign entries are retained. Withdrawal journals intent before a rename
 //! into private trash on the same filesystem, so no package/game data is touched.
 use super::filesystem::{optional_snapshot, Dir, DirectoryIdentity, Scope, Snapshot, Stamp};
+use pcl_core::retained_fs::{self, Directory, Leaf, Links, Metadata, Traversal};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    path::{Path, PathBuf},
+    fs::File,
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -106,13 +108,27 @@ impl RecoveryState {
 
 pub struct ShortcutStore {
     project: PathBuf,
+    resources: PathBuf,
+    executable: PathBuf,
     paths: XdgPaths,
     writer: Mutex<()>,
 }
 impl ShortcutStore {
+    #[cfg(test)]
     pub fn new(project: PathBuf, paths: XdgPaths) -> Self {
+        let executable = project.join("start-native.sh");
+        Self::with_resources(project.clone(), project, executable, paths)
+    }
+    pub fn with_resources(
+        project: PathBuf,
+        resources: PathBuf,
+        executable: PathBuf,
+        paths: XdgPaths,
+    ) -> Self {
         Self {
             project,
+            resources,
+            executable,
             paths,
             writer: Mutex::new(()),
         }
@@ -141,6 +157,22 @@ impl ShortcutStore {
         )
     }
     fn contents(&self) -> Result<Vec<u8>, String> {
+        if self.resources != self.project {
+            let project = self.project.to_str().ok_or("项目路径必须是 UTF-8")?;
+            retained_fs::validate_absolute_path(&self.project).map_err(|e| e.to_string())?;
+            installed_relative(&self.resources, &self.executable)?;
+            let exec = format!(
+                "{} {} {} {}",
+                desktop_exec(Path::new("/usr/bin/env"))?,
+                desktop_argument(&format!(
+                    "PCL_RH_RESOURCE_ROOT={}",
+                    self.resources.to_str().ok_or("发行资源路径必须是 UTF-8")?
+                ))?,
+                desktop_argument(&format!("PCL_RH_DATA_ROOT={project}"))?,
+                desktop_exec(&self.executable)?,
+            );
+            return Ok(format!("[Desktop Entry]\nType=Application\nVersion=1.0\n{CURRENT_NAMES}{CURRENT_COMMENTS}Exec={exec}\nPath={}\nIcon={}\nTerminal=false\nCategories=Game;\nKeywords=Minecraft;PCL;Forge;\nStartupNotify=true\nStartupWMClass=pcl-desktop\nX-PCL-Linux-Owner=launcher-local-v1\nX-PCL-Linux-Project={}\n",desktop_value(project)?,desktop_value(&self.resources.join("assets/pcl-rh.png").display().to_string())?,self.project_key()).into_bytes());
+        }
         self.registered_contents(CURRENT_NAMES, CURRENT_COMMENTS, "pcl-rh.png")
     }
     fn registered_contents(
@@ -164,19 +196,36 @@ impl ShortcutStore {
         // Legacy ownership remains recognizable even when its path cannot be
         // encoded into a new Exec token (for example '='). Withdrawal may still
         // preserve that exact registered file for undo.
-        if self.legacy_owned(snapshot)? || snapshot.header == self.contents()? {
+        if self.legacy_owned(snapshot)?
+            || snapshot.header == self.contents()?
+            || self.registered_matches(snapshot, CURRENT_NAMES, CURRENT_COMMENTS, "pcl-rh.png")?
+        {
             return Ok(true);
         }
         // Keep the exact former icon/comment bytes with each historical name.
         // A brand update grants no ownership over arbitrary edited variants.
         for names in [CURRENT_NAMES, FORMER_NAMES] {
-            if snapshot.header
-                == self.registered_contents(names, FORMER_COMMENTS, "pcl-linux.png")?
-            {
+            if self.registered_matches(snapshot, names, FORMER_COMMENTS, "pcl-linux.png")? {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+    fn registered_matches(
+        &self,
+        snapshot: &Snapshot,
+        names: &str,
+        comments: &str,
+        icon: &str,
+    ) -> Result<bool, String> {
+        match self.registered_contents(names, comments, icon) {
+            Ok(bytes) => Ok(snapshot.header == bytes),
+            // Installed launchers pass data paths as an env value, where '='
+            // is representable. No former executable template existed for
+            // such a path, so it cannot grant ownership of another entry.
+            Err(_) if self.resources != self.project => Ok(false),
+            Err(error) => Err(error),
+        }
     }
     fn legacy_owned(&self, snapshot: &Snapshot) -> Result<bool, String> {
         let former = self.legacy()?;
@@ -241,13 +290,21 @@ impl ShortcutStore {
                 state.push((target, path, None));
             }
         }
-        let revision = format!(
-            "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(&(self.project_key(), create, state))
-                    .map_err(|_| "应用入口状态无法序列化")?
-            )
-        );
+        let revision_bytes = if self.resources == self.project {
+            serde_json::to_vec(&(self.project_key(), create, state))
+        } else {
+            // A prepared empty target must not authorize a reopened store with
+            // different resource/executable bindings for the same data root.
+            serde_json::to_vec(&(
+                self.project_key(),
+                create,
+                state,
+                &self.resources,
+                &self.executable,
+            ))
+        }
+        .map_err(|_| "应用入口状态无法序列化")?;
+        let revision = format!("{:x}", Sha256::digest(revision_bytes));
         Ok(ShortcutPlan {
             revision,
             entries,
@@ -269,7 +326,12 @@ impl ShortcutStore {
         if plan.revision != expected_revision {
             return Err("应用入口状态已变化，请重新确认创建".into());
         }
-        validate_launcher(&self.project)?;
+        let installed = if self.resources == self.project {
+            validate_launcher(&self.project)?;
+            None
+        } else {
+            Some(InstalledLauncher::open(&self.resources, &self.executable)?)
+        };
         let scope = Scope::create(&self.project, "launcher-local")?;
         let _lock = scope.folder.as_ref().unwrap().lock(".shortcuts.lock")?;
         if self.prepare_create(target)?.revision != expected_revision {
@@ -277,6 +339,9 @@ impl ShortcutStore {
         }
         let path = self.path(target)?;
         let parent = Dir::create_absolute(path)?;
+        if let Some(installed) = &installed {
+            installed.recheck()?;
+        }
         if let Some(snapshot) = optional_snapshot(&parent, NAME, LIMIT)? {
             if !self.owned(&snapshot)? {
                 return Err("同名应用入口已被替换，已保留原文件".into());
@@ -296,6 +361,9 @@ impl ShortcutStore {
             return Err("应用入口已保存，但目标目录发生变化，请检查实际目录".into());
         }
         scope.recheck()?;
+        if let Some(installed) = &installed {
+            installed.recheck()?;
+        }
         Ok(ShortcutOutcome {
             paths: vec![path.join(NAME).display().to_string()],
             operation_ids: Vec::new(),
@@ -648,6 +716,100 @@ fn validate_launcher(project: &Path) -> Result<(), String> {
     drop(file);
     Ok(())
 }
+
+fn installed_relative<'a>(resources: &Path, executable: &'a Path) -> Result<&'a Path, String> {
+    retained_fs::validate_absolute_path(resources).map_err(|e| e.to_string())?;
+    retained_fs::validate_absolute_path(executable).map_err(|e| e.to_string())?;
+    let relative = executable
+        .strip_prefix(resources)
+        .map_err(|_| "安装的可执行文件必须位于发行资源目录内")?;
+    if relative.as_os_str().is_empty()
+        || relative.components().count() > 32
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err("安装的可执行文件路径无效".into());
+    }
+    Ok(relative)
+}
+
+/// Installation files are readable capabilities, independent of the private
+/// data directories used for journals. Retain the whole root-to-file graph so
+/// replacing a resource path cannot authorize a different executable at create.
+struct InstalledLauncher {
+    path: PathBuf,
+    root: Directory,
+    parents: Vec<(Leaf, Directory)>,
+    name: Leaf,
+    file: File,
+    stamp: Metadata,
+}
+impl InstalledLauncher {
+    fn open(resources: &Path, executable: &Path) -> Result<Self, String> {
+        require_xdg_backend()?;
+        let relative = installed_relative(resources, executable)?;
+        let root = Directory::open_absolute(resources).map_err(|e| e.to_string())?;
+        let mut parents = Vec::new();
+        let mut parent = root.clone();
+        let mut parts = relative.components().peekable();
+        let name = loop {
+            let part = parts.next().ok_or("安装的可执行文件路径无效")?;
+            let name = Leaf::new(part.as_os_str()).map_err(|e| e.to_string())?;
+            if parts.peek().is_none() {
+                break name;
+            }
+            let child = parent
+                .child(&name, Traversal::SameFilesystem)
+                .map_err(|e| format!("无法打开启动器发行资源目录：{e}"))?;
+            parents.push((name, child.clone()));
+            parent = child;
+        };
+        let file = parent
+            .open_regular(&name, Links::Single)
+            .map_err(|e| format!("安装的启动器必须是真实普通文件：{e}"))?;
+        let stamp = retained_fs::metadata(&file).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        if file
+            .metadata()
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode()
+            & 0o111
+            == 0
+        {
+            return Err("安装的启动器不可执行，不能创建应用入口".into());
+        }
+        let proof = Self {
+            path: resources.to_path_buf(),
+            root,
+            parents,
+            name,
+            file,
+            stamp,
+        };
+        proof.recheck()?;
+        Ok(proof)
+    }
+    fn recheck(&self) -> Result<(), String> {
+        let checked = || -> std::io::Result<()> {
+            if Directory::open_absolute(&self.path)?.identity()? != self.root.identity()? {
+                return Err(std::io::Error::other("发行资源根目录发生变化"));
+            }
+            let mut parent = &self.root;
+            for (name, child) in &self.parents {
+                parent.recheck(name, &child.identity()?)?;
+                parent = child;
+            }
+            parent.recheck(&self.name, &self.stamp.identity)?;
+            if retained_fs::metadata(&self.file)? != self.stamp {
+                return Err(std::io::Error::other("安装的启动器文件发生变化"));
+            }
+            Ok(())
+        };
+        checked().map_err(|e| format!("启动器安装资源验证失败：{e}"))
+    }
+}
 fn read_journal(operation: &Dir) -> Result<(Journal, Snapshot), String> {
     let snapshot = Snapshot::open(operation, "journal.json", LIMIT)?;
     let journal: Journal =
@@ -691,6 +853,12 @@ fn desktop_exec(path: &Path) -> Result<String, String> {
     let text = path.to_str().ok_or("启动脚本路径必须是 UTF-8")?;
     if text.contains('=') || text.chars().any(char::is_control) {
         return Err("启动脚本路径含有 desktop Exec 不支持的字符".into());
+    }
+    desktop_argument(text)
+}
+fn desktop_argument(text: &str) -> Result<String, String> {
+    if text.chars().any(char::is_control) {
+        return Err("应用入口参数含有控制字符".into());
     }
     let mut quoted = String::from("\"");
     for c in text.chars() {

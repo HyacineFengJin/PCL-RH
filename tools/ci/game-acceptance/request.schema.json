@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Disposable PCL RH game acceptance request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "parent", "minecraft", "mode", "duration_seconds"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "parent": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Existing physical absolute directory. The native role allocates a new private child; it never reuses this directory as a game root."},
+    "minecraft": {"const": "1.21.4"},
+    "fabric": {"oneOf": [{"type": "null"}, {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[A-Za-z0-9.-]+$"}]},
+    "mode": {"enum": ["prepare", "run"]},
+    "duration_seconds": {"type": "integer", "minimum": 30, "maximum": 120}
+  }
+}

@@ -16,6 +16,8 @@ mod downloads;
 mod editing;
 mod experimental;
 mod export_presets;
+mod game_acceptance;
+mod installation_check;
 mod installer_java;
 mod instance_commands;
 mod instance_delete;
@@ -121,6 +123,7 @@ struct RunStatus {
 }
 struct Shared {
     project: PathBuf,
+    resources: PathBuf,
     accounts: Arc<accounts::Accounts>,
     downloads: Arc<downloads::Downloads>,
     tasks: Arc<tasks::Tasks>,
@@ -241,9 +244,6 @@ struct InstanceView {
     instance: pcl_core::Instance,
     metadata: instance_meta::Metadata,
     metadata_revision: String,
-}
-fn project() -> Result<PathBuf, String> {
-    launcher_paths::resolve()
 }
 fn bootstrap_view(s: &Shared) -> Bootstrap {
     let _ = launcher_monitor_runtime::refresh(s);
@@ -2104,8 +2104,21 @@ fn main() {
     ) {
         std::process::exit(code);
     }
-    let project = project()
+    if let Some(code) = game_acceptance::dispatch_cli() {
+        std::process::exit(code);
+    }
+    if let Some(code) = installation_check::dispatch_cli() {
+        std::process::exit(code);
+    }
+    let layout = launcher_paths::resolve()
         .unwrap_or_else(|error| startup_failure::exit(startup_failure::Stage::Project, error));
+    layout
+        .initialize()
+        .unwrap_or_else(|error| startup_failure::exit(startup_failure::Stage::Project, error));
+    let current_build =
+        launcher_update_commands::current_build_for(&layout.project, layout.installed);
+    let project = layout.project;
+    let resources = layout.resources;
     let launcher_preferences = launcher_prefs::LauncherPreferencesStore::load(&project);
     let initial_preferences = launcher_preferences.snapshot().preferences;
     let network_warning =
@@ -2120,8 +2133,13 @@ fn main() {
         applications: PathBuf::new(),
         desktop: None,
     });
-    let launcher_local =
-        launcher_runtime::LocalRuntime::new(project.clone(), xdg, &initial_preferences);
+    let launcher_local = launcher_runtime::LocalRuntime::with_resources(
+        project.clone(),
+        resources.clone(),
+        std::env::current_exe().unwrap_or_else(|_| resources.join("pcl-desktop")),
+        xdg,
+        &initial_preferences,
+    );
     launcher_local
         .warnings
         .set(launcher_runtime::WarningKind::Network, network_warning);
@@ -2134,11 +2152,8 @@ fn main() {
     {
         std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     }
-    let launcher_updates = launcher_update_commands::Updater::new(
-        &project,
-        launcher_update_commands::current_build(&project),
-    )
-    .unwrap_or_else(|error| startup_failure::exit(startup_failure::Stage::Updater, error));
+    let launcher_updates = launcher_update_commands::Updater::new(&project, current_build)
+        .unwrap_or_else(|error| startup_failure::exit(startup_failure::Stage::Updater, error));
     // Recover our executable transaction before any configuration migration or
     // task can write. This is read-only when no update journal exists.
     if let Err(error) = launcher_updates.service.recover() {
@@ -2163,6 +2178,7 @@ fn main() {
         launcher_favorites: launcher_favorites::FavoriteStore::load(&project),
         desktop: Arc::new(platform::Desktop::default()),
         operations: Mutex::new(()),
+        resources,
         project,
         status: Mutex::new(RunStatus {
             stage: if warning.is_some() { "error" } else { "idle" }.into(),
@@ -2187,7 +2203,10 @@ fn main() {
             launcher_asset_commands::serve_media,
         )
         .plugin(tauri_plugin_dialog::init())
-        .manage(Arc::new(experimental::Host::new(state.project.clone())))
+        .manage(Arc::new(experimental::Host::with_resources(
+            state.project.clone(),
+            state.resources.clone(),
+        )))
         .manage(state)
         .setup(|app| {
             let shared = app.state::<Arc<Shared>>().inner().clone();
@@ -2588,6 +2607,7 @@ mod integration_tests {
             let tasks = Arc::new(tasks::Tasks::new());
             Shared {
                 project: self.0.clone(),
+                resources: self.0.clone(),
                 accounts: Arc::new(accounts::Accounts::new(&self.0)),
                 downloads: Arc::new(downloads::Downloads::new(tasks.clone())),
                 tasks,

@@ -50,7 +50,18 @@ pub struct LocalRuntime {
     observed: Mutex<VecDeque<(String, TaskStage)>>,
 }
 impl LocalRuntime {
+    #[cfg(test)]
     pub fn new(project: PathBuf, paths: XdgPaths, prefs: &LauncherPreferences) -> Self {
+        let executable = project.join("start-native.sh");
+        Self::with_resources(project.clone(), project, executable, paths, prefs)
+    }
+    pub fn with_resources(
+        project: PathBuf,
+        resources: PathBuf,
+        executable: PathBuf,
+        paths: XdgPaths,
+        prefs: &LauncherPreferences,
+    ) -> Self {
         let warnings = Arc::new(RuntimeWarnings::default());
         let (sender, receiver) = mpsc::sync_channel::<(DiagnosticPolicy, DiagnosticRecord)>(64);
         let diagnostics = Diagnostics::new(project.clone());
@@ -66,7 +77,7 @@ impl LocalRuntime {
         });
         let runtime = Self {
             stats: StatsStore::new(project.clone()),
-            shortcuts: ShortcutStore::new(project, paths),
+            shortcuts: ShortcutStore::with_resources(project, resources, executable, paths),
             warnings,
             window_effects: Mutex::new(()),
             policy: AtomicU8::new(0),

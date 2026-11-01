@@ -271,6 +271,8 @@ impl Node {
     pub(super) fn host_command(&self, lease: &Lease) -> io::Result<Command> {
         lease.recheck()?;
         let mut command = self.command()?;
+        // ESM imports stay beside the installed script; writable stores come
+        // only from argv[2]. cwd is user data, never the read-only installation.
         command
             .arg(lease.script_path())
             .arg(lease.data_path())

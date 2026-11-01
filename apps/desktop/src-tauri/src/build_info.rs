@@ -19,6 +19,7 @@ pub(crate) struct BuildInfo {
     debug_assertions: bool,
     custom_protocol: bool,
     curseforge_embedded: bool,
+    runtime_layout: &'static str,
 }
 
 fn commit(value: Option<&'static str>) -> Option<&'static str> {
@@ -27,7 +28,7 @@ fn commit(value: Option<&'static str>) -> Option<&'static str> {
 
 fn compiled(custom_protocol: bool, curseforge_embedded: bool) -> BuildInfo {
     BuildInfo {
-        schema_version: 1,
+        schema_version: 2,
         product_id: "dev.pcl-rh.desktop",
         version: env!("CARGO_PKG_VERSION"),
         commit: commit(option_env!("PCL_BUILD_COMMIT")),
@@ -40,6 +41,7 @@ fn compiled(custom_protocol: bool, curseforge_embedded: bool) -> BuildInfo {
         debug_assertions: cfg!(debug_assertions),
         custom_protocol,
         curseforge_embedded,
+        runtime_layout: "split-v1",
     }
 }
 
@@ -82,7 +84,7 @@ mod tests {
 
     fn fixture() -> BuildInfo {
         BuildInfo {
-            schema_version: 1,
+            schema_version: 2,
             product_id: "dev.pcl-rh.desktop",
             version: "0.2.0",
             commit: Some("0123456789abcdef0123456789abcdef01234567"),
@@ -93,6 +95,7 @@ mod tests {
             debug_assertions: true,
             custom_protocol: true,
             curseforge_embedded: false,
+            runtime_layout: "split-v1",
         }
     }
     fn args(values: &[&str]) -> Vec<OsString> {
@@ -111,10 +114,11 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({
-                "schema_version":1, "product_id":"dev.pcl-rh.desktop", "version":"0.2.0",
+                "schema_version":2, "product_id":"dev.pcl-rh.desktop", "version":"0.2.0",
                 "commit":"0123456789abcdef0123456789abcdef01234567", "profile":"release",
                 "target":"x86_64-unknown-linux-gnu", "target_os":"linux", "target_arch":"x86_64",
                 "debug_assertions":true, "custom_protocol":true, "curseforge_embedded":false,
+                "runtime_layout":"split-v1",
             })
         );
     }

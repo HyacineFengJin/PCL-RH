@@ -142,8 +142,12 @@ def verify_desktop_build(raw: str, manifest: dict) -> dict:
     info = json.loads(raw)
     fields = {"schema_version", "product_id", "version", "commit", "profile", "target",
               "target_os", "target_arch", "debug_assertions", "custom_protocol", "curseforge_embedded"}
+    require(isinstance(info, dict), "Unsupported desktop build information")
+    if info.get("schema_version") == 2:
+        fields.add("runtime_layout")
+        require(info.get("runtime_layout") == "split-v1", "Unknown installed runtime layout")
     require(isinstance(info, dict) and set(info) == fields
-            and type(info["schema_version"]) is int and info["schema_version"] == 1
+            and type(info["schema_version"]) is int and info["schema_version"] in (1, 2)
             and info["product_id"] == "dev.pcl-rh.desktop", "Unsupported desktop build information")
     require(info["version"] == manifest["version"], "Desktop version differs from the package")
     require(isinstance(info["commit"], str) and re.fullmatch(r"[0-9a-fA-F]{40}", info["commit"]) is not None
