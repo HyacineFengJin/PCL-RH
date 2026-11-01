@@ -1,6 +1,6 @@
 # 发行候选与首发
 
-发行目标为 Linux x64、Windows x64、macOS Intel 与 Apple Silicon。[四平台优化便携包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)、[Windows 当前用户安装器](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41273494801)、[两架构 macOS 独立 `.app` / 应用 DMG](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933)及 [Ubuntu 24.04 x64 `.deb`](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702)均已通过实际分发验收。候选未签名、macOS 未经 Apple 公证，完整跨平台账号和游戏验收仍未完成。
+发行目标为 Linux x64、Windows x64、macOS Intel 与 Apple Silicon。[四平台优化便携包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)、[Windows 当前用户安装器](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951)、[两架构 macOS 独立 `.app` / 应用 DMG](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933)及 [Ubuntu 24.04 x64 `.deb`](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702)均已通过实际分发验收。候选未签名、macOS 未经 Apple 公证，完整跨平台账号和游戏验收仍未完成。
 
 ## 生成候选
 
@@ -24,7 +24,7 @@
 
 | 平台 | 安装候选 |
 | --- | --- |
-| Windows x64 | [windows-user-installer-release](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41273494801/artifacts/13071275536)，内含 `*-setup.exe` |
+| Windows x64 | [windows-user-installer-retest](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951/artifacts/13072798295)，内含 `pcl-rh-0.2.0-windows-x86_64-release-setup.exe` |
 | macOS Apple Silicon | [macos-app-macos-15](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13071236999)，内含 `mac-app.tar.gz`；[macos-app-dmg-macos-15](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13070867662)，内含 `pcl-rh-0.2.0-macos-aarch64-release-app.dmg` |
 | macOS Intel | [macos-app-macos-15-intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13070923080)，内含 `mac-app.tar.gz`；[macos-app-dmg-macos-15-intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933/artifacts/13070668626)，内含 `pcl-rh-0.2.0-macos-x86_64-release-app.dmg` |
 | Ubuntu 24.04 x64 | [linux-debian-package](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702/artifacts/13071036014)，内含 `pcl-rh_0.2.0-1_amd64.deb` |
@@ -33,7 +33,7 @@ macOS 两种架构的验收均包含真实启动器原生窗口的连续可见�
 
 应用与系统包的用户数据独立于程序：macOS 默认 `~/Library/Application Support/PCL RH`；Linux 默认 `$XDG_DATA_HOME/pcl-rh`，未设置该变量时为 `~/.local/share/pcl-rh`。`.app` 更新时替换完整应用，`.deb` 通过包管理器安装更高包版本，均保留外部数据；安装方法和便携版切换说明见[构建与运行](BUILDING.md)。
 
-真实客户端流程只有原版和 Fabric 均取得窗口、渲染与世界进入证据，并清理所属进程后才通过；失败也保存日志和阶段结果。[Linux 两类客户端已通过完整流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41275607901)，使用 Xvfb / Mesa 软件渲染。macOS 到达 LWJGL 初始化后尚无窗口和世界进入证据，Windows 的 Java 探测仍在修复，当前没有四平台完整通过结果。该流程不进行 Microsoft 登录、认证启动或人工游戏操作，也不能代表所有显卡、加载器、整合包或游戏版本已通过验证。
+真实客户端流程只有原版和 Fabric 均取得窗口、渲染与世界进入证据，并清理所属进程后才通过；失败也保存日志和阶段结果。[Linux 两类客户端已通过完整流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41275607901)，使用 Xvfb / Mesa 软件渲染。macOS 的 [Apple Silicon](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278654369)与 [Intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278656406)检查均报告 `GLFW 65545: NSGL: Failed to find a suitable pixel format`，未创建游戏窗口或进入世界。Windows 更新后的程序候选与真实客户端仍待验收，当前没有四平台完整通过结果。该流程不进行 Microsoft 登录、认证启动或人工游戏操作，也不能代表所有显卡、加载器、整合包或游戏版本已通过验证。
 
 这些流程在临时 runner 中执行安装和测试，产物保留 7 天；不会替换使用者的本机安装，不创建 tag、发布 Release、签名或 Apple 公证。`release` 是编译优化配置，不代表正式发行。
 
@@ -43,9 +43,9 @@ macOS 两种架构的验收均包含真实启动器原生窗口的连续可见�
 | --- | --- |
 | 四平台编译、便携归档与基础自动化检查 | 已有流程及通过记录，见[平台说明](PLATFORMS.md) |
 | 优化便携候选 | 最新四平台运行均成功，已核对实际归档、二进制信息、CLI 与声明型宿主 |
-| Windows 安装与原生窗口 | 独立流程已通过实际安装、Unicode 快捷方式、窗口创建与正常关闭、占用失败、重装及保留数据的卸载 |
+| Windows 安装与原生窗口 | [最新独立验收](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951)已通过实际安装、Unicode 快捷方式、窗口正常关闭、占用失败、重装、升级及保留数据卸载 |
 | macOS 独立应用与 Linux 系统包 | 两架构 `.app` / 应用 DMG 与 Ubuntu `.deb` 均通过实际验收，下载与范围见上文 |
-| 真实原版 / Fabric 离线客户端 | Linux 原版与 Fabric 完整流程通过；macOS 尚缺窗口与世界进入证据，Windows Java 探测修复中 |
+| 真实原版 / Fabric 离线客户端 | Linux 原版与 Fabric 完整流程通过；两种 macOS CI 均因 GLFW 65545 / NSGL 像素格式错误而失败；Windows 更新候选与客户端仍待验收 |
 | 正版登录、认证启动、人工操作与整合包实测 | 完整跨环境验收待完成；启动器窗口或离线世界进入检查不能代替 |
 | 私有整合包的 Java 处理器 | Windows/macOS 尚缺受限执行后端，实际含客户端处理器的计划提前报告不支持 |
 | RH Code 跨平台能力 | Windows/macOS 源码写回、作者代码受限构建与部分工具生命周期仍需完成 |

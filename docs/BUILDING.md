@@ -74,7 +74,7 @@ python tools/build-native.py --jobs 2
 
 ## Windows 安装候选
 
-Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[最新 Windows 候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41273494801)已通过安装验收，可下载其中的 [windows-user-installer-release](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41273494801/artifacts/13071275536)。解压后运行其中的 `*-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
+Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[最新独立安装验收](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951)已通过实际安装、原生窗口正常关闭、占用失败后的重装、升级与保留数据卸载，可下载其中的 [windows-user-installer-retest](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951/artifacts/13072798295)。解压后运行 `pcl-rh-0.2.0-windows-x86_64-release-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
 
 升级前退出启动器及仍在使用它的游戏，再沿用原目录重新安装。安装器只替换程序清单中的文件，卸载保留运行后产生的实例、设置和工程。发生文件占用等错误时，处理原因后重新运行安装器；程序升级尚不提供完整事务回滚，也不会在升级时清理新版清单中已移除的旧资源。需要清除旧程序资源时，可先卸载再安装，保留的数据仍在原目录。
 
@@ -109,6 +109,12 @@ pcl-rh
 应用菜单和 `/usr/bin/pcl-rh` 使用同一入口，由包装脚本定位 `/usr/lib/pcl-rh` 的程序与只读生产资源。用户数据默认在 `$XDG_DATA_HOME/pcl-rh`；未设置 `XDG_DATA_HOME` 时为 `~/.local/share/pcl-rh`。升级时先退出启动器，再用同一安装命令安装更高包版本。`apt remove pcl-rh` 或 `apt purge pcl-rh` 只移除包管理的程序文件，保留用户数据、存档和工程；软件包更新由包管理器完成。
 
 macOS `.app` 和 Linux 安装版都可用 `PCL_RH_DATA_ROOT` 选择另一个绝对数据目录，该目录须位于程序与发行资源之外。它们不会自动迁移旧便携版的设置、账号记录或已保存凭据；原数据仍在原目录，已有 Minecraft 目录可在新安装版中重新添加。Node.js、游戏 Java、桌面门户和凭据服务的要求仍适用，包不会附带完整 Node.js 或 JDK。
+
+## 实际游戏验收
+
+[Linux 原版与 Fabric 客户端](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41275607901)已通过官方 Java 与游戏安装、可见窗口、临时单人世界进入及所属进程清理。该检查使用 Xvfb / Mesa 软件渲染，不能替代实际显卡、Microsoft 登录或人工游戏操作验证。
+
+macOS 的 [Apple Silicon](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278654369)和 [Intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278656406)客户端检查均在 OpenGL 上下文创建时报告 `GLFW 65545: NSGL: Failed to find a suitable pixel format`，未创建游戏窗口或进入世界。Windows 更新后的程序候选与真实客户端仍待验收；启动器安装和窗口检查通过不表示这些游戏检查已通过。
 
 ## 开发与检查
 
