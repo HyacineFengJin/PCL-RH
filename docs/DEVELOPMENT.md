@@ -367,9 +367,11 @@ CF 下载使用独立来源分支，仅接受允许的官方文件节点之间�
 
 `tools/installer-native.py` 从已核验的 Windows 便携包生成 Inno Setup 当前用户安装器。每个资源按清单独立列出并绑定 SHA256，拒绝 Windows 路径别名、指令插入和用户状态目录，不递归复制源码树。卸载使用安装器自己的文件日志，保留运行后产生的用户数据。主 EXE、CLI 优先于其他资源安装，使被占用的主程序尽早阻止升级；这不是任意晚失败可回滚的事务。`tools/ci/verify-native-installer.py` 仅限临时 Windows runner，验证实际安装、快捷方式、占用失败、解锁重装及保留数据的卸载。
 
-`windows-installer.yml` 可复用官方候选中已验证的 Windows 便携产物，核对来源运行、提交和 artifact 摘要后才处理。`PCL_NATIVE_SOURCE_COMMIT` 表示被验证程序的来源，工作流自己的 `GITHUB_SHA` 不变；安装报告分别记录程序与工具的提交，避免把较新的验收工具误当成二进制来源。快捷方式通过只读 `IShellLinkW` 接口取得完整 Unicode 路径，再核对目标和工作目录的实际文件身份；输出使用 ASCII 转义 JSON，避免控制台代码页损坏路径。
+`windows-installer.yml` 与 `macos-distribution.yml` 通过共用的 `tools/ci/fetch-native-candidate.py` 复用官方候选中对应本机架构的便携产物，核对来源运行、提交和 artifact 摘要后才处理。`PCL_NATIVE_SOURCE_COMMIT` 表示被验证程序的来源，工作流自己的 `GITHUB_SHA` 不变；报告分别记录程序与工具的提交，避免把较新的验收工具误当成二进制来源。Windows 快捷方式通过只读 `IShellLinkW` 接口取得完整 Unicode 路径，再核对目标和工作目录的实际文件身份；输出使用 ASCII 转义 JSON，避免控制台代码页损坏路径。
 
 `windows-window-smoke.py` 只观察新建子进程自己的可见原生窗口，确认稳定显示后向同一窗口发送 `WM_CLOSE`，要求正常退出。它不操作其他应用，也不将窗口创建当成 React 页面、登录或游戏功能通过的证据。
+
+`tools/dmg-native.py` 核验原始 macOS 归档、逐文件清单、原生架构及 Finder 入口后，用系统 `hdiutil` 生成只读 UDZO 映像，保持完整便携文件夹。实现参考 [Apple 磁盘映像分发说明](https://developer.apple.com/library/archive/documentation/Porting/Conceptual/PortingUnix/distributing/distibuting.html)，不引入第三方打包工具。`verify-native-dmg.py` 仅在临时 macOS runner 挂载到指定私有目录，核对映像内清单，复制到含中文、空格和 `&` 的可写路径，再运行实际程序的编译信息、CLI 与声明宿主检查，最后卸载自身映像。它不从只读卷初始化用户数据，也不把这些检查视为 Finder 交互、Gatekeeper、账号或游戏验收。
 
 正式 Windows 桌面程序使用 GUI subsystem，CLI 保留 console。辅助模式在路径和 WebView 初始化前分流，候选检查读取真实 PE Subsystem，并用显式管道运行 `--build-info` 和拒绝无效构建请求；独立 monitor 夹具也是真实 GUI PE。普通启动的致命错误由 `startup_failure` 输出详细诊断并显示固定原生提示，不把私密路径或未知输入放入弹窗。
 

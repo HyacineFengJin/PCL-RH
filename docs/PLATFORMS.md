@@ -1,6 +1,6 @@
 # 平台支持 / Platform support
 
-PCL RH 已通过 Linux x64、Windows x64、macOS Intel / Apple Silicon 的完整桌面编译与链接。四个平台都有未签名便携候选，Windows 另有当前用户安装器；其余分发形式和完整实机游戏验证仍在完善。
+PCL RH 已通过 Linux x64、Windows x64、macOS Intel / Apple Silicon 的完整桌面编译与链接。四个平台都有未签名便携候选，Windows 另有当前用户安装器，macOS 提供便携目录的 DMG；其余分发形式和完整实机游戏验证仍在完善。
 
 | 部分 | Linux | Windows | macOS |
 | --- | --- | --- | --- |
@@ -28,7 +28,7 @@ PCL RH 已通过 Linux x64、Windows x64、macOS Intel / Apple Silicon 的完整
 | WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
 | 完整桌面编译与链接 | 原生 CI 通过，x64 | 原生 CI 通过，x64 | Intel / Apple Silicon 原生 CI 通过 |
 | 未签名便携测试包 | 归档、解压与 CLI / 插件宿主检查通过 | ZIP 解压与 CLI / 插件宿主检查通过 | Intel / Apple Silicon 归档与解压检查通过 |
-| 分发入口 | 便携目录与应用快捷方式 | 当前用户安装器与便携 ZIP；安装、升级、保留数据卸载检查通过 | 两种架构的便携目录与 Finder `.command` 入口 |
+| 分发入口 | 便携目录与应用快捷方式 | 当前用户安装器与便携 ZIP；安装、升级、保留数据卸载检查通过 | 两种架构的便携 DMG 与 Finder `.command` 入口；需复制整个目录到可写位置 |
 | 完整实机游戏验证 | 待完成跨环境验收 | 原生窗口创建、正常关闭已在 CI 验证；登录和游戏仍待实测 | Intel / Apple Silicon 待完成 |
 
 架构判断不会把 `x86` 当成 `x86_64`，也不会把 ARM 当成 x64。原生库提取使用平台对应的 `.so`、`.dll`、`.dylib` / `.jnilib`；旧元数据中的 `${arch}` 按目标位数展开。Mojang 没有提供的 Java 平台会报告不可用，不会自动下载其他架构的运行时。仅有分类支持不表示所有 Minecraft 版本都有对应架构的原生库。
@@ -99,11 +99,11 @@ Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约
 
 ## 桌面构建检查
 
-在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面与 CLI 程序，生成未签名便携包及 Windows 当前用户安装器。普通入口不使用官方服务密钥；macOS `.app` / DMG 与 Linux 系统包仍待完成。
+在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面与 CLI 程序，生成未签名便携包及 Windows 当前用户安装器。普通入口不使用官方服务密钥；独立 macOS 流程可将官方便携候选制作成 DMG，独立 `.app` 与 Linux 系统包仍待完成。
 
 **Official native candidates** 复用同一流水线，固定 `release` 优化配置并显式传入官方 CF 构建凭据。最近的四平台优化候选已通过实际解压与桌面 `--build-info` 检查，确认版本、提交、目标平台、生产前端特性及内置服务声明一致；CLI 版本另行核对。两种入口均不签名或发布 Release。
 
-各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[四平台构建与便携包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41208521669)已完成原生编译与链接；该次运行仍因 Windows 后续快捷方式验收失败而显示红色。验收脚本修复后，同一 Windows 便携包已由[独立流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41211667491)完成安装验证。具体业务与实机游戏仍需分别验收；RH Code 的源码写回和作者代码隔离限制见上表。
+各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[四平台构建与便携包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41208521669)已完成原生编译与链接；该次运行仍因 Windows 后续快捷方式验收失败而显示红色。验收脚本修复后，同一 Windows 便携包已由[独立流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267266213)完成安装验证。具体业务与实机游戏仍需分别验收；RH Code 的源码写回和作者代码隔离限制见上表。
 
 三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
 
@@ -111,13 +111,15 @@ Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约
 
 Windows 的独立安装流程复用同一个已验证便携包，记录程序源提交与安装工具提交，核对真实 Unicode 快捷方式目标、原生窗口连续可见与正常关闭。实际文件占用、解锁重装、卸载后保留设置、存档和自建文件均已通过。窗口检查只证明窗口创建和关闭，不替代页面操作、账号或游戏功能验证；安装过程的边界见[安装候选说明](BUILDING.md#windows-安装候选)。
 
+[macOS 磁盘映像流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267794638)在 Intel 和 Apple Silicon 上核验原生候选，实际制作、只读挂载 DMG，逐文件验证后复制到可写路径，运行副本的 Finder 入口编译信息、CLI 和声明宿主检查，再卸载映像。这没有验证 Finder 交互、Gatekeeper、登录或游戏；安装步骤见[磁盘映像说明](BUILDING.md#macos-磁盘映像候选)。
+
 Linux 优化候选已在 Arch / Wayland 实际打开首页、设置和百宝箱，通过界面创建应用快捷方式，并由该入口重新打开同一程序；路径包含中文、空格和 `&`。测试使用独立数据目录，不涉及真实账号或游戏。这补充了桌面入口验证，仍不能替代其他发行版和游戏验收。
 
 构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41205929960)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41205930068)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41208521669)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
 
 ## English
 
-PCL RH now compiles and links as a complete desktop application on native Linux x64, Windows x64, macOS Intel and Apple Silicon CI hosts. Unsigned portable previews pass archive and headless runtime checks on all four hosts. A Windows per-user installer passes actual installation, upgrade, data-preserving uninstallation and native-window CI checks. macOS app bundles, Linux system packages, signing and complete interactive game validation remain unfinished. The table above distinguishes verified transactions from unavailable native Code publication and author-code confinement.
+PCL RH now compiles and links as a complete desktop application on native Linux x64, Windows x64, macOS Intel and Apple Silicon CI hosts. Unsigned portable previews pass archive and headless runtime checks on all four hosts. A Windows per-user installer passes actual installation, upgrade, data-preserving uninstallation and native-window CI checks. Both macOS architectures also provide a portable DMG, checked by mounting it, verifying the files and running the Finder entry's build-info mode from a writable copy. Standalone macOS app bundles, Linux system packages, signing and complete interactive game validation remain unfinished. The table above distinguishes verified transactions from unavailable native Code publication and author-code confinement.
 
 The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. A separate installer workflow compiles the production installer and passes actual vanilla/Fabric installation, repair/recovery, resource publication/undo and instance mutation fixtures on all four hosts. Non-Linux confined Java processors, native Code publication, Windows running-executable replacement, distribution packages and interactive game validation remain unfinished. Architecture-specific Minecraft natives must also exist for the selected game version. The portable source-build entry is `tools/build-native.py`; desktop shortcut installation remains Linux-specific.
 

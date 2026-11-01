@@ -64,7 +64,7 @@ python tools/build-native.py --jobs 2
 - macOS：在 Finder 打开 `Start PCL RH.command`，或在终端运行 `./start-native.sh`。
 - Linux：运行 `./start-native.sh`，可在「设置 → 百宝箱 → 创建快捷方式」创建应用入口。
 
-程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。Mac 的 `.command` 是便携启动入口，`.app` / DMG 分发仍在准备。
+程序与资源位于包根目录，用户数据在首次运行时创建；更新时手动换包并保留原用户数据。Mac 的 `.command` 是便携启动入口，另有下述 DMG 候选，独立 `.app` 仍在准备。
 
 便携包包含 Code 与社区声明型插件服务的 npm 依赖，运行这些服务需要单独安装 Node.js 22.19+。首次启动且没有社区插件记录文件时，首页和设置中的社区插槽由 Rust 返回空内容，不为读取空内容启动 Node；插件管理与 RH Code 在实际使用时检查运行依赖。已有插件记录损坏或目录不可读会明确报告原因。系统 WebView / WebKit 依赖同样需要可用；普通测试包不包含官方 CurseForge 服务凭据。签名、标准安装包和实机游戏验证的状态见[平台说明](PLATFORMS.md)。
 
@@ -74,9 +74,15 @@ python tools/build-native.py --jobs 2
 
 ## Windows 安装候选
 
-Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[独立安装验收的最新候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41211667491)名称为 `windows-user-installer-retest`。解压后运行其中的 `*-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
+Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[独立安装验收的最新候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267266213)名称为 `windows-user-installer-retest`。解压后运行其中的 `*-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
 
 升级前退出启动器及仍在使用它的游戏，再沿用原目录重新安装。安装器只替换程序清单中的文件，卸载保留运行后产生的实例、设置和工程。发生文件占用等错误时，处理原因后重新运行安装器；程序升级尚不提供完整事务回滚，也不会在升级时清理新版清单中已移除的旧资源。需要清除旧程序资源时，可先卸载再安装，保留的数据仍在原目录。
+
+## macOS 磁盘映像候选
+
+[磁盘映像验证流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267794638)分别提供 Apple Silicon（`macos-portable-dmg-macos-15`）与 Intel（`macos-portable-dmg-macos-15-intel`）产物。解压 artifact 并打开其中的 `.dmg`，将整个 `PCL-RH` 文件夹复制到自己可写的位置，再打开副本里的 `Start PCL RH.command`。请勿从只读映像直接启动，也不要只复制一个程序文件。
+
+DMG 保留现有便携布局；独立 `.app`、签名与 Apple 公证仍待完成。更新时先关闭启动器，并保留原目录中的 `.pcl-rust`、`Minecraft` 和自建工程；不要用全新文件夹替换来丢弃原数据。
 
 ## 开发与检查
 

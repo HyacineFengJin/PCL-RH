@@ -1,8 +1,9 @@
 name: Desktop platform builds
 
 # Compile on each native host and verify a relocated portable preview archive.
-# This workflow does not sign, install or publish a release. The official
-# caller passes one build-only service credential explicitly, never to npm.
+# This workflow does not sign or publish a release. Windows installation checks
+# use disposable CI storage only. The official caller passes one build-only
+# service credential explicitly, never to npm.
 on:
   workflow_call:
     inputs:
