@@ -468,13 +468,39 @@ mod tests {
                 _ => resources.join("experimental/host.mjs"),
             };
             let retained = path.with_file_name(format!("retained-{target}"));
-            fs::rename(&path, &retained).unwrap();
-            if target == "host.mjs" {
-                fs::write(&path, b"// replacement").unwrap();
-            } else {
-                fs::create_dir(&path).unwrap();
+            match fs::rename(&path, &retained) {
+                Ok(()) => {
+                    if target == "host.mjs" {
+                        fs::write(&path, b"// replacement").unwrap();
+                    } else {
+                        fs::create_dir(&path).unwrap();
+                    }
+                    assert!(lease.recheck().is_err(), "rebound {target} was accepted");
+                }
+                #[cfg(windows)]
+                Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) => {
+                    // Windows can pin an ancestor while its descendant script
+                    // or lock is open. That native refusal is a protection,
+                    // not permission to skip the identity assertions. The same
+                    // rename must work once this exact lease releases its FDs.
+                    assert!(path.exists(), "blocked {target} disappeared");
+                    assert!(!retained.exists(), "blocked {target} was partly renamed");
+                    lease.recheck().unwrap();
+                    assert_eq!(
+                        fs::read(resources.join("experimental/host.mjs")).unwrap(),
+                        b"// never executed"
+                    );
+                    assert!(
+                        !extensions_absent(&data).unwrap(),
+                        "blocked rename lost the host lock"
+                    );
+                    drop(lease);
+                    fs::rename(&path, &retained).unwrap();
+                    assert!(!path.exists());
+                    assert!(retained.exists());
+                }
+                Err(error) => panic!("unexpected rename failure for {target}: {error}"),
             }
-            assert!(lease.recheck().is_err(), "rebound {target} was accepted");
         }
     }
 

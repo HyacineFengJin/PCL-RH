@@ -300,7 +300,19 @@ mod tests {
         assert!(!resources.join(".pcl-rust").exists());
         assert!(!data.join("pcl-rh.json").exists());
         assert!(Layout::installed(&resources, &resources.join("state"), None).is_err());
-        assert!(Layout::installed(&resources, &resources.join("../state"), None).is_err());
+        // PathBuf::join normalizes parent components under a Windows verbatim
+        // prefix. Preserve the raw caller spelling so this actually exercises
+        // rejection of '..', rather than testing a normalized sibling path.
+        let mut invalid = resources.as_os_str().to_owned();
+        invalid.push(std::path::MAIN_SEPARATOR_STR);
+        invalid.push("..");
+        invalid.push(std::path::MAIN_SEPARATOR_STR);
+        invalid.push("state");
+        let invalid = PathBuf::from(invalid);
+        assert!(invalid
+            .components()
+            .any(|part| part == Component::ParentDir));
+        assert!(Layout::installed(&resources, &invalid, None).is_err());
     }
 
     #[cfg(unix)]

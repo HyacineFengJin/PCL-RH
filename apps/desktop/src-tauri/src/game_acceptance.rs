@@ -146,7 +146,15 @@ impl Workspace {
         let (name, child) = directory
             .create_private_workspace()
             .map_err(|e| e.to_string())?;
-        let path = parent.join(name.as_os_str());
+        // Production launch planning canonicalizes its game root. Keep the
+        // same native representation here too (notably Windows' verbatim
+        // prefix), so containment checks compare names in one namespace. The
+        // retained parent/child identity below still decides which directory
+        // this pathname is allowed to reference.
+        let path = parent
+            .join(name.as_os_str())
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
         let workspace = Self {
             parent: directory,
             child,
@@ -736,6 +744,25 @@ fn log_evidence(root: &Path, log: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn allocated_workspace_and_production_log_use_the_same_canonical_namespace() {
+        let parent = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(parent.path()).unwrap();
+        assert_eq!(workspace.path.canonicalize().unwrap(), workspace.path);
+        let name = Leaf::new("own.log").unwrap();
+        workspace
+            .child
+            .create_file(&name)
+            .unwrap()
+            .write_all(b"Backend library: LWJGL\n")
+            .unwrap();
+        let log = workspace.path.join("own.log").canonicalize().unwrap();
+        assert_eq!(
+            log_evidence(&workspace.path, &log).unwrap()["total_bytes"],
+            23
+        );
+        workspace.verify().unwrap();
+    }
     fn request() -> Value {
         json!({"schema_version":1,"parent":"/fixture/parent","minecraft":"1.21.4","fabric":null,"mode":"prepare","duration_seconds":30})
     }
