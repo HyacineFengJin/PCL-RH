@@ -98,9 +98,17 @@ def build(directory: Path, output: Path) -> dict:
         PACKAGE.require(not any(os.path.lexists(output / name) for name in names),
                         "Refusing to replace an existing disk image output")
         image = scratch / (base + ".dmg")
+        # Full runtime trees contain many small files. Intel CI can spend more
+        # than five minutes creating the filesystem; keep a finite ten-minute
+        # bound and expose hdiutil's progress instead of an opaque silent wait.
+        # Indexing this delivery-only volume is unnecessary. This flag affects
+        # the new image, not the host's Spotlight service or user volumes.
+        print("Creating read-only portable disk image...", flush=True)
         subprocess.run(["/usr/bin/hdiutil", "create", "-srcfolder", str(stage),
                         "-volname", "PCL RH " + manifest["version"], "-fs", "HFS+",
-                        "-format", "UDZO", "-o", str(image)], check=True, timeout=300)
+                        "-nospotlight", "-puppetstrings", "-format", "UDZO",
+                        "-o", str(image)], check=True, timeout=600)
+        print("Checking the disk-image checksum...", flush=True)
         subprocess.run(["/usr/bin/hdiutil", "verify", str(image)], check=True, timeout=120)
         report = {"schema_version": 1, "distribution": "macos-portable-dmg",
                   "image": names[0], "sha256": sha256(image), "format": "UDZO",
