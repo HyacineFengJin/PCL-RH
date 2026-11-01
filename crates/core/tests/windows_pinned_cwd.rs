@@ -437,8 +437,8 @@ fn created_directory_delete_access_requires_identity_checked_read_caps() {
     game.metadata().unwrap().require_private().unwrap();
 
     let mut child = spawn().expect("identity-checked read caps must permit pinned cwd startup");
-    let mut stdout = child.take_stdout().unwrap();
-    let mut stderr = child.take_stderr().unwrap();
+    let stdout = child.take_stdout().unwrap();
+    let stderr = child.take_stderr().unwrap();
     let deadline = Instant::now() + WAIT;
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -452,12 +452,35 @@ fn created_directory_delete_access_requires_identity_checked_read_caps() {
     };
     assert_eq!(status.code(), Some(0));
     assert_eq!(child.wait().unwrap(), status);
-    let mut listed = String::new();
-    stdout.read_to_string(&mut listed).unwrap();
+    // GameOutput stays nonblocking after process exit: an overlapped read
+    // must complete before its buffered bytes or EOF can be observed.
+    let drain = |mut stream: game_process::GameOutput| {
+        let deadline = Instant::now() + WAIT;
+        let mut bytes = Vec::new();
+        let mut block = [0u8; 1024];
+        loop {
+            match stream.read(&mut block) {
+                Ok(0) => break,
+                Ok(count) => bytes.extend_from_slice(&block[..count]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause(),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => panic!("native --list output read failed: {error}"),
+            }
+            assert!(
+                bytes.len() <= 64 * 1024,
+                "native --list output exceeded bound"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "native --list output did not reach EOF"
+            );
+        }
+        String::from_utf8(bytes).unwrap()
+    };
+    let listed = drain(stdout);
     assert!(listed
         .contains("created_directory_delete_access_requires_identity_checked_read_caps: test"));
-    let mut errors = String::new();
-    stderr.read_to_string(&mut errors).unwrap();
+    let errors = drain(stderr);
     assert!(errors.is_empty(), "native --list stderr: {errors}");
     parent
         .recheck(&workspace_name, &workspace_identity)
