@@ -70,11 +70,13 @@ python tools/build-native.py --jobs 2
 
 插件宿主使用系统标准位置的 Node：Linux 为 `/usr/bin/node`，Windows 为系统 Program Files 下的 `nodejs/node.exe`，macOS 为 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node` 及其受支持的 Homebrew 安装。NVM 等用户级目录目前不会自动识别。安装或升级后可直接点击界面中的「重试」，无需重新启动整个启动器；权限、目录替换和存储损坏错误仍需按原原因处理。
 
-维护者使用 **Official native candidates** 可从官方 `master` 构建包含官方 CF 服务凭据的四平台优化候选包，仍只上传 Actions artifact。[当前四平台优化候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)已全部成功。归档名包含应用版本；解压检查会实际读取桌面程序的 `--build-info` 并核对独立 CLI 版本，避免错装旧二进制或开发配置。候选构建与首发剩余工作见[发行说明](RELEASING.md)。
+维护者使用 **Official native candidates** 可从官方 `master` 构建包含官方 CF 服务凭据的四平台优化候选包，仍只上传 Actions artifact。[四平台优化候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)已全部成功，另有[更新后的 Windows 官方候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941)完成原生编译、便携包和安装器验收。归档名包含应用版本；解压检查会实际读取桌面程序的 `--build-info` 并核对独立 CLI 版本，避免错装旧二进制或开发配置。候选构建与首发剩余工作见[发行说明](RELEASING.md)。
 
 ## Windows 安装候选
 
-Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[最新独立安装验收](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951)已通过实际安装、原生窗口正常关闭、占用失败后的重装、升级与保留数据卸载，可下载其中的 [windows-user-installer-retest](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41280219951/artifacts/13072798295)。解压后运行 `pcl-rh-0.2.0-windows-x86_64-release-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
+Windows 构建另提供 `windows-user-installer-release` artifact（普通调试构建对应 `debug`）。[最新官方 Windows 候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941)已通过原生编译、便携包核验，以及实际安装、原生窗口正常关闭、占用失败后的重装、升级与保留数据卸载。下载其中的 [windows-user-installer-release](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941/artifacts/13079827391)，解压后运行 `pcl-rh-0.2.0-windows-x86_64-release-setup.exe`，默认安装到当前用户的本地应用目录，并创建开始菜单入口。需要已安装 [Microsoft WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。安装器与便携包均未签名。
+
+也可下载 [portable-preview-windows-2025-release](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941/artifacts/13079782410)，先解压 Actions artifact，再解压其中的 `pcl-rh-0.2.0-windows-x86_64-release.zip`，保留完整资源目录。该候选可用于实体 Windows 测试；真实客户端和完整账号、游戏验收状态见下文。
 
 升级前退出启动器及仍在使用它的游戏，再沿用原目录重新安装。安装器只替换程序清单中的文件，卸载保留运行后产生的实例、设置和工程。发生文件占用等错误时，处理原因后重新运行安装器；程序升级尚不提供完整事务回滚，也不会在升级时清理新版清单中已移除的旧资源。需要清除旧程序资源时，可先卸载再安装，保留的数据仍在原目录。
 
@@ -114,7 +116,7 @@ macOS `.app` 和 Linux 安装版都可用 `PCL_RH_DATA_ROOT` 选择另一个绝�
 
 [Linux 原版与 Fabric 客户端](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41275607901)已通过官方 Java 与游戏安装、可见窗口、临时单人世界进入及所属进程清理。该检查使用 Xvfb / Mesa 软件渲染，不能替代实际显卡、Microsoft 登录或人工游戏操作验证。
 
-macOS 的 [Apple Silicon](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278654369)和 [Intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278656406)客户端检查均在 OpenGL 上下文创建时报告 `GLFW 65545: NSGL: Failed to find a suitable pixel format`，未创建游戏窗口或进入世界。Windows 更新后的程序候选与真实客户端仍待验收；启动器安装和窗口检查通过不表示这些游戏检查已通过。
+macOS 的 [Apple Silicon](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278654369)和 [Intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278656406)客户端检查均在 OpenGL 上下文创建时报告 `GLFW 65545: NSGL: Failed to find a suitable pixel format`，未创建游戏窗口或进入世界；实体 macOS 游戏验收仍待完成。Windows 最新程序候选已通过构建、便携包与安装验收；[原版和 Fabric 实测](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41299432729)完成了官方 Java 获取、加载器启动及所属进程清理，但 CI 驱动报告 GLFW 65542 / WGL 不支持 OpenGL，尚未渲染或进入世界，仍需实体 Windows 验收。
 
 ## 开发与检查
 
