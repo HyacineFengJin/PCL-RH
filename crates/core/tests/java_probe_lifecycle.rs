@@ -255,9 +255,24 @@ fn diagnose_java_directory(path: &Path) {
 
 #[cfg(windows)]
 fn windows_launch_plan(directory: &Path, image: &Path) {
+    // The ASCII success case must run independently of optional 8.3 support
+    // for the subsequent Chinese root on this particular NTFS volume.
+    for (root_name, require_success) in [("ASCII root & space", true), ("游戏根 & space", false)]
+    {
+        windows_launch_plan_in_root(directory, image, root_name, require_success);
+    }
+}
+
+#[cfg(windows)]
+fn windows_launch_plan_in_root(
+    directory: &Path,
+    image: &Path,
+    root_name: &str,
+    require_success: bool,
+) {
     use pcl_core::java::{invocation_path, JavaSelection};
     use serde_json::json;
-    let root = directory.join("游戏根 & space");
+    let root = directory.join(root_name);
     let id = "windows_paths";
     let version = root.join("versions").join(id);
     let library = root.join("libraries/example/fixture/1.0/fixture-1.0.jar");
@@ -287,12 +302,41 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
         }
     });
     fs::write(version.join(format!("{id}.json")), metadata.to_string()).unwrap();
+    let originals = [
+        version.join(format!("{id}.json")),
+        version.join(format!("{id}.jar")),
+        library.clone(),
+        logging.clone(),
+    ]
+    .map(|path| {
+        let bytes = fs::read(&path).unwrap();
+        (path, bytes)
+    });
+    let assert_preserved_and_retired = || {
+        for (path, bytes) in &originals {
+            assert_eq!(
+                fs::read(path).unwrap(),
+                *bytes,
+                "plan changed fixture input: {}",
+                path.display()
+            );
+        }
+        assert!(!root
+            .join(".pcl-linux/logs")
+            .join(format!("{id}.log"))
+            .exists());
+        assert!(!directory.join("injected").exists());
+        // The native fixture rejects every argv except its fixed property
+        // query. No jar or game was launched, and the last probe is retired.
+        assert_stopped(directory, "root.pid");
+    };
     let canonical = root.canonicalize().unwrap();
     let selected = JavaSelection::Manual {
         path: image.canonicalize().unwrap().display().to_string(),
     };
     diagnose_java_directory(&canonical);
-    let plan = pcl_core::build_launch_plan_with_java(
+    let callable_root = invocation_path(&canonical);
+    let result = pcl_core::build_launch_plan_with_java(
         &canonical,
         directory,
         id,
@@ -300,8 +344,29 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
         2,
         &selected,
         &[],
-    )
-    .unwrap();
+    );
+    let java_root = match callable_root {
+        Ok(path) => path,
+        Err(error) => {
+            assert!(!require_success, "ASCII plan must succeed: {error}");
+            assert!(
+                error.starts_with("当前 Java/Windows 系统代码页不能无损表示此路径")
+                    && error.contains("可用短路径")
+                    && error.contains("ASCII"),
+                "Chinese plan failed for an unrelated reason: {error}"
+            );
+            assert_eq!(
+                result
+                    .err()
+                    .expect("unrepresentable Chinese plan must be rejected"),
+                error
+            );
+            assert_preserved_and_retired();
+            println!("Windows Java plan: Chinese root explicitly rejected without a lossless same-object alias; inputs intact and probe retired");
+            return;
+        }
+    };
+    let plan = result.unwrap();
     assert!(!plan.java.to_string_lossy().starts_with(r"\\?\"));
     assert_eq!(
         plan.java.canonicalize().unwrap(),
@@ -318,7 +383,6 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
             .find_map(|value| value.strip_prefix(prefix))
             .unwrap()
     };
-    let java_root = invocation_path(&canonical).unwrap();
     assert_eq!(Path::new(argument("-Duser.dir=")), java_root);
     assert_eq!(
         Path::new(argument("-Duser.dir=")).canonicalize().unwrap(),
@@ -398,8 +462,10 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
         [java_root.to_str().unwrap(), "explicit-user-choice"]
     );
     assert_eq!(explicit.game_dir, plan.game_dir);
-    // Only the fake JVM's fixed property query ran. No jar or game is started.
-    assert_stopped(directory, "root.pid");
+    assert_preserved_and_retired();
+    println!(
+        "Windows Java plan: {root_name:?} passed all path, argument and explicit-override checks"
+    );
 }
 
 fn case(mode: &str) {
