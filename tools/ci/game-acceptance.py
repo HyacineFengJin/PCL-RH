@@ -262,7 +262,7 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
     reader = threading.Thread(target=read_events, daemon=True)
     reader.start()
     pid, monitor_pid, prepared_java, spawned_at = None, None, None, None
-    result, observations, errors, native_sample = None, [], [], None
+    result, observations, errors, native_sample, native_error_dialog = None, [], [], None, None
     first_visible, longest, last_window = None, 0.0, None
     started = time.monotonic()
     # The Rust role owns the 900-second download cancellation and the at-most
@@ -308,6 +308,20 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
             if not observations or observation != observations[-1]:
                 if len(observations) < 64:
                     observations.append(observation)
+            if platform.system() == "Windows" and native_error_dialog is None \
+                    and any(item.get("visible") and item.get("class") == "#32770" for item in own):
+                # Read the own error dialog once, with a retained native Java
+                # identity. This diagnostic never supplies render/world proof.
+                try:
+                    if prepared_java is None:
+                        raise ValueError("No prepared Java image was acknowledged")
+                    dialog_spec = importlib.util.spec_from_file_location("acceptance_windows_dialog",
+                        Path(__file__).with_name("game-acceptance") / "windows_dialog.py")
+                    dialog = importlib.util.module_from_spec(dialog_spec)
+                    dialog_spec.loader.exec_module(dialog)
+                    native_error_dialog = dialog.capture(pid, prepared_java, parent)
+                except (OSError, ValueError, RuntimeError) as error:
+                    native_error_dialog = {"status": "diagnostic_failed", "reason": str(error)[:512]}
             if macos_sample is not None and native_sample is None and spawned_at is not None \
                     and now - spawned_at >= min(45, max(12, duration - 15)) and longest < 2:
                 # The optional CI diagnostic independently validates the exact
@@ -335,7 +349,7 @@ def run_client(desktop: Path, parent: Path, expected_commit: str, fabric: str | 
                "screenshots_taken": False, "focus_changed": False}
     client = result or {"attempt_status": "fail", "stages": {}, "reason": "The selected binary did not return acceptance evidence"}
     return {"build": build, "client": client, "native_window": windows, "protocol_errors": errors,
-            "native_sample": native_sample,
+            "native_sample": native_sample, "native_error_dialog": native_error_dialog,
             "role_exit_code": returncode, "render_assessment": render_assessment(client, windows)}
 
 

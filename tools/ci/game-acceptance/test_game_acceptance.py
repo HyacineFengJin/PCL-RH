@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -125,6 +128,58 @@ class EvidenceTests(unittest.TestCase):
         for fields in ({"schema_version": 1}, {"schema_version": 2, "runtime_layout": "legacy"}):
             with self.assertRaises(ValueError):
                 ACCEPTANCE.validate_build({"commit": commit, "product_id": "dev.pcl-rh.desktop", **fields}, commit)
+
+    def test_owned_windows_error_dialog_is_read_once_without_changing_game_verdict(self):
+        commit, observed = "a" * 40, threading.Event()
+        build = {"schema_version": 2, "commit": commit, "product_id": "dev.pcl-rh.desktop",
+                 "runtime_layout": "split-v1"}
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            desktop, java = parent / "inert-desktop.exe", parent / "inert-java.exe"
+            desktop.write_bytes(b"inert protocol fixture; never executed")
+            events = [{"event": "prepared", "data": {"java": str(java)}},
+                      {"event": "spawned", "data": {"pid": 55, "monitor_pid": 54}},
+                      {"event": "result", "data": {"attempt_status": "fail", "stages": {}}}]
+            class Protocol:
+                finished, index = False, 0
+                def readline(self, _limit):
+                    if self.index == 2:
+                        observed.wait(3)
+                    if self.index == len(events):
+                        self.finished = True
+                        return ""
+                    value = json.dumps(events[self.index]) + "\n"
+                    self.index += 1
+                    return value
+                def close(self):
+                    pass
+            pipe = Protocol()
+            process = SimpleNamespace(stdin=io.StringIO(), stdout=pipe,
+                                      poll=lambda: 0 if pipe.finished else None, wait=lambda **_: 0)
+            observations = []
+            def observe(pid):
+                observations.append(pid)
+                if len(observations) >= 2:
+                    observed.set()
+                return {"method": "inert window metadata fixture", "windows": [
+                    {"id": "1", "owner_pid": pid, "class": "#32770", "visible": True,
+                     "width": 400, "height": 200}]}
+            diagnostic = {"status": "captured", "diagnostic_only": True, "affects_game_acceptance": False}
+            capture = mock.Mock(return_value=diagnostic)
+            modules = {"acceptance_native_window": SimpleNamespace(observe=observe),
+                       "acceptance_windows_dialog": SimpleNamespace(capture=capture)}
+            def spec(name, _path):
+                return SimpleNamespace(name=name, loader=SimpleNamespace(exec_module=lambda _: None))
+            with mock.patch.object(ACCEPTANCE.platform, "system", return_value="Windows"), \
+                    mock.patch.object(ACCEPTANCE.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(build).encode())), \
+                    mock.patch.object(ACCEPTANCE.subprocess, "Popen", return_value=process), \
+                    mock.patch("importlib.util.spec_from_file_location", side_effect=spec), \
+                    mock.patch("importlib.util.module_from_spec", side_effect=lambda spec: modules[spec.name]):
+                result = ACCEPTANCE.run_client(desktop, parent, commit, None, 120, False)
+            self.assertGreaterEqual(len(observations), 2)
+            capture.assert_called_once_with(55, java, parent)
+            self.assertEqual(result["native_error_dialog"], diagnostic)
+            self.assertEqual(result["render_assessment"]["status"], "blocked")
 
 
 if __name__ == "__main__":
