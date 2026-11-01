@@ -450,8 +450,7 @@ fn run_pipeline(
     }
 
     *current = "launch_plan";
-    let home = workspace
-        .path
+    let home = pcl_core::java::invocation_path(&workspace.path)?
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");

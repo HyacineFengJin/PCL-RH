@@ -252,7 +252,7 @@ impl World {
         file.write_all(&level)
             .and_then(|_| file.sync_all())
             .map_err(|e| e.to_string())?;
-        let options = format!("version:{data_version}\nrenderDistance:2\nsimulationDistance:4\nmaxFps:30\nenableVsync:false\ngraphicsMode:0\npauseOnLostFocus:false\nonboardAccessibility:false\ntutorialStep:none\nsoundCategory_master:0.0\n");
+        let options = format!("version:{data_version}\nrenderDistance:2\nsimulationDistance:5\nmaxFps:30\nenableVsync:false\ngraphicsMode:0\npauseOnLostFocus:false\nonboardAccessibility:false\ntutorialStep:none\nsoundCategory_master:0.0\n");
         let mut file = directory
             .create_file(&leaf("options.txt")?)
             .map_err(|e| e.to_string())?;
@@ -269,7 +269,7 @@ impl World {
         evidence["game_dir"] = json!(game_dir);
         evidence["spawn_chunk_radius"] = json!(0);
         evidence["render_distance"] = json!(2);
-        evidence["simulation_distance"] = json!(4);
+        evidence["simulation_distance"] = json!(5);
         Ok(Self {
             directory,
             evidence,

@@ -41,6 +41,7 @@ pub fn prepare_jvm_args(project: &Path, title: &str) -> Result<Vec<String>, Stri
         .filter(|path| !path.contains('='))
         .ok_or("启动器路径包含不受 Java agent 支持的字符，无法设置游戏窗口标题")?;
     let path = cache.ensure(&format!("{:x}.jar", md5::compute(AGENT)), AGENT)?;
+    let path = crate::java::invocation_path(&path)?;
     let encoded = title
         .as_bytes()
         .iter()

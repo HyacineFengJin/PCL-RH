@@ -760,11 +760,24 @@ fn build_launch_plan_inner(
     uuid[6] = (uuid[6] & 0x0f) | 0x30;
     uuid[8] = (uuid[8] & 0x3f) | 0x80;
     let uuid = uuid.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    // Retain native canonical paths for filesystem authority and supervision.
+    // JVM arguments use the same objects in Java's supported path namespace;
+    // Windows' extended prefix is an OS spelling, not a portable Java path.
+    let java_root = java::invocation_path(&root)?;
+    let java_game_dir = java::invocation_path(&game_dir)?;
+    let java_natives = java::invocation_path(&natives)?;
+    let java_classpath = classpath
+        .iter()
+        .map(|path| java::invocation_path(path))
+        .collect::<Result<Vec<_>>>()?;
     let mut replacements = BTreeMap::from([
         ("auth_player_name", player.into()),
         ("version_name", id.into()),
-        ("game_directory", game_dir.display().to_string()),
-        ("assets_root", root.join("assets").display().to_string()),
+        ("game_directory", java_game_dir.display().to_string()),
+        (
+            "assets_root",
+            java_root.join("assets").display().to_string(),
+        ),
         ("assets_index_name", asset_id.into()),
         ("auth_uuid", uuid),
         ("auth_access_token", "0".into()),
@@ -781,12 +794,12 @@ fn build_launch_plan_inner(
                 options.custom_info.clone()
             },
         ),
-        ("natives_directory", natives.display().to_string()),
+        ("natives_directory", java_natives.display().to_string()),
         ("launcher_name", "PCL-RH".into()),
         ("launcher_version", "0.1.0".into()),
         (
             "classpath",
-            std::env::join_paths(&classpath)
+            std::env::join_paths(&java_classpath)
                 .map_err(|error| format!("Invalid Java classpath: {error}"))?
                 .into_string()
                 .map_err(|_| "Java classpath is not UTF-8")?,
@@ -797,12 +810,15 @@ fn build_launch_plan_inner(
         ),
         (
             "library_directory",
-            root.join("libraries").display().to_string(),
+            java_root.join("libraries").display().to_string(),
         ),
     ]);
     replacements.insert(
         "game_assets",
-        root.join("assets/virtual/legacy").display().to_string(),
+        java_root
+            .join("assets/virtual/legacy")
+            .display()
+            .to_string(),
     );
     if let Some(identity) = online {
         replacements.insert("auth_uuid", identity.uuid.clone());
@@ -844,6 +860,7 @@ fn build_launch_plan_inner(
     let mut args = vec![format!("-Xmx{memory_gib}G")];
     args.extend(expand(&raw_jvm, &replacements, &argument_context)?);
     if let Some(path) = log_config {
+        let path = java::invocation_path(&path)?;
         args.push(text(logging, "argument").replace("${path}", &path.display().to_string()));
     }
     options.apply_jvm(&mut args)?;

@@ -52,6 +52,8 @@ impl<'de> Deserialize<'de> for JavaSelection {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JavaRuntime {
+    /// Resolved executable spelling suitable for subsequent JVM launches.
+    /// Windows uses a checked ordinary Win32 path, not a verbatim argv[0].
     pub path: String,
     pub major: u32,
     pub vendor: String,
@@ -70,6 +72,27 @@ pub struct JavaCatalog {
     pub unavailable: Vec<JavaFailure>,
 }
 
+/// Path spelling accepted by the JVM for an existing file or directory.
+/// Windows requires an absolute path and verifies that converting a canonical
+/// disk/UNC name to ordinary Win32 syntax resolves to the same object. Other
+/// platforms preserve the supplied spelling. This does not grant managed-store
+/// authority or pin an executable; nonexistent suffixes must be derived from a
+/// separately checked existing root by the caller.
+pub fn invocation_path(path: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        if !path.is_absolute() {
+            return Err("Java 调用路径必须是绝对路径".into());
+        }
+        let canonical = fs::canonicalize(path).map_err(|e| format!("Java 调用路径不可用：{e}"))?;
+        windows::callable_path(&canonical)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(path.to_path_buf())
+    }
+}
+
 fn canonical_executable(path: &Path) -> Result<PathBuf> {
     let path = fs::canonicalize(path).map_err(|e| format!("Java 路径不可用：{e}"))?;
     if path.to_str().is_none() {
@@ -86,6 +109,8 @@ fn canonical_executable(path: &Path) -> Result<PathBuf> {
             return Err("Java 文件没有执行权限".into());
         }
     }
+    #[cfg(windows)]
+    let path = windows::callable_path(&path)?;
     Ok(path)
 }
 
