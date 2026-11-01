@@ -250,6 +250,11 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
             .unwrap()
     };
     let java_root = invocation_path(&canonical).unwrap();
+    assert_eq!(Path::new(argument("-Duser.dir=")), java_root);
+    assert_eq!(
+        Path::new(argument("-Duser.dir=")).canonicalize().unwrap(),
+        plan.game_dir
+    );
     assert_eq!(Path::new(argument("-Dfixture.game=")), java_root);
     assert_eq!(
         Path::new(argument("-Dfixture.assets=")),
@@ -300,6 +305,30 @@ fn windows_launch_plan(directory: &Path, image: &Path) {
         .args
         .windows(2)
         .any(|args| args[0] == "--gameDir" && Path::new(&args[1]) == java_root));
+    let explicit = pcl_core::build_launch_plan_with_options(
+        &canonical,
+        directory,
+        id,
+        "Fixture_Player",
+        2,
+        &selected,
+        &[],
+        &pcl_core::LaunchOptions {
+            jvm_args: "-Duser.dir=explicit-user-choice".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let user_dirs = explicit
+        .args
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("-Duser.dir="))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        user_dirs,
+        [java_root.to_str().unwrap(), "explicit-user-choice"]
+    );
+    assert_eq!(explicit.game_dir, plan.game_dir);
     // Only the fake JVM's fixed property query ran. No jar or game is started.
     assert_stopped(directory, "root.pid");
 }

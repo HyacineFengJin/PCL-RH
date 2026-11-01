@@ -33,6 +33,22 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Test portable crates on their native host
         run: cargo +stable test --locked -p pcl-core -p pcl-network -p pcl-auth
+      - name: Test real JDK 21 with pinned Windows cwd
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:JAVA_HOME_21_X64)) {
+            throw 'Windows runner must provide JAVA_HOME_21_X64 for real JVM validation'
+          }
+          foreach ($exe in @('java.exe', 'javac.exe')) {
+            if (!(Test-Path -LiteralPath (Join-Path $env:JAVA_HOME_21_X64 "bin/$exe") -PathType Leaf)) {
+              throw "Required JDK 21 executable missing: $exe"
+            }
+          }
+          $env:PCL_TEST_WINDOWS_JAVA21_HOME = $env:JAVA_HOME_21_X64
+          cargo +stable test --locked -p pcl-core --test windows_pinned_cwd java21_pinned_volume_guid_cwd_requires_java_user_dir -- --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Report host toolchain
         run: rustc +stable -vV
       # Includes actual native desktop persistence adapters through focused

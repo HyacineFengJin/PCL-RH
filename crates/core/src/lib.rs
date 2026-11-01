@@ -858,6 +858,12 @@ fn build_launch_plan_inner(
         replacements.insert("resolution_height", height.to_string());
     }
     let mut args = vec![format!("-Xmx{memory_gib}G")];
+    // The Windows monitor retains a volume-GUID cwd to pin its native namespace.
+    // Java NIO cannot initialize its default filesystem from that spelling.
+    // Give Java the same checked directory in DOS form, without changing the
+    // native cwd lease. Explicit metadata/user JVM options still follow it.
+    #[cfg(windows)]
+    args.push(format!("-Duser.dir={}", java_game_dir.display()));
     args.extend(expand(&raw_jvm, &replacements, &argument_context)?);
     if let Some(path) = log_config {
         let path = java::invocation_path(&path)?;

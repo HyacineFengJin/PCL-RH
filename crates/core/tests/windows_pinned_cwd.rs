@@ -1,6 +1,7 @@
 //! Real GameChild::spawn_in_directory regressions using only this executable
 //! and disposable private fixtures. The ordinary libtest fixture entry points
-//! return immediately outside a child fixture; no shell, Java or GUI is used.
+//! return immediately outside a child fixture. An explicit opt-in CI test uses
+//! the runner's JDK 21; no shell, GUI or game is started.
 #![cfg(windows)]
 
 #[path = "../src/file_ops/junction_fixture.rs"]
@@ -489,6 +490,257 @@ fn created_directory_delete_access_requires_identity_checked_read_caps() {
     assert_eq!(game.identity().unwrap(), game_identity);
     workspace.metadata().unwrap().require_private().unwrap();
     game.metadata().unwrap().require_private().unwrap();
+}
+
+#[test]
+fn java21_pinned_volume_guid_cwd_requires_java_user_dir() {
+    let Some(java_home) = env::var_os("PCL_TEST_WINDOWS_JAVA21_HOME") else {
+        eprintln!("JDK 21 opt-in absent; this invocation is not real JVM validation");
+        return;
+    };
+    fn private_child(parent: &Directory, name: &Leaf) -> Directory {
+        let created = parent
+            .create_private(name, Traversal::SameFilesystem)
+            .unwrap();
+        let expected = created.identity().unwrap();
+        let read = parent.child(name, Traversal::SameFilesystem).unwrap();
+        assert_eq!(read.identity().unwrap(), expected);
+        read.metadata().unwrap().require_private().unwrap();
+        parent.recheck(name, &expected).unwrap();
+        drop(created);
+        read
+    }
+    fn collect(
+        mut child: GameChild,
+        mut while_running: impl FnMut(),
+    ) -> (std::process::ExitStatus, String, String) {
+        let mut streams = [child.take_stdout().unwrap(), child.take_stderr().unwrap()];
+        let mut bytes = [Vec::new(), Vec::new()];
+        let mut eof = [false; 2];
+        let mut status = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            for index in 0..2 {
+                if eof[index] {
+                    continue;
+                }
+                let mut block = [0u8; 4096];
+                match streams[index].read(&mut block) {
+                    Ok(0) => eof[index] = true,
+                    Ok(count) => bytes[index].extend_from_slice(&block[..count]),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(error) => panic!("JDK fixture output read: {error}"),
+                }
+                assert!(
+                    bytes[index].len() <= 64 * 1024,
+                    "JDK fixture output exceeded 64 KiB"
+                );
+            }
+            while_running();
+            if status.is_none() {
+                status = child.try_wait().unwrap();
+            }
+            if let Some(status) = status {
+                if eof.into_iter().all(|done| done) {
+                    assert_eq!(child.wait().unwrap(), status);
+                    let [stdout, stderr] = bytes.map(|value| String::from_utf8(value).unwrap());
+                    return (status, stdout, stderr);
+                }
+            }
+            if Instant::now() >= deadline {
+                let cleanup = Instant::now();
+                child.terminate().unwrap();
+                assert!(
+                    cleanup.elapsed() < Duration::from_secs(2),
+                    "JDK fixture cleanup exceeded deadline"
+                );
+                panic!(
+                    "JDK fixture process/output deadline; stdout={} stderr={}",
+                    String::from_utf8_lossy(&bytes[0]),
+                    String::from_utf8_lossy(&bytes[1])
+                );
+            }
+            pause();
+        }
+    }
+    fn anchors(path: &Path) -> Vec<PathBuf> {
+        fs::read_dir(path)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".pcl-rh-cwd-anchor-v1-")
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+    let java_home = PathBuf::from(java_home);
+    let java = pcl_core::java::invocation_path(&java_home.join("bin/java.exe")).unwrap();
+    let javac = pcl_core::java::invocation_path(&java_home.join("bin/javac.exe")).unwrap();
+    let temporary = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(temporary.path()).unwrap();
+    let parent = Directory::open_absolute(&base).unwrap();
+    let (name, created) = parent.create_private_workspace().unwrap();
+    let workspace_identity = created.identity().unwrap();
+    let workspace = parent.child(&name, Traversal::SameFilesystem).unwrap();
+    assert_eq!(workspace.identity().unwrap(), workspace_identity);
+    parent.recheck(&name, &workspace_identity).unwrap();
+    workspace.metadata().unwrap().require_private().unwrap();
+    drop(created);
+    let workspace_path = base.join(name.as_os_str());
+    let game_name = Leaf::new("游戏 cwd").unwrap();
+    let game = private_child(&workspace, &game_name);
+    let _control = private_child(&workspace, &Leaf::new("control").unwrap());
+    let _outside = private_child(&workspace, &Leaf::new("outside").unwrap());
+    let game_identity = game.identity().unwrap();
+    let game_path = workspace_path.join(game_name.as_os_str());
+    let java_cwd = pcl_core::java::invocation_path(&game_path).unwrap();
+    let control = pcl_core::java::invocation_path(&workspace_path.join("control")).unwrap();
+    let ready = control.join("java-ready");
+    let finish = control.join("java-finish");
+    let source = control.join("PinnedCwd.java");
+    fs::write(game_path.join("source.txt"), b"literal cwd input").unwrap();
+    fs::write(
+        &source,
+        r#"
+import java.nio.file.*;
+public final class PinnedCwd {
+    public static void main(String[] args) throws Exception {
+        if (Runtime.version().feature() != 21) throw new AssertionError("JDK 21 required");
+        Path cwd = Paths.get(".").toRealPath();
+        if (!Files.isSameFile(cwd, Path.of(args[0]))) throw new AssertionError("different cwd");
+        if (!Files.readString(Path.of("source.txt")).equals("literal cwd input"))
+            throw new AssertionError("relative read escaped cwd");
+        Files.writeString(Path.of("java-created"), "relative Java write");
+        Files.writeString(Path.of(args[1]), "ready");
+        while (!Files.exists(Path.of(args[2]))) Thread.sleep(5);
+        System.out.println("java.base@" + Runtime.version().feature());
+        System.out.println("same-cwd:true");
+    }
+}
+"#,
+    )
+    .unwrap();
+    let compile_args = [
+        OsString::from("--release"),
+        "21".into(),
+        "-encoding".into(),
+        "UTF-8".into(),
+        "-d".into(),
+        control.as_os_str().to_owned(),
+        source.into_os_string(),
+    ];
+    let compile_cwd = pcl_core::java::invocation_path(&workspace_path).unwrap();
+    let (status, stdout, stderr) = collect(
+        GameChild::spawn(&javac, &compile_args, &compile_cwd).unwrap(),
+        || {},
+    );
+    assert!(
+        status.success(),
+        "JDK fixture javac failed: {stdout}{stderr}"
+    );
+    let arguments = [
+        OsString::from("-Dsun.java.launcher.diag=true"),
+        "-cp".into(),
+        control.as_os_str().to_owned(),
+        "PinnedCwd".into(),
+        java_cwd.as_os_str().to_owned(),
+        ready.as_os_str().to_owned(),
+        finish.as_os_str().to_owned(),
+    ];
+    let (status, stdout, stderr) = collect(
+        GameChild::spawn_in_directory(&java, &arguments, game.file()).unwrap(),
+        || {},
+    );
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "unmodified GUID cwd unexpectedly worked: {stdout}{stderr}"
+    );
+    assert!(
+        stderr.contains("InvalidPathException")
+            && stderr.contains("Long path prefix can only be used with an absolute path"),
+        "JDK did not reproduce Volume GUID default-directory failure: {stdout}{stderr}"
+    );
+    assert!(!ready.exists(), "negative JVM entered the Java fixture");
+    let failed_anchors = anchors(&game_path);
+    assert_eq!(failed_anchors.len(), 1);
+    fs::remove_file(&failed_anchors[0]).unwrap();
+
+    let mut fixed_arguments = vec![OsString::from(format!("-Duser.dir={}", java_cwd.display()))];
+    fixed_arguments.extend(arguments);
+    let child = GameChild::spawn_in_directory(&java, &fixed_arguments, game.file()).unwrap();
+    let pid = child.id();
+    let mut owned_identity = None;
+    let mut checked = false;
+    let (status, stdout, stderr) = collect(child, || {
+        if checked || !ready.is_file() {
+            return;
+        }
+        let identity = game_process::identity(pid)
+            .unwrap()
+            .expect("JDK fixture must still be alive");
+        assert!(game_process::alive(&identity).unwrap());
+        let blocked = |result: io::Result<()>| {
+            let error = result.expect_err("JVM cwd mutation succeeded while owned Job was live");
+            assert!(
+                matches!(error.raw_os_error(), Some(5 | 32 | 145)),
+                "unexpected rejection: {error}"
+            );
+        };
+        blocked(fs::rename(&game_path, workspace_path.join("moved-cwd")));
+        blocked(fs::rename(&workspace_path, base.join("moved-workspace")));
+        blocked(junction_fixture::set_existing(
+            &workspace_path.join("outside"),
+            &game_path,
+        ));
+        blocked(set_junction_attributes(
+            &workspace_path.join("outside"),
+            &game_path,
+        ));
+        let protected = anchors(&game_path);
+        assert_eq!(protected.len(), 1);
+        blocked(fs::remove_file(&protected[0]));
+        blocked(fs::rename(&protected[0], game_path.join("stolen-anchor")));
+        assert_eq!(game.identity().unwrap(), game_identity);
+        workspace.recheck(&game_name, &game_identity).unwrap();
+        game.metadata().unwrap().require_private().unwrap();
+        owned_identity = Some(identity);
+        checked = true;
+        fs::write(&finish, b"finish").unwrap();
+    });
+    assert!(
+        checked,
+        "real JDK never completed its relative IO fixture: {stdout}{stderr}"
+    );
+    assert_eq!(status.code(), Some(0), "fixed JVM failed: {stdout}{stderr}");
+    assert!(
+        stdout.lines().any(|line| line == "java.base@21"),
+        "not the required JDK 21: {stdout}"
+    );
+    assert!(stdout.lines().any(|line| line == "same-cwd:true"));
+    assert!(stderr.is_empty(), "fixed JDK stderr: {stderr}");
+    assert!(
+        !game_process::alive(&owned_identity.unwrap()).unwrap(),
+        "owned JVM survived retirement"
+    );
+    assert_eq!(
+        fs::read(game_path.join("java-created")).unwrap(),
+        b"relative Java write"
+    );
+    assert_eq!(game.identity().unwrap(), game_identity);
+    workspace.recheck(&game_name, &game_identity).unwrap();
+    parent.recheck(&name, &workspace_identity).unwrap();
+    game.metadata().unwrap().require_private().unwrap();
+    for anchor in anchors(&game_path) {
+        fs::remove_file(anchor).unwrap();
+    }
 }
 
 #[test]
