@@ -1,7 +1,7 @@
 import { t, formatNumber } from "./i18n";
 /** Existing CE local-resource list, selection and local file operations.
  * Update inspection/confirmation is owned by the separate update components. */
-import { useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { LauncherNavigationContext } from "./useLauncherPreferences";
 import { resourceBrowseRequest } from "./resourceBrowse";
 import { ResourceFavorite } from "./LauncherFavorites";
@@ -233,14 +233,19 @@ export function ResourcePanel({
   }, [removalChoice]);
   const mutationBlocked =
     disabled || mutationDisabled || !!working || loading || !writableKind;
+  const writableFiles = useMemo(
+    () =>
+      entries
+        .map(writableResourceFile)
+        .filter((file): file is ResourceFile => file !== null),
+    [entries],
+  );
   const updates = useResourceUpdates({
     api,
     scopeKey,
     instance,
     generation: `${generation}:${resourceGeneration}`,
-    files: entries
-      .map(writableResourceFile)
-      .filter((file): file is ResourceFile => file !== null),
+    files: writableFiles,
     enabled: section === "mods" && !loading && !error && !recoveryError,
     native,
     disabled: mutationBlocked,
@@ -253,58 +258,71 @@ export function ResourcePanel({
     !!recoveryError ||
     updates.busy ||
     !!updates.choice;
-  const updateFor = (resource: Resource) =>
-    !hideUpdates
-      ? updates.result?.entries.find(
-          (entry) =>
-            entry.file_name === resource.file_name &&
-            entry.fingerprint === resource.fingerprint,
-        )
+  // Each accepted inspection has unique filenames. Retain its row references,
+  // but still match the fingerprint: a same-name replacement is not that mod.
+  const updateIndex = useMemo(
+    () =>
+      new Map(updates.result?.entries.map((entry) => [entry.file_name, entry])),
+    [updates.result],
+  );
+  const inspectedUpdate = (resource: Resource) => {
+    const entry = resource.file_name
+      ? updateIndex.get(resource.file_name)
       : undefined;
-  const filtered = entries
-    .filter((v) =>
-      [v.name, v.file_name, v.description].some((value) =>
-        value?.toLowerCase().includes(query.toLowerCase()),
-      ),
-    )
-    .filter(
-      (v) =>
-        filter !== "updates" || updateFor(v)?.status === "update_available",
-    )
-    .sort(
-      (a, b) => a.name.localeCompare(b.name, "zh-CN") * (descending ? -1 : 1),
-    );
-  const selectedEntries = entries.filter((entry) =>
-    selected.includes(entry.path),
+    return entry?.fingerprint === resource.fingerprint ? entry : undefined;
+  };
+  const updateFor = (resource: Resource) =>
+    !hideUpdates ? inspectedUpdate(resource) : undefined;
+  const filtered = useMemo(() => {
+    const needle = query.toLowerCase();
+    return entries
+      .filter((v) =>
+        [v.name, v.file_name, v.description].some((value) =>
+          value?.toLowerCase().includes(needle),
+        ),
+      )
+      .filter(
+        (v) =>
+          filter !== "updates" || updateFor(v)?.status === "update_available",
+      )
+      .sort(
+        (a, b) => a.name.localeCompare(b.name, "zh-CN") * (descending ? -1 : 1),
+      );
+  }, [entries, query, filter, updateIndex, hideUpdates, descending]);
+  const selectedPaths = useMemo(() => new Set(selected), [selected]);
+  const selectedEntries = useMemo(
+    () => entries.filter((entry) => selectedPaths.has(entry.path)),
+    [entries, selectedPaths],
   );
   // Bookmark identity is authoritative inspection data, independent of whether
   // update actions are hidden. A filename alone never identifies a publisher.
-  const favoriteProjects = selectedEntries.map(
-    (resource) =>
-      updates.result?.entries.find(
-        (entry) =>
-          entry.file_name === resource.file_name &&
-          entry.fingerprint === resource.fingerprint,
-      )?.project_id,
+  const favoriteProjects = useMemo(
+    () =>
+      selectedEntries.map((resource) => inspectedUpdate(resource)?.project_id),
+    [selectedEntries, updateIndex],
   );
   const recognizedSelection =
     section === "mods" &&
     selectedEntries.length > 0 &&
     favoriteProjects.every((id): id is string => !!id);
-  const favoriteContext = JSON.stringify([
-    scopeKey,
-    id,
-    section,
-    generation,
-    resourceGeneration,
-    selectedEntries.map((resource) => [
-      resource.file_name,
-      resource.fingerprint,
-    ]),
-  ]);
+  const favoriteContext = useMemo(
+    () =>
+      JSON.stringify([
+        scopeKey,
+        id,
+        section,
+        generation,
+        resourceGeneration,
+        selectedEntries.map((resource) => [
+          resource.file_name,
+          resource.fingerprint,
+        ]),
+      ]),
+    [scopeKey, id, section, generation, resourceGeneration, selectedEntries],
+  );
   const allVisibleSelected =
     filtered.length > 0 &&
-    filtered.every((entry) => selected.includes(entry.path));
+    filtered.every((entry) => selectedPaths.has(entry.path));
   function toggleSelection(path: string) {
     setSelected((old) =>
       old.includes(path) ? old.filter((v) => v !== path) : [...old, path],
@@ -499,13 +517,14 @@ export function ResourcePanel({
         <button
           className="ce-button"
           disabled={loading || !!error || !filtered.length}
-          onClick={() =>
+          onClick={() => {
+            const visiblePaths = new Set(filtered.map((entry) => entry.path));
             setSelected((old) =>
               allVisibleSelected
-                ? old.filter((path) => !filtered.some((v) => v.path === path))
-                : [...new Set([...old, ...filtered.map((v) => v.path)])],
-            )
-          }
+                ? old.filter((path) => !visiblePaths.has(path))
+                : [...new Set([...old, ...visiblePaths])],
+            );
+          }}
         >
           {allVisibleSelected ? t("ui.deselectAll") : t("ui.selectAll")}
         </button>
@@ -768,12 +787,12 @@ export function ResourcePanel({
                   className={
                     "resource-row ce-local-resource-row " +
                     (!v.enabled ? "resource-disabled " : "") +
-                    (selected.includes(v.path) ? "is-selected" : "")
+                    (selectedPaths.has(v.path) ? "is-selected" : "")
                   }
                   key={v.path}
                   role="option"
                   tabIndex={0}
-                  aria-selected={selected.includes(v.path)}
+                  aria-selected={selectedPaths.has(v.path)}
                   onClick={() => toggleSelection(v.path)}
                   onKeyDown={(event) => {
                     if (

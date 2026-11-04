@@ -569,6 +569,34 @@ pub(super) fn snapshot(
     name: &str,
     limit: u64,
 ) -> Result<Option<(Stamp, String, Vec<u8>)>, String> {
+    let mut bytes = Vec::new();
+    Ok(
+        snapshot_chunks(dir, name, limit, |chunk| bytes.extend_from_slice(chunk))?
+            .map(|(stamp, digest)| (stamp, digest, bytes)),
+    )
+}
+
+/// Revision checks and recovery comparisons need the verified digest, without
+/// retaining either source's entire body while comparing two log locations.
+pub(super) fn snapshot_digest(
+    dir: &Dir,
+    name: &str,
+    limit: u64,
+) -> Result<Option<(Stamp, String)>, String> {
+    snapshot_chunks(dir, name, limit, |_| {})
+}
+
+const SNAPSHOT_BLOCK_BYTES: usize = 64 * 1024;
+
+/// Body and digest readers share exactly the same bounded stream and carrier
+/// validation. The extra sentinel byte detects growth beyond the input limit;
+/// short reads, in-place edits and pathname replacement all refuse a snapshot.
+fn snapshot_chunks(
+    dir: &Dir,
+    name: &str,
+    limit: u64,
+    mut retain: impl FnMut(&[u8]),
+) -> Result<Option<(Stamp, String)>, String> {
     let Some(mut file) = dir.file(name)? else {
         return Ok(None);
     };
@@ -576,13 +604,23 @@ pub(super) fn snapshot(
     if before.bytes > limit.min(MAX_FILE_BYTES) {
         return Err(format!("日志文件过大：{name}"));
     }
-    let mut data = Vec::new();
-    (&mut file)
-        .take(limit.min(MAX_FILE_BYTES) + 1)
-        .read_to_end(&mut data)
-        .map_err(|e| e.to_string())?;
-    if data.len() as u64 > limit
-        || data.len() as u64 != before.bytes
+    let mut source = (&mut file).take(limit.min(MAX_FILE_BYTES) + 1);
+    let mut buffer = [0; SNAPSHOT_BLOCK_BYTES];
+    let mut count = 0u64;
+    let mut digest = Sha256::new();
+    loop {
+        let length = match source.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(length) => length,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        count += length as u64;
+        digest.update(&buffer[..length]);
+        retain(&buffer[..length]);
+    }
+    if count > limit
+        || count != before.bytes
         || before != Stamp::from_file(&file)?
         || dir
             .file(name)?
@@ -590,8 +628,7 @@ pub(super) fn snapshot(
     {
         return Err(format!("日志读取期间发生变化，请重试：{name}"));
     }
-    let digest = format!("{:x}", Sha256::digest(&data));
-    Ok(Some((before, digest, data)))
+    Ok(Some((before, format!("{:x}", digest.finalize()))))
 }
 
 /// Own the actual native staging lease until it is sealed and published. Drop

@@ -93,6 +93,108 @@ fn native_list_read_tail_and_session_offset_use_actual_owned_file_streams() {
 }
 
 #[test]
+fn native_live_tail_limits_large_logs_and_preserves_its_captured_end() {
+    let fixture = Fixture::new();
+    fixture.write("large.log", b"");
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.log("large.log"))
+        .unwrap();
+    writer.set_len(MAX_FILE_BYTES + 1024).unwrap();
+    writer.seek(SeekFrom::End(0)).unwrap();
+    let suffix = (0..350)
+        .map(|index| format!("日志 {index} fixture-secret\r\n"))
+        .collect::<String>();
+    writer.write_all(b"\n").unwrap();
+    writer.write_all(suffix.as_bytes()).unwrap();
+    let expected = suffix.lines().skip(150).collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        read_tail(&fixture.root, "large.log", 200, |text| {
+            assert_eq!(text, expected);
+            text.replace("fixture-secret", "<redacted>")
+        })
+        .unwrap(),
+        expected.replace("fixture-secret", "<redacted>")
+    );
+
+    // Keep the original open FD and its captured length while an actual writer
+    // appends. The helper must never read bytes past that committed boundary.
+    let mut reader = fs::File::open(fixture.log("large.log")).unwrap();
+    let end = reader.metadata().unwrap().len();
+    writer.write_all(b"appended after capture\n").unwrap();
+    assert_eq!(
+        tail::text(&tail::read(&mut reader, end, 200).unwrap()),
+        expected
+    );
+    writer.set_len(0).unwrap();
+    assert!(tail::read(&mut reader, end, 200)
+        .unwrap_err()
+        .contains("截短"));
+}
+
+#[test]
+fn native_digest_only_snapshots_match_body_hashes_and_keep_input_limits() {
+    let fixture = Fixture::new();
+    let directory = Dir::absolute(&fixture.root.join(".pcl-linux/logs")).unwrap();
+    let bytes = (0..128 * 1024 + 37)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    for data in [b"".as_slice(), b"small\r\nlog\n", bytes.as_slice()] {
+        fixture.write("body.log", data);
+        let (stamp, digest, body) = snapshot(&directory, "body.log", MAX_FILE_BYTES)
+            .unwrap()
+            .unwrap();
+        assert_eq!(body, data);
+        assert_eq!(digest, format!("{:x}", Sha256::digest(data)));
+        assert_eq!(
+            snapshot_digest(&directory, "body.log", MAX_FILE_BYTES)
+                .unwrap()
+                .unwrap(),
+            (stamp, digest)
+        );
+    }
+    assert!(snapshot(&directory, "body.log", bytes.len() as u64 - 1).is_err());
+    assert!(snapshot_digest(&directory, "body.log", bytes.len() as u64 - 1).is_err());
+    assert!(snapshot_digest(&directory, "missing.log", MAX_FILE_BYTES)
+        .unwrap()
+        .is_none());
+    let previous = snapshot_digest(&directory, "body.log", MAX_FILE_BYTES)
+        .unwrap()
+        .unwrap()
+        .1;
+    fixture.write("body.log", &vec![b'x'; bytes.len()]);
+    assert_ne!(
+        snapshot_digest(&directory, "body.log", MAX_FILE_BYTES)
+            .unwrap()
+            .unwrap()
+            .1,
+        previous
+    );
+
+    fixture.write("limit.log", b"");
+    let writer = fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.log("limit.log"))
+        .unwrap();
+    writer.set_len(MAX_FILE_BYTES).unwrap();
+    let mut expected = Sha256::new();
+    let zeros = [0; 64 * 1024];
+    for _ in 0..MAX_FILE_BYTES / zeros.len() as u64 {
+        expected.update(zeros);
+    }
+    assert_eq!(
+        snapshot_digest(&directory, "limit.log", MAX_FILE_BYTES)
+            .unwrap()
+            .unwrap()
+            .1,
+        format!("{:x}", expected.finalize())
+    );
+    writer.set_len(MAX_FILE_BYTES + 1).unwrap();
+    assert!(snapshot_digest(&directory, "limit.log", MAX_FILE_BYTES).is_err());
+    assert!(snapshot(&directory, "limit.log", MAX_FILE_BYTES).is_err());
+}
+
+#[test]
 fn native_session_capture_rejects_same_bytes_under_a_replaced_file_identity() {
     let fixture = Fixture::new();
     fixture.write("failed.log", b"same bytes\n");

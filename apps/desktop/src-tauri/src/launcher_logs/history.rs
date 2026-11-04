@@ -105,14 +105,14 @@ pub fn execute_clear(
         for (name, entry) in &journal.entries {
             cancelled(cancel)?;
             scope.recheck()?;
-            let (stamp, digest, _) =
-                snapshot(logs, name, MAX_FILE_BYTES)?.ok_or("清理前日志已消失")?;
+            let (stamp, digest) =
+                snapshot_digest(logs, name, MAX_FILE_BYTES)?.ok_or("清理前日志已消失")?;
             if stamp != entry.stamp || digest != entry.digest {
                 return Err("清理期间日志被外部修改".into());
             }
             logs.move_new(name, &operation)?;
-            let (stamp, digest, _) =
-                snapshot(&operation, name, MAX_FILE_BYTES)?.ok_or("移动后的日志已消失")?;
+            let (stamp, digest) =
+                snapshot_digest(&operation, name, MAX_FILE_BYTES)?.ok_or("移动后的日志已消失")?;
             if !entry.stamp.after_move_matches(&stamp) || digest != entry.digest {
                 return Err("移动期间日志被外部修改，已保留恢复副本".into());
             }
@@ -204,7 +204,7 @@ fn completed(operation: &Dir) -> Result<bool, String> {
     };
     let receipt: Completion = serde_json::from_slice(&bytes)
         .map_err(|e| format!("日志恢复完成标记无效，已保留记录：{e}"))?;
-    let (_, digest, _) = snapshot(operation, "journal.json", MAX_JOURNAL_BYTES)?
+    let (_, digest) = snapshot_digest(operation, "journal.json", MAX_JOURNAL_BYTES)?
         .ok_or("日志恢复完成标记缺少对应清单，已保留记录")?;
     if receipt.schema != 1 || receipt.journal_digest != digest {
         return Err("日志恢复完成标记与清单不匹配，已保留记录".into());
@@ -254,9 +254,9 @@ fn recovery_row(
     let mut warnings = Vec::new();
     let mut bytes = 0u64;
     for (name, entry) in &journal.entries {
-        let archived = snapshot(operation, name, MAX_FILE_BYTES)?;
-        let original = snapshot(logs, name, MAX_FILE_BYTES)?;
-        if let Some((stamp, digest, _)) = &archived {
+        let archived = snapshot_digest(operation, name, MAX_FILE_BYTES)?;
+        let original = snapshot_digest(logs, name, MAX_FILE_BYTES)?;
+        if let Some((stamp, digest)) = &archived {
             names.push(name.clone());
             bytes += stamp.bytes;
             if !entry.stamp.after_move_matches(stamp) || digest != &entry.digest {
@@ -265,18 +265,12 @@ fn recovery_row(
             if original.is_some() {
                 warnings.push(format!("原位置已有文件，恢复不会覆盖：{name}"));
             }
-        } else if original.as_ref().is_none_or(|(stamp, digest, _)| {
+        } else if original.as_ref().is_none_or(|(stamp, digest)| {
             !entry.stamp.after_move_matches(stamp) || digest != &entry.digest
         }) {
             warnings.push(format!("日志不在原位置或恢复位置，请检查：{name}"));
         }
-        states.insert(
-            name,
-            (
-                archived.map(|(s, d, _)| (s, d)),
-                original.map(|(s, d, _)| (s, d)),
-            ),
-        );
+        states.insert(name, (archived, original));
     }
     for name in operation.names()? {
         if name != "journal.json" && !journal.entries.contains_key(&name) {
@@ -407,8 +401,8 @@ fn restore_entries(
     let mut restored = 0;
     for (name, entry) in &journal.entries {
         cancelled(cancel)?;
-        let Some((stamp, digest, _)) = snapshot(operation, name, MAX_FILE_BYTES)? else {
-            if snapshot(logs, name, MAX_FILE_BYTES)?.is_none_or(|(stamp, digest, _)| {
+        let Some((stamp, digest)) = snapshot_digest(operation, name, MAX_FILE_BYTES)? else {
+            if snapshot_digest(logs, name, MAX_FILE_BYTES)?.is_none_or(|(stamp, digest)| {
                 !entry.stamp.after_move_matches(&stamp) || digest != entry.digest
             }) {
                 return Err(format!("原日志发生变化或丢失，已保留其它恢复副本：{name}"));

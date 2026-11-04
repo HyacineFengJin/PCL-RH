@@ -43,6 +43,18 @@ function resourceHarness(initial, navigation, wrapper = false) {
     useContext(context) {
       return context.value;
     },
+    useMemo(factory, dependencies) {
+      const index = cursor++,
+        previous = hooks[index];
+      if (
+        !previous ||
+        dependencies.some(
+          (value, i) => !Object.is(value, previous.dependencies[i]),
+        )
+      )
+        hooks[index] = { dependencies, value: factory() };
+      return hooks[index].value;
+    },
     useEffect(effect, dependencies) {
       const index = cursor++,
         previous = hooks[index];
@@ -251,6 +263,110 @@ function button(ui, key) {
 function rows(ui) {
   return elements(ui.tree, (node) => node.props?.role === "option");
 }
+
+test("large resource lists reuse sorting and indexed update matches during selection", async () => {
+  const count = 1000;
+  const f = fixture(
+    "mods",
+    Array.from({ length: count }, (_, i) => resource(`mod-${count - i}`)),
+  );
+  const originalCompare = String.prototype.localeCompare;
+  const originalFind = Array.prototype.find;
+  let comparisons = 0,
+    updateProbes = 0;
+  String.prototype.localeCompare = function (...args) {
+    comparisons++;
+    return originalCompare.apply(this, args);
+  };
+  Array.prototype.find = function (predicate, thisArg) {
+    if (this.length !== count || this[0]?.status !== "up_to_date")
+      return originalFind.call(this, predicate, thisArg);
+    return originalFind.call(this, (...args) => {
+      updateProbes++;
+      return predicate.apply(thisArg, args);
+    });
+  };
+  try {
+    await f.ui.flush();
+    assert.equal(rows(f.ui).length, count);
+    comparisons = 0;
+    updateProbes = 0;
+    button(f.ui, "ui.selectAll").props.onClick();
+    await f.ui.flush();
+    assert.ok(rows(f.ui).every((row) => row.props["aria-selected"]));
+    console.log(
+      JSON.stringify({
+        scenario: "select-1000-resources",
+        comparisons,
+        updateProbes,
+      }),
+    );
+    assert.equal(
+      comparisons,
+      0,
+      "Selection does not sort unchanged resource identities or names",
+    );
+    assert.equal(
+      updateProbes,
+      0,
+      "Rendering and selection do not repeatedly scan all update rows",
+    );
+    assert.equal(f.reads(), 1);
+    assert.equal(
+      f.calls.filter(({ command }) => command === "resource_update_check")
+        .length,
+      1,
+    );
+  } finally {
+    String.prototype.localeCompare = originalCompare;
+    Array.prototype.find = originalFind;
+    f.ui.close();
+  }
+});
+
+test("memoized resource views update search and sorting while preserving hidden selections", async () => {
+  const f = fixture("mods", [
+    resource("beta"),
+    resource("alpha"),
+    resource("gamma"),
+  ]);
+  try {
+    await f.ui.flush();
+    button(f.ui, "ui.selectAll").props.onClick();
+    await f.ui.flush();
+    const search = () =>
+      elements(
+        f.ui.tree,
+        (node) =>
+          node.type === "input" &&
+          node.props["aria-label"] === f.ui.i18n.t("local.search"),
+      )[0];
+    search().props.onChange({ target: { value: "ALPHA" } });
+    await f.ui.flush();
+    assert.equal(rows(f.ui).length, 1);
+    assert.ok(content(rows(f.ui)[0]).includes("alpha.jar"));
+    button(f.ui, "ui.deselectAll").props.onClick();
+    await f.ui.flush();
+    assert.equal(rows(f.ui)[0].props["aria-selected"], false);
+    search().props.onChange({ target: { value: "" } });
+    await f.ui.flush();
+    assert.deepEqual(
+      rows(f.ui).map((row) => row.props["aria-selected"]),
+      [false, true, true],
+    );
+    button(f.ui, "local.sortName").props.onClick();
+    await f.ui.flush();
+    assert.ok(content(rows(f.ui)[0]).includes("gamma.jar"));
+    f.inventory([resource("delta")]);
+    button(f.ui, "ui.refresh").props.onClick();
+    await f.ui.flush();
+    assert.equal(rows(f.ui).length, 1);
+    assert.ok(content(rows(f.ui)[0]).includes("delta.jar"));
+    assert.equal(rows(f.ui)[0].props["aria-selected"], false);
+  } finally {
+    f.ui.close();
+  }
+});
 
 for (const kind of ["mods", "resourcepacks", "shaderpacks"]) {
   test(`empty ${kind} can browse compatible resources and refresh an external addition`, async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Api } from "./types";
 import { useInstanceOperationScope } from "./instanceOperationUi";
 import {
@@ -49,16 +49,30 @@ export function useResourceUpdates({
   onNotify: (message: string) => void;
 }) {
   const root = useInstanceOperationScope(api, scopeKey, native, disabled);
-  const identity = JSON.stringify([
-    instance.id,
-    instance.minecraft_version,
-    instance.loader,
-    generation,
-    enabled,
-    [...files]
-      .sort((a, b) => a.file_name.localeCompare(b.file_name))
-      .map((file) => [file.file_name, file.fingerprint]),
-  ]);
+  // The list owns immutable scan snapshots. Selection/progress renders retain
+  // that snapshot, so they need neither another sort nor another large string.
+  // Actual scope/generation/content changes still retire the inspection owner.
+  const identity = useMemo(
+    () =>
+      JSON.stringify([
+        instance.id,
+        instance.minecraft_version,
+        instance.loader,
+        generation,
+        enabled,
+        [...files]
+          .sort((a, b) => a.file_name.localeCompare(b.file_name))
+          .map((file) => [file.file_name, file.fingerprint]),
+      ]),
+    [
+      instance.id,
+      instance.minecraft_version,
+      instance.loader,
+      generation,
+      enabled,
+      files,
+    ],
+  );
   const owner = useRef({ root: root.scope, identity });
   if (owner.current.root !== root.scope || owner.current.identity !== identity)
     owner.current = { root: root.scope, identity };

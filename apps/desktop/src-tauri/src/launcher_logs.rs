@@ -22,10 +22,12 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 #[path = "launcher_logs/filesystem.rs"]
 mod filesystem;
-use filesystem::{component, snapshot, Dir, DirectoryIdentity, Stamp};
+use filesystem::{component, snapshot, snapshot_digest, Dir, DirectoryIdentity, Stamp};
 #[path = "launcher_logs/history.rs"]
 mod history;
 pub use history::{execute_clear, list_recovery, prepare_clear, restore};
+#[path = "launcher_logs/tail.rs"]
+mod tail;
 
 const MAX_ENTRIES: usize = 4096;
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -257,8 +259,8 @@ fn scan(
     for name in names {
         cancelled(cancel)?;
         valid_log(&name)?;
-        let (stamp, digest, _) =
-            snapshot(logs, &name, MAX_FILE_BYTES)?.ok_or("日志已消失，请重新读取")?;
+        let (stamp, digest) =
+            snapshot_digest(logs, &name, MAX_FILE_BYTES)?.ok_or("日志已消失，请重新读取")?;
         bytes = bytes.checked_add(stamp.bytes).ok_or("日志总大小过大")?;
         if bytes > MAX_TOTAL_BYTES {
             return Err("日志总大小超过 256 MiB，请分次导出或清理".into());
@@ -336,37 +338,13 @@ pub fn read_tail(
     let logs = scope.logs.as_ref().ok_or("日志目录不存在")?;
     let mut file = logs.file(name)?.ok_or("日志不存在")?;
     let before = Stamp::from_file(&file)?;
-    let start = before.bytes.saturating_sub(MAX_FILE_BYTES);
-    file.seek(SeekFrom::Start(start))
-        .map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(before.bytes - start)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+    let bytes = tail::read(&mut file, before.bytes, lines)?;
     let current = logs.file(name)?.ok_or("日志已消失")?;
     if Stamp::from_file(&current)?.identity() != before.identity() {
         return Err("当前日志已被替换，请重新读取".into());
     }
     scope.recheck()?;
-    // Drop a partial first line before decoding, including a split UTF-8 code
-    // point. The byte bound also prevents one enormous line from growing memory.
-    let bytes = if start > 0 {
-        bytes
-            .iter()
-            .position(|b| *b == b'\n')
-            .map(|i| &bytes[i + 1..])
-            .unwrap_or(&[])
-    } else {
-        &bytes
-    };
-    let text = String::from_utf8_lossy(bytes);
-    let count = text.lines().count();
-    let suffix = text
-        .lines()
-        .skip(count.saturating_sub(lines.clamp(100, 100_000)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(redact(&suffix))
+    Ok(redact(&tail::text(&bytes)))
 }
 
 /// Failure analysis binds one session log before releasing admission. It never
