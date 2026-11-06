@@ -66,10 +66,8 @@ jobs:
                           '--data', str(root / 'data'), '--output', str(root / 'evidence')], check=True)
           app.verify_bundle(bundle, json.loads(Path('target/native-app/app-manifest.json').read_bytes()))
           PY
-      - name: Build the application disk image
-        run: python tools/dmg-native.py --directory target/native-packages --output target/native-dmg --app-directory target/native-app
-      - name: Mount and verify the copied installed application
-        run: python tools/ci/verify-native-dmg.py --directory target/native-dmg --portable target/native-packages --app-directory target/native-app
+      # The independently verified .app remains usable even if disk-image
+      # creation later fails. Each format still requires its own full checks.
       - name: Save the verified standalone application
         uses: actions/upload-artifact@v7
         with:
@@ -78,6 +76,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+      - name: Build the application disk image
+        run: python tools/dmg-native.py --directory target/native-packages --output target/native-dmg --app-directory target/native-app
+      - name: Mount and verify the copied installed application
+        run: python tools/ci/verify-native-dmg.py --directory target/native-dmg --portable target/native-packages --app-directory target/native-app
       - name: Save the verified disk image
         uses: actions/upload-artifact@v7
         with:
