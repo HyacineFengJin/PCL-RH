@@ -1,12 +1,12 @@
 # 发行维护 / Releasing
 
-项目目前尚未公开发行。本文说明维护者后续构建、验证和发布的流程；当前源码构建与测试包使用见[构建与运行](BUILDING.md)。Linux x64 为主要支持平台，Windows x64、macOS Intel / Apple Silicon 为实验性。现有测试包未签名，macOS 未经 Apple 公证；具体功能和实机验收范围见[平台说明](PLATFORMS.md)。
+版本与附件见 [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases)。本文说明维护者构建、验证和发布的流程；安装与源码构建见[构建与运行](BUILDING.md)。Linux x64 为主要支持平台，Windows x64、macOS Intel / Apple Silicon 为实验性。发行包未签名，macOS 未经 Apple 公证；具体功能和实机验收范围见[平台说明](PLATFORMS.md)。
 
 ## 构建发行文件
 
 1. 确认待发行的 `master` 已提交并通过对应检查，应用版本与锁文件保持一致。记录待发行提交，不混用旧候选与新源码。
 2. 在 **Actions → [Official native candidates](https://github.com/HyacineFengJin/PCL-RH/actions/workflows/official-native.yml) → Run workflow** 选择 `master` 和所需平台，通常为 `all`。流程固定使用 Cargo `release` 优化配置，并从仓库 Secret 读取官方 CurseForge 构建凭据；缺少凭据会失败。
-3. 原生流程构建 WebUI、桌面和 CLI，验证实际归档、逐文件哈希、桌面 `--build-info`、CLI 版本及声明型插件宿主，并生成 Windows 当前用户安装器。保留每个平台的源提交、运行编号、清单及校验结果。
+3. 原生流程构建 WebUI、桌面和 CLI，按实际目标依赖生成 `native-attribution.json` 与 `NATIVE-DEPENDENCIES.txt`，验证实际归档、逐文件哈希、桌面 `--build-info`、CLI 版本及声明型插件宿主，并生成 Windows 当前用户安装器。保留每个平台的源提交、运行编号、清单及校验结果。
 4. 用同一次成功官方构建的 `source_run` 运行下表中的独立分发流程。它们复用经核验的原始程序；程序源提交和打包工具提交分别记录。独立安装布局要求程序支持 `split-v1`。
 
 | 工作流 | 产物与验证 |
@@ -37,4 +37,4 @@
 - Windows/macOS 私有安装的 Java 处理器、RH Code 源码写回与隔离构建、Windows 运行中 EXE 替换等现有限制，详见[平台说明](PLATFORMS.md)。
 - [安装、更新及数据位置](BUILDING.md)；如涉及数据兼容性变化，写清迁移方式。
 
-公开后检查 Release 附件能下载，重新核对摘要，并确认 README 的 `releases/latest` 指向预期版本。预发布版本通常不进入 GitHub 的 latest 入口；发布渠道和 README 下载入口须保持一致。
+公开后检查 Release 附件能下载，重新核对摘要，并确认 README 的版本下载链接与实际 Release 一致。更新版本时同步修改文档中的版本入口；预发布版本使用明确的版本链接。

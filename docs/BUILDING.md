@@ -1,10 +1,10 @@
 # 构建与运行 / Build and run
 
-目前尚未公开发行，可按下文[从源码构建](#源码构建)，或使用维护者生成的测试包。**Linux x64 为主要支持平台；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** 测试包未签名，macOS 未经 Apple 公证；功能限制与验收范围见[平台说明](PLATFORMS.md)。
+发行文件见 [v0.2.0](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0)，也可按下文[从源码构建](#源码构建)。**Linux x64 为主要支持平台；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** 发行包未签名，macOS 未经 Apple 公证；功能限制与验收范围见[平台说明](PLATFORMS.md)。
 
-## 测试包安装与更新
+## 安装与更新
 
-以下说明适用于对应类型的构建产物，以实际提供的文件为准。安装后添加已有 `.minecraft` 或空游戏目录，再选择实例、下载游戏或导入整合包。详细操作见[使用指南](USAGE.md)。下载时可用同目录的 `.sha256` 文件核对完整性。
+以下说明适用于对应类型的发行附件，以实际提供的文件为准。安装后添加已有 `.minecraft` 或空游戏目录，再选择实例、下载游戏或导入整合包。详细操作见[使用指南](USAGE.md)。下载时可用同目录的 `.sha256` 文件核对完整性。
 
 ### Linux
 
@@ -49,7 +49,7 @@ Windows Java 路径需能由当前系统代码页无损表示；无法表示时�
 两种安装版均可通过 `PCL_RH_DATA_ROOT` 指定另一个绝对数据目录，该目录须位于程序与发行资源之外。安装版不会自动迁移旧便携版的设置、账号记录或保存凭据；原数据仍在原目录，已有 Minecraft 目录可重新添加。
 
 - Linux 需要可用的 GTK 3、WebKitGTK 4.1、OpenSSL 和 D-Bus 运行库；文件选择器需要 XDG Desktop Portal 及适合桌面环境的后端，记住正版登录需要当前平台可用的系统凭据服务。
-- 游戏 Java 可由启动器下载，测试包不附完整 JDK。
+- 游戏 Java 可由启动器下载，发行包不附完整 JDK。
 - RH Code 和社区声明型插件需要单独安装 Node.js 22.19+。内置 npm 依赖随包提供；没有社区插件记录时，首页和设置中的空插槽不会为读取空内容启动 Node。
 - 插件宿主使用系统标准位置的 Node：Linux 为 `/usr/bin/node`，Windows 为 Program Files 下的 `nodejs/node.exe`，macOS 为 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node` 及其受支持的 Homebrew 安装。NVM 等用户级目录目前不会自动识别。安装或升级后可点击界面中的「重试」。
 

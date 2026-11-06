@@ -106,7 +106,7 @@ def verified_portable(directory: Path, scratch: Path) -> tuple[Path, dict, str]:
     PACKAGE.checked_version(manifest["version"])
     require(re.fullmatch(r"[0-9a-f]{40}", manifest["commit"]) is not None,
             "Missing native source commit")
-    allowed = {"pcl-desktop", "pcl-cli", "README-native.txt", "pcl-rh-license-notices.zip"}
+    allowed = {"pcl-desktop", "pcl-cli", "README-native.txt", "pcl-rh-license-notices.zip"} | PACKAGE.NATIVE_ATTRIBUTION_FILES
     names = set()
     for entry in manifest["files"]:
         name = entry["path"]

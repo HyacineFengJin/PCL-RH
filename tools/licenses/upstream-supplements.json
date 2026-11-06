@@ -615,9 +615,78 @@
               "location": "node_modules/@esbuild/linux-x64"
             }
           ]
+        },
+        {
+          "ecosystem": "npm",
+          "name": "@esbuild/darwin-arm64",
+          "version": "0.28.2",
+          "declared_license": "MIT",
+          "manifest_url": "https://raw.githubusercontent.com/evanw/esbuild/609683d892977362a0f99026cb74b96263d728a9/npm/@esbuild/darwin-arm64/package.json",
+          "manifest_sha256": "4e652c9e4410daf03da852a664940153601fac397233cdcf276b4b1a312454b9",
+          "repository_directory": "npm/@esbuild/darwin-arm64",
+          "registry_url": "https://registry.npmjs.org/@esbuild%2Fdarwin-arm64/0.28.2",
+          "registry_manifest_sha256": "71ef3c7d38a4eac3247e08b72b6a1801745139043f20c1c3d3f58c031bfa6495",
+          "registry_tarball": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.2.tgz",
+          "registry_integrity": "sha512-n4KqkOQrraxHJcgjM1RvwbigfQKIKJVpM7xp+KsxiyUSrRdIXnt73VhrPAx0fV44hgfmIVKjxMN9J1t5jySVkw==",
+          "verified_lockfile_occurrences": [
+            {
+              "tree": "apps/desktop",
+              "location": "node_modules/@esbuild/darwin-arm64"
+            },
+            {
+              "tree": "experimental/runtime",
+              "location": "node_modules/@esbuild/darwin-arm64"
+            }
+          ]
+        },
+        {
+          "ecosystem": "npm",
+          "name": "@esbuild/darwin-x64",
+          "version": "0.28.2",
+          "declared_license": "MIT",
+          "manifest_url": "https://raw.githubusercontent.com/evanw/esbuild/609683d892977362a0f99026cb74b96263d728a9/npm/@esbuild/darwin-x64/package.json",
+          "manifest_sha256": "e841d308b3490ed55706aa6362a263f77933010249fc240286b6b6722270d973",
+          "repository_directory": "npm/@esbuild/darwin-x64",
+          "registry_url": "https://registry.npmjs.org/@esbuild%2Fdarwin-x64/0.28.2",
+          "registry_manifest_sha256": "f85c515e48608b52a51a4409387250b146efe3cc1e07555bcac95b5276dcf17f",
+          "registry_tarball": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.2.tgz",
+          "registry_integrity": "sha512-uq6suIWYP37qzGddBKPw5QEQPi6HiLGsO7UmkpfyaYNQ3D+rN6w6WfwH+nuqcGXWvawGwxOEroO4YGnFh95azw==",
+          "verified_lockfile_occurrences": [
+            {
+              "tree": "apps/desktop",
+              "location": "node_modules/@esbuild/darwin-x64"
+            },
+            {
+              "tree": "experimental/runtime",
+              "location": "node_modules/@esbuild/darwin-x64"
+            }
+          ]
+        },
+        {
+          "ecosystem": "npm",
+          "name": "@esbuild/win32-x64",
+          "version": "0.28.2",
+          "declared_license": "MIT",
+          "manifest_url": "https://raw.githubusercontent.com/evanw/esbuild/609683d892977362a0f99026cb74b96263d728a9/npm/@esbuild/win32-x64/package.json",
+          "manifest_sha256": "89382df45735edcd917c492a810ab514920fa07d36c653cdc122bdfd8f526964",
+          "repository_directory": "npm/@esbuild/win32-x64",
+          "registry_url": "https://registry.npmjs.org/@esbuild%2Fwin32-x64/0.28.2",
+          "registry_manifest_sha256": "2989be0abdb22dfcf143fbb5cd6355c90fb502d7bd5c97e4e95d5da44baa98e8",
+          "registry_tarball": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz",
+          "registry_integrity": "sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==",
+          "verified_lockfile_occurrences": [
+            {
+              "tree": "apps/desktop",
+              "location": "node_modules/@esbuild/win32-x64"
+            },
+            {
+              "tree": "experimental/runtime",
+              "location": "node_modules/@esbuild/win32-x64"
+            }
+          ]
         }
       ],
-      "verification_method": "Official npm exact-version gitHead equals the official v0.28.2 tag; source platform package manifest name/version/license all match both installed trees."
+      "verification_method": "Official npm exact-version gitHead equals the official v0.28.2 tag for each listed platform package. Source platform package manifests exactly match locked name/version/license; registry integrity matches both recorded lockfile occurrences. The repository-root MIT license is preserved verbatim. Platform archives omit their own license file; no license file is claimed to be inside those archives."
     },
     {
       "source_repository": "https://github.com/rollup/rollup",
@@ -857,6 +926,49 @@
         }
       ],
       "verification_method": "Official npm exact-version gitHead identifies this source commit; JavaScript manifest is exactly standardwebhooks 1.1.1/MIT. Nearest ancestor libraries/LICENSE is the MIT grant with Copyright (c) 2023 Svix, and the exact source archive has no overriding JavaScript license. Root specification Apache LICENSE is not substituted for the library license."
+    },
+    {
+      "source_repository": "https://github.com/TooTallNate/proxy-agents",
+      "source_tag": "proxy-agent-negotiate@1.1.0",
+      "source_commit": "b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16",
+      "evidence_kind": "canonical_text_for_declared_spdx",
+      "license_identifier": "MIT",
+      "license_url": "https://raw.githubusercontent.com/spdx/license-list-data/c4a7237ec8f4654e867546f9f409749300f1bf4c/text/MIT.txt",
+      "license_sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+      "license_text": "MIT License\n\nCopyright (c) <year> <copyright holders>\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and\nassociated documentation files (the \"Software\"), to deal in the Software without restriction, including\nwithout limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the\nfollowing conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial\nportions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT\nLIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO\nEVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER\nIN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE\nUSE OR OTHER DEALINGS IN THE SOFTWARE.\n",
+      "canonical_source_repository": "https://github.com/spdx/license-list-data",
+      "canonical_source_tag": "v3.28.0",
+      "canonical_source_commit": "c4a7237ec8f4654e867546f9f409749300f1bf4c",
+      "original_notice_status": "The exact published archive and package source omit an original LICENSE and copyright notice. The unchanged SPDX copyright placeholders are standard-template text, not attribution to this package. No year or copyright holder has been inferred from the author field or sibling packages.",
+      "verified_packages": [
+        {
+          "ecosystem": "npm",
+          "name": "proxy-agent-negotiate",
+          "version": "1.1.0",
+          "declared_license": "MIT",
+          "manifest_url": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16/packages/negotiate/package.json",
+          "manifest_sha256": "22afa667fffb3ada1f7d56955ed59f396936f80c55ce09a229fe0afb3247c77a",
+          "repository_directory": "packages/negotiate",
+          "published_manifest_sha256": "7b7c2579ea138d20d4f7699ca78ef16c526f35168dbf694f1d47cc861b0954d4",
+          "registry_url": "https://registry.npmjs.org/proxy-agent-negotiate/1.1.0",
+          "registry_manifest_sha256": "41807d237c09eff6120e33932015c4ff9c230872c2df119010db48aa4ae0731e",
+          "registry_tarball": "https://registry.npmjs.org/proxy-agent-negotiate/-/proxy-agent-negotiate-1.1.0.tgz",
+          "registry_integrity": "sha512-N8IBcM3UgCVzz2L2Lqv8DVntDnnC8/hiV4nEDUPkqq72TPUgYWjQc+bdZlBPZK9LzPAvOY//gAt0S0DApoOXWQ==",
+          "registry_git_head_present": false,
+          "published_archive_sha256": "6eec23d5d381a8b0ffafe91c19876d3a052e463618695981a7529f3a8bca1997",
+          "npm_provenance_url": "https://registry.npmjs.org/-/npm/v1/attestations/proxy-agent-negotiate@1.1.0",
+          "npm_provenance_document_sha256": "e109fa690f2e23184f9a2cb0c00b0132a6339685ac9acceb26ef0d1d353af2a3",
+          "npm_provenance_subject_sha512": "37c20170cdd4802573cf62f62eabfc0d59ed0e79c2f3f8625789c40d43e4aaaef64cf5206168d073e6dd66504f64af4bccf02f398fff800b744b40c0a6839759",
+          "annotated_tag_object": "04af2dd5365059650ad7209cc46457adca9b5ecb",
+          "verified_lockfile_occurrences": [
+            {
+              "tree": "experimental/runtime",
+              "location": "node_modules/proxy-agent-negotiate"
+            }
+          ]
+        }
+      ],
+      "verification_method": "Official npm exact-version metadata declares MIT but has no gitHead. The npm-hosted SLSA subject sha512 equals the downloaded archive and lockfile integrity; resolvedDependencies and the peeled official package tag identify the same commit. Its exact package manifest declares proxy-agent-negotiate 1.1.0/MIT, and all five published files match the installed files. Root/package LICENSE files and original copyright headers were not found. Standard MIT terms are supplied verbatim from pinned official SPDX data, not represented as an upstream package notice. Provenance payload values were inspected and compared; cryptographic certificate/transparency verification was not performed."
     }
   ]
 }

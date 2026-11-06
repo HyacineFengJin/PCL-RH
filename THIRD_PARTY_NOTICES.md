@@ -21,12 +21,16 @@ PCL / PCL CE、HMCL、PCL N / Nex 和 DSH 的参考关系另见版权说明。�
 ## 可再生成的依赖清单
 
 - [THIRDPARTY.generated.json](THIRDPARTY.generated.json)：精确版本、依赖边、使用范围、原许可证表达式、正文指纹及证据缺口。
-- [LICENSES/DEPENDENCIES.txt](LICENSES/DEPENDENCIES.txt)：收集到的完整 LICENSE / COPYING / NOTICE 原文，按内容 SHA-256 去重，保留上游署名及逻辑来源路径。
+- [LICENSES/DEPENDENCIES.txt](LICENSES/DEPENDENCIES.txt)：收集到的完整 LICENSE / COPYING / NOTICE 原文及明确单列的 SPDX 标准条款，按内容 SHA-256 去重，保留署名和来源路径。
 - [生成工具](tools/licenses/README.md)：离线采集、内容一致性检查和严格模式说明。
 
 当前快照采集 Linux `x86_64-unknown-linux-gnu` 的 Cargo 依赖闭包，以及桌面和 Pi runtime 的两份 npm 锁文件。构建/开发依赖也会列出，不能把“出现在锁文件中”直接等同于“编入了发行二进制”。其他平台的原生依赖、未安装的可选 npm 包及操作系统动态库不冒充已完成检查。
 
-当前清单中 **2 个已安装包的许可正文证据尚未收齐**：`@napi-rs/lzma-linux-x64-gnu` 1.5.1、`proxy-agent-negotiate` 1.1.0。它们已有 MIT 许可声明，但精确版本中尚未找到可确认的完整授权原文；未以作者名或其他版本的正文代替。另有 **85 个未安装的可选 npm 包**，仅记录锁文件声明。这些项在 `issues` 中单独列明。严格证据检查因此不会报告全通过；补齐或更新依赖后应重新生成，而不是删除这些提示。
+当前清单中 **1 个已安装开发依赖的许可正文尚未收齐**：`@napi-rs/lzma-linux-x64-gnu` 1.5.1；保留 `license_text_missing` 提示，不以作者名或其他版本的正文代替。
+
+随 runtime 分发的 `proxy-agent-negotiate` 1.1.0 已核对精确发布归档、MIT 声明、上游提交及对应版本标签；按其明确的 SPDX 标识提供[官方 SPDX MIT 标准条款](https://spdx.org/licenses/MIT.html)，固定来源和摘要见清单中的 `canonical_license_supplements`。该文本与包内或上游原始 LICENSE 分列，版权模板保持原样，不代表该包的版权署名，也未从作者字段补造年份或权利人。**原包及该版本源码未提供原始 LICENSE / copyright notice**，仍单独记录 `original_license_notice_missing` 严格证据缺口。
+
+另有 **85 个未安装的可选 npm 包**，仅记录锁文件声明。这些项在 `issues` 中单独列明。严格证据检查仍不会报告全通过；补齐或更新依赖后应重新生成，而不是删除提示。提供标准条款不等于已证明所有发行方式合规。
 
 对归档缺正文但已核实上游的包，清单保留精确版本、固定提交、原文指纹及发布来源。Cargo 补文另核对发布归档校验和、源码提交和原始 manifest；npm 补文保留对应发布元数据。有分支许可时只采用已核实分支，例如 fastnbt 的 MIT；selectors 的 MPL 2.0 正文依据该版本源码头指定的官方版本链接。
 

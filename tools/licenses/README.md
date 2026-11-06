@@ -73,7 +73,33 @@ missing evidence when it cannot be verified; never substitute a repository's
 current branch for an older package version. Regenerate and review the resulting
 inventory and license text changes before distribution.
 
+When the exact published npm manifest declares an SPDX identifier but neither
+the package nor its verified source provides an original legal notice, an
+explicit `canonical_text_for_declared_spdx` record may supply the corresponding
+standard terms from a pinned official SPDX source. It must bind the exact npm
+archive integrity and published manifest SHA-256; the installed manifest is
+checked against that digest. The SPDX identifier must match the full declaration,
+not merely one branch of an expression. Standard template copyright placeholders
+remain unchanged and are never attributed to the package or filled from an
+author field.
+
+These records appear in `canonical_license_texts` and
+`canonical_license_supplements`, separately from original `license_files` and
+`upstream_supplements`. They retain an `original_license_notice_missing` issue
+that fails strict evidence checking: supplying declared standard terms does not
+claim that the package's original LICENSE or copyright notice was recovered,
+or establish final distribution compliance.
+
 ## Application and release copies
+
+Native candidates additionally run `python tools/licenses/native.py --output
+target/native-attribution` after the native build. The collector reads offline
+Cargo metadata for the host's desktop/CLI production dependency graph and the
+actually installed runtime npm packages. It binds both output documents to HEAD,
+the locked inputs and the host target. `package-native.py --native-attribution`
+checks those bindings and includes the documents in both the package and its
+offline notices archive. Missing declarations or all available license terms
+stop collection; separately recorded original-notice evidence gaps remain visible.
 
 The About page includes an offline reader for the fixed attribution documents.
 Vite loads each text on demand and the production custom-protocol build embeds

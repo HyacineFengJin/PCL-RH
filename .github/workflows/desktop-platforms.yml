@@ -168,13 +168,25 @@ jobs:
                             'Compiler logs are attached to this run.\n')
           sys.exit(0 if code == 0 else 1)
           PY
+      - name: Collect attribution for the actual native target and installed runtime
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          python - <<'PY'
+          import subprocess
+          host = next(line.removeprefix('host: ').strip() for line in subprocess.check_output(
+              ['rustc', '-vV'], text=True).splitlines() if line.startswith('host: '))
+          subprocess.run(['cargo', 'fetch', '--locked', '--target', host], check=True)
+          subprocess.run(['python', 'tools/licenses/test_native.py'], check=True)
+          subprocess.run(['python', 'tools/licenses/native.py', '--output', 'target/native-attribution'], check=True)
+          PY
       - name: Assemble a native portable preview
         env:
           OFFICIAL_BUILD: ${{ inputs.official || false }}
         run: |
           args=()
           if [ "$OFFICIAL_BUILD" = true ]; then args+=(--curseforge-embedded); fi
-          python tools/package-native.py --binaries "target/$BUILD_PROFILE" --profile "$BUILD_PROFILE" --output target/native-packages "${args[@]}"
+          python tools/package-native.py --binaries "target/$BUILD_PROFILE" --profile "$BUILD_PROFILE" --output target/native-packages --native-attribution target/native-attribution "${args[@]}"
       - name: Verify the relocated archive and actual bundled plugin host
         # Only private synthetic data, CLI scanning and declarative host RPC.
         # Never opens a GUI, contacts a model or accesses accounts/game roots.

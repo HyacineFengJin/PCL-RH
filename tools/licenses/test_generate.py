@@ -88,6 +88,66 @@ class EvidenceTests(unittest.TestCase):
                     "published_archive_sha256": checksum, "cargo_lock_checksum": checksum}
         return package, evidence, {"source_commit": commit}, checksum
 
+    def canonical_npm_fixture(self, declared="MIT"):
+        tree = self.root / "fixture"
+        package = tree / "node_modules/example"
+        package.mkdir(parents=True)
+        manifest = json.dumps({"name": "example", "version": "1.0.0", "license": declared})
+        (package / "package.json").write_text(manifest)
+        (tree / "package.json").write_text(json.dumps({"dependencies": {"example": "1.0.0"}}))
+        (tree / "package-lock.json").write_text(json.dumps({"packages": {
+            "": {"dependencies": {"example": "1.0.0"}},
+            "node_modules/example": {"version": "1.0.0", "license": declared, "integrity": "sha512-exact"},
+        }}))
+        text = "MIT License\nCopyright (c) <year> <copyright holders>\nCanonical fixture terms.\n"
+        source = {
+            "evidence_kind": "canonical_text_for_declared_spdx", "license_identifier": "MIT",
+            "license_text": text, "license_sha256": module.sha256(text.encode()),
+            "license_url": "https://example.org/fixed-spdx-commit/MIT.txt",
+            "verified_packages": [{"name": "example", "version": "1.0.0", "declared_license": declared,
+                                   "registry_integrity": "sha512-exact", "published_manifest_sha256": module.sha256(manifest.encode())}],
+        }
+        supplements = self.root / "tools/licenses/upstream-supplements.json"
+        supplements.parent.mkdir(parents=True)
+        supplements.write_text(json.dumps({"sources": [source]}))
+        return package, source, supplements
+
+    def test_canonical_terms_preserve_placeholders_and_original_notice_gap(self):
+        _, source, _ = self.canonical_npm_fixture()
+        with patch.object(module, "NPM_TREES", ("fixture",)):
+            row = self.audit.npm()[0]["packages"][0]
+        self.assertEqual(row["license_files"], [])
+        self.assertNotIn("upstream_supplements", row)
+        self.assertEqual(row["canonical_license_texts"], [{"file": "canonical:MIT", "text_sha256": source["license_sha256"]}])
+        self.assertEqual(row["canonical_license_supplements"][0]["source"]["evidence_kind"], "canonical_text_for_declared_spdx")
+        self.assertEqual(next(iter(self.audit.texts.values()))["text"], source["license_text"])
+        self.assertEqual([issue["code"] for issue in self.audit.issues], ["original_license_notice_missing"])
+        self.assertTrue(self.audit.issues[0]["fails_strict"])
+
+    def test_canonical_terms_reject_changed_published_manifest(self):
+        package, _, _ = self.canonical_npm_fixture()
+        metadata = json.loads((package / "package.json").read_text())
+        metadata["unverified_extra_field"] = True
+        (package / "package.json").write_text(json.dumps(metadata))
+        with patch.object(module, "NPM_TREES", ("fixture",)):
+            with self.assertRaisesRegex(ValueError, "manifest differs"):
+                self.audit.npm()
+        self.assertEqual(self.audit.texts, {})
+
+    def test_canonical_terms_require_published_archive_evidence(self):
+        _, source, supplements = self.canonical_npm_fixture()
+        del source["verified_packages"][0]["registry_integrity"]
+        supplements.write_text(json.dumps({"sources": [source]}))
+        with self.assertRaisesRegex(ValueError, "exact published npm package evidence"):
+            self.audit.supplements()
+        self.assertEqual(self.audit.texts, {})
+
+    def test_canonical_terms_do_not_relabel_a_license_expression(self):
+        self.canonical_npm_fixture("MIT OR Apache-2.0")
+        with self.assertRaisesRegex(ValueError, "exact SPDX declaration"):
+            self.audit.supplements()
+        self.assertEqual(self.audit.texts, {})
+
     def test_npm_same_version_with_different_archive_integrity_is_rejected(self):
         tree = self.root / "fixture"
         package = tree / "node_modules/example"

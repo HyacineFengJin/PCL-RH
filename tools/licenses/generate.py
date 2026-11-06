@@ -91,6 +91,11 @@ class Audit:
                 ecosystem = package.get("ecosystem", source.get("ecosystem", "npm"))
                 if ecosystem not in {"npm", "cargo"}:
                     raise ValueError("Unsupported upstream supplement ecosystem")
+                if source.get("evidence_kind") == "canonical_text_for_declared_spdx":
+                    if ecosystem != "npm" or source.get("license_identifier") != package["declared_license"]:
+                        raise ValueError("Canonical license text must match the package's exact SPDX declaration")
+                    if not all(package.get(field) for field in ("registry_integrity", "published_manifest_sha256")):
+                        raise ValueError("Canonical license text requires exact published npm package evidence")
                 key = (ecosystem, package["name"], package["version"], package["declared_license"])
                 records = supplements.setdefault(key, [])
                 if any(previous[0]["license_url"] == source["license_url"] for previous in records):
@@ -109,18 +114,32 @@ class Audit:
         return supplements.get(key, [])
 
     def add_supplement_texts(self, row, records):
-        """Preserve each original document and its evidence; one package may need several."""
+        """Keep original notices distinct from standard terms for a declared SPDX ID."""
         provenance = []
+        canonical = []
         for source, evidence in records:
             digest = self.text(source["license_text"].encode("utf-8"), source["license_url"])
-            row["license_files"].append({"file": "upstream:" + source.get("source_file", "LICENSE"), "text_sha256": digest})
             # Keep version-specific branches and source-header evidence visible.
             # Never replace the package's declared expression with a verified OR branch.
-            provenance.append({
+            record = {
                 "source": {k: v for k, v in source.items() if k not in {"license_text", "verified_packages"}},
                 "package_verification": dict(evidence),
-            })
-        row["upstream_supplements"] = provenance
+            }
+            if source.get("evidence_kind") == "canonical_text_for_declared_spdx":
+                row.setdefault("canonical_license_texts", []).append({
+                    "file": "canonical:" + source["license_identifier"], "text_sha256": digest,
+                })
+                canonical.append(record)
+            else:
+                row["license_files"].append({"file": "upstream:" + source.get("source_file", "LICENSE"), "text_sha256": digest})
+                provenance.append(record)
+        if provenance:
+            row["upstream_supplements"] = provenance
+        if canonical:
+            row["canonical_license_supplements"] = canonical
+            if not row["license_files"]:
+                self.issue("original_license_notice_missing", row["id"],
+                           "Canonical terms for the exact declared SPDX identifier are supplied separately. The published package and verified source omit an original license/copyright notice; standard template placeholders are not this package's copyright attribution.")
 
     def validate_cargo_supplement(self, package_root, evidence, source, lock_checksum):
         """Validate local provenance without executing or extracting package contents."""
@@ -204,12 +223,15 @@ class Audit:
                 if installed and not row["license_files"]:
                     records = self.matching_supplements(supplements, "npm", row)
                     if records:
-                        for _, evidence in records:
+                        for source, evidence in records:
                             integrity = evidence.get("registry_integrity")
                             if integrity is not None and integrity != row["integrity"]:
                                 raise ValueError(ident + ": lockfile integrity differs from verified registry evidence")
+                            if source.get("evidence_kind") == "canonical_text_for_declared_spdx":
+                                if sha256((package_path / "package.json").read_bytes()) != evidence["published_manifest_sha256"]:
+                                    raise ValueError(ident + ": installed manifest differs from verified published evidence")
                         self.add_supplement_texts(row, records)
-                if installed and not row["license_files"]:
+                if installed and not row["license_files"] and not row.get("canonical_license_texts"):
                     self.issue("license_text_missing", ident, "Installed archive has no independently named license/notice file; a license declaration alone is not its complete legal text.")
                 if not license_value:
                     self.issue("license_declaration_missing", ident, "The lockfile has no license declaration.")

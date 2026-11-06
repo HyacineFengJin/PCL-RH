@@ -119,6 +119,64 @@ class NativePackageTests(unittest.TestCase):
     def run_package(self) -> dict:
         return PACKAGE.package(self.root, self.binaries, self.output, "debug")
 
+    def native_attribution(self) -> tuple[Path, dict]:
+        names = ("Cargo.lock", "experimental/runtime/package.json",
+                 "experimental/runtime/package-lock.json", "tools/licenses/upstream-supplements.json",
+                 "tools/licenses/generate.py", "tools/licenses/native.py")
+        for name in names:
+            if not (self.root / name).exists():
+                self.write(name, b"synthetic collector input\n")
+        self.git("add", *names)
+        self.git("-c", "user.name=Synthetic fixture", "-c", "user.email=fixture@example.invalid",
+                 "commit", "-qm", "synthetic native attribution inputs")
+        head = PACKAGE.Head(self.root)
+        directory = self.base / "native attribution"
+        directory.mkdir()
+        text = b"Synthetic native dependency license\n"
+        targets = {("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+                   ("windows", "x86_64"): "x86_64-pc-windows-msvc",
+                   ("macos", "x86_64"): "x86_64-apple-darwin",
+                   ("macos", "aarch64"): "aarch64-apple-darwin"}
+        doc = {"schema_version": 1, "generator": "tools/licenses/native.py",
+               "source_commit": head.commit, "target": targets[(self.system, self.arch)],
+               "inputs": [{"path": name, "git_blob": head.entries[name][1],
+                           "bytes": len(head.read(name)), "sha256": hashlib.sha256(head.read(name)).hexdigest()}
+                          for name in names],
+               "license_text_bundle": "NATIVE-DEPENDENCIES.txt",
+               "license_text_bundle_sha256": hashlib.sha256(text).hexdigest()}
+        (directory / "native-attribution.json").write_text(json.dumps(doc), encoding="utf-8")
+        (directory / "NATIVE-DEPENDENCIES.txt").write_bytes(text)
+        return directory, doc
+
+    def test_native_attribution_is_in_package_and_offline_notice_archive(self) -> None:
+        directory, _ = self.native_attribution()
+        result = PACKAGE.package(self.root, self.binaries, self.output, "release",
+                                 attribution_directory=directory)
+        extracted = self.unpack(self.output / result["archive"])
+        with zipfile.ZipFile(extracted / "pcl-rh-license-notices.zip") as notices:
+            for name in PACKAGE.NATIVE_ATTRIBUTION_FILES:
+                expected = (directory / name).read_bytes()
+                self.assertEqual((extracted / name).read_bytes(), expected)
+                self.assertEqual(notices.read(name), expected)
+
+    def test_native_attribution_rejects_wrong_source_target_text_or_inputs(self) -> None:
+        directory, original = self.native_attribution()
+        head = PACKAGE.Head(self.root)
+        for field, replacement in (("source_commit", "0" * 40), ("target", "another-target"),
+                                   ("license_text_bundle_sha256", "0" * 64), ("inputs", [])):
+            with self.subTest(field=field):
+                doc = {**original, field: replacement}
+                (directory / "native-attribution.json").write_text(json.dumps(doc), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    PACKAGE.native_attribution(head, directory, self.system, self.arch)
+        for field, replacement in (("git_blob", "0" * 40), ("bytes", 0), ("sha256", "0" * 64)):
+            with self.subTest(input_field=field):
+                doc = json.loads(json.dumps(original))
+                doc["inputs"][0][field] = replacement
+                (directory / "native-attribution.json").write_text(json.dumps(doc), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "differs from committed source"):
+                    PACKAGE.native_attribution(head, directory, self.system, self.arch)
+
     def assert_no_scratch(self) -> None:
         self.assertEqual(list(self.output.glob(".pcl-native-package-*")), [])
 

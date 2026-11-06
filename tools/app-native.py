@@ -120,7 +120,7 @@ def required_source_manifest(manifest: dict) -> None:
             | {"pcl-rh-license-notices.zip"} <= names, "Portable candidate lacks required production resources")
     require(all(type(entry["mode"]) is int and entry["mode"] in (0o644, 0o755)
                 for entry in manifest["files"]), "Unsafe application resource permissions")
-    extra = BINARIES | EXCLUDED | {"pcl-rh-license-notices.zip"}
+    extra = BINARIES | EXCLUDED | {"pcl-rh-license-notices.zip"} | PACKAGE.NATIVE_ATTRIBUTION_FILES
     for name in names:
         PACKAGE.relative_name(name)
         require(name.split("/", 1)[0] not in (".pcl-rust", ".pcl-linux", "Minecraft"), "Application includes user state")

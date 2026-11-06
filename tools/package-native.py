@@ -28,6 +28,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 MAX_FILES = 100_000
 MAX_BYTES = 2 * 1024**3
+NATIVE_ATTRIBUTION_FILES = frozenset({"native-attribution.json", "NATIVE-DEPENDENCIES.txt"})
 SEMVER_NUMBER = r"(?:0|[1-9][0-9]*)"
 SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 SEMVER = re.compile(SEMVER_NUMBER + r"\." + SEMVER_NUMBER + r"\." + SEMVER_NUMBER
@@ -160,6 +161,53 @@ def license_inputs(head: Head) -> tuple[types.ModuleType, dict[str, bytes], dict
     module.source_bytes = head.read
     contents, issues = module.checked_documents()
     return module, contents, issues
+
+
+def native_attribution(head: Head, directory: Path, system: str, arch: str) -> dict[str, bytes]:
+    """Bind the native collector's output to this source and target before shipping.
+
+    These are explicit build outputs, unlike the committed source-only inventory.
+    Their complete bytes also enter the normal package and notices manifests.
+    """
+    targets = {("linux", "x86_64"): "x86_64-unknown-linux-gnu",
+               ("windows", "x86_64"): "x86_64-pc-windows-msvc",
+               ("macos", "x86_64"): "x86_64-apple-darwin",
+               ("macos", "aarch64"): "aarch64-apple-darwin"}
+    regular_directory(directory)
+    contents = {}
+    for name in sorted(NATIVE_ATTRIBUTION_FILES):
+        path = directory / name
+        metadata = path.lstat()
+        require(stat.S_ISREG(metadata.st_mode) and not reparse(metadata)
+                and 0 < metadata.st_size <= 32 * 1024**2,
+                "Missing or invalid native attribution output: " + name)
+        contents[name] = path.read_bytes()
+        contents[name].decode("utf-8")
+    document = json.loads(contents["native-attribution.json"])
+    require(document.get("schema_version") == 1
+            and document.get("generator") == "tools/licenses/native.py"
+            and document.get("source_commit") == head.commit
+            and document.get("target") == targets[(system, arch)],
+            "Native attribution belongs to another source or target")
+    require(document.get("license_text_bundle") == "NATIVE-DEPENDENCIES.txt"
+            and document.get("license_text_bundle_sha256")
+            == hashlib.sha256(contents["NATIVE-DEPENDENCIES.txt"]).hexdigest(),
+            "Native attribution text bundle hash mismatch")
+    seen = set()
+    for item in document.get("inputs", []):
+        name = relative_name(item["path"])
+        require(name not in seen, "Duplicate native attribution input")
+        seen.add(name)
+        data = head.read(name)
+        require(item.get("git_blob") == head.entries[name][1]
+                and item.get("bytes") == len(data)
+                and item.get("sha256") == hashlib.sha256(data).hexdigest(),
+                "Native attribution input differs from committed source: " + name)
+    require({"Cargo.lock", "experimental/runtime/package.json",
+             "experimental/runtime/package-lock.json", "tools/licenses/upstream-supplements.json",
+             "tools/licenses/generate.py", "tools/licenses/native.py"} <= seen,
+            "Native attribution is missing source bindings")
+    return contents
 
 
 def reparse(metadata: os.stat_result) -> bool:
@@ -336,7 +384,8 @@ def write_archive(destination: Path, stage: Stage, system: str) -> None:
 
 
 def package(root: Path, binaries: Path, output: Path, profile: str, *,
-            curseforge_embedded: bool = False) -> dict[str, str]:
+            curseforge_embedded: bool = False,
+            attribution_directory: Path | None = None) -> dict[str, str]:
     system, arch = native_host()
     require(profile in ("debug", "release"), "Unsupported Cargo profile")
     require(not output.is_relative_to(root / "experimental/runtime/node_modules"),
@@ -356,6 +405,8 @@ def package(root: Path, binaries: Path, output: Path, profile: str, *,
             and bool(runtime.get("dependencies", {}).get("@earendil-works/pi-coding-agent")),
             "Runtime package lock does not describe the committed runtime dependencies")
     module, documents, issues = license_inputs(head)
+    if attribution_directory is not None:
+        documents.update(native_attribution(head, attribution_directory, system, arch))
     suffix = ".zip" if system == "windows" else ".tar.gz"
     archive_name = f"pcl-rh-{version}-{system}-{arch}-{profile}" + suffix
     names = {"archive": archive_name, "sha256": archive_name + ".sha256",
@@ -407,7 +458,8 @@ def package(root: Path, binaries: Path, output: Path, profile: str, *,
                   "The archive includes runtime dependencies, not a Node.js or Java installation.\n"
                   "Game Java can be downloaded by the launcher; author builds need an external supported JDK.\n"
                   "Native author-code builds and private-pack Java processors remain platform restricted.\n"
-                  "This unsigned development/test archive uses manual replacement for updates.\n"
+                  "This unsigned portable archive uses manual replacement for updates.\n"
+                  + ("Windows and macOS support is experimental.\n" if system != "linux" else "")
                   + credential_notice)
         stage.add_bytes("README-native.txt", readme.encode("utf-8"))
         license_path = scratch / "license-notices.zip"
@@ -454,12 +506,15 @@ def main() -> None:
     parser.add_argument("--binaries", type=Path, required=True, help="explicit native Cargo output directory")
     parser.add_argument("--profile", choices=("debug", "release"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--native-attribution", type=Path,
+                        help="native-target license inventory produced from this exact source revision")
     parser.add_argument("--curseforge-embedded", action="store_true",
                         help="declare an embedded service credential; archive verification must confirm it")
     args = parser.parse_args()
     try:
         print(json.dumps(package(ROOT, args.binaries.absolute(), args.output.absolute(), args.profile,
-                                 curseforge_embedded=args.curseforge_embedded)))
+                                 curseforge_embedded=args.curseforge_embedded,
+                                 attribution_directory=args.native_attribution)))
     except (ValueError, OSError, KeyError, UnicodeError, subprocess.CalledProcessError) as error:
         parser.exit(1, "Native packaging failed: " + str(error) + "\n")
 
