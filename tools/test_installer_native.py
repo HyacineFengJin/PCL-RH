@@ -42,7 +42,8 @@ class InstallerRecipeTests(unittest.TestCase):
             scratch = Path(temporary)
             root = scratch / "PCL-RH"
             root.mkdir()
-            manifest = self.fixture(root, ["pcl-desktop.exe", "pcl-cli.exe", "LICENSE"])
+            manifest = self.fixture(root, ["pcl-desktop.exe", "pcl-cli.exe", "LICENSE",
+                                           *sorted(INSTALL.PACKAGE.NATIVE_ATTRIBUTION_FILES)])
             icon = root / "assets/pcl-rh.ico"
             icon.parent.mkdir()
             shutil.copyfile(Path(__file__).parents[1] / "assets/pcl-rh.ico", icon)
@@ -123,6 +124,21 @@ class InstallerRecipeTests(unittest.TestCase):
             manifest["platform"] = "linux"
             with self.assertRaisesRegex(ValueError, "Windows"):
                 INSTALL.inno_script(root, manifest)
+
+    def test_native_attribution_is_installed_with_its_manifest_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = self.fixture(root, ["pcl-desktop.exe", "native-attribution.json",
+                                           "NATIVE-DEPENDENCIES.txt"])
+            script = INSTALL.inno_script(root, manifest)
+            for entry in manifest["files"][1:]:
+                line, = [line for line in script.splitlines()
+                         if line.startswith('Source: "PCL-RH\\' + entry["path"] + '";')]
+                self.assertIn('DestDir: "{app}";', line)
+                self.assertIn('Hash: "' + entry["sha256"] + '"', line)
+            for name in ("native-attribution-private.json", "NATIVE-DEPENDENCIES.txt.bak"):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Not a program resource"):
+                    INSTALL.member(name)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ LEGAL = load("pcl_installer_legal", ROOT / "licenses/release.py")
 APP_ID = "dev.pcl-rh.desktop"
 ROOT_FILES = {"pcl-rh.json", "pcl-desktop.exe", "pcl-cli.exe", "start-native.ps1",
               "README-native.txt", "package-manifest.json", "pcl-rh-license-notices.zip",
-              "LICENSES/INNO-SETUP.txt"}
+              "LICENSES/INNO-SETUP.txt"} | PACKAGE.NATIVE_ATTRIBUTION_FILES
 
 
 def language_inputs() -> tuple[bytes, bytes]:
