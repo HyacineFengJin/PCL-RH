@@ -1,0 +1,9 @@
+.ce-local-resources .ce-resource-window {
+  position: relative;
+  overflow-anchor: none;
+}
+.ce-local-resources .ce-resource-window > .resource-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}

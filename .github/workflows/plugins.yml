@@ -80,7 +80,7 @@ jobs:
           node apps/desktop/scripts/check-porter-source-owner.mjs
           node apps/desktop/scripts/check-rh-code-controller.mjs
       - name: Check download visibility and local resource refresh
-        run: node --test apps/desktop/scripts/download-panel-lifecycle-ui.test.mjs apps/desktop/scripts/local-resource-refresh-ui.test.mjs
+        run: node --test apps/desktop/scripts/download-panel-lifecycle-ui.test.mjs apps/desktop/scripts/local-resource-refresh-ui.test.mjs apps/desktop/scripts/resource-window-ui.test.mjs
       - name: Type check and build the WebUI
         run: npm run build --prefix apps/desktop
       # No native stores, game processes, AI providers or credentials are used.

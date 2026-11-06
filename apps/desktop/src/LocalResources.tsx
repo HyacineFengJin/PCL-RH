@@ -6,6 +6,8 @@ import { LauncherNavigationContext } from "./useLauncherPreferences";
 import { resourceBrowseRequest } from "./resourceBrowse";
 import { ResourceFavorite } from "./LauncherFavorites";
 import { useResourceInfoExport } from "./useResourceInfoExport";
+import { RESOURCE_ROW_HEIGHT, useResourceWindow } from "./useResourceWindow";
+import "./resource-window.css";
 import {
   Box,
   Search,
@@ -290,6 +292,11 @@ export function ResourcePanel({
       );
   }, [entries, query, filter, updateIndex, hideUpdates, descending]);
   const selectedPaths = useMemo(() => new Set(selected), [selected]);
+  const resourcePaths = useMemo(
+    () => filtered.map((resource) => resource.path),
+    [filtered],
+  );
+  const resourceWindow = useResourceWindow(resourcePaths, !loading && !error);
   const selectedEntries = useMemo(
     () => entries.filter((entry) => selectedPaths.has(entry.path)),
     [entries, selectedPaths],
@@ -781,168 +788,195 @@ export function ResourcePanel({
               role="listbox"
               aria-label={t("local.resources")}
               aria-multiselectable="true"
+              ref={resourceWindow.listRef}
+              className={
+                resourceWindow.virtual ? "ce-resource-window" : undefined
+              }
+              style={
+                resourceWindow.virtual
+                  ? { height: filtered.length * RESOURCE_ROW_HEIGHT }
+                  : undefined
+              }
+              onFocusCapture={resourceWindow.onFocusCapture}
+              onKeyDownCapture={resourceWindow.onKeyDownCapture}
             >
-              {filtered.map((v) => (
-                <div
-                  className={
-                    "resource-row ce-local-resource-row " +
-                    (!v.enabled ? "resource-disabled " : "") +
-                    (selectedPaths.has(v.path) ? "is-selected" : "")
-                  }
-                  key={v.path}
-                  role="option"
-                  tabIndex={0}
-                  aria-selected={selectedPaths.has(v.path)}
-                  onClick={() => toggleSelection(v.path)}
-                  onKeyDown={(event) => {
-                    if (
-                      event.target === event.currentTarget &&
-                      (event.key === "Enter" || event.key === " ")
-                    ) {
-                      event.preventDefault();
-                      toggleSelection(v.path);
-                    }
-                  }}
-                >
-                  <span className="resource-icon">
-                    {v.icon ? (
-                      <img src={v.icon} alt="" loading="lazy" decoding="async" />
-                    ) : (
-                      <Box size={29} strokeWidth={1.6} />
-                    )}
-                  </span>
-                  <div className="ce-resource-text">
-                    <strong>
-                      {section === "mods" &&
-                      navigation.modDisplayStyle === "file_name"
-                        ? v.file_name || v.name
-                        : v.name || v.file_name}
-                      {updateFor(v)?.status === "update_available" ? (
-                        <small className="ce-resource-update-version">
-                          {" "}
-                          |{" "}
-                          {updateFor(v)?.old_version ||
-                            v.version ||
-                            t("local.installedVersion")}{" "}
-                          → {updateFor(v)?.new_version} ↑
-                        </small>
-                      ) : (
-                        (v.version || updateFor(v)?.old_version) && (
-                          <small>
-                            {" "}
-                            | {v.version || updateFor(v)?.old_version}
-                          </small>
-                        )
-                      )}
-                      {updateFor(v)?.status === "unknown" && (
-                        <small title={updateFor(v)?.reason ?? undefined}>
-                          {" "}
-                          {t("local.unknownSuffix")}
-                        </small>
-                      )}
-                      {updateFor(v)?.status === "blocked" && (
-                        <small title={updateFor(v)?.reason ?? undefined}>
-                          {" "}
-                          {t("local.blockedSuffix")}
-                        </small>
-                      )}
-                    </strong>
-                    <small>
-                      {v.file_name || v.name}
-                      {v.description ? `: ${v.description}` : ""}
-                    </small>
-                    {!v.enabled && <small>{t("ui.disabled")}</small>}
-                    {writableKind && !writableResourceFile(v) && (
-                      <small>{t("ui.readonly")}</small>
-                    )}
-                  </div>
+              {resourceWindow.indices.map((index) => {
+                const v = filtered[index];
+                return (
                   <div
-                    className="ce-resource-hover-actions"
-                    onClick={(event) => event.stopPropagation()}
+                    className={
+                      "resource-row ce-local-resource-row " +
+                      (!v.enabled ? "resource-disabled " : "") +
+                      (selectedPaths.has(v.path) ? "is-selected" : "")
+                    }
+                    key={v.path}
+                    role="option"
+                    data-resource-index={index}
+                    aria-posinset={index + 1}
+                    aria-setsize={filtered.length}
+                    style={
+                      resourceWindow.virtual
+                        ? { top: index * RESOURCE_ROW_HEIGHT }
+                        : undefined
+                    }
+                    tabIndex={0}
+                    aria-selected={selectedPaths.has(v.path)}
+                    onClick={() => toggleSelection(v.path)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.target === event.currentTarget &&
+                        (event.key === "Enter" || event.key === " ")
+                      ) {
+                        event.preventDefault();
+                        toggleSelection(v.path);
+                      }
+                    }}
                   >
-                    <span
-                      className="ce-resource-action-tip"
-                      data-tooltip={t("ui.details")}
-                    >
-                      <button
-                        aria-label={t("ui.resourceAction", {
-                          name: v.name,
-                          action: t("ui.details"),
-                        })}
-                        onClick={() => openDetails(v)}
-                      >
-                        <Info size={15} />
-                      </button>
+                    <span className="resource-icon">
+                      {v.icon ? (
+                        <img
+                          src={v.icon}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                        />
+                      ) : (
+                        <Box size={29} strokeWidth={1.6} />
+                      )}
                     </span>
-                    <span
-                      className="ce-resource-action-tip"
-                      data-tooltip={t("local.openLocation")}
-                    >
-                      <button
-                        aria-label={t("ui.resourceAction", {
-                          name: v.name,
-                          action: t("local.openFolder"),
-                        })}
-                        onClick={() => onOpen(section)}
-                      >
-                        <FolderOpen size={15} />
-                      </button>
-                    </span>
-                    <span
-                      className="ce-resource-action-tip"
-                      data-tooltip={
-                        section !== "mods"
-                          ? t("local.modsOnly")
-                          : !writableResourceFile(v)
-                            ? t("local.identityReadonly")
-                            : v.enabled
-                              ? t("ui.disable")
-                              : t("ui.enable")
-                      }
-                    >
-                      <button
-                        disabled={
-                          writesDisabled ||
-                          section !== "mods" ||
-                          !writableResourceFile(v)
-                        }
-                        aria-label={t("ui.resourceAction", {
-                          name: v.name,
-                          action: t(v.enabled ? "ui.disable" : "ui.enable"),
-                        })}
-                        onClick={() => setEnabled([v], !v.enabled)}
-                      >
-                        {v.enabled ? (
-                          <CircleMinus size={15} />
+                    <div className="ce-resource-text">
+                      <strong>
+                        {section === "mods" &&
+                        navigation.modDisplayStyle === "file_name"
+                          ? v.file_name || v.name
+                          : v.name || v.file_name}
+                        {updateFor(v)?.status === "update_available" ? (
+                          <small className="ce-resource-update-version">
+                            {" "}
+                            |{" "}
+                            {updateFor(v)?.old_version ||
+                              v.version ||
+                              t("local.installedVersion")}{" "}
+                            → {updateFor(v)?.new_version} ↑
+                          </small>
                         ) : (
-                          <CircleCheck size={15} />
+                          (v.version || updateFor(v)?.old_version) && (
+                            <small>
+                              {" "}
+                              | {v.version || updateFor(v)?.old_version}
+                            </small>
+                          )
                         )}
-                      </button>
-                    </span>
-                    <span
-                      className="ce-resource-action-tip"
-                      data-tooltip={
-                        !writableKind
-                          ? t("local.deleteUnavailable")
-                          : !writableResourceFile(v)
-                            ? t("local.identityReadonly")
-                            : t("local.deleteRecoverable")
-                      }
+                        {updateFor(v)?.status === "unknown" && (
+                          <small title={updateFor(v)?.reason ?? undefined}>
+                            {" "}
+                            {t("local.unknownSuffix")}
+                          </small>
+                        )}
+                        {updateFor(v)?.status === "blocked" && (
+                          <small title={updateFor(v)?.reason ?? undefined}>
+                            {" "}
+                            {t("local.blockedSuffix")}
+                          </small>
+                        )}
+                      </strong>
+                      <small>
+                        {v.file_name || v.name}
+                        {v.description ? `: ${v.description}` : ""}
+                      </small>
+                      {!v.enabled && <small>{t("ui.disabled")}</small>}
+                      {writableKind && !writableResourceFile(v) && (
+                        <small>{t("ui.readonly")}</small>
+                      )}
+                    </div>
+                    <div
+                      className="ce-resource-hover-actions"
+                      onClick={(event) => event.stopPropagation()}
                     >
-                      <button
-                        disabled={writesDisabled || !writableResourceFile(v)}
-                        aria-label={t("ui.resourceAction", {
-                          name: v.name,
-                          action: t("ui.delete"),
-                        })}
-                        onClick={() => chooseRemoval([v])}
+                      <span
+                        className="ce-resource-action-tip"
+                        data-tooltip={t("ui.details")}
                       >
-                        <Trash2 size={15} />
-                      </button>
-                    </span>
+                        <button
+                          aria-label={t("ui.resourceAction", {
+                            name: v.name,
+                            action: t("ui.details"),
+                          })}
+                          onClick={() => openDetails(v)}
+                        >
+                          <Info size={15} />
+                        </button>
+                      </span>
+                      <span
+                        className="ce-resource-action-tip"
+                        data-tooltip={t("local.openLocation")}
+                      >
+                        <button
+                          aria-label={t("ui.resourceAction", {
+                            name: v.name,
+                            action: t("local.openFolder"),
+                          })}
+                          onClick={() => onOpen(section)}
+                        >
+                          <FolderOpen size={15} />
+                        </button>
+                      </span>
+                      <span
+                        className="ce-resource-action-tip"
+                        data-tooltip={
+                          section !== "mods"
+                            ? t("local.modsOnly")
+                            : !writableResourceFile(v)
+                              ? t("local.identityReadonly")
+                              : v.enabled
+                                ? t("ui.disable")
+                                : t("ui.enable")
+                        }
+                      >
+                        <button
+                          disabled={
+                            writesDisabled ||
+                            section !== "mods" ||
+                            !writableResourceFile(v)
+                          }
+                          aria-label={t("ui.resourceAction", {
+                            name: v.name,
+                            action: t(v.enabled ? "ui.disable" : "ui.enable"),
+                          })}
+                          onClick={() => setEnabled([v], !v.enabled)}
+                        >
+                          {v.enabled ? (
+                            <CircleMinus size={15} />
+                          ) : (
+                            <CircleCheck size={15} />
+                          )}
+                        </button>
+                      </span>
+                      <span
+                        className="ce-resource-action-tip"
+                        data-tooltip={
+                          !writableKind
+                            ? t("local.deleteUnavailable")
+                            : !writableResourceFile(v)
+                              ? t("local.identityReadonly")
+                              : t("local.deleteRecoverable")
+                        }
+                      >
+                        <button
+                          disabled={writesDisabled || !writableResourceFile(v)}
+                          aria-label={t("ui.resourceAction", {
+                            name: v.name,
+                            action: t("ui.delete"),
+                          })}
+                          onClick={() => chooseRemoval([v])}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         )}

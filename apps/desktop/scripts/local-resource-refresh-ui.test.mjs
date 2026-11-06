@@ -71,6 +71,9 @@ function resourceHarness(initial, navigation, wrapper = false) {
         });
       }
     },
+    useLayoutEffect(effect, dependencies) {
+      react.useEffect(effect, dependencies);
+    },
   };
   const placeholders = {
     "./CeSelect": { CeSelect() {} },
@@ -288,7 +291,9 @@ test("large resource lists reuse sorting and indexed update matches during selec
   };
   try {
     await f.ui.flush();
-    assert.equal(rows(f.ui).length, count);
+    assert.ok(rows(f.ui).length < 40, "The initial window bounds row creation");
+    assert.equal(rows(f.ui).at(-1).props["aria-posinset"], count);
+    assert.ok(rows(f.ui).every((row) => row.props["aria-setsize"] === count));
     comparisons = 0;
     updateProbes = 0;
     button(f.ui, "ui.selectAll").props.onClick();
@@ -316,6 +321,16 @@ test("large resource lists reuse sorting and indexed update matches during selec
       f.calls.filter(({ command }) => command === "resource_update_check")
         .length,
       1,
+    );
+    button(f.ui, "ui.disable").props.onClick();
+    await f.ui.flush();
+    const write = f.calls.find(
+      ({ command }) => command === "resource_set_enabled",
+    );
+    assert.equal(
+      write.args.files.length,
+      count,
+      "Bulk actions include offscreen resources",
     );
   } finally {
     String.prototype.localeCompare = originalCompare;
