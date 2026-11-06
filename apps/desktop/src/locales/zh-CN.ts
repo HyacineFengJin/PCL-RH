@@ -148,7 +148,7 @@ const messages = {
   "personalize.interaction": "指针与右键菜单",
   "personalize.customCursor": "使用自定义指针",
   "personalize.cursorStyle": "指针风格",
-  "personalize.cursorAccent": "蓝色渐变",
+  "personalize.cursorAccent": "纯蓝",
   "personalize.cursorOutline": "简洁描边",
   "personalize.cursorSize": "指针大小",
   "personalize.cursorSmall": "小（24 px）",

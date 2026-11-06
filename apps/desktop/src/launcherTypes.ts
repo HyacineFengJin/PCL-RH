@@ -203,7 +203,7 @@ export function defaultLauncherPreferenceView(): LauncherPreferenceView {
         launch_tips: true,
         advanced_materials: false,
         custom_cursor: true,
-        cursor_style: "accent",
+        cursor_style: "outline",
         cursor_size: "small",
         custom_context_menu: true,
         context_menu_density: "comfortable",

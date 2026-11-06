@@ -277,7 +277,7 @@ mod fixtures {
         assert_eq!(before.preferences.appearance.cursor_size, CursorSize::Small);
         assert_eq!(
             before.preferences.appearance.cursor_style,
-            CursorStyle::Accent
+            CursorStyle::Outline
         );
         assert!(before.preferences.appearance.custom_context_menu);
         let after = store.update(&before.revision, patch(serde_json::json!({

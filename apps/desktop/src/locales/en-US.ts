@@ -161,7 +161,7 @@ const messages = {
   "personalize.interaction": "Cursor and context menu",
   "personalize.customCursor": "Use custom cursors",
   "personalize.cursorStyle": "Cursor style",
-  "personalize.cursorAccent": "Blue gradient",
+  "personalize.cursorAccent": "Solid blue",
   "personalize.cursorOutline": "Clean outline",
   "personalize.cursorSize": "Cursor size",
   "personalize.cursorSmall": "Small (24 px)",

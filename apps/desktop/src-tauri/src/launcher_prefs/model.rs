@@ -21,7 +21,7 @@ selection!(Theme {
     Dark
 });
 selection!(Palette { Blue });
-selection!(CursorStyle { Accent, Outline });
+selection!(CursorStyle { Outline, Accent });
 selection!(CursorSize { Small, Standard });
 selection!(ContextMenuDensity {
     Comfortable,
