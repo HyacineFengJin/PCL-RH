@@ -1,0 +1,48 @@
+name: Upload verified packages to release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release draft and tag
+        type: string
+        required: true
+      manifest_sha256:
+        description: SHA256 of the already uploaded release-manifest.json
+        type: string
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-package-upload-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    if: github.repository == 'HyacineFengJin/PCL-RH' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test manifest and archive boundaries
+        run: python -m unittest discover -s tools/ci -p 'test_release_upload.py'
+      - name: Upload exact packages without publishing the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: >-
+          python tools/ci/upload-release-packages.py
+          --tag "$RELEASE_TAG" --manifest-sha256 "$MANIFEST_SHA256"
+          --output "$RUNNER_TEMP/release-upload/evidence.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-package-upload-evidence
+          path: ${{ runner.temp }}/release-upload/evidence.json
+          if-no-files-found: error
+          retention-days: 7
