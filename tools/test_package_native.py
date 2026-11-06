@@ -69,6 +69,7 @@ class NativePackageTests(unittest.TestCase):
         legal_spec = importlib.util.spec_from_file_location("fixture_license", LICENSE_SOURCE)
         legal = importlib.util.module_from_spec(legal_spec)
         legal_spec.loader.exec_module(legal)
+        self.license_documents = legal.DOCUMENTS
         for name in legal.DOCUMENTS:
             self.write(name, ("Synthetic attribution " + name + "\n").encode())
         self.write("THIRDPARTY.generated.json", b'{"schema_version":1,"inputs":[],"issues":[]}')
@@ -232,8 +233,9 @@ class NativePackageTests(unittest.TestCase):
         notices = (self.output / result["license"]).read_bytes()
         self.assertEqual(notices, (extracted / "pcl-rh-license-notices.zip").read_bytes())
         with zipfile.ZipFile(self.output / result["license"]) as license_zip:
-            self.assertEqual(len(license_zip.namelist()), 20)
-            self.assertIn("MANIFEST.json", license_zip.namelist())
+            self.assertCountEqual(license_zip.namelist(), (*self.license_documents, "MANIFEST.json"))
+            for name in self.license_documents:
+                self.assertEqual(license_zip.read(name), self.git("show", "HEAD:" + name))
         checksum = (self.output / result["sha256"]).read_text().split()
         self.assertEqual(checksum, [hashlib.sha256(archive.read_bytes()).hexdigest(), archive.name])
         self.assertNotIn(str(self.root).encode(), raw)
