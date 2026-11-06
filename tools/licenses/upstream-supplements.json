@@ -969,6 +969,1366 @@
         }
       ],
       "verification_method": "Official npm exact-version metadata declares MIT but has no gitHead. The npm-hosted SLSA subject sha512 equals the downloaded archive and lockfile integrity; resolvedDependencies and the peeled official package tag identify the same commit. Its exact package manifest declares proxy-agent-negotiate 1.1.0/MIT, and all five published files match the installed files. Root/package LICENSE files and original copyright headers were not found. Standard MIT terms are supplied verbatim from pinned official SPDX data, not represented as an upstream package notice. Provenance payload values were inspected and compared; cryptographic certificate/transparency verification was not performed."
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/wravery/webview2-rs",
+      "source_commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+      "source_file": "LICENSE",
+      "license_identifier": "MIT",
+      "evidence_kind": "same_commit_repository_license_or_notice",
+      "license_url": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+      "license_sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73",
+      "license_text": "MIT License\n\nCopyright (c) 2021 Bill Avery\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+      "verified_packages": [
+        {
+          "name": "webview2-com",
+          "version": "0.39.1",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/wravery/webview2-rs",
+          "repository_directory": "crates/webview2-com",
+          "manifest_url": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/crates/webview2-com/Cargo.toml",
+          "manifest_sha256": "bee8a11a0f7c152ff835ea5ca64bcb5558e8a6079be56eccc4086dddb383288c",
+          "published_original_manifest_sha256": "bee8a11a0f7c152ff835ea5ca64bcb5558e8a6079be56eccc4086dddb383288c",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6",
+          "cargo_lock_checksum": "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6",
+          "scope_note": "The same-commit subpackage manifest inherits workspace.package.license = MIT; the repository-root original LICENSE supplies the MIT terms and Bill Avery copyright notice.",
+          "scope_evidence": [
+            {
+              "file": "Cargo.toml",
+              "sha256": "86df68bbb014e816ac356a462838914d813ce6aaa1d11b2aa284941701c6c7c2",
+              "workspace_package_license": "MIT",
+              "workspace_package_version": "0.39.1",
+              "evidence": "Same-commit workspace package declares MIT; this subpackage sets license.workspace = true.",
+              "kind": "same_commit_workspace_package_license",
+              "source_url": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/Cargo.toml"
+            }
+          ],
+          "ecosystem": "cargo",
+          "cargo_vcs_commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+          "cached_vcs_info_sha256": "88413f4e9de3a9360fafb0d8c9a0fdf5a01a45d73f9ded314fa7b9ffa2108ace",
+          "published_normalized_manifest_sha256": "4ba1c8935a5f535d18115242abbef3c73e9b2dd329a52b87f6f37b7adeae2421",
+          "cached_source_files": []
+        },
+        {
+          "name": "webview2-com-sys",
+          "version": "0.39.1",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/wravery/webview2-rs",
+          "repository_directory": "crates/bindings",
+          "manifest_url": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/crates/bindings/Cargo.toml",
+          "manifest_sha256": "00229c125c597e4f0ddb9e598738ee5b38a9086fd59eea6d2577cdda5f8e5875",
+          "published_original_manifest_sha256": "00229c125c597e4f0ddb9e598738ee5b38a9086fd59eea6d2577cdda5f8e5875",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb",
+          "cargo_lock_checksum": "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb",
+          "scope_note": "The same-commit subpackage manifest inherits workspace.package.license = MIT; the repository-root original LICENSE supplies the MIT terms and Bill Avery copyright notice.",
+          "scope_evidence": [
+            {
+              "file": "Cargo.toml",
+              "sha256": "86df68bbb014e816ac356a462838914d813ce6aaa1d11b2aa284941701c6c7c2",
+              "workspace_package_license": "MIT",
+              "workspace_package_version": "0.39.1",
+              "evidence": "Same-commit workspace package declares MIT; this subpackage sets license.workspace = true.",
+              "kind": "same_commit_workspace_package_license",
+              "source_url": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/Cargo.toml"
+            }
+          ],
+          "ecosystem": "cargo",
+          "cargo_vcs_commit": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+          "cached_vcs_info_sha256": "d4137410068017c3f66fe98578f2fd40f0e76d3fd628fa361c758f3b262351c7",
+          "published_normalized_manifest_sha256": "1a3e5684710cb1d2e7e7afdd32af011a4a8038c259f6592ade3f871ca31cad7d",
+          "cached_source_files": []
+        }
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/wravery/webview2-rs",
+      "source_commit": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+      "source_file": "LICENSE",
+      "license_identifier": "MIT",
+      "evidence_kind": "same_commit_repository_license_or_notice",
+      "license_url": "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE",
+      "license_sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73",
+      "license_text": "MIT License\n\nCopyright (c) 2021 Bill Avery\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n",
+      "verified_packages": [
+        {
+          "name": "webview2-com-macros",
+          "version": "0.8.1",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/wravery/webview2-rs",
+          "repository_directory": "crates/callback-macros",
+          "manifest_url": "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/crates/callback-macros/Cargo.toml",
+          "manifest_sha256": "a615e325d5acebc64f6553724028cd5e3639397e534cef107f172540cb78d0fd",
+          "published_original_manifest_sha256": "a615e325d5acebc64f6553724028cd5e3639397e534cef107f172540cb78d0fd",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54",
+          "cargo_lock_checksum": "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54",
+          "scope_note": "The same-commit subpackage manifest inherits workspace.package.license = MIT; the repository-root original LICENSE supplies the MIT terms and Bill Avery copyright notice.",
+          "scope_evidence": [
+            {
+              "file": "Cargo.toml",
+              "sha256": "5d0444d55131aa8a4290fc3cd54bd8598e9528577ddf5c3368ee48a02e297f6d",
+              "workspace_package_license": "MIT",
+              "workspace_package_version": "0.38.1",
+              "evidence": "Same-commit workspace package declares MIT; this subpackage sets license.workspace = true.",
+              "kind": "same_commit_workspace_package_license",
+              "source_url": "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/Cargo.toml"
+            }
+          ],
+          "ecosystem": "cargo",
+          "cargo_vcs_commit": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+          "cached_vcs_info_sha256": "c24c2646f52e6cb4c1f382afc69fa99c0dc78d6d8e4316ade7e51707b4f9af8e",
+          "published_normalized_manifest_sha256": "b006cef88171ef3675df724a900cb31eb1f74158f77a20680915f1dbe95d457e",
+          "cached_source_files": []
+        }
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/madsmtm/objc2",
+      "source_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+      "source_file": "LICENSE.md",
+      "license_identifier": "MIT",
+      "evidence_kind": "same_commit_repository_license_or_notice",
+      "document_role": "Original upstream scope notice; it links to standard license terms rather than containing a full MIT grant.",
+      "license_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+      "license_sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+      "license_text": "# License\n\nThe licensing of these crates is a bit complicated:\n- The crates `objc2`, `block2`, `objc2-foundation` and `objc2-encode` are\n  [currently][#23] licensed under [the MIT license][MIT].\n- All other crates are trio-licensed under the [Zlib], [Apache-2.0] or [MIT]\n  license, at your option.\n\nFurthermore, the crates are (usually automatically) derived from Apple SDKs,\nand that may have implications for licensing, see below for details.\n\n[#23]: https://github.com/madsmtm/objc2/issues/23\n[MIT]: https://opensource.org/license/MIT\n[Zlib]: https://zlib.net/zlib_license.html\n[Apache-2.0]: https://www.apache.org/licenses/LICENSE-2.0\n\n\n## Apple SDKs\n\nThese crates are derived from Apple SDKs shipped with Xcode. You can obtain a\ncopy of the Xcode license at:\n\nhttps://www.apple.com/legal/sla/docs/xcode.pdf\n\nOr by typing `xcodebuild -license` in your terminal.\n\nFrom reading the license, it is unclear whether distributing derived works\nsuch as these crates are allowed?\n\nBut in any case, to practically use these crates, you will have to link, and\nthat only works when you have the correct Xcode SDK available to provide the\nrequired `.tbd` files, which is why we choose to still use the normal SPDX\nidentifiers in the crates (Xcode is required to use the crates, and when using\nXcode you have already agreed to the Xcode license).\n",
+      "verified_packages": [
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-app-kit",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-app-kit",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-app-kit/Cargo.toml",
+          "manifest_sha256": "a15eb82815ce282d59a2f5be179556695ce678790129c30e1d86567c1e2c684e",
+          "published_original_manifest_sha256": "a15eb82815ce282d59a2f5be179556695ce678790129c30e1d86567c1e2c684e",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
+          "cargo_lock_checksum": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-app-kit/README.md",
+              "sha256": "da145d375986071fdf836604db8c6e99438bb484ad51b8775455635e36fc2ce3",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "da145d375986071fdf836604db8c6e99438bb484ad51b8775455635e36fc2ce3"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-core-foundation",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-core-foundation",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-foundation/Cargo.toml",
+          "manifest_sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f",
+          "published_original_manifest_sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+          "cargo_lock_checksum": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-foundation/README.md",
+              "sha256": "c02a9b113d8855df956d9d854321c5bfef3c2921131070dc0c64870053b42459",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "c02a9b113d8855df956d9d854321c5bfef3c2921131070dc0c64870053b42459"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-core-graphics",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-core-graphics",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-graphics/Cargo.toml",
+          "manifest_sha256": "8156455095991b7501f4fa30bdf29c5a541a41e3c479558e757932b07d0b16d1",
+          "published_original_manifest_sha256": "8156455095991b7501f4fa30bdf29c5a541a41e3c479558e757932b07d0b16d1",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807",
+          "cargo_lock_checksum": "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-graphics/README.md",
+              "sha256": "6361def881598a3b6d19e7e0d45d77aa5f8c87980db0c36d895cc33bb83f10bf",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "6361def881598a3b6d19e7e0d45d77aa5f8c87980db0c36d895cc33bb83f10bf"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-foundation",
+          "version": "0.3.2",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-foundation",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-foundation/Cargo.toml",
+          "manifest_sha256": "71158540d55a9b5ce073c856347f0ed1e0e71f4210cfb48a82b1f0e505ba6a50",
+          "published_original_manifest_sha256": "71158540d55a9b5ce073c856347f0ed1e0e71f4210cfb48a82b1f0e505ba6a50",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
+          "cargo_lock_checksum": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-foundation/README.md",
+              "sha256": "50be6f8e1214bd644cdc32c9610278c004205cdddbe2aaed7887d8bad48dd6c5",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "50be6f8e1214bd644cdc32c9610278c004205cdddbe2aaed7887d8bad48dd6c5"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-io-surface",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-io-surface",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-io-surface/Cargo.toml",
+          "manifest_sha256": "80c0f7bac2add855807e6abadbc220473b982041b99339bacf17e2885b3752c9",
+          "published_original_manifest_sha256": "80c0f7bac2add855807e6abadbc220473b982041b99339bacf17e2885b3752c9",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d",
+          "cargo_lock_checksum": "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-io-surface/README.md",
+              "sha256": "19cf0408a59e7abe800fa42d326f92942323a867fcf6ecca1c8d026617a13f40",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "19cf0408a59e7abe800fa42d326f92942323a867fcf6ecca1c8d026617a13f40"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-quartz-core",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-quartz-core",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-quartz-core/Cargo.toml",
+          "manifest_sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4",
+          "published_original_manifest_sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
+          "cargo_lock_checksum": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-quartz-core/README.md",
+              "sha256": "655e91cca9d73db675f3ceb77d74c77a2261425c9b250a904f732704abcd4650",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "655e91cca9d73db675f3ceb77d74c77a2261425c9b250a904f732704abcd4650"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-web-kit",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-web-kit",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-web-kit/Cargo.toml",
+          "manifest_sha256": "c18d575811ed67608266557f3c5b673b2430accb55c86c6547a833000dd78a40",
+          "published_original_manifest_sha256": "c18d575811ed67608266557f3c5b673b2430accb55c86c6547a833000dd78a40",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f",
+          "cargo_lock_checksum": "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-web-kit/README.md",
+              "sha256": "159bf89415ebe1bd3f47868c70b4615f2702d973d97844f92840b261da4e2ee8",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "159bf89415ebe1bd3f47868c70b4615f2702d973d97844f92840b261da4e2ee8"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        }
+      ],
+      "verification_method": "Each published Cargo.toml.orig is byte-identical to its manifest fetched at the .cargo_vcs_info.json commit. The same-commit workspace manifest resolves inherited version and license. Cached .crate SHA256 equals Cargo.lock, and same-commit READMEs are byte-identical to published cached copies. The complete original repository notice is preserved, including the Apple SDK discussion. Only its explicitly offered MIT branch is selected; OR expressions are not rewritten."
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/madsmtm/objc2",
+      "source_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+      "source_file": "LICENSE.md",
+      "license_identifier": "MIT",
+      "evidence_kind": "same_commit_repository_license_or_notice",
+      "document_role": "Original upstream scope notice; it links to standard license terms rather than containing a full MIT grant.",
+      "license_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+      "license_sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+      "license_text": "# License\n\nThe licensing of these crates is a bit complicated:\n- The crates `objc2`, `block2`, `objc2-foundation` and `objc2-encode` are\n  [currently][#23] licensed under [the MIT license][MIT].\n- All other crates are trio-licensed under the [Zlib], [Apache-2.0] or [MIT]\n  license, at your option.\n\nFurthermore, the crates are (usually automatically) derived from Apple SDKs,\nand that may have implications for licensing, see below for details.\n\n[#23]: https://github.com/madsmtm/objc2/issues/23\n[MIT]: https://opensource.org/license/MIT\n[Zlib]: https://zlib.net/zlib_license.html\n[Apache-2.0]: https://www.apache.org/licenses/LICENSE-2.0\n\n\n## Apple SDKs\n\nThese crates are derived from Apple SDKs shipped with Xcode. You can obtain a\ncopy of the Xcode license at:\n\nhttps://www.apple.com/legal/sla/docs/xcode.pdf\n\nOr by typing `xcodebuild -license` in your terminal.\n\nFrom reading the license, it is unclear whether distributing derived works\nsuch as these crates are allowed?\n\nBut in any case, to practically use these crates, you will have to link, and\nthat only works when you have the correct Xcode SDK available to provide the\nrequired `.tbd` files, which is why we choose to still use the normal SPDX\nidentifiers in the crates (Xcode is required to use the crates, and when using\nXcode you have already agreed to the Xcode license).\n",
+      "verified_packages": [
+        {
+          "ecosystem": "cargo",
+          "name": "dispatch2",
+          "version": "0.3.1",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/dispatch2",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/dispatch2/Cargo.toml",
+          "manifest_sha256": "f6aeef4bfe348b9e65e33db2bfb079be4149f9ab0f4b0b3bf3f5d04c144545af",
+          "published_original_manifest_sha256": "f6aeef4bfe348b9e65e33db2bfb079be4149f9ab0f4b0b3bf3f5d04c144545af",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
+          "cargo_lock_checksum": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/Cargo.toml",
+              "sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+              "resolved_package_version": "0.3.1",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/dispatch2/README.md",
+              "sha256": "eba8f5b9bc021bfaaf84478017baf838a92d56a47e691a8b8989aae1210c05d7",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "eba8f5b9bc021bfaaf84478017baf838a92d56a47e691a8b8989aae1210c05d7"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2",
+          "version": "0.6.4",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/objc2",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/objc2/Cargo.toml",
+          "manifest_sha256": "edff06609a6f76ba4aa4ead2f6219826f6c4fd82075fa178029085f37f931536",
+          "published_original_manifest_sha256": "edff06609a6f76ba4aa4ead2f6219826f6c4fd82075fa178029085f37f931536",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f",
+          "cargo_lock_checksum": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/Cargo.toml",
+              "sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+              "resolved_package_version": "0.6.4",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/objc2/README.md",
+              "sha256": "5da56f1508a87b982a23e6bad2ff09b329f7fcf9181ea15eac17788f8d1c6824",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "5da56f1508a87b982a23e6bad2ff09b329f7fcf9181ea15eac17788f8d1c6824"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        }
+      ],
+      "verification_method": "Each published Cargo.toml.orig is byte-identical to its manifest fetched at the .cargo_vcs_info.json commit. The same-commit workspace manifest resolves inherited version and license. Cached .crate SHA256 equals Cargo.lock, and same-commit READMEs are byte-identical to published cached copies. The complete original repository notice is preserved, including the Apple SDK discussion. Only its explicitly offered MIT branch is selected; OR expressions are not rewritten."
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/madsmtm/objc2",
+      "source_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+      "source_file": "LICENSE.md",
+      "license_identifier": "MIT",
+      "evidence_kind": "same_commit_repository_license_or_notice",
+      "document_role": "Original upstream scope notice; it links to standard license terms rather than containing a full MIT grant.",
+      "license_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+      "license_sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+      "license_text": "# License\n\nThe licensing of these crates is a bit complicated:\n- The crates `objc2`, `block2`, `objc2-foundation` and `objc2-encode` are\n  [currently][#23] licensed under [the MIT license][MIT].\n- All other crates are trio-licensed under the [Zlib], [Apache-2.0] or [MIT]\n  license, at your option.\n\nFurthermore, the crates are (usually automatically) derived from Apple SDKs,\nand that may have implications for licensing, see below for details.\n\n[#23]: https://github.com/madsmtm/objc2/issues/23\n[MIT]: https://opensource.org/license/MIT\n[Zlib]: https://zlib.net/zlib_license.html\n[Apache-2.0]: https://www.apache.org/licenses/LICENSE-2.0\n\n\n## Apple SDKs\n\nThese crates are derived from Apple SDKs shipped with Xcode. You can obtain a\ncopy of the Xcode license at:\n\nhttps://www.apple.com/legal/sla/docs/xcode.pdf\n\nOr by typing `xcodebuild -license` in your terminal.\n\nFrom reading the license, it is unclear whether distributing derived works\nsuch as these crates are allowed?\n\nBut in any case, to practically use these crates, you will have to link, and\nthat only works when you have the correct Xcode SDK available to provide the\nrequired `.tbd` files, which is why we choose to still use the normal SPDX\nidentifiers in the crates (Xcode is required to use the crates, and when using\nXcode you have already agreed to the Xcode license).\n",
+      "verified_packages": [
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-encode",
+          "version": "4.1.0",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/objc2-encode",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-encode/Cargo.toml",
+          "manifest_sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6",
+          "published_original_manifest_sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+          "cargo_lock_checksum": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/Cargo.toml",
+              "sha256": "e87a02110f5eb621bfb789dded153094461049de1d62d0a0bd6e5f8ea87e13e9",
+              "resolved_package_version": "4.1.0",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-encode/README.md",
+              "sha256": "e980a74b88a62193f7908df3c27e7915f38559870f5e033ddb77fbed65e024a5",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "e980a74b88a62193f7908df3c27e7915f38559870f5e033ddb77fbed65e024a5"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-exception-helper",
+          "version": "0.1.1",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/objc2-exception-helper",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-exception-helper/Cargo.toml",
+          "manifest_sha256": "b8bf2ffec7fd293d53a316893362ca12e06c3f1fef1fa2d476161e256214ee6e",
+          "published_original_manifest_sha256": "b8bf2ffec7fd293d53a316893362ca12e06c3f1fef1fa2d476161e256214ee6e",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "c7a1c5fbb72d7735b076bb47b578523aedc40f3c439bea6dfd595c089d79d98a",
+          "cargo_lock_checksum": "c7a1c5fbb72d7735b076bb47b578523aedc40f3c439bea6dfd595c089d79d98a",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/Cargo.toml",
+              "sha256": "e87a02110f5eb621bfb789dded153094461049de1d62d0a0bd6e5f8ea87e13e9",
+              "resolved_package_version": "0.1.1",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-exception-helper/README.md",
+              "sha256": "b0afbec3a223fc72d479bf60dd84311b622b4d9fb283a8dd60068d0e87d2b66a",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "b0afbec3a223fc72d479bf60dd84311b622b4d9fb283a8dd60068d0e87d2b66a"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        }
+      ],
+      "verification_method": "Each published Cargo.toml.orig is byte-identical to its manifest fetched at the .cargo_vcs_info.json commit. The same-commit workspace manifest resolves inherited version and license. Cached .crate SHA256 equals Cargo.lock, and same-commit READMEs are byte-identical to published cached copies. The complete original repository notice is preserved, including the Apple SDK discussion. Only its explicitly offered MIT branch is selected; OR expressions are not rewritten."
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/madsmtm/objc2",
+      "source_commit": "b4167b582b2f75f9a1be75495c41b765344fd03c",
+      "source_file": "LICENSE.md",
+      "license_identifier": "MIT",
+      "evidence_kind": "same_commit_repository_license_or_notice",
+      "document_role": "Original upstream scope notice; it links to standard license terms rather than containing a full MIT grant.",
+      "license_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+      "license_sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+      "license_text": "# License\n\nThe licensing of these crates is a bit complicated:\n- The crates `objc2`, `block2`, `objc2-foundation` and `objc2-encode` are\n  [currently][#23] licensed under [the MIT license][MIT].\n- All other crates are trio-licensed under the [Zlib], [Apache-2.0] or [MIT]\n  license, at your option.\n\nFurthermore, the crates are (usually automatically) derived from Apple SDKs,\nand that may have implications for licensing, see below for details.\n\n[#23]: https://github.com/madsmtm/objc2/issues/23\n[MIT]: https://opensource.org/license/MIT\n[Zlib]: https://zlib.net/zlib_license.html\n[Apache-2.0]: https://www.apache.org/licenses/LICENSE-2.0\n\n\n## Apple SDKs\n\nThese crates are derived from Apple SDKs shipped with Xcode. You can obtain a\ncopy of the Xcode license at:\n\nhttps://www.apple.com/legal/sla/docs/xcode.pdf\n\nOr by typing `xcodebuild -license` in your terminal.\n\nFrom reading the license, it is unclear whether distributing derived works\nsuch as these crates are allowed?\n\nBut in any case, to practically use these crates, you will have to link, and\nthat only works when you have the correct Xcode SDK available to provide the\nrequired `.tbd` files, which is why we choose to still use the normal SPDX\nidentifiers in the crates (Xcode is required to use the crates, and when using\nXcode you have already agreed to the Xcode license).\n",
+      "verified_packages": [
+        {
+          "ecosystem": "cargo",
+          "name": "block2",
+          "version": "0.6.2",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/block2",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/crates/block2/Cargo.toml",
+          "manifest_sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac",
+          "published_original_manifest_sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
+          "cargo_lock_checksum": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/Cargo.toml",
+              "sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+              "resolved_package_version": "0.6.2",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/crates/block2/README.md",
+              "sha256": "99073a83cfe6ee090546e3063f41251f7309fe2a017c4add8494e4ad7990d058",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "b4167b582b2f75f9a1be75495c41b765344fd03c",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "99073a83cfe6ee090546e3063f41251f7309fe2a017c4add8494e4ad7990d058"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        }
+      ],
+      "verification_method": "Each published Cargo.toml.orig is byte-identical to its manifest fetched at the .cargo_vcs_info.json commit. The same-commit workspace manifest resolves inherited version and license. Cached .crate SHA256 equals Cargo.lock, and same-commit READMEs are byte-identical to published cached copies. The complete original repository notice is preserved, including the Apple SDK discussion. Only its explicitly offered MIT branch is selected; OR expressions are not rewritten."
+    },
+    {
+      "ecosystem": "cargo",
+      "source_repository": "https://github.com/spdx/license-list-data",
+      "source_commit": null,
+      "source_file": "SPDX/text/MIT.txt",
+      "license_identifier": "MIT",
+      "evidence_kind": "canonical_fixed_license_version",
+      "document_role": "Standard MIT terms for the branch explicitly referenced by the original upstream notice; not an original repository LICENSE or package copyright attribution.",
+      "license_url": "https://raw.githubusercontent.com/spdx/license-list-data/c4a7237ec8f4654e867546f9f409749300f1bf4c/text/MIT.txt",
+      "license_sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+      "license_text": "MIT License\n\nCopyright (c) <year> <copyright holders>\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and\nassociated documentation files (the \"Software\"), to deal in the Software without restriction, including\nwithout limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the\nfollowing conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial\nportions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT\nLIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO\nEVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER\nIN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE\nUSE OR OTHER DEALINGS IN THE SOFTWARE.\n",
+      "canonical_source_repository": "https://github.com/spdx/license-list-data",
+      "canonical_source_tag": "v3.28.0",
+      "canonical_source_commit": "c4a7237ec8f4654e867546f9f409749300f1bf4c",
+      "upstream_referenced_official_terms_url": "https://opensource.org/license/MIT",
+      "copyright_template_status": "Unmodified Copyright (c) <year> <copyright holders> belongs to the standard template. It is not a statement of the crate copyright; no owner/year has been invented.",
+      "verified_packages": [
+        {
+          "ecosystem": "cargo",
+          "name": "block2",
+          "version": "0.6.2",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/block2",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/crates/block2/Cargo.toml",
+          "manifest_sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac",
+          "published_original_manifest_sha256": "d18aec0c39956f1a29b6d157c13ec51ce53d7c2a2982c307528215f8870720ac",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
+          "cargo_lock_checksum": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/Cargo.toml",
+              "sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+              "resolved_package_version": "0.6.2",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/b4167b582b2f75f9a1be75495c41b765344fd03c/crates/block2/README.md",
+              "sha256": "99073a83cfe6ee090546e3063f41251f7309fe2a017c4add8494e4ad7990d058",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "b4167b582b2f75f9a1be75495c41b765344fd03c",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "99073a83cfe6ee090546e3063f41251f7309fe2a017c4add8494e4ad7990d058"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "dispatch2",
+          "version": "0.3.1",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/dispatch2",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/dispatch2/Cargo.toml",
+          "manifest_sha256": "f6aeef4bfe348b9e65e33db2bfb079be4149f9ab0f4b0b3bf3f5d04c144545af",
+          "published_original_manifest_sha256": "f6aeef4bfe348b9e65e33db2bfb079be4149f9ab0f4b0b3bf3f5d04c144545af",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
+          "cargo_lock_checksum": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/Cargo.toml",
+              "sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+              "resolved_package_version": "0.3.1",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/dispatch2/README.md",
+              "sha256": "eba8f5b9bc021bfaaf84478017baf838a92d56a47e691a8b8989aae1210c05d7",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "eba8f5b9bc021bfaaf84478017baf838a92d56a47e691a8b8989aae1210c05d7"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-app-kit",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-app-kit",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-app-kit/Cargo.toml",
+          "manifest_sha256": "a15eb82815ce282d59a2f5be179556695ce678790129c30e1d86567c1e2c684e",
+          "published_original_manifest_sha256": "a15eb82815ce282d59a2f5be179556695ce678790129c30e1d86567c1e2c684e",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
+          "cargo_lock_checksum": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-app-kit/README.md",
+              "sha256": "da145d375986071fdf836604db8c6e99438bb484ad51b8775455635e36fc2ce3",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "da145d375986071fdf836604db8c6e99438bb484ad51b8775455635e36fc2ce3"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-core-foundation",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-core-foundation",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-foundation/Cargo.toml",
+          "manifest_sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f",
+          "published_original_manifest_sha256": "44cd6a4440c3ea1ba85df240ab9b9e7a95da3a5873ce623ac426ac5acfbe507f",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+          "cargo_lock_checksum": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-foundation/README.md",
+              "sha256": "c02a9b113d8855df956d9d854321c5bfef3c2921131070dc0c64870053b42459",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "c02a9b113d8855df956d9d854321c5bfef3c2921131070dc0c64870053b42459"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-core-graphics",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-core-graphics",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-graphics/Cargo.toml",
+          "manifest_sha256": "8156455095991b7501f4fa30bdf29c5a541a41e3c479558e757932b07d0b16d1",
+          "published_original_manifest_sha256": "8156455095991b7501f4fa30bdf29c5a541a41e3c479558e757932b07d0b16d1",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807",
+          "cargo_lock_checksum": "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-core-graphics/README.md",
+              "sha256": "6361def881598a3b6d19e7e0d45d77aa5f8c87980db0c36d895cc33bb83f10bf",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "6361def881598a3b6d19e7e0d45d77aa5f8c87980db0c36d895cc33bb83f10bf"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-encode",
+          "version": "4.1.0",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/objc2-encode",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-encode/Cargo.toml",
+          "manifest_sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6",
+          "published_original_manifest_sha256": "12972b1faf213492f9e78226f23642c461284b739f7be5437d9401465a2869a6",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+          "cargo_lock_checksum": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/Cargo.toml",
+              "sha256": "e87a02110f5eb621bfb789dded153094461049de1d62d0a0bd6e5f8ea87e13e9",
+              "resolved_package_version": "4.1.0",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-encode/README.md",
+              "sha256": "e980a74b88a62193f7908df3c27e7915f38559870f5e033ddb77fbed65e024a5",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "e980a74b88a62193f7908df3c27e7915f38559870f5e033ddb77fbed65e024a5"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-exception-helper",
+          "version": "0.1.1",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/objc2-exception-helper",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-exception-helper/Cargo.toml",
+          "manifest_sha256": "b8bf2ffec7fd293d53a316893362ca12e06c3f1fef1fa2d476161e256214ee6e",
+          "published_original_manifest_sha256": "b8bf2ffec7fd293d53a316893362ca12e06c3f1fef1fa2d476161e256214ee6e",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "c7a1c5fbb72d7735b076bb47b578523aedc40f3c439bea6dfd595c089d79d98a",
+          "cargo_lock_checksum": "c7a1c5fbb72d7735b076bb47b578523aedc40f3c439bea6dfd595c089d79d98a",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/Cargo.toml",
+              "sha256": "e87a02110f5eb621bfb789dded153094461049de1d62d0a0bd6e5f8ea87e13e9",
+              "resolved_package_version": "0.1.1",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8d214f5477365ffcbcbb7de058c86ed9a518efb7/crates/objc2-exception-helper/README.md",
+              "sha256": "b0afbec3a223fc72d479bf60dd84311b622b4d9fb283a8dd60068d0e87d2b66a",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8d214f5477365ffcbcbb7de058c86ed9a518efb7",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "b0afbec3a223fc72d479bf60dd84311b622b4d9fb283a8dd60068d0e87d2b66a"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-foundation",
+          "version": "0.3.2",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-foundation",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-foundation/Cargo.toml",
+          "manifest_sha256": "71158540d55a9b5ce073c856347f0ed1e0e71f4210cfb48a82b1f0e505ba6a50",
+          "published_original_manifest_sha256": "71158540d55a9b5ce073c856347f0ed1e0e71f4210cfb48a82b1f0e505ba6a50",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
+          "cargo_lock_checksum": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-foundation/README.md",
+              "sha256": "50be6f8e1214bd644cdc32c9610278c004205cdddbe2aaed7887d8bad48dd6c5",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "50be6f8e1214bd644cdc32c9610278c004205cdddbe2aaed7887d8bad48dd6c5"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-io-surface",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-io-surface",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-io-surface/Cargo.toml",
+          "manifest_sha256": "80c0f7bac2add855807e6abadbc220473b982041b99339bacf17e2885b3752c9",
+          "published_original_manifest_sha256": "80c0f7bac2add855807e6abadbc220473b982041b99339bacf17e2885b3752c9",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d",
+          "cargo_lock_checksum": "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-io-surface/README.md",
+              "sha256": "19cf0408a59e7abe800fa42d326f92942323a867fcf6ecca1c8d026617a13f40",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "19cf0408a59e7abe800fa42d326f92942323a867fcf6ecca1c8d026617a13f40"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-quartz-core",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-quartz-core",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-quartz-core/Cargo.toml",
+          "manifest_sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4",
+          "published_original_manifest_sha256": "ca303efdd2bcb7958d3e0a08f9b7adb327a2942d0730cda5991365c48016f4d4",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
+          "cargo_lock_checksum": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-quartz-core/README.md",
+              "sha256": "655e91cca9d73db675f3ceb77d74c77a2261425c9b250a904f732704abcd4650",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "655e91cca9d73db675f3ceb77d74c77a2261425c9b250a904f732704abcd4650"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2-web-kit",
+          "version": "0.3.2",
+          "declared_license": "Zlib OR Apache-2.0 OR MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "framework-crates/objc2-web-kit",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-web-kit/Cargo.toml",
+          "manifest_sha256": "c18d575811ed67608266557f3c5b673b2430accb55c86c6547a833000dd78a40",
+          "published_original_manifest_sha256": "c18d575811ed67608266557f3c5b673b2430accb55c86c6547a833000dd78a40",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f",
+          "cargo_lock_checksum": "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/Cargo.toml",
+              "sha256": "2a5d4807cb132ce1d3f5b591a760643db49ca835dedefddcbd3087ad962360cd",
+              "resolved_package_version": "0.3.2",
+              "resolved_declared_license": "Zlib OR Apache-2.0 OR MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/framework-crates/objc2-web-kit/README.md",
+              "sha256": "159bf89415ebe1bd3f47868c70b4615f2702d973d97844f92840b261da4e2ee8",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "7b1abfd750a2cacaea71d6a56ecfb83cb7de560b",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "159bf89415ebe1bd3f47868c70b4615f2702d973d97844f92840b261da4e2ee8"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        },
+        {
+          "ecosystem": "cargo",
+          "name": "objc2",
+          "version": "0.6.4",
+          "declared_license": "MIT",
+          "verified_license_expression": "MIT",
+          "source_repository": "https://github.com/madsmtm/objc2",
+          "repository_directory": "crates/objc2",
+          "manifest_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/objc2/Cargo.toml",
+          "manifest_sha256": "edff06609a6f76ba4aa4ead2f6219826f6c4fd82075fa178029085f37f931536",
+          "published_original_manifest_sha256": "edff06609a6f76ba4aa4ead2f6219826f6c4fd82075fa178029085f37f931536",
+          "manifest_exact_bytes_match": true,
+          "manifest_normalized_newlines_match": true,
+          "manifest_toml_structure_match": true,
+          "manifest_difference": null,
+          "published_archive_sha256": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f",
+          "cargo_lock_checksum": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f",
+          "scope_note": "The exact same-commit repository LICENSE.md explicitly licenses objc2, block2, objc2-foundation and objc2-encode under MIT and all other crates under Zlib OR Apache-2.0 OR MIT at the recipient's option. The MIT branch is selected for this evidence; the package's original declared expression is unchanged. The complete upstream notice, including its Apple SDK discussion, and separately labelled standard MIT terms are both retained.",
+          "scope_evidence": [
+            {
+              "kind": "same_commit_repository_license_scope_and_explicit_standard_terms_link",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md",
+              "sha256": "7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54",
+              "license_url_referenced_by_upstream": "https://opensource.org/license/MIT"
+            },
+            {
+              "kind": "same_commit_workspace_manifest_inheritance",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/Cargo.toml",
+              "sha256": "f93fce3a2814c16597140137b109c53042c0ae74909fd123a8a4d1f7d35090da",
+              "resolved_package_version": "0.6.4",
+              "resolved_declared_license": "MIT"
+            },
+            {
+              "kind": "exact_published_readme_license_scope",
+              "source_url": "https://raw.githubusercontent.com/madsmtm/objc2/8852b424193ca41602281b3d7540d7c8ed51e49a/crates/objc2/README.md",
+              "sha256": "5da56f1508a87b982a23e6bad2ff09b329f7fcf9181ea15eac17788f8d1c6824",
+              "published_cached_source_byte_match": true
+            }
+          ],
+          "cargo_vcs_commit": "8852b424193ca41602281b3d7540d7c8ed51e49a",
+          "cached_source_files": [
+            {
+              "file": "README.md",
+              "sha256": "5da56f1508a87b982a23e6bad2ff09b329f7fcf9181ea15eac17788f8d1c6824"
+            }
+          ],
+          "copyright_status": "No explicit copyright line was found in the checked upstream LICENSE.md or the first 100 lines of cached crate .rs/.m/.h/.c/.md/.toml files. No owner or year is inferred from package authors; standard MIT copyright placeholders are not this package's attribution."
+        }
+      ],
+      "verification_method": "The original same-commit objc2 LICENSE.md explicitly offers MIT and links to the official OSI MIT page. Complete MIT standard terms are supplied verbatim from immutable official SPDX license-list-data, separately from the original repository notice. This follows the existing canonical_fixed_license_version source-reference mechanism, not the canonical_text_for_declared_spdx npm-only mechanism. Original OR declarations are retained and verified_license_expression records only MIT."
     }
   ]
 }

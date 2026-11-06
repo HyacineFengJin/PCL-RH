@@ -78,7 +78,7 @@
     },
     {
       "path": "tools/licenses/upstream-supplements.json",
-      "sha256": "7e5033026e41f36fe386fc2ee02007eebb874c50ec108aca3753765a9b6fb8fe"
+      "sha256": "3853cbf288b17533a86ad3ccb22d5c4f62bff4beccfbaeea7c641c1c9fc1be12"
     }
   ],
   "npm": [
