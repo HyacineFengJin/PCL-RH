@@ -8,7 +8,7 @@
 
 PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启动器，延续 PCL 家族的使用习惯，并通过 RH Code 与插件体系扩展创作能力。
 
-[English](README.en.md) · [使用指南](docs/USAGE.md) · [文档](docs/README.md)
+[构建与运行](docs/BUILDING.md) · [English](README.en.md) · [使用指南](docs/USAGE.md) · [文档](docs/README.md)
 
 ## 主要功能
 
@@ -17,11 +17,11 @@ PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启�
 - **RH Code**：面向模组项目的 AI 工作区，支持多个对话、源码编辑、改动审阅、项目构建和像素资产工具。
 - **插件体系**：启动器与 RH Code 共用插件管理，支持可选官方功能和经授权的社区组件扩展。
 
-已通过 **Linux、Windows、macOS Intel / Apple Silicon** 原生构建，跨平台功能与实机验证仍在完善，具体范围见[平台说明](docs/PLATFORMS.md)。
+**主要支持 Linux x64；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** Windows/macOS 已有原生构建与安装检查，实体设备的游戏验收尚未完成，部分安装与 RH Code 功能仍有限制，详见[平台说明](docs/PLATFORMS.md)。当前测试包未签名，macOS 未经 Apple 公证。
 
 ## 开始使用
 
-候选包与原生构建入口见[构建说明](docs/BUILDING.md)。以下为 Linux 源码构建示例，先准备对应依赖：
+目前尚未公开发行。原生构建、运行依赖与测试包说明见[构建与运行](docs/BUILDING.md)。以下为 Linux 源码构建示例，先准备[构建依赖](docs/BUILDING.md#依赖)：
 
 ```sh
 git clone https://github.com/HyacineFengJin/PCL-RH.git
