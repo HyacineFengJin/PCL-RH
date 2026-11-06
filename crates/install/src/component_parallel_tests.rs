@@ -155,6 +155,278 @@ fn component_cache_is_copied_to_writable_distinct_inodes_before_remote_work() {
     }
 }
 
+fn during_copy<T>(action: impl FnOnce(&mut fs::File) + 'static, body: impl FnOnce() -> T) -> T {
+    struct ClearHook;
+    impl Drop for ClearHook {
+        fn drop(&mut self) {
+            crate::components::COPY_CHUNK_TEST.with(|hook| {
+                hook.borrow_mut().take();
+            });
+        }
+    }
+    let _clear = ClearHook;
+    crate::components::COPY_CHUNK_TEST.with(|hook| {
+        assert!(hook.borrow_mut().replace(Box::new(action)).is_none());
+    });
+    let result = body();
+    crate::components::COPY_CHUNK_TEST.with(|hook| {
+        assert!(
+            hook.borrow().is_none(),
+            "The copy did not reach its first chunk"
+        );
+    });
+    result
+}
+
+#[test]
+fn invalid_component_cache_is_a_miss_and_preserves_the_source() {
+    let payload = vec![7; 128 * 1024];
+    for cached_bytes in [
+        vec![8; payload.len()],
+        vec![7; 3],
+        vec![7; payload.len() + 1],
+    ] {
+        let server = server(payload.clone());
+        let installer = installer(&server, 1, 0, false);
+        let (workspace, cache) = (fixture(), fixture());
+        let download = dependencies(&server, &payload, 1).remove(0);
+        let cached = cache.path().join(&download.relative);
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, &cached_bytes).unwrap();
+        let stats = batch(
+            &installer,
+            workspace.path(),
+            cache.path(),
+            std::slice::from_ref(&download),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            (stats.downloaded, stats.reused, stats.network),
+            (1, 0, payload.len() as u64)
+        );
+        assert_eq!(server.artifact_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fs::read(workspace.path().join(&download.relative)).unwrap(),
+            payload
+        );
+        assert_eq!(fs::read(cached).unwrap(), cached_bytes);
+        assert!(!contains_temporary(workspace.path()));
+    }
+}
+
+#[test]
+fn invalid_local_component_cache_still_tries_the_explicit_source() {
+    let payload = b"verified explicit cache";
+    let server = server(payload.to_vec());
+    let (workspace, cache, source) = (fixture(), fixture(), fixture());
+    let download = dependencies(&server, payload, 1).remove(0);
+    for (root, bytes) in [
+        (cache.path(), &b"invalid local cache"[..]),
+        (source.path(), &payload[..]),
+    ] {
+        let path = root.join(&download.relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+    let installer = installer(&server, 1, 0, false)
+        .with_cache_source(source.path())
+        .unwrap();
+    let stats = batch(
+        &installer,
+        workspace.path(),
+        cache.path(),
+        &[download],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!((stats.downloaded, stats.reused, stats.network), (0, 1, 0));
+    assert_eq!(server.artifact_requests.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn changing_component_cache_during_copy_is_a_miss_even_if_copied_hash_matches() {
+    let payload = vec![7; 128 * 1024];
+    for change in ["truncate", "append", "rewrite-consumed-byte"] {
+        let server = server(payload.clone());
+        let installer = installer(&server, 1, 0, false);
+        let (workspace, cache) = (fixture(), fixture());
+        let download = dependencies(&server, &payload, 1).remove(0);
+        let cached = cache.path().join(&download.relative);
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, &payload).unwrap();
+        let source = cached.clone();
+        let stats = during_copy(
+            move |_| {
+                let mut file = fs::OpenOptions::new().write(true).open(source).unwrap();
+                match change {
+                    "truncate" => file.set_len(0).unwrap(),
+                    "append" => file.set_len(128 * 1024 + 1).unwrap(),
+                    _ => file.write_all(&[9]).unwrap(),
+                }
+            },
+            || {
+                batch(
+                    &installer,
+                    workspace.path(),
+                    cache.path(),
+                    std::slice::from_ref(&download),
+                    &AtomicBool::new(false),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (stats.downloaded, stats.reused, stats.network),
+            (1, 0, payload.len() as u64),
+            "{change}"
+        );
+        assert_eq!(
+            fs::read(workspace.path().join(&download.relative)).unwrap(),
+            payload
+        );
+        assert_eq!(server.artifact_requests.load(Ordering::Relaxed), 1);
+        assert!(!contains_temporary(workspace.path()));
+    }
+}
+
+#[test]
+fn cancelled_or_io_failed_component_cache_copy_does_not_fall_back_to_network() {
+    let payload = vec![7; 128 * 1024];
+    for cancelled in [true, false] {
+        let server = server(payload.clone());
+        let installer = installer(&server, 1, 0, false);
+        let (workspace, cache) = (fixture(), fixture());
+        let download = dependencies(&server, &payload, 1).remove(0);
+        let cached = cache.path().join(&download.relative);
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, &payload).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let source = cached.clone();
+        let error = during_copy(
+            move |output| {
+                if cancelled {
+                    flag.store(true, Ordering::Release);
+                } else {
+                    // A real second-chunk write error, with no special device or
+                    // permission assumption. The private temporary name stays owned.
+                    *output = fs::File::open(source).unwrap();
+                }
+            },
+            || {
+                batch(
+                    &installer,
+                    workspace.path(),
+                    cache.path(),
+                    std::slice::from_ref(&download),
+                    &cancel,
+                )
+            },
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.contains("取消"), cancelled, "{error}");
+        assert_eq!(server.artifact_requests.load(Ordering::Relaxed), 0);
+        assert!(!workspace.path().join(&download.relative).exists());
+        assert!(!contains_temporary(workspace.path()));
+        assert_eq!(fs::read(cached).unwrap(), payload);
+    }
+}
+
+#[test]
+fn component_publication_still_rejects_source_stamp_changes() {
+    let (workspace, target) = (fixture(), fixture());
+    let relative = "libraries/fixture/publish.jar";
+    let source = workspace.path().join(relative);
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, vec![7; 128 * 1024]).unwrap();
+    let server = server(Vec::new());
+    let installer = installer(&server, 1, 0, false);
+    let error = during_copy(
+        move |_| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(source)
+                .unwrap()
+                .write_all(&[9])
+                .unwrap();
+        },
+        || {
+            installer.publish_component_libraries(
+                &InstallDir::legacy(target.path().into()),
+                &InstallDir::legacy(workspace.path().into()),
+                &AtomicBool::new(false),
+                &ComponentStats::new(0, 0, 0, 0, 0),
+                &|_| {},
+            )
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("组件运行库在复制期间变化"), "{error}");
+    assert!(!target.path().join(relative).exists());
+    assert!(!contains_temporary(target.path()));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn component_cache_hit_reads_source_once() {
+    const CHILD: &str = "PCL_COMPONENT_CACHE_READ_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["download_policy_tests::component_parallel_tests::component_cache_hit_reads_source_once", "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        return;
+    }
+    fn rchar() -> u64 {
+        fs::read_to_string("/proc/self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+    let payload = vec![7; 16 * 1024 * 1024];
+    // The local server stays idle: a cache hit must make no HTTP requests.
+    let server = server(Vec::new());
+    let installer = installer(&server, 1, 0, false);
+    let (workspace, cache) = (fixture(), fixture());
+    let download = dependencies(&server, &payload, 1).remove(0);
+    let cached = cache.path().join(&download.relative);
+    fs::create_dir_all(cached.parent().unwrap()).unwrap();
+    fs::write(cached, &payload).unwrap();
+    let before = rchar();
+    let stats = batch(
+        &installer,
+        workspace.path(),
+        cache.path(),
+        &[download],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let read_bytes = rchar() - before;
+    assert_eq!((stats.downloaded, stats.reused, stats.network), (0, 1, 0));
+    assert_eq!(server.artifact_requests.load(Ordering::Relaxed), 0);
+    assert!(
+        (payload.len() as u64..payload.len() as u64 + 64 * 1024).contains(&read_bytes),
+        "Unexpected cache-hit rchar delta: {read_bytes}"
+    );
+    println!(
+        "isolated 16MiB component cache hit: rchar={read_bytes}, payload={}, network=0",
+        payload.len()
+    );
+}
+
 fn contains_temporary(path: &Path) -> bool {
     fs::read_dir(path).unwrap().any(|entry| {
         let path = entry.unwrap().path();

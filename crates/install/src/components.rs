@@ -378,9 +378,9 @@ impl Installer {
             let mut reused = false;
             if !self.downloads.policy().forbid_cross_root_cache_copy {
                 let cached = cache.file(&d.relative)?;
-                if verify(&cached, &d.hash, d.size, cancel)? {
-                    // Processors may rewrite inputs. Never share cache inodes.
-                    copy_cancel(&cached, &path, &d.hash, d.size, cancel)?;
+                // Copy and validate the same held source stream once. Processors
+                // may rewrite inputs, so never share cache inodes.
+                if try_copy_cache(&cached, &path, &d.hash, d.size, cancel)? {
                     reused = true;
                 } else if let Some(source) = &self.cache_source {
                     reused = source.copy_to(workspace, d, cancel)?;
@@ -766,7 +766,7 @@ impl Installer {
                 let mut output = destination.output(size)?;
                 let copied =
                     copy_stream(&mut input, output.file_mut(), size, cancel).and_then(|actual| {
-                        if actual.eq_ignore_ascii_case(&hash) {
+                        if actual.is_some_and(|actual| actual.eq_ignore_ascii_case(&hash)) {
                             Ok(())
                         } else {
                             Err("组件运行库在复制期间变化".into())
@@ -786,15 +786,26 @@ impl Installer {
         Ok(())
     }
 }
+#[cfg(test)]
+thread_local! {
+    // Only deterministic private-file tests can interrupt a copy between chunks.
+    // There is no hook, counter or branch in production builds.
+    pub(super) static COPY_CHUNK_TEST: std::cell::RefCell<Option<Box<dyn FnOnce(&mut fs::File)>>> =
+        std::cell::RefCell::new(None);
+}
+
+// A content/size/stamp mismatch is distinct from cancellation or an I/O error.
+// Cache callers may discard the private output and retry another source; final
+// component publication must still turn a mismatch into an installation error.
 fn copy_stream(
     input: &mut fs::File,
     output: &mut fs::File,
     expected_size: u64,
     cancel: &AtomicBool,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let before = pcl_core::retained_fs::metadata(input).map_err(error)?;
     if before.len != expected_size {
-        return Err("组件复制源大小已变化".into());
+        return Ok(None);
     }
     let mut digest = Sha1::new();
     let mut received = 0u64;
@@ -804,38 +815,52 @@ fn copy_stream(
         let max = (expected_size - received).min(buf.len() as u64) as usize;
         let n = input.read(&mut buf[..max]).map_err(error)?;
         if n == 0 {
-            return Err("组件复制源在读取期间缩短".into());
+            return Ok(None);
         }
         received += n as u64;
         digest.update(&buf[..n]);
         output.write_all(&buf[..n]).map_err(error)?;
+        #[cfg(test)]
+        COPY_CHUNK_TEST.with(|hook| {
+            let callback = hook.borrow_mut().take();
+            if let Some(callback) = callback {
+                callback(output);
+            }
+        });
     }
     check(cancel)?;
     if input.read(&mut buf[..1]).map_err(error)? != 0
         || pcl_core::retained_fs::metadata(input).map_err(error)? != before
     {
-        return Err("组件复制源在读取期间变化".into());
+        return Ok(None);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(Some(format!("{:x}", digest.finalize())))
 }
-fn copy_cancel(
+fn try_copy_cache(
     source: &bound_root::InstallPath,
     target: &bound_root::InstallPath,
     hash: &str,
     size: u64,
     cancel: &AtomicBool,
-) -> Result<()> {
-    let mut input = source.open()?;
+) -> Result<bool> {
+    check(cancel)?;
+    let Some(mut input) = source.open_optional()? else {
+        return Ok(false);
+    };
+    if input.metadata().map_err(error)?.len() != size {
+        return Ok(false);
+    }
     let mut output = target.output(size)?;
     let copied = copy_stream(&mut input, output.file_mut(), size, cancel).and_then(|actual| {
-        if actual.eq_ignore_ascii_case(hash) {
-            Ok(())
-        } else {
-            Err("组件缓存副本校验失败".into())
-        }
+        check(cancel)?;
+        Ok(actual.is_some_and(|actual| actual.eq_ignore_ascii_case(hash)))
     });
     match copied {
-        Ok(()) => output.publish(),
+        Ok(true) => {
+            output.publish()?;
+            Ok(true)
+        }
+        Ok(false) => output.discard().map(|_| false),
         Err(e) => Err(output.close(e)),
     }
 }
