@@ -1,5 +1,75 @@
 use super::*;
 
+#[test]
+fn pacing_clock_has_no_initial_credit_even_after_scheduler_setup_delay() {
+    let mut clock = PayloadClock::default();
+    let first = Instant::now() + Duration::from_secs(60);
+    let service = Duration::from_millis(64);
+    assert_eq!(clock.reserve(first, service).unwrap(), first + service);
+    assert_eq!(clock.reserve(first, service).unwrap(), first + service * 2);
+}
+
+#[test]
+fn pacing_clock_recovers_late_ticks_but_never_banks_more_than_two_milliseconds() {
+    let start = Instant::now();
+    for service in [
+        Duration::from_micros(125),
+        Duration::from_millis(1),
+        Duration::from_millis(64),
+    ] {
+        let mut clock = PayloadClock::default();
+        clock.reserve(start, service).unwrap();
+        let late = start + Duration::from_secs(60);
+        let mut immediately_funded = Duration::ZERO;
+        loop {
+            let deadline = clock.reserve(late, service).unwrap();
+            if deadline > late {
+                break;
+            }
+            immediately_funded += service;
+            assert!(immediately_funded <= MAX_PACING_CATCHUP);
+        }
+        assert_eq!(
+            immediately_funded.as_nanos(),
+            MAX_PACING_CATCHUP.as_nanos() / service.as_nanos() * service.as_nanos()
+        );
+    }
+}
+
+#[test]
+fn pacing_clock_retains_queued_byte_debt_across_a_late_reader() {
+    let start = Instant::now();
+    let mut clock = PayloadClock::default();
+    let service = Duration::from_millis(64);
+    for index in 1..=4 {
+        assert_eq!(
+            clock.reserve(start, service).unwrap(),
+            start + service * index
+        );
+    }
+    let observed = start + Duration::from_millis(100);
+    assert_eq!(
+        clock.reserve(observed, service).unwrap(),
+        start + service * 5
+    );
+}
+
+#[tokio::test]
+async fn already_funded_payload_completes_without_registering_another_timer() {
+    use std::{future::Future, task::Poll};
+    let scheduler = scheduler(1, 1024);
+    scheduler.next_payload.lock().unwrap().next = Some(Instant::now() - Duration::from_micros(100));
+    let cancel = AtomicBool::new(false);
+    let mut transfer = Box::pin(scheduler.throttle(DOWNLOAD_SLICE_BYTES as u64, &cancel));
+    let first_poll =
+        std::future::poll_fn(|context| Poll::Ready(transfer.as_mut().poll(context))).await;
+    assert!(matches!(first_poll, Poll::Ready(Ok(()))));
+    assert_eq!(
+        scheduler.status().paced_payload_bytes,
+        DOWNLOAD_SLICE_BYTES as u64
+    );
+}
+
 fn scheduler(concurrent: u16, rate: u32) -> Arc<DownloadScheduler> {
     DownloadScheduler::new(DownloadPolicy {
         max_concurrent_transfers: concurrent,

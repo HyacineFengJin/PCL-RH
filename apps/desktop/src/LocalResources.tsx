@@ -806,7 +806,7 @@ export function ResourcePanel({
                 >
                   <span className="resource-icon">
                     {v.icon ? (
-                      <img src={v.icon} alt="" />
+                      <img src={v.icon} alt="" loading="lazy" decoding="async" />
                     ) : (
                       <Box size={29} strokeWidth={1.6} />
                     )}

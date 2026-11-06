@@ -6,7 +6,7 @@ import {
   formatRelativeDate,
   type MessageKey,
 } from "./i18n";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Pickaxe,
@@ -28,6 +28,7 @@ import { InstallSelection, installNameError } from "./InstallSelection";
 import type { InstallOptions } from "./InstallSelection";
 import type { ResourceSummary } from "./ResourceDetails";
 import type { ResourceBrowseRequest } from "./resourceBrowse";
+import type { Api } from "./types";
 import { communityAliases, communityIcon } from "./communityResources";
 import { CommunityPages, type CommunityPage } from "./communityPagination";
 import grassIcon from "./assets/game-icons/grass.png";
@@ -43,6 +44,26 @@ export type {
   DownloadTaskView,
 } from "./taskTypes";
 type VersionEntry = { id: string; kind: string; release_time: string };
+type CatalogOwner = { api: Api; rootId: string | null; requested: boolean };
+type CatalogView = {
+  owner: CatalogOwner;
+  entries: VersionEntry[];
+  loading: boolean;
+  error: string;
+};
+const emptyCatalog: VersionEntry[] = [];
+const aprilVersions = new Set([
+  "26w14a",
+  "25w14craftmine",
+  "24w14potato",
+  "23w13a_or_b",
+  "22w13oneblockatatime",
+  "20w14infinite",
+  "3D Shareware v1.34",
+  "1.RV-Pre1",
+  "15w14a",
+  "2.0",
+]);
 const kindName = (kind: string) =>
   kind === "release"
     ? t("download.release")
@@ -75,9 +96,8 @@ export function DownloadPanel({
   onTaskStart: (id: string) => void;
   visible?: boolean;
 }) {
-  const [catalog, setCatalog] = useState<VersionEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [catalogView, setCatalogView] = useState<CatalogView | null>(null);
+  const [taskError, setError] = useState("");
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<string[]>([]);
   const [choice, setChoice] = useState<VersionEntry | null>(null);
@@ -86,6 +106,21 @@ export function DownloadPanel({
   const mounted = useRef(true);
   const submissionEpoch = useRef(0);
   const catalogEpoch = useRef(0);
+  const catalogOwner = useRef<CatalogOwner>({ api, rootId, requested: false });
+  if (
+    catalogOwner.current.api !== api ||
+    catalogOwner.current.rootId !== rootId
+  )
+    catalogOwner.current = { api, rootId, requested: false };
+  const owner = catalogOwner.current;
+  const currentCatalog = catalogView?.owner === owner ? catalogView : null;
+  const catalog = currentCatalog?.entries ?? emptyCatalog;
+  const loading = currentCatalog?.loading ?? false;
+  // Other installers fetch their own provider metadata. Only the two vanilla
+  // views consume the official Minecraft catalog.
+  const usesCatalog =
+    section === "minecraft" || section === "installer-minecraft";
+  const error = taskError || (usesCatalog ? currentCatalog?.error : "");
   const context = useRef({ rootId, section, visible, api, choice });
   if (
     context.current.rootId !== rootId ||
@@ -107,86 +142,105 @@ export function DownloadPanel({
     return () => {
       mounted.current = false;
       submissionEpoch.current += 1;
-      catalogEpoch.current += 1;
     };
   }, []);
   useEffect(() => {
     setChoice(null);
     setError("");
-  }, [section, rootId]);
+    setCatalogView((previous) => (previous?.owner === owner ? previous : null));
+  }, [api, section, rootId]);
   async function loadCatalog(refresh = false) {
+    if (
+      !mounted.current ||
+      context.current !== renderedContext ||
+      !visible ||
+      !usesCatalog ||
+      (!refresh && owner.requested)
+    )
+      return;
+    // Hiding a view does not cancel an admitted request or discard its result.
+    // Keep failures attempted too: reopening offers explicit retry instead of
+    // silently issuing the same request on every navigation/render.
+    owner.requested = true;
     const request = ++catalogEpoch.current;
-    setLoading(true);
+    const current = () =>
+      mounted.current &&
+      catalogOwner.current === owner &&
+      request === catalogEpoch.current;
+    setCatalogView((previous) => ({
+      owner,
+      entries: previous?.owner === owner ? previous.entries : emptyCatalog,
+      loading: true,
+      error: "",
+    }));
     setError("");
     try {
       const entries = await api<VersionEntry[]>("download_catalog", {
         refresh,
       });
-      if (mounted.current && request === catalogEpoch.current)
-        setCatalog(entries);
+      if (current())
+        setCatalogView({ owner, entries, loading: false, error: "" });
     } catch (e) {
-      if (mounted.current && request === catalogEpoch.current)
-        setError(String(e));
-    } finally {
-      if (mounted.current && request === catalogEpoch.current)
-        setLoading(false);
+      if (current())
+        setCatalogView((previous) => ({
+          owner,
+          entries: previous?.owner === owner ? previous.entries : emptyCatalog,
+          loading: false,
+          error: String(e),
+        }));
     }
   }
   useEffect(() => {
-    void loadCatalog();
-    return () => {
-      catalogEpoch.current += 1;
-    };
-  }, [api]);
+    if (visible && usesCatalog) void loadCatalog();
+  }, [api, rootId, visible, usesCatalog]);
   // Global task polling belongs to App. This panel only owns its submission
   // lifetime, so another queued/running job does not disable catalog choices.
   const busy = working;
-  const ids = new Set(installed.map((item) => item.id));
-  const aprilVersions = new Set([
-    "26w14a",
-    "25w14craftmine",
-    "24w14potato",
-    "23w13a_or_b",
-    "22w13oneblockatatime",
-    "20w14infinite",
-    "3D Shareware v1.34",
-    "1.RV-Pre1",
-    "15w14a",
-    "2.0",
-  ]);
-  const groups = [
-    {
-      id: "release",
-      title: t("download.release"),
-      entries: catalog.filter(
-        (e) => e.kind === "release" && !aprilVersions.has(e.id),
-      ),
-    },
-    {
-      id: "snapshot",
-      title: t("download.preview"),
-      entries: catalog.filter(
-        (e) => e.kind === "snapshot" && !aprilVersions.has(e.id),
-      ),
-    },
-    {
-      id: "old",
-      title: t("download.ancient"),
-      entries: catalog.filter(
-        (e) =>
-          !["release", "snapshot"].includes(e.kind) && !aprilVersions.has(e.id),
-      ),
-    },
-    {
-      id: "april",
-      title: t("download.april"),
-      entries: catalog.filter((e) => aprilVersions.has(e.id)),
-    },
-  ];
-  const latest = [
-    catalog.find((e) => e.kind === "release"),
-    catalog.find((e) => e.kind === "snapshot" && !aprilVersions.has(e.id)),
-  ].filter((e): e is VersionEntry => Boolean(e));
+  const ids = useMemo(
+    () => new Set(installed.map((item) => item.id)),
+    [installed],
+  );
+  const groups = useMemo(
+    () => [
+      {
+        id: "release",
+        titleKey: "download.release" as const,
+        entries: catalog.filter(
+          (e) => e.kind === "release" && !aprilVersions.has(e.id),
+        ),
+      },
+      {
+        id: "snapshot",
+        titleKey: "download.preview" as const,
+        entries: catalog.filter(
+          (e) => e.kind === "snapshot" && !aprilVersions.has(e.id),
+        ),
+      },
+      {
+        id: "old",
+        titleKey: "download.ancient" as const,
+        entries: catalog.filter(
+          (e) =>
+            !["release", "snapshot"].includes(e.kind) &&
+            !aprilVersions.has(e.id),
+        ),
+      },
+      {
+        id: "april",
+        titleKey: "download.april" as const,
+        entries: catalog.filter((e) => aprilVersions.has(e.id)),
+      },
+    ],
+    [catalog],
+  );
+  const latest = useMemo(
+    () =>
+      [
+        catalog.find((e) => e.kind === "release"),
+        catalog.find((e) => e.kind === "snapshot" && !aprilVersions.has(e.id)),
+      ].filter((e): e is VersionEntry => Boolean(e)),
+    [catalog],
+  );
   const resourceLabels: Record<string, string> = {
     mods: "模组",
     modpacks: "整合包",
@@ -297,7 +351,14 @@ export function DownloadPanel({
           <span>{error}</span>
           <button
             className="icon-button"
-            onClick={() => setError("")}
+            onClick={() => {
+              setError("");
+              setCatalogView((previous) =>
+                previous?.owner === owner
+                  ? { ...previous, error: "" }
+                  : previous,
+              );
+            }}
             aria-label={t("ui.closeNotice")}
           >
             <X size={15} />
@@ -325,7 +386,7 @@ export function DownloadPanel({
               key={section}
               api={api}
               loader={section}
-              catalog={catalog}
+              catalog={visible ? catalog : emptyCatalog}
               catalogLoading={loading}
             />
           ) : community ? (
@@ -346,7 +407,7 @@ export function DownloadPanel({
               <div className="ce-card-title">{section}</div>
               <p className="muted">{t("download.catalogUnavailable")}</p>
             </section>
-          ) : (
+          ) : !visible ? null : (
             <>
               <section className="ce-card ce-catalog-latest">
                 <div className="ce-card-title">{t("ui.latest")}</div>
@@ -389,7 +450,7 @@ export function DownloadPanel({
                     aria-expanded={expanded.includes(group.id)}
                   >
                     <span>
-                      {group.title} ({formatNumber(group.entries.length)})
+                      {t(group.titleKey)} ({formatNumber(group.entries.length)})
                     </span>
                     <ChevronDown
                       size={19}

@@ -17,6 +17,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub const DOWNLOAD_SLICE_BYTES: usize = 64 * 1024;
 const CANCEL_POLL: Duration = Duration::from_millis(40);
+// Tokio timers round short waits to millisecond ticks. Recover at most this
+// much missed service time, shared across all readers; never bank idle time
+// without a bound or grant credit before the first payload reservation.
+const MAX_PACING_CATCHUP: Duration = Duration::from_millis(2);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DownloadPolicy {
@@ -59,10 +63,11 @@ struct Counters {
 pub struct DownloadScheduler {
     policy: DownloadPolicy,
     slots: Arc<Semaphore>,
-    // A zero-burst leaky byte clock keeps all active readers on one budget.
-    // Reservations are at most 64 KiB, bounding cancelled unused debt to one
-    // small slice per active transfer. No mutex survives a sleep or await.
-    next_payload: Mutex<Instant>,
+    // The shared byte clock permits at most rate * 2ms of delayed-service
+    // catch-up, with no initial credit. Reservations remain at most 64 KiB,
+    // bounding cancelled unused debt to one small slice per active transfer.
+    // No mutex survives a sleep or await.
+    next_payload: Mutex<PayloadClock>,
     counters: Arc<Counters>,
 }
 pub struct DownloadPermit {
@@ -80,13 +85,26 @@ impl Drop for Queued {
         self.0.queued.fetch_sub(1, Ordering::Relaxed);
     }
 }
+#[derive(Default)]
+struct PayloadClock {
+    next: Option<Instant>,
+}
+impl PayloadClock {
+    fn reserve(&mut self, now: Instant, service: Duration) -> Result<Instant, String> {
+        let oldest = now.checked_sub(MAX_PACING_CATCHUP).unwrap_or(now);
+        let start = self.next.map(|next| next.max(oldest)).unwrap_or(now);
+        let deadline = start.checked_add(service).ok_or("下载限速时间超出范围")?;
+        self.next = Some(deadline);
+        Ok(deadline)
+    }
+}
 impl DownloadScheduler {
     pub fn new(policy: DownloadPolicy) -> Result<Arc<Self>, String> {
         policy.validate()?;
         Ok(Arc::new(Self {
             slots: Arc::new(Semaphore::new(policy.max_concurrent_transfers as usize)),
             policy,
-            next_payload: Mutex::new(Instant::now()),
+            next_payload: Mutex::new(PayloadClock::default()),
             counters: Arc::new(Counters {
                 active: AtomicU64::new(0),
                 queued: AtomicU64::new(0),
@@ -150,19 +168,18 @@ impl DownloadScheduler {
         }
         let rate = u64::from(self.policy.total_rate_limit_mib_per_second) * 1024 * 1024;
         let nanos = (u128::from(bytes) * 1_000_000_000).div_ceil(u128::from(rate)) as u64;
-        let mut next = self.next_payload.lock().map_err(|_| "下载限速器锁异常")?;
-        let deadline = (*next)
-            .max(Instant::now())
-            .checked_add(Duration::from_nanos(nanos))
-            .ok_or("下载限速时间超出范围")?;
-        *next = deadline;
-        Ok(Some(deadline))
+        let mut clock = self.next_payload.lock().map_err(|_| "下载限速器锁异常")?;
+        clock
+            .reserve(Instant::now(), Duration::from_nanos(nanos))
+            .map(Some)
     }
     pub async fn throttle(&self, mut bytes: u64, cancel: &AtomicBool) -> Result<(), String> {
         while bytes > 0 {
             cancelled(cancel)?;
             let slice = bytes.min(DOWNLOAD_SLICE_BYTES as u64);
-            if let Some(deadline) = self.reserve(slice)? {
+            // Already-funded slices must not register a new timer: even a past
+            // sub-millisecond deadline can round into the next Tokio tick.
+            if let Some(deadline) = self.reserve(slice)?.filter(|time| *time > Instant::now()) {
                 tokio::select! {
                     biased;
                     _=wait_cancelled(cancel)=>return Err("下载已取消".into()),
