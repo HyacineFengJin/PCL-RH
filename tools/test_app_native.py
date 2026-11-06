@@ -43,7 +43,8 @@ class MacApplicationTests(unittest.TestCase):
         struct.pack_into("<I", header, 12, 2)
         self.png = (APP.ROOT.parent / "assets/pcl-rh.png").read_bytes()
         self.files = {name: (b"inert production resource\n", 0o644)
-                      for name in (*APP.PACKAGE.REQUIRED, *APP.LEGAL.DOCUMENTS)}
+                      for name in (*APP.PACKAGE.REQUIRED, *APP.LEGAL.DOCUMENTS,
+                                   *APP.PACKAGE.NATIVE_ATTRIBUTION_FILES)}
         self.files.update({"pcl-desktop": (bytes(header), 0o755), "pcl-cli": (bytes(header), 0o755),
                            "start-native.sh": (b"#!/bin/sh\n# inert, never executed\n", 0o755),
                            "Start PCL RH.command": (b"#!/bin/sh\n# inert, never executed\n", 0o755),

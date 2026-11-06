@@ -93,7 +93,7 @@ def verified_portable(directory: Path, scratch: Path) -> tuple[Path, dict, str]:
                             for entry in manifest["files"]),
                     "A distribution image must not contain user state")
     extra = {"pcl-desktop", "pcl-cli", "Start PCL RH.command", "README-native.txt",
-             "pcl-rh-license-notices.zip"}
+             "pcl-rh-license-notices.zip"} | PACKAGE.NATIVE_ATTRIBUTION_FILES
     PACKAGE.require(all(entry["path"] in extra or entry["path"] in LEGAL.DOCUMENTS
                         or PACKAGE.selected_resource(entry["path"], "start-native.sh")
                         or entry["path"].startswith("experimental/runtime/node_modules/")

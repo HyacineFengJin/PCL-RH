@@ -43,6 +43,8 @@ class NativeDiskImageTests(unittest.TestCase):
         self.files = {"pcl-desktop": (bytes(header), 0o755), "pcl-cli": (bytes(header), 0o755),
                       "start-native.sh": (b"#!/bin/sh\n# inert fixture; never executed\n", 0o755),
                       "Start PCL RH.command": (b"#!/bin/sh\n# inert fixture; never executed\n", 0o755)}
+        self.files.update({name: (b"inert native attribution fixture\n", 0o644)
+                           for name in DMG.PACKAGE.NATIVE_ATTRIBUTION_FILES})
         self.environment = mock.patch.dict(os.environ, {"PCL_NATIVE_SOURCE_COMMIT": COMMIT})
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -170,7 +172,8 @@ class NativeApplicationDiskImageTests(unittest.TestCase):
         struct.pack_into("<I", header, 12, 2)
         self.app = DMG.load("pcl_app_dmg_fixture", Path(__file__).with_name("app-native.py"))
         self.files = {name: (b"inert production fixture\n", 0o644)
-                      for name in (*DMG.PACKAGE.REQUIRED, *DMG.LEGAL.DOCUMENTS)}
+                      for name in (*DMG.PACKAGE.REQUIRED, *DMG.LEGAL.DOCUMENTS,
+                                   *DMG.PACKAGE.NATIVE_ATTRIBUTION_FILES)}
         self.files.update({"pcl-desktop": (bytes(header), 0o755), "pcl-cli": (bytes(header), 0o755),
                            "start-native.sh": (b"#!/bin/sh\n# inert fixture, never executed\n", 0o755),
                            "Start PCL RH.command": (b"#!/bin/sh\n# inert fixture, never executed\n", 0o755),
