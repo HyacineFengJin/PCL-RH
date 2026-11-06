@@ -13,7 +13,7 @@
 Ubuntu / Debian 包：`.deb` 面向 Ubuntu 24.04 x64 ABI，其他 Debian 系发行版须满足包中声明的库与版本要求。下载后在文件所在目录安装：
 
 ```sh
-sudo apt install ./pcl-rh_0.2.0-1_amd64.deb
+sudo apt install ./pcl-rh_0.2.1-1_amd64.deb
 pcl-rh
 ```
 

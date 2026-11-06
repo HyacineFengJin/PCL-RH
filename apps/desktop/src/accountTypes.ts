@@ -13,6 +13,8 @@ export type AuthState = {
   client_id: string;
   selected: string | null;
   accounts: { profile: AccountProfile; remembered: boolean }[];
+  offline_player: string | null;
+  can_create_offline: boolean;
   stage: string;
   message: string;
   challenge: {

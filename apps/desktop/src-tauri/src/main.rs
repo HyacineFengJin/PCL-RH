@@ -1686,6 +1686,10 @@ fn auth_select(id: Option<String>, state: State<'_, Arc<Shared>>) -> Result<(), 
     with_account_write(&state, || state.accounts.select(id))
 }
 #[tauri::command]
+fn auth_save_offline(name: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
+    with_account_write(&state, || state.accounts.save_offline(name))
+}
+#[tauri::command]
 async fn auth_remove(id: String, state: State<'_, Arc<Shared>>) -> Result<(), String> {
     let s = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1796,6 +1800,7 @@ fn launch_game(
         return Err("启动器正在关闭".into());
     }
     launcher_monitor_runtime::require_idle(&state)?;
+    state.accounts.require_selected_identity()?;
     state.config.ensure_writable()?;
     let (cfg, root) = instance_context(&state.config, root_id.as_deref(), &id)?;
     let policy = captured_launch_policy(&state)?;
@@ -1877,32 +1882,36 @@ fn launch_game(
                         game_options.isolation,
                     )?;
                     match s.accounts.identity()? {
-                        Some(identity) => pcl_core::build_launch_plan_authenticated_with_options(
-                            Path::new(&root.path),
-                            &s.project,
-                            &id,
-                            &pcl_core::OnlineIdentity {
-                                name: identity.name,
-                                uuid: identity.uuid,
-                                access_token: identity.access_token,
-                                xuid: identity.xuid,
-                                client_id: identity.client_id,
-                            },
-                            memory,
-                            java_service::effective_choice(launch_settings, &root, &id),
-                            &launch_settings.java_paths,
-                            &game_options,
-                        ),
-                        None => pcl_core::build_launch_plan_with_options(
-                            Path::new(&root.path),
-                            &s.project,
-                            &id,
-                            &cfg.player,
-                            memory,
-                            java_service::effective_choice(launch_settings, &root, &id),
-                            &launch_settings.java_paths,
-                            &game_options,
-                        ),
+                        accounts::AccountIdentity::Microsoft(identity) => {
+                            pcl_core::build_launch_plan_authenticated_with_options(
+                                Path::new(&root.path),
+                                &s.project,
+                                &id,
+                                &pcl_core::OnlineIdentity {
+                                    name: identity.name,
+                                    uuid: identity.uuid,
+                                    access_token: identity.access_token,
+                                    xuid: identity.xuid,
+                                    client_id: identity.client_id,
+                                },
+                                memory,
+                                java_service::effective_choice(launch_settings, &root, &id),
+                                &launch_settings.java_paths,
+                                &game_options,
+                            )
+                        }
+                        accounts::AccountIdentity::Offline(name) => {
+                            pcl_core::build_launch_plan_with_options(
+                                Path::new(&root.path),
+                                &s.project,
+                                &id,
+                                &name,
+                                memory,
+                                java_service::effective_choice(launch_settings, &root, &id),
+                                &launch_settings.java_paths,
+                                &game_options,
+                            )
+                        }
                     }
                 })?;
                 if s.stop.load(Ordering::SeqCst) {
@@ -2408,6 +2417,7 @@ fn main() {
             auth_start,
             auth_cancel,
             auth_select,
+            auth_save_offline,
             auth_remove,
             auth_open_browser,
             account_commands::auth_save_login,

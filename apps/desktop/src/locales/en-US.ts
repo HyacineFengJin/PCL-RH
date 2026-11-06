@@ -391,7 +391,7 @@ const messages = {
   "about.pclLicense": "PCL terms and guide",
   "about.community": "PCL CE team; interface design reference",
   "about.github": "GitHub profile",
-  "about.version": "Current version: 0.2.0 (experimental native Linux build)",
+  "about.version": "Current version: 0.2.1",
   "about.source": "View source code",
   "about.thanks": "Acknowledgements from upstream PCL CE",
   "about.bmclapi":

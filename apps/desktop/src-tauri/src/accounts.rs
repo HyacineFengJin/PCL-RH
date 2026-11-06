@@ -21,6 +21,21 @@ pub struct SavedAccount {
     pub remembered: bool,
 }
 
+pub enum AccountIdentity {
+    Microsoft(LaunchIdentity),
+    Offline(String),
+}
+
+const ADD_ACCOUNT: &str = "请先添加账号";
+const PREMIUM_REQUIRED: &str = "请先添加拥有 Minecraft Java 版的微软正版账号，再创建离线账号";
+
+fn valid_offline_player(name: &str) -> bool {
+    (3..=16).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,9 +68,12 @@ mod tests {
         let a = Arc::new(Accounts::new(&f.0));
         assert_eq!(a.snapshot().client_id, DEFAULT_CLIENT_ID);
         a.configure(String::new()).unwrap();
-        assert!(a.start(false).err().unwrap().contains("Client ID"));
+        assert_eq!(
+            a.start(false).err().unwrap(),
+            "启动器尚未配置 Microsoft 登录，请联系项目维护者"
+        );
         assert_eq!(a.snapshot().stage, "idle");
-        assert!(a.identity().unwrap().is_none());
+        assert!(a.identity().err().unwrap().contains(ADD_ACCOUNT));
         assert!(a.configure("wrong-id".into()).is_err());
         a.configure(CLIENT.into()).unwrap();
         assert_eq!(Accounts::new(&f.0).snapshot().client_id, CLIENT);
@@ -89,6 +107,7 @@ mod tests {
                 },
                 remembered: false,
             }],
+            offline_player: None,
         })
         .unwrap();
         let a = Accounts::new(&f.0);
@@ -125,6 +144,122 @@ mod tests {
             expires_at: 0,
             textures: Default::default(),
         }
+    }
+    fn with_premium(a: &Accounts) {
+        let mut i = a.inner.lock().unwrap();
+        i.book.accounts.push(SavedAccount {
+            profile: profile(),
+            remembered: false,
+        });
+        a.persist(&i.book).unwrap();
+    }
+    #[test]
+    fn fresh_install_and_settings_draft_do_not_create_an_identity() {
+        let f = crate::integration_tests::Fixture::new();
+        let s = f.shared();
+        let mut settings = s.config.snapshot();
+        settings.player = "DraftPlayer".into();
+        s.config.save(settings).unwrap();
+        assert!(s.accounts.snapshot().offline_player.is_none());
+        assert!(!s.accounts.snapshot().can_create_offline);
+        assert!(s.accounts.require_selected_identity().is_err());
+        assert!(s.accounts.identity().is_err());
+        assert!(s.accounts.select(None).is_err());
+        assert_eq!(
+            s.accounts.save_offline("DraftPlayer".into()).unwrap_err(),
+            PREMIUM_REQUIRED
+        );
+        assert!(Accounts::new(&f.0).identity().is_err());
+    }
+    #[test]
+    fn offline_registration_is_explicit_persistent_and_uses_registered_name() {
+        let f = Fixture::new();
+        let a = Accounts::new(&f.0);
+        with_premium(&a);
+        assert!(a.snapshot().can_create_offline);
+        assert!(a.identity().is_err());
+        a.save_offline(" Offline_Name ".into()).unwrap();
+        let a = Accounts::new(&f.0);
+        assert!(a.require_selected_identity().is_ok());
+        assert!(a.snapshot().selected.is_none());
+        assert!(
+            matches!(a.identity().unwrap(), AccountIdentity::Offline(name) if name == "Offline_Name")
+        );
+        a.select(Some(profile().id)).unwrap();
+        // An expired/session-only online selection must never fall back to the
+        // offline identity merely because one has previously been registered.
+        assert!(a.identity().is_err());
+        a.select(None).unwrap();
+        assert!(matches!(a.identity().unwrap(), AccountIdentity::Offline(_)));
+    }
+    #[test]
+    fn removing_premium_preserves_existing_offline_but_blocks_new_names() {
+        let f = Fixture::new();
+        let a = Accounts::new(&f.0);
+        with_premium(&a);
+        a.save_offline("ExistingPlayer".into()).unwrap();
+        a.finish_remove(&profile().id, Ok(())).unwrap();
+        assert!(!a.snapshot().can_create_offline);
+        assert!(
+            matches!(a.identity().unwrap(), AccountIdentity::Offline(name) if name == "ExistingPlayer")
+        );
+        a.save_offline("ExistingPlayer".into()).unwrap();
+        assert_eq!(
+            a.save_offline("DifferentPlayer".into()).unwrap_err(),
+            PREMIUM_REQUIRED
+        );
+        assert_eq!(
+            Accounts::new(&f.0).snapshot().offline_player.as_deref(),
+            Some("ExistingPlayer")
+        );
+    }
+    #[test]
+    fn removing_last_online_account_does_not_invent_an_offline_identity() {
+        let f = Fixture::new();
+        let a = Accounts::new(&f.0);
+        with_premium(&a);
+        a.select(Some(profile().id)).unwrap();
+        a.finish_remove(&profile().id, Ok(())).unwrap();
+        assert!(a.identity().is_err());
+        assert!(a.snapshot().offline_player.is_none());
+    }
+    #[test]
+    fn legacy_book_keeps_online_profiles_without_defaulting_offline() {
+        let f = Fixture::new();
+        let a = Accounts::new(&f.0);
+        with_premium(&a);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&a.file).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("offline_player");
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&a.file, &bytes).unwrap();
+        let restored = Accounts::new(&f.0);
+        assert_eq!(restored.snapshot().accounts.len(), 1);
+        assert!(restored.snapshot().offline_player.is_none());
+        assert_eq!(fs::read(&a.file).unwrap(), bytes);
+    }
+    #[test]
+    fn failed_or_busy_registration_never_publishes_an_offline_identity() {
+        let f = Fixture::new();
+        let a = Accounts::new(&f.0);
+        with_premium(&a);
+        for name in [
+            "",
+            "ab",
+            "name with spaces",
+            "中文名字",
+            "12345678901234567",
+        ] {
+            assert!(a.save_offline(name.into()).is_err());
+        }
+        a.inner.lock().unwrap().credential_busy = true;
+        assert!(a.save_offline("ValidName".into()).is_err());
+        a.inner.lock().unwrap().credential_busy = false;
+        fs::write(&a.file, b"preserved invalid book").unwrap();
+        assert!(a.save_offline("ValidName".into()).is_err());
+        assert!(a.identity().is_err());
+        assert!(a.snapshot().offline_player.is_none());
+        assert_eq!(fs::read(&a.file).unwrap(), b"preserved invalid book");
     }
     #[test]
     fn failed_store_or_book_publication_never_claims_remembered() {
@@ -297,6 +432,10 @@ struct Book {
     client_id: String,
     selected: Option<String>,
     accounts: Vec<SavedAccount>,
+    // A settings.player fallback is not an account. Older books preserve their
+    // online profiles; offline identities must be explicitly registered here.
+    #[serde(default)]
+    offline_player: Option<String>,
 }
 impl Default for Book {
     fn default() -> Self {
@@ -304,6 +443,7 @@ impl Default for Book {
             client_id: DEFAULT_CLIENT_ID.into(),
             selected: None,
             accounts: Vec::new(),
+            offline_player: None,
         }
     }
 }
@@ -312,6 +452,8 @@ pub struct AuthState {
     pub client_id: String,
     pub selected: Option<String>,
     pub accounts: Vec<SavedAccount>,
+    pub offline_player: Option<String>,
+    pub can_create_offline: bool,
     pub stage: String,
     pub message: String,
     pub challenge: Option<DeviceChallenge>,
@@ -346,7 +488,11 @@ impl Accounts {
             match fs::read(&file)
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Book>(&bytes).ok())
-            {
+                .filter(|book| {
+                    book.offline_player
+                        .as_deref()
+                        .is_none_or(valid_offline_player)
+                }) {
                 Some(mut book) => {
                     if book.client_id.trim().is_empty() {
                         book.client_id = DEFAULT_CLIENT_ID.into();
@@ -411,6 +557,10 @@ impl Accounts {
             client_id: i.book.client_id.clone(),
             selected: i.book.selected.clone(),
             accounts: i.book.accounts.clone(),
+            offline_player: i.book.offline_player.clone(),
+            // Only a completed Microsoft/Minecraft authentication publishes a
+            // profile. Token expiry does not erase a previously added identity.
+            can_create_offline: !i.book.accounts.is_empty(),
             stage: i.stage.clone(),
             message: i.message.clone(),
             challenge: i.challenge.clone(),
@@ -453,11 +603,45 @@ impl Accounts {
         {
             return Err("账号不存在".into());
         }
+        if id.is_none() && i.book.offline_player.is_none() {
+            return Err("尚未创建离线账号".into());
+        }
         let mut book = i.book.clone();
         book.selected = id;
         self.persist(&book)?;
         i.book = book;
         Ok(())
+    }
+    /// Registration and selection are one persisted update. Generic settings
+    /// writes cannot create or rename a launch identity, even through raw IPC.
+    pub fn save_offline(&self, name: String) -> Result<(), String> {
+        let name = name.trim();
+        if !valid_offline_player(name) {
+            return Err("离线玩家名须为 3–16 位英文字母、数字或下划线".into());
+        }
+        let mut i = self.inner.lock().unwrap();
+        if i.cancel.is_some() || i.credential_busy {
+            return Err("请先结束当前登录".into());
+        }
+        if i.book.accounts.is_empty() && i.book.offline_player.as_deref() != Some(name) {
+            return Err(PREMIUM_REQUIRED.into());
+        }
+        let mut book = i.book.clone();
+        book.offline_player = Some(name.to_owned());
+        book.selected = None;
+        self.persist(&book)?;
+        i.book = book;
+        Ok(())
+    }
+    /// Fast admission before dependency repair; authentication still runs when
+    /// constructing the launch plan. An empty selection never means "Player".
+    pub fn require_selected_identity(&self) -> Result<(), String> {
+        let i = self.inner.lock().unwrap();
+        match &i.book.selected {
+            Some(id) if i.book.accounts.iter().any(|a| &a.profile.id == id) => Ok(()),
+            None if i.book.offline_player.is_some() => Ok(()),
+            _ => Err(ADD_ACCOUNT.into()),
+        }
     }
     pub fn cancel(&self) {
         let mut i = self.inner.lock().unwrap();
@@ -622,7 +806,10 @@ impl Accounts {
         let mut book = i.book.clone();
         book.accounts.retain(|a| a.profile.id != id);
         if book.selected.as_deref() == Some(id) {
-            book.selected = None;
+            book.selected = book
+                .accounts
+                .first()
+                .map(|account| account.profile.id.clone());
         }
         self.persist(&book)?;
         i.book = book;
@@ -727,11 +914,16 @@ impl Accounts {
         Ok(Some(challenge))
     }
     /// Refuses an unavailable/expired online identity instead of silently using offline mode.
-    pub fn identity(&self) -> Result<Option<LaunchIdentity>, String> {
+    pub fn identity(&self) -> Result<AccountIdentity, String> {
         let (id, client_id, cached, remembered) = {
             let i = self.inner.lock().unwrap();
             let Some(id) = i.book.selected.clone() else {
-                return Ok(None);
+                return i
+                    .book
+                    .offline_player
+                    .clone()
+                    .map(AccountIdentity::Offline)
+                    .ok_or_else(|| ADD_ACCOUNT.to_owned());
             };
             let account = i
                 .book
@@ -785,7 +977,7 @@ impl Accounts {
             i.warning = warning;
         }
         self.persist(&i.book)?;
-        Ok(Some(identity))
+        Ok(AccountIdentity::Microsoft(identity))
     }
     /// A detached game monitor receives this snapshot through an anonymous
     /// pipe. Never serialize it to account/settings files or diagnostic DTOs.

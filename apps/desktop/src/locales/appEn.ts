@@ -1,5 +1,9 @@
 /** Fixed application presentation. User and service values remain literal. */
 const messages = {
+  "accounts.addAccount": "Add account",
+  "accounts.noAccount": "No game identity selected",
+  "accounts.premiumRequired":
+    "Support Minecraft: add a Microsoft account that owns Java Edition before creating an offline account.",
   "accounts.offlineTitle": "Offline player",
   "accounts.onlineTitle": "Microsoft sign-in",
   "accounts.back": "Back to account type",

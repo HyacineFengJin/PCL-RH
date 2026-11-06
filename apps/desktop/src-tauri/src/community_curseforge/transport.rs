@@ -38,7 +38,7 @@ fn client(
 ) -> Result<Client, String> {
     network
         .async_client()
-        .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
+        .user_agent("PCL-RH/0.2.1 (https://github.com/HyacineFengJin/PCL-RH)")
         .https_only(https_only)
         .redirect(if downloads {
             reqwest::redirect::Policy::custom(|attempt| {

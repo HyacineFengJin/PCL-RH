@@ -565,7 +565,7 @@ pub async fn modrinth_search(
         _ => "relevance",
     };
     let client = pcl_network::async_client()
-        .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
+        .user_agent("PCL-RH/0.2.1 (https://github.com/HyacineFengJin/PCL-RH)")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;

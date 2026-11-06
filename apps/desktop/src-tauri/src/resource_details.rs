@@ -17,7 +17,7 @@ fn client() -> Result<reqwest::Client, String> {
 fn client_with(network: &pcl_network::ClientFactory) -> Result<reqwest::Client, String> {
     network
         .async_client()
-        .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
+        .user_agent("PCL-RH/0.2.1 (https://github.com/HyacineFengJin/PCL-RH)")
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .build()

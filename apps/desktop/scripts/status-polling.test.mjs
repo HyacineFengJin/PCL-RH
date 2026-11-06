@@ -366,16 +366,16 @@ test("closing admission rejects replies even before effect cleanup runs", async 
 test("offline save refreshes auth immediately through the same owner", async (t) => {
   const updated = initial().auth;
   updated.message = "offline selected";
+  updated.offline_player = "after";
   const f = driver((command) =>
     command === "auth_status" ? structuredClone(updated) : {},
   );
   t.after(() => f.close());
-  let saved, dialog;
+  let dialog;
   await f.action("saveOfflineAccount", {
     data: { settings: { player: "before" } },
-    save: async (value) => {
-      saved = value;
-    },
+    save: async () =>
+      assert.fail("Account registration must not write generic settings"),
     setAuthWorking: (value) => f.working(value),
     setAuthError: (error) => {
       if (error) assert.fail(String(error));
@@ -384,12 +384,13 @@ test("offline save refreshes auth immediately through the same owner", async (t)
       dialog = value;
     },
   })("after");
-  assert.equal(saved.player, "after");
+  assert.equal(f.calls[0].args.name, "after");
   assert.equal(dialog, null);
   assert.equal(f.state.auth.message, "offline selected");
+  assert.equal(f.state.auth.offline_player, "after");
   assert.deepEqual(
     f.calls.map((c) => c.command),
-    ["auth_select", "auth_status"],
+    ["auth_save_offline", "auth_status"],
   );
 });
 test("a local game launch wakes the process poll without the idle delay", async (t) => {
@@ -411,6 +412,7 @@ test("a local game launch wakes the process poll without the idle delay", async 
     resourceBusy: false,
     rootWorking: false,
     rootAvailable: true,
+    hasAccount: true,
     rootKey: "fixture",
     rootId: "root",
     contextKey: { current: "fixture" },
@@ -428,6 +430,29 @@ test("a local game launch wakes the process poll without the idle delay", async 
   await f.advance(900);
   assert.equal(f.calls.filter((c) => c.command === "process_status").length, 2);
 });
+test("launch with no identity opens account creation before settings writes or native launch", async (t) => {
+  const f = driver();
+  t.after(() => f.close());
+  let opened = 0;
+  await f.action("launch", {
+    data: initial(),
+    selected: { id: "fixture" },
+    busy: false,
+    downloadBusy: false,
+    resourceBusy: false,
+    rootWorking: false,
+    rootAvailable: true,
+    hasAccount: false,
+    openAccountDialog: () => {
+      opened++;
+    },
+    save: async () => assert.fail("No settings write without an identity"),
+    rootApi: async () => assert.fail("No native launch without an identity"),
+  })();
+  assert.equal(opened, 1);
+  assert.deepEqual(f.calls, []);
+});
+
 test("all visible status/auth fields participate in equality, including nested textures", () => {
   const { sameProcessStatus, sameAuthState } = status.exports;
   const state = initial();
@@ -465,9 +490,16 @@ test("all visible status/auth fields participate in equality, including nested t
   };
   assert.equal(sameAuthState(auth, structuredClone(auth)), true);
   const paths = [
-    ...["client_id", "selected", "stage", "message", "warning", "saving"].map(
-      (key) => [key],
-    ),
+    ...[
+      "client_id",
+      "selected",
+      "offline_player",
+      "can_create_offline",
+      "stage",
+      "message",
+      "warning",
+      "saving",
+    ].map((key) => [key]),
     ...["user_code", "verification_uri", "expires_in"].map((key) => [
       "challenge",
       key,

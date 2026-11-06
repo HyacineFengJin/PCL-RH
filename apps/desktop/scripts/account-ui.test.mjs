@@ -22,6 +22,8 @@ const auth = (accounts = [{ profile: profile(), remembered: false }]) => ({
   client_id: "approved",
   selected: "account-1",
   accounts,
+  offline_player: null,
+  can_create_offline: accounts.length > 0,
   stage: "success",
   message: "",
   challenge: null,
@@ -101,6 +103,44 @@ test("offline child contains only its name and saves a validated draft", async (
   await ui.flush();
   assert.deepEqual(saves, ["Valid_Name"]);
   assert.deepEqual(actions, []);
+  ui.close();
+});
+
+test("offline registration stays blocked without a premium account, including direct submit", async () => {
+  const { ui, saves } = dialog("offline", {
+    auth: { ...auth([]), selected: null },
+  });
+  const submit = () =>
+    elements(ui.tree, (n) => n.type === "form")[0].props.onSubmit({
+      preventDefault() {},
+    });
+  assert.equal(button(ui, "accounts.save").props.disabled, true);
+  assert.ok(content(ui.tree).includes(ui.i18n.t("accounts.premiumRequired")));
+  submit();
+  await ui.flush();
+  assert.deepEqual(saves, []);
+  ui.replace({ auth: auth() });
+  submit();
+  await ui.flush();
+  assert.deepEqual(saves, ["OfflinePlayer"]);
+  ui.close();
+});
+
+test("an existing offline identity remains selectable but cannot be renamed after premium removal", async () => {
+  const { ui, saves } = dialog("offline", {
+    auth: { ...auth([]), selected: null, offline_player: "OfflinePlayer" },
+  });
+  assert.equal(button(ui, "accounts.save").props.disabled, false);
+  field(ui, "accounts.offlineName").props.onChange({
+    target: { value: "OtherPlayer" },
+  });
+  await ui.flush();
+  assert.equal(button(ui, "accounts.save").props.disabled, true);
+  elements(ui.tree, (n) => n.type === "form")[0].props.onSubmit({
+    preventDefault() {},
+  });
+  await ui.flush();
+  assert.deepEqual(saves, []);
   ui.close();
 });
 

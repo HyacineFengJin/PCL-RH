@@ -17,6 +17,8 @@ PCL RH is a Minecraft: Java Edition launcher built with **Rust, Tauri, and React
 - **RH Code**: an AI workspace for mod projects with multiple conversations, source editing, change review, project builds and pixel asset tools.
 - **Plugins**: shared management for optional built-in capabilities and permission-controlled community components.
 
+New installations start without an account. Add a Microsoft account that owns Minecraft Java Edition before creating an offline identity. See [accounts and sign-in](docs/AUTHENTICATION.md).
+
 ## Download and use
 
 Choose your platform from [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/latest):

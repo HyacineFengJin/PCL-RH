@@ -40,6 +40,8 @@ export function sameAuthState(a: AuthState, b: AuthState) {
   return (
     a.client_id === b.client_id &&
     a.selected === b.selected &&
+    a.offline_player === b.offline_player &&
+    a.can_create_offline === b.can_create_offline &&
     a.stage === b.stage &&
     a.message === b.message &&
     a.warning === b.warning &&

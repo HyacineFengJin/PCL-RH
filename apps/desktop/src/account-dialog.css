@@ -183,6 +183,13 @@
   margin: 14px 0 0;
   overflow-wrap: anywhere;
 }
+.ce-account-hint {
+  color: var(--ce-muted, #7a899b);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 14px 0 0;
+  overflow-wrap: anywhere;
+}
 .ce-account-appearance-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

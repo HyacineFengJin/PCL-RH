@@ -345,7 +345,7 @@ const messages = {
   "about.pclLicense": "PCL 许可与指南",
   "about.community": "PCL CE 团队；界面设计参考",
   "about.github": "GitHub 主页",
-  "about.version": "当前版本: 0.2.0（Linux 原生实验版）",
+  "about.version": "当前版本: 0.2.1",
   "about.source": "查看源代码",
   "about.thanks": "PCL CE 上游项目致谢",
   "about.bmclapi":

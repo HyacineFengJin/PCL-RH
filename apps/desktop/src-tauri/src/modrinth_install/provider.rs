@@ -238,7 +238,7 @@ pub(crate) struct HttpProvider<'a> {
 impl<'a> HttpProvider<'a> {
     pub fn new(cancel: &'a AtomicBool) -> Result<Self> {
         let client = pcl_network::async_client()
-            .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
+            .user_agent("PCL-RH/0.2.1 (https://github.com/HyacineFengJin/PCL-RH)")
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .build()

@@ -17,6 +17,8 @@ PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启�
 - **RH Code**：面向模组项目的 AI 工作区，支持多个对话、源码编辑、改动审阅、项目构建和像素资产工具。
 - **插件体系**：启动器与 RH Code 共用插件管理，支持可选官方功能和经授权的社区组件扩展。
 
+首次使用不附带默认账号。请先添加拥有 Minecraft Java 版的 Microsoft 正版账号，之后可创建离线身份，详见[账号说明](docs/AUTHENTICATION.md)。
+
 ## 下载与使用
 
 从 [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/latest) 下载对应系统的安装包：

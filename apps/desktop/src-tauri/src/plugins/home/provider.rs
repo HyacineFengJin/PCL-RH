@@ -42,7 +42,7 @@ impl Provider for GitHub {
             let client = self
                 .network
                 .async_client()
-                .user_agent("PCL-RH-announcements/0.2.0")
+                .user_agent("PCL-RH-announcements/0.2.1")
                 .https_only(true)
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(8))

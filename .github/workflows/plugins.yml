@@ -76,6 +76,7 @@ jobs:
       - name: Check idle work, source lifetimes and bounded project witnesses
         # Synthetic source snapshots only. No SDK/model, native app or user data.
         run: |
+          node --test apps/desktop/scripts/account-ui.test.mjs
           node --test apps/desktop/scripts/status-polling.test.mjs apps/desktop/scripts/task-polling.test.mjs apps/desktop/scripts/task-terminal-refresh-ui.test.mjs experimental/runtime/tests/porter-projects.test.mjs experimental/runtime/tests/source-release.test.mjs
           node apps/desktop/scripts/check-porter-source-owner.mjs
           node apps/desktop/scripts/check-rh-code-controller.mjs

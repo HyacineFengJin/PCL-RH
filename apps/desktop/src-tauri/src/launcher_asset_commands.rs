@@ -182,7 +182,7 @@ async fn fetch_home(url: &str) -> Result<assets::HomepageRead, String> {
             .resolve_to_addrs(&location.host, &sockets)
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(15))
-            .user_agent("PCL-RH/0.2.0")
+            .user_agent("PCL-RH/0.2.1")
             .build()
             .map_err(|_| "无法建立主页连接")?;
         let mut response = client

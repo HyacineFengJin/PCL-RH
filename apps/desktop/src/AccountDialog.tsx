@@ -60,6 +60,9 @@ export function AccountDialog(p: Props) {
   const [nameError, setNameError] = useState("");
   const signing = ["preparing", "waiting", "saving"].includes(p.auth.stage);
   const disabled = p.working || p.busy || signing;
+  const canSaveOffline =
+    p.auth.can_create_offline ||
+    (!!p.auth.offline_player && name.trim() === p.auth.offline_player);
   const problem =
     p.error ||
     p.auth.warning ||
@@ -111,6 +114,7 @@ export function AccountDialog(p: Props) {
             noValidate
             onSubmit={(e) => {
               e.preventDefault();
+              if (!p.native || disabled || !canSaveOffline) return;
               if (!/^[A-Za-z0-9_]{3,16}$/.test(name.trim())) {
                 setNameError(t("accounts.nameInvalid"));
                 return;
@@ -126,10 +130,16 @@ export function AccountDialog(p: Props) {
                 value={name}
                 maxLength={16}
                 autoComplete="off"
-                disabled={p.working || p.busy}
+                disabled={
+                  disabled ||
+                  (!p.auth.can_create_offline && !p.auth.offline_player)
+                }
                 onChange={(e) => setName(e.target.value)}
               />
             </label>
+            {!p.auth.can_create_offline && (
+              <p className="ce-account-hint">{t("accounts.premiumRequired")}</p>
+            )}
             {(nameError || p.error || p.busy) && (
               <p className="ce-account-error" role="alert">
                 {nameError || p.error || t("accounts.busy")}
@@ -139,7 +149,7 @@ export function AccountDialog(p: Props) {
               <button
                 className="ce-button primary"
                 type="submit"
-                disabled={!p.native || p.working || p.busy}
+                disabled={!p.native || disabled || !canSaveOffline}
               >
                 <Save size={16} />
                 {p.working ? t("main.saving") : t("accounts.save")}

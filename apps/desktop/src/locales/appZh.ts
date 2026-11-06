@@ -1,5 +1,9 @@
 /** Fixed application presentation. User and service values remain literal. */
 const messages = {
+  "accounts.addAccount": "添加账号",
+  "accounts.noAccount": "尚未选择游戏身份",
+  "accounts.premiumRequired":
+    "支持正版：请先添加拥有 Minecraft Java 版的微软账号，再新建离线账号。",
   "accounts.offlineTitle": "离线玩家",
   "accounts.onlineTitle": "正版登录",
   "accounts.back": "返回验证方式",

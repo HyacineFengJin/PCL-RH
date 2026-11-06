@@ -76,7 +76,7 @@ impl Client {
     ) -> Result<Self> {
         let http = factory
             .async_client()
-            .user_agent("PCL-RH/0.2.0 (https://github.com/HyacineFengJin/PCL-RH)")
+            .user_agent("PCL-RH/0.2.1 (https://github.com/HyacineFengJin/PCL-RH)")
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .build()

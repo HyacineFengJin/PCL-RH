@@ -165,6 +165,8 @@ const emptyAuth: AuthState = {
   client_id: "",
   selected: null,
   accounts: [],
+  offline_player: null,
+  can_create_offline: false,
   stage: "idle",
   message: "",
   challenge: null,
@@ -1839,9 +1841,12 @@ function App() {
     }
   }
   function openAccountDialog() {
-    setAccountType(data?.auth.selected ? "premium" : "offline");
+    const existing = !!data?.auth.selected || !!data?.auth.offline_player;
+    setAccountType(
+      data?.auth.selected || !data?.auth.offline_player ? "premium" : "offline",
+    );
     setAuthError("");
-    setDialog("accounts");
+    setDialog(existing ? "accounts" : "account-type");
   }
   function openAccountAppearance(id: string) {
     setAppearanceId(id);
@@ -1861,8 +1866,7 @@ function App() {
     setAuthWorking(true);
     setAuthError("");
     try {
-      await save({ ...data.settings, player: name });
-      await api("auth_select", { id: null });
+      await api("auth_save_offline", { name });
       await statusPolling.current?.auth.refresh();
       setDialog(null);
     } catch (error) {
@@ -1874,6 +1878,7 @@ function App() {
   const activeAccount = data?.auth.accounts.find(
     (a) => a.profile.id === data.auth.selected,
   );
+  const hasAccount = !!activeAccount || !!data?.auth.offline_player;
   const selected = data?.instances.find((i) => i.id === data.settings.selected),
     busy =
       data?.status.stage === "preparing" || data?.status.stage === "running";
@@ -1994,6 +1999,10 @@ function App() {
       !rootAvailable
     )
       return;
+    if (!hasAccount) {
+      openAccountDialog();
+      return;
+    }
     const targetKey = rootKey;
     try {
       await save(data.settings);
@@ -2591,26 +2600,28 @@ function App() {
                   <>
                     {profileList ? (
                       <div className="ce-profile-list">
-                        <button
-                          className="ce-profile-list-row"
-                          disabled={!!busy}
-                          onClick={() => {
-                            if (native)
-                              void authAction("auth_select", { id: null });
-                            setProfileList(false);
-                          }}
-                        >
-                          <span
-                            className="ce-profile-list-avatar"
-                            style={{
-                              backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                        {data.auth.offline_player && (
+                          <button
+                            className="ce-profile-list-row"
+                            disabled={!!busy}
+                            onClick={() => {
+                              if (native)
+                                void authAction("auth_select", { id: null });
+                              setProfileList(false);
                             }}
-                          />
-                          <span>
-                            <strong>{data.settings.player}</strong>
-                            <small>{t("accounts.offlineAuth")}</small>
-                          </span>
-                        </button>
+                          >
+                            <span
+                              className="ce-profile-list-avatar"
+                              style={{
+                                backgroundImage: `url(${defaultSkin}),url(${defaultSkin})`,
+                              }}
+                            />
+                            <span>
+                              <strong>{data.auth.offline_player}</strong>
+                              <small>{t("accounts.offlineAuth")}</small>
+                            </span>
+                          </button>
+                        )}
                         {data.auth.accounts.map((account) => (
                           <button
                             key={account.profile.id}
@@ -2667,12 +2678,15 @@ function App() {
                           />
                           <span className="account-heading">
                             {activeAccount?.profile.name ||
-                              data.settings.player}
+                              data.auth.offline_player ||
+                              t("accounts.addAccount")}
                           </span>
                           <span className="account-kind">
                             {activeAccount
                               ? t("accounts.microsoftAuth")
-                              : t("accounts.offlineLogin")}
+                              : data.auth.offline_player
+                                ? t("accounts.offlineLogin")
+                                : t("accounts.noAccount")}
                           </span>
                         </button>
                         <div className="ce-profile-actions">
@@ -2754,7 +2768,9 @@ function App() {
                             ? data.status.stage === "preparing"
                               ? t("common.cancel")
                               : t("main.stopGame")
-                            : t("main.launchGame")}
+                            : hasAccount
+                              ? t("main.launchGame")
+                              : t("accounts.addAccount")}
                         </span>
                         <small>
                           {boundGame
@@ -3766,11 +3782,19 @@ function App() {
                     <button
                       key={item.id}
                       className={accountType === item.id ? "selected" : ""}
-                      disabled={item.id === "third-party"}
+                      disabled={
+                        item.id === "third-party" ||
+                        (item.id === "offline" &&
+                          !data?.auth.can_create_offline &&
+                          !data?.auth.offline_player)
+                      }
                       title={
                         item.id === "third-party"
                           ? t("accounts.thirdPartyUnavailable")
-                          : undefined
+                          : item.id === "offline" &&
+                              !data?.auth.can_create_offline
+                            ? t("accounts.premiumRequired")
+                            : undefined
                       }
                       onClick={() => setAccountType(item.id)}
                     >
@@ -3779,10 +3803,20 @@ function App() {
                     </button>
                   ))}
                 </div>
+                {!data?.auth.can_create_offline && (
+                  <p className="ce-account-hint">
+                    {t("accounts.premiumRequired")}
+                  </p>
+                )}
                 <div className="ce-account-type-footer">
                   <button
                     className="ce-button"
-                    disabled={!accountType}
+                    disabled={
+                      !accountType ||
+                      (accountType === "offline" &&
+                        !data?.auth.can_create_offline &&
+                        !data?.auth.offline_player)
+                    }
                     onClick={() => setDialog("accounts")}
                   >
                     {t("main.continue")}
@@ -3797,7 +3831,10 @@ function App() {
           {dialog === "accounts" && data && (
             <AccountDialog
               mode={accountType === "offline" ? "offline" : "premium"}
-              player={data.settings.player}
+              player={
+                data.auth.offline_player ||
+                (data.settings.player === "Player" ? "" : data.settings.player)
+              }
               auth={data.auth}
               native={native}
               busy={!!busy}
