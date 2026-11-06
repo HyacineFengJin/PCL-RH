@@ -8,7 +8,7 @@
 
 PCL RH is a Minecraft: Java Edition launcher built with **Rust, Tauri, and React**. It draws on the PCL family and extends game management with the RH Code workspace and a shared plugin system.
 
-[Download v0.2.0](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0) · [简体中文](README.md) · [User guide](docs/USAGE.md) · [Documentation](docs/README.md)
+[Download latest](https://github.com/HyacineFengJin/PCL-RH/releases/latest) · [简体中文](README.md) · [User guide](docs/USAGE.md) · [Documentation](docs/README.md)
 
 ## Features
 
@@ -17,25 +17,26 @@ PCL RH is a Minecraft: Java Edition launcher built with **Rust, Tauri, and React
 - **RH Code**: an AI workspace for mod projects with multiple conversations, source editing, change review, project builds and pixel asset tools.
 - **Plugins**: shared management for optional built-in capabilities and permission-controlled community components.
 
-**Linux x64 is the primary supported platform. Windows x64 and macOS Intel / Apple Silicon support is experimental.** Native build and installation checks exist for Windows/macOS, but game acceptance on physical machines is unfinished, and some installation and RH Code features remain limited. See [platform support](docs/PLATFORMS.md). Packages are unsigned; macOS packages are not notarized by Apple.
+## Download and use
 
-## Get started
+Choose your platform from [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/latest):
 
-Choose the matching system and architecture from [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0). See the [build guide](docs/BUILDING.md) for installation, updates and dependencies. For a Linux source build, install the [prerequisites](docs/BUILDING.md#依赖) and run:
+| System | Recommended package | Support |
+| --- | --- | --- |
+| Linux x64 | Ubuntu 24.04 `.deb` or portable `.tar.gz` | Primary |
+| Windows x64 | `*-setup.exe` or portable `.zip` | Experimental |
+| macOS Apple Silicon / Intel | Matching `*-app.dmg` | Experimental |
 
-```sh
-git clone https://github.com/HyacineFengJin/PCL-RH.git
-cd PCL-RH
-./build-native.sh
-./start-native.sh
-```
+Game acceptance on physical Windows/macOS machines is unfinished, and some features remain limited. See [platform support](docs/PLATFORMS.md). Packages are unsigned; macOS packages are not notarized by Apple.
 
-[Games and modpacks](docs/USAGE.md) · [RH Code](docs/RH_CODE.md) · [Plugins](docs/PLUGINS.md) · [Contribute](CONTRIBUTING.md)
+[Install and update](docs/BUILDING.md) · [Games and modpacks](docs/USAGE.md) · [RH Code](docs/RH_CODE.md) · [Plugins](docs/PLUGINS.md) · [Report an issue](https://github.com/HyacineFengJin/PCL-RH/issues/new/choose)
 
-Most detailed guides are currently in Chinese.
+For source builds, see the [build instructions](docs/BUILDING.md#源码构建). Code navigation and contribution steps are in the [contribution guide](CONTRIBUTING.md). Most detailed guides are currently in Chinese.
 
 ## License and acknowledgments
 
 Original code and documentation are **[MIT licensed](LICENSE)**. Third-party content retains its own terms; see [copyright and provenance](COPYRIGHT.md).
 
-Project icons and primary artwork are created with **GPT**. Thanks to the PCL family, HMCL and other projects for inspiration and references. PCL RH is independently developed and is not an official PCL CE release or Minecraft product.
+Special thanks to **[龙腾猫跃 (LTCatt)](https://github.com/LTCatt)**, creator of [Plain Craft Launcher (PCL / PCL2)](https://github.com/Meloong-Git/PCL), and to [PCL CE](https://github.com/PCL-Community/PCL-CE), HMCL and other reference projects. [Support the PCL author](https://meloong.com/afd/a/LTCat). PCL's [original licensing notice and usage guide](LICENSES/PCL-LICENCE.txt) are preserved separately.
+
+PCL RH is a third-party Rust and WebUI implementation drawing on PCL / PCL CE's design, not an official release by LTCatt or the PCL CE team, or an official Minecraft product. Project icons and primary artwork were made with **GPT**.

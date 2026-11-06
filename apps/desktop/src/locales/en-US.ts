@@ -387,6 +387,8 @@ const messages = {
   "about.contributorsUnavailable": "Unable to load contributors right now",
   "about.originalAuthor": "Original PCL author; interface design reference",
   "about.author": "Author profile",
+  "about.sponsorAuthor": "Support LTCatt",
+  "about.pclLicense": "PCL terms and guide",
   "about.community": "PCL CE team; interface design reference",
   "about.github": "GitHub profile",
   "about.version": "Current version: 0.2.0 (experimental native Linux build)",
@@ -413,7 +415,7 @@ const messages = {
     "The User Agent request header includes the launcher version. Authentication, resource downloads, and project queries send the requests needed by their respective services.",
   "about.other": "Other information",
   "about.independent":
-    "PCL RH is an independent native Linux implementation with an interface based on Plain Craft Launcher Community Edition.",
+    "PCL RH is a third-party Rust and WebUI implementation drawing on PCL / PCL CE's design, not an official release by LTCatt or the PCL CE team.",
   "about.minecraftNotice":
     "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.",
   "about.linuxSource": "PCL RH source code",

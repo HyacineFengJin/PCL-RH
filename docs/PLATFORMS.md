@@ -1,151 +1,52 @@
-# 平台支持 / Platform support
+# 平台支持
 
-**Linux x64 为主要支持平台；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** 发行文件见 [v0.2.0](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0)，安装与源码构建见[构建与运行](BUILDING.md)。发行包未签名，macOS 未经 Apple 公证。
+[下载最新版本](https://github.com/HyacineFengJin/PCL-RH/releases/latest) · [安装与更新](BUILDING.md) · [文档目录](README.md)
 
-四个平台已有完整桌面编译、归档及安装检查记录，详见下文；这些历史记录不代表后续版本自动通过。Linux 原版与 Fabric 已通过软件渲染 CI 的离线世界进入检查；实体 Windows/macOS 的游戏验收尚未完成，完整跨环境账号与认证启动验收也未完成。
+Linux x64 为主要支持平台，Windows x64 和两种 macOS 架构为**实验性支持**。以下说明以 v0.2.0 为基线；各版本的变化与验收范围见对应 Release。
 
-| 部分 | Linux | Windows | macOS |
+## 选择发行包
+
+| 系统 | 架构 | 发行文件 | 支持状态 |
 | --- | --- | --- | --- |
-| Minecraft 平台、架构规则与原生库分类 | 已实现 | 已实现 | 已实现，区分 Intel / Apple Silicon |
-| Java 路径与官方运行时目录名 | 已实现 | 已实现 `.exe` 路径 | 已实现 JDK / `.bundle` 路径 |
-| 有限时 Java 探测 | 已实现，私有进程组 | 已实现，私有 Job Object | 已实现，私有进程组 |
-| 账号密钥存储后端 | Secret Service | Windows Credential Store | macOS Keychain |
-| 核心、网络与认证模块的原生 CI 测试 | 通过，x64 | 通过，x64 | 通过，Intel / Apple Silicon |
-| 声明型插件的清单、授权与持久状态（独立 Node 模块） | 原生 runner 测试通过 | 原生 runner 测试通过 | 原生 runner 测试通过 |
-| 原生剪贴板、编辑与默认程序端口 | 已实现，接口 CI 通过 | 已实现，接口 CI 通过 | 已实现，Intel / Apple Silicon 接口 CI 通过 |
-| 系统内存信息 | 原生读取 | 原生读取 | 原生读取 |
-| 保留目录句柄、文件身份与暂存发布原语 | 原生 CI 通过，已接安装与修复 | 原生 CI 通过，已接安装与修复 | 两种架构原生 CI 通过，已接安装与修复 |
-| 安装器生产编译与原版 / Fabric 安装、修复事务 | 原生 CI 通过 | 原生 CI 通过 | Intel / Apple Silicon 原生 CI 通过 |
-| 独立游戏子进程生命周期 | 已接生产监控器 | 已接独立监控；原生会话、管道截止时间与句柄继承夹具通过 | 原生进程组与独立监控夹具通过 |
-| Java 获取、资源另存、实例日志与本机状态存储 | 已实现 | 原生服务检查通过 | Intel / Apple Silicon 原生服务检查通过 |
-| 整合包导入、实例导出与导出预设 | Linux 回归通过 | 已接原生端口，完整业务仍待验证 | 已接原生端口，完整业务仍待验证 |
-| 模组下载、资源安装 / 更新 / 撤销、实例改名与引用重放 | Linux 业务回归通过 | 原生业务 CI 通过，含内容指纹、取消与旧撤销记录保留 | Intel / Apple Silicon 原生业务 CI 通过 |
-| 实例重置、启动准备、内存估算与诊断导出 | Linux 回归通过 | 原生业务 CI 通过 | Intel / Apple Silicon 原生业务 CI 通过 |
-| 可恢复实例删除与还原 | Linux 回归通过 | 原生 journal、依赖检查与还原夹具通过 | Intel / Apple Silicon 原生业务 CI 通过 |
-| 启动器自身更新 | 便携版回归通过；`.deb` 通过包管理器更新 | 下载、校验与退役夹具通过；运行中 exe 替换未实现 | 便携版交换、校验与恢复夹具通过；`.app` 替换完整应用 |
-| RH Code 项目扫描与来源绑定 | 回归通过 | 原生文件与来源绑定夹具通过 | Intel / Apple Silicon 原生夹具通过 |
-| RH Code 源码应用与资源保存 | 原有事务回归通过 | 尚未实现原生事务，修改前明确拒绝 | 尚未实现原生事务，修改前明确拒绝 |
-| RH Code 作者代码构建 | Linux bubblewrap 隔离 | 缺少隔离实现，返回 blocked | 缺少隔离实现，返回 blocked |
-| RH Code 可信 Node 宿主与有界 RPC | Linux 回归通过 | 原生锁、管道与退役夹具通过，完整 AI 待实测 | Intel / Apple Silicon 原生夹具通过，完整 AI 待实测 |
-| WebUI 生产构建 | 通过 | 通过 | Intel / Apple Silicon 通过 |
-| 完整桌面编译与链接 | 原生 CI 通过，x64 | 原生 CI 通过，x64 | Intel / Apple Silicon 原生 CI 通过 |
-| 未签名便携测试包 | 归档、解压与 CLI / 插件宿主检查通过 | ZIP 解压与 CLI / 插件宿主检查通过 | Intel / Apple Silicon 归档与解压检查通过 |
-| 分发入口 | 便携目录与快捷方式；Ubuntu 24.04 x64 `.deb` 实际安装、升级、移除 / purge 与保留数据检查通过 | 当前用户安装器与便携 ZIP；安装、升级、保留数据卸载检查通过 | 两架构独立 `.app` / 应用 DMG、LaunchServices、原生窗口正常退出、只读挂载与复制检查通过 |
-| 真实离线原版 / Fabric 客户端 | 两类客户端的官方安装、Java 下载、可见窗口、临时世界进入与进程清理已在软件渲染 CI 通过 | 官方安装、Java 下载、加载器与进程清理通过；CI 因 GLFW 65542 / WGL 驱动不支持 OpenGL 未能渲染或进入世界，实体 Windows 待验收 | 两种架构的 CI 均因 GLFW 65545 / NSGL 找不到合适像素格式而失败，未创建游戏窗口或进入世界；实体 Mac 待验收 |
-| 正版登录、认证启动与人工游戏操作 | 完整跨环境验收待完成 | 原生启动器窗口检查已通过；账号与游戏仍须分别验证 | Intel / Apple Silicon 完整验收待完成 |
+| Linux | x64 | Ubuntu 24.04 `.deb`、便携 `.tar.gz` | 主要支持 |
+| Windows | x64 | 当前用户安装器 `.exe`、便携 `.zip` | 实验性 |
+| macOS | Apple Silicon（aarch64） | `.app` 压缩包、应用 DMG、便携 `.tar.gz` | 实验性 |
+| macOS | Intel（x86_64） | `.app` 压缩包、应用 DMG、便携 `.tar.gz` | 实验性 |
 
-架构判断不会把 `x86` 当成 `x86_64`，也不会把 ARM 当成 x64。原生库提取使用平台对应的 `.so`、`.dll`、`.dylib` / `.jnilib`；旧元数据中的 `${arch}` 按目标位数展开。Mojang 没有提供的 Java 平台会报告不可用，不会自动下载其他架构的运行时。仅有分类支持不表示所有 Minecraft 版本都有对应架构的原生库。
+Linux 发行构建以 Ubuntu 24.04 x64 为基线，其他发行版须满足[运行依赖](BUILDING.md#用户数据与运行依赖)。macOS 应用声明的最低系统为 11.0，当前分发检查使用 macOS 15。发行包未签名，macOS 未经 Apple 公证。
 
-账号存储使用 [keyring 的平台后端](https://docs.rs/keyring/3.6.3/keyring/#credential-store-features)，账号标识保持兼容。Microsoft 正版服务接入状态仍见[账号说明](AUTHENTICATION.md)。
+目前不提供 Linux ARM、Windows ARM 或 32 位发行包。能识别某个架构不代表已有该架构的启动器或所有游戏版本的原生库。
 
-Java 信息检测只执行选定文件和固定的版本查询参数，按两秒截止时间与每个输出流 64 KiB 上限处理。Windows 在挂起状态建立进程与 Job 的归属后才运行，结束时停止该检测拥有的进程树，另外等待最多 500 毫秒确认清理；无法确认时不会返回可用 Java。Unix 使用私有进程组和直接 `execve`；不会给普通文本隐式补一个 shell，显式声明 `#!` 的包装脚本仍可使用。Windows 批处理不作为 Java 执行。
+## 功能与限制
 
-启动器生成的 Windows Java 路径在当前代码页可无损表示时保留原路径；无法表示时，只接受已经存在且核对为同一文件对象的兼容短名，没有可用短名会明确拒绝，需使用可表示的 Java 或游戏目录，启动器不会修改系统 8.3 设置。启动计划为 Java 提供与受保护原生工作目录对应的可读路径；[真实 JDK 21 回归](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41298267684)已验证中文目录的相对读写和原有目录保护。
+| 功能 | Linux | Windows / macOS |
+| --- | --- | --- |
+| 原版 / Fabric 安装、依赖补全与修复 | 已实现 | 原生安装检查通过，实机游戏仍待验收 |
+| Java 下载、模组与资源管理、日志诊断 | 已实现 | 已接入原生端口，具体游戏与环境仍需验证 |
+| 整合包导入与实例导出 | 已实现 | 已接入，完整业务仍待实机验证 |
+| 需要私有重建游戏核心的整合包 | Java 处理器依赖 Landlock ABI 3 / openat2 | 受限 Java 处理器尚未实现，相关计划会明确阻止 |
+| 社区声明型插件 | 支持，需系统 Node.js | 数据层与宿主检查通过，需系统 Node.js |
+| RH Code 项目扫描与对话宿主 | 支持 | 已接入，完整 AI 使用仍待实测 |
+| RH Code 源码写回与资源保存 | 支持 | 原生写入事务尚未实现，操作前明确拒绝 |
+| RH Code 作者代码构建 | 使用 bubblewrap 隔离 | 隔离执行尚未实现，返回 blocked |
 
-检测会过滤 `JAVA_TOOL_OPTIONS`、`_JAVA_OPTIONS` 和 `JDK_JAVA_OPTIONS` 的注入，不修改系统环境或已保存的游戏启动参数。
+普通「下载游戏」中的加载器安装，与上表的私有核心重建不是同一入口。私有处理器限制不影响原版、Fabric、不含客户端处理器的计划，或无需重建核心的完整游戏包；也不代表所有 Forge / NeoForge 版本均已通过实机验证。
 
-## 核心开发与检查
+Windows 的 Java 和游戏路径需能由当前系统代码页无损表示；否则只接受已经存在、且核对为同一对象的兼容短名。无法满足时应换用可表示的路径，启动器不会更改系统 8.3 设置。
 
-RH Code 的独立边界检查见 `.github/workflows/code-boundaries.yml`。它运行真实项目扫描、来源绑定、管道协议及文件夹具；Linux 另运行合成编译与子进程隔离测试。Windows/macOS 的 `blocked` 回执只验证拒绝执行路径，不表示已经支持作者代码构建。该检查也不替代完整 Node 宿主、桌面应用或实机游戏验证。
+账号凭据分别使用 Linux Secret Service、Windows Credential Store 和 macOS Keychain。登录、凭据保存与故障处理见[账号说明](AUTHENTICATION.md)。完整跨环境的正版登录与认证启动验收仍待完成。
 
-以下命令只构建和检查独立的核心、网络与认证模块，不构建桌面宿主：
+## 更新与数据
 
-```sh
-cargo test --locked -p pcl-core -p pcl-network -p pcl-auth
-```
+安装版按原分发方式更新：Linux 使用包管理器，macOS 替换完整 `.app`，Windows 退出启动器后重新运行安装器。便携版须完整换包并保留个人数据；Windows 运行中 EXE 的自动替换尚未实现。
 
-`.github/workflows/portable-core.yml` 在 Linux x64、Windows x64、macOS Intel 与 Apple Silicon 四个原生 runner 上执行该命令。显式平台测试在每个系统检查不同架构的规则与分类；Unix 的进程、权限和符号链接测试仅在 Unix 执行，Windows 另有路径组件检查。测试采用本地夹具与回环服务，不读取真实账号、密钥环或游戏目录。
+Windows 首次启动后立即关闭曾出现超时，独立复验通过，原因仍待实机排查。安装包校验、更新方法与数据目录见[安装与构建](BUILDING.md)。
 
-Java 生命周期检查使用专门的原生可执行夹具，覆盖卡死、输出刷屏、异常退出、保留管道的子进程与其他进程的隔离；Windows 还检查检测方异常退出后的 Job 清理。不需要发现或运行系统 Java，可独立运行：
+## 当前验证范围
 
-```sh
-cargo test --locked -p pcl-core --test java_probe_lifecycle
-```
+- 四个平台的程序构建、便携包校验和对应安装检查均已完成。安装器、原生窗口和游戏启动分别验证。
+- Linux 原版与 Fabric 在软件渲染环境中完成了临时单人世界进入检查；这不替代实体显卡和不同桌面环境的兼容性验证。
+- Windows / macOS 的云端游戏测试分别受 WGL / NSGL 图形能力限制，未完成渲染与进入世界验证，仍需实体设备验收。
+- Microsoft 登录、认证启动和人工游戏操作不属于上述离线客户端检查的通过范围。
 
-安装器的文件流、原生库解压、私有工作区、修复登记和恢复已接入原生端口。通过私有暂存重建游戏核心的整合包安装，在 Windows/macOS 上仍缺 Java 处理器的受限执行后端；检查计划时会依据实际客户端处理器记录给出阻止原因，在下载 Java 或创建私有实例前拒绝。原版、Fabric、没有客户端处理器的计划及无需重建核心的完整游戏包不受这项限制。Linux 仍在工作线程中验证实际 Landlock/openat2 能力。
-
-「下载游戏」的普通组件安装沿用用户选择目标目录与加载器的原有授权和 Java 处理器流程；它与上述私有安装、RH Code 作者代码隔离是不同入口。普通路径没有因这项平台检查而被禁止，也不能据此认为任意 Forge/NeoForge 版本已通过三平台实机验证。
-
-Java 获取、资源保存、实例改名、重置、删除与还原、引用重放、资源安装与更新的原生业务夹具已通过。便携版自身更新已接 macOS 的原生交换；Windows 能下载、校验与退役更新来源，运行中 EXE 的替换在操作前明确拒绝，尚缺专用 helper。安装版由原分发方式更新：Linux 使用包管理器，macOS 替换完整 `.app`。GTK / WebKitGTK 已限定为 Linux 依赖，官方插件的剪贴板契约不再使用 GTK 窗口类型。跨平台源码构建可使用 `tools/build-native.py`，Windows 入口为 `start-native.ps1`，Linux/macOS 入口为 `start-native.sh`，`install-desktop.sh` 仅用于 Linux。
-
-## 原生接口
-
-`crates/desktop-platform/` 提供系统剪贴板、网页编辑命令与默认程序打开接口。Windows 使用系统剪贴板和 WebView2，macOS 使用 AppKit，Linux 保留 GTK 异步选区处理。它不管理插件授权、账号或项目；权限、资源识别与调用归属仍由原来的官方插件和命令负责。
-
-可独立检查这些接口，而不构建安装器：
-
-```sh
-cargo test --locked -p pcl-desktop-platform
-```
-
-GitHub 的 **Native UI ports** 工作流在四个原生 runner 上独立执行这些检查；完整应用仍以 **Desktop platform builds** 的结果为准。
-
-接口测试不访问真实剪贴板、打开浏览器或创建桌面窗口。它们检查文本边界、超时后的单次交付、权限与焦点退役以及迟到回调的归属；编译通过不表示原生交互已经过实机验证。
-
-`pcl-core::file_ops` 提供路径型 `rename_noreplace` 和相对于已持有父目录句柄的 `rename_noreplace_at`。后者只接受单个文件名，不重新解析父目录的可变路径，已接入现有私有安装发布与损坏修复的文件移动。Linux 使用 `renameat2`，macOS 使用 `renameatx_np`，Windows 使用相对目录句柄的原生文件操作；均不通过覆盖、复制再删除或改变工作目录来降级实现。
-
-`pcl-core::retained_fs` 提供持有目录、字面文件名、原生文件身份和私有暂存的共同接口。Windows 使用完整的卷标识与 128 位文件 ID、真实 SID / DACL；Unix 使用设备与 inode。Linux 暂存保持匿名 `O_TMPFILE`，macOS 使用私有命名租约，Windows 保留拒绝其他写入和删除共享的原始文件句柄。命名租约不会被描述为匿名文件。
-
-封存与发布核对大小、SHA256、身份及元数据，并执行实际文件和目录刷新。发布后核验或刷新失败会返回“可能已发布”的结果与回执，禁止直接重试或删除来假装回滚。这些[原语已在四个原生 runner 通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41298267684)，包含目录换名、Windows 原地 junction 变更、并发冲突、取消及刷新失败的夹具；这仍不代表整个安装器已跨平台。
-
-下载、缓存复制、组件复制与原生库解压使用保留目录的文件流和暂存输出；网络重试不包含发布错误。修复日志的 Unix 字段与 marker 哈希保持兼容，Windows 日志证据另用真实文件 ID 的显式格式。macOS / Windows 的命名修复暂存单独登记在私有 `dependency-staging`，不会混入旧业务日志。分配记录先持久化才开放写入，发布回执记录失败返回“可能已发布”；日志损坏不能授权删除或覆盖业务原件。已验证的旧 intent 仍可恢复原件并提交原有 marker。
-
-暂存登记有字节、记录与未完成项配额，无法确认时保留现场并停止新写。当前追加会完整复核日志前缀，累计历史较多时的性能仍需优化；这不等于已经具备任意规模、自动回收的长期暂存库。
-
-Windows/macOS 会额外拒绝同一文件的别名改名；如果发布后源名字被其他操作重新创建，也会报冲突，此时文件可能已经发布，调用方须核对事务状态。这个原语不替代父目录准入、源文件身份核验、持久化刷新、事务日志或中断恢复，不能据此认为整个安装器已经跨平台。
-
-**Installer transactions** 工作流在四个原生 runner 先编译完整生产安装器，再运行安装与恢复测试。[四个平台均已通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41298267661)。夹具包含实际回环 HTTP、原版 / Fabric 安装、各平台原生 ZIP 提取、取消清理、并发冲突、损坏修复和中断恢复；资源事务包含 512 个真实输入的发布、历史和撤销检查，不访问真实游戏目录。Linux 另有依赖 Landlock 的合成 Java 处理器测试。该结果不是完整桌面编译、真实 Mojang 下载或游戏启动验证。
-
-Windows 的启动器状态文档通过不可变修订日志保存，保留原文件作为身份与内容基线；不会用两次改名模拟原子替换。动态导出预设与导入日志使用调用者显式授予的文档能力，不按任意文件名前缀开放权限。损坏、外部修改或无法确认的提交会保留证据并拒绝覆盖。该机制不能在没有外部锚点时检测整个状态目录同时回滚。
-
-Windows 的状态文档支持显式缺失与重新创建：删除后保存会产生新的逻辑修订，旧状态不能重新授权写入。Unix 的既有日志字段与顺序保持兼容。资源来源的命名暂存由登记凭据持有；已写入退役意图的来源可以恢复清理，只有分配或封存记录的中断来源会保留并阻止新写，不按文件名前缀删除。Windows 的资源终态日志也保留原始基线，仍受历史数量与字节配额约束。
-
-Windows 的游戏目录接口持有本机 NTFS 祖先与非空工作目录租约，已接独立监控器。原生夹具覆盖相对文件操作、目录替换拒绝、GUI 退出后游戏继续运行、精确会话停止与管道退役；它约束拥有者存活期间的目录生命周期，不是任意程序沙箱。macOS 自定义 Seatbelt 规则与 Windows 普通路径工作目录的候选实现出现过实际反例，未作为安全后端启用。
-
-## 已有构建与分发检查
-
-在 GitHub 的 **Actions → Desktop platform builds → Run workflow** 可手动执行完整桌面编译与链接检查，覆盖 Linux x64、Windows x64，以及 macOS 的 Apple Silicon 和 Intel runner。它先测试原生接口，再构建 WebUI 和启用 `custom-protocol` 的桌面与 CLI 程序，生成未签名便携包及 Windows 当前用户安装器。普通入口不使用官方服务密钥；独立 macOS 和 Linux 工作流可继续生成 `.app` / 应用 DMG 与 `.deb`，这些新布局的生产验收状态单独判断。
-
-**Official native candidates** 复用同一流水线，固定 `release` 优化配置并显式传入官方 CF 构建凭据。已有四平台优化候选通过实际解压与桌面 `--build-info` 检查的记录，核对版本、提交、目标平台、生产前端特性及内置服务声明；CLI 版本另行核对。新候选须重新完成对应检查，两种入口均不签名或发布 Release。
-
-各平台独立运行。失败会保持红色状态，编译器日志与 Rust 工具链信息保存为该次运行的 artifact，保留 7 天。[四平台构建与便携包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)四个平台均已成功；[既有 Windows 官方候选](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941)也已通过原生编译、便携包检查和实际安装验收，包含原生窗口正常关闭。具体业务与实机游戏仍需分别验收；RH Code 的源码写回和作者代码隔离限制见上表。
-
-三种验证需要分别判断：核心测试通过、完整桌面编译通过、真实系统中的安装与游戏启动通过。前两种检查不能替代最后一种。
-
-[四个平台的便携测试包](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)已通过实际归档、解压、文件哈希、原生可执行架构、CLI 扫描和声明型插件宿主 RPC 检查。[Code 边界回归](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41298267651)也在四个原生主机上通过，包含空插件投影、运行依赖识别、宿主锁和退役检查；Linux 另有实际子进程、namespace init 退出确认、启动前取消和 UTF-8 输出帧顺序检查。下载和依赖要求见[分发说明](BUILDING.md#用户数据与运行依赖)。
-
-Windows 的[既有官方候选流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941)从原生编译、便携包验证继续完成实际安装，记录程序源提交与安装工具提交，核对真实 Unicode 快捷方式目标、原生窗口连续可见与正常关闭。实际文件占用、解锁重装、升级及卸载后保留设置、存档和自建文件均已通过。窗口检查只证明窗口创建和关闭，不替代页面操作、账号或游戏功能验证；安装与更新方法见[Windows 说明](BUILDING.md#windows实验性)。
-
-[旧 macOS 便携映像流程](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41267794638)在 Intel 和 Apple Silicon 上实际制作、只读挂载 DMG，验证完整便携文件夹并运行副本的 `.command` 编译信息、CLI 和声明宿主，再卸载映像。旧布局仍须完整复制到可写位置；两种包的使用方法见[macOS 分发说明](BUILDING.md#macos实验性)。
-
-[macOS app distribution](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933)已在两种架构检查独立应用中的只读资源、默认及显式数据目录、真实插件宿主调用与退役、LaunchServices 入口和自有原生窗口的正常退出。应用 DMG 还通过只读挂载上的直接应用诊断、复制、保留数据和卸载映像检查，提供 `macos-app-macos-15` / `macos-app-macos-15-intel` 及对应的 `macos-app-dmg-*` artifact。[Linux system-package verification](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702)已在临时 Ubuntu 24.04 runner 实际安装、升级、移除、重装和 purge `.deb`，核对生产资源、默认及显式数据根、真实宿主退役与保留的数据，提供 `linux-debian-package` artifact。安装方法见 [macOS 安装说明](BUILDING.md#macos实验性)和 [Debian 包说明](BUILDING.md#linux)。
-
-新安装版的用户数据位置固定：macOS 为 `~/Library/Application Support/PCL RH`，Linux 为 `$XDG_DATA_HOME/pcl-rh`，未设置 `XDG_DATA_HOME` 时使用 `~/.local/share/pcl-rh`。资源分别留在 `.app` 内和 `/usr/lib/pcl-rh`，不整份复制到用户数据目录。Ubuntu 包的 ABI 与库依赖以 Ubuntu 24.04 x64 构建产物及包声明为准，其他发行版的兼容性须另外验证。
-
-[Native client acceptance](https://github.com/HyacineFengJin/PCL-RH/actions/workflows/game-acceptance.yml) 在四个原生 runner 的实际安装布局中下载官方 Java 和 Minecraft 1.21.4，分别运行原版与 Fabric 客户端。通过条件包括自有窗口持续可见、渲染初始化证据、客户端写入的 Quick Play 记录、临时单人世界进入证据及所属游戏进程清理；只有 Java PID、OpenGL 探测或启动计划成功不能通过。[Linux 两类客户端的完整流程已通过](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41275607901)，使用 Xvfb / Mesa 软件渲染，因此结果不能替代实际显卡和桌面环境测试。macOS 的 [Apple Silicon](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278654369)与 [Intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278656406)检查均在 OpenGL 上下文创建时报告 `GLFW 65545: NSGL: Failed to find a suitable pixel format`，没有游戏窗口或世界进入证据，实体 Mac 游戏验收仍待完成。Windows 的[两类真实客户端](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41299432729)已完成官方安装、Java 获取、加载器启动与所属进程清理，但均报告 GLFW 65542 / WGL 驱动不支持 OpenGL，未取得渲染或世界进入证据；实体 Windows 验收仍待完成。当前没有四平台完整通过结果。该流程不进行 Microsoft 登录、认证启动或人工游戏操作。
-
-构建基线见[核心检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41298267684)、[Code 边界检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41298267651)和[桌面检查](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394)。原生库分类支持的架构范围大于已执行检查的范围，不能把分类支持当成对应架构的实机验证。
-
-## English
-
-**Linux x64 is the primary supported platform; Windows x64 and macOS Intel / Apple Silicon support is experimental.** Release files are listed under [v0.2.0](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0); see the [build guide](BUILDING.md) for installation and source builds. PCL RH has native desktop build and distribution checks on all four CI hosts; each release must validate its own artifacts. [Four-host portable candidates](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41272954394), the [Windows per-user installer](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41297103941), [both standalone macOS app/application-DMG candidates](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274750933) and the [Ubuntu 24.04 x64 Debian package](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41274751702) have historical production distribution verification records. macOS checks include an owned native window and orderly exit; Debian checks include real installation, upgrade, removal and purge with user-data preservation. Installed data defaults to `~/Library/Application Support/PCL RH` on macOS and `$XDG_DATA_HOME/pcl-rh` or `~/.local/share/pcl-rh` on Linux, separately from application resources. Signing and notarization are not provided.
-
-The portable-core workflow tests the core, network and authentication crates on native Linux x64, Windows x64 and both Intel and Apple Silicon macOS runners. These checks do **not** build the desktop application. Java probing uses a private Windows Job Object or Unix process group with a two-second deadline and 64 KiB output limit per stream. Windows starts suspended before job assignment and separately bounds cleanup confirmation; Unix uses direct execve to prevent implicit plain-text shell execution. Native executable fixtures exercise process lifetime without an installed JVM. A separate installer workflow passes vanilla/Fabric installation, repair/recovery and instance/resource transaction fixtures on all four hosts. Non-Linux confined Java processors, native Code publication, Windows running-executable replacement and full account/game verification remain unfinished. Architecture-specific Minecraft natives must exist for the selected version. Portable source builds use `tools/build-native.py`; desktop shortcut installation remains Linux-specific.
-
-The **Native client acceptance** workflow drives real offline vanilla and Fabric clients in disposable worlds. Success requires sustained native windows, render initialization, game-written Quick Play records, a singleplayer join and owned-process cleanup. [Both Linux clients pass the complete flow](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41275607901). The [Apple Silicon](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278654369) and [Intel](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41278656406) macOS CI attempts fail with GLFW 65545 / NSGL reporting no suitable pixel format, before a game window or world entry; game acceptance on a physical Mac remains pending. [Both Windows clients](https://github.com/HyacineFengJin/PCL-RH/actions/runs/41299432729) complete official installation, Java acquisition, loader startup and owned-process cleanup, but report GLFW 65542 / WGL with no OpenGL driver support. Rendering and world entry remain unverified on a physical Windows machine. Complete four-host acceptance is unfinished. Microsoft login, authenticated launch and human gameplay are separate, unverified stages; Linux software-rendering results do not establish physical-GPU compatibility.
-
-The manual **Desktop platform builds** workflow builds the WebUI and compiles/links the desktop and CLI on Linux x64, Windows x64, macOS arm64 and macOS x64. **Official native candidates** reuses it with the optimized release profile and an explicit build-only CF credential. Earlier four-host optimized candidates passed archive/hash checks, the actual desktop's read-only build-info command, CLI scanning and declarative-host RPC; new candidates must pass independently. The desktop report must match the package's version, source commit, target, profile, production WebUI and embedded-service declaration; the CLI version is checked independently. Windows installer verification can reuse an authenticated official artifact while separately recording the installer-tool revision. It observes only its own fresh native window and closes it normally; it does not verify React content, accounts or game startup. Artifacts remain available for seven days. These workflows do not sign or publish a release; ordinary previews omit official service credentials.
-
-The desktop-platform crate isolates native clipboard, edit-command and default-app operations, with GTK dependencies restricted to Linux. Its isolated tests compile/pass on all four hosts without accessing the real clipboard or opening applications. The core supplies retained-directory identity, private staging, bounded sealing, no-replace publication and actual native flushes. Publication uncertainty is explicit. Linux staging is anonymous; Darwin and Windows use named leases with a separate bounded repair registry. Windows records full FileId128 and native SID/DACL evidence. The registry preserves uncertain or corrupt state and does not gain authority over business originals; existing verified recovery intents remain authoritative. Rechecking its full prefix currently has a cumulative performance cost for large histories. Full desktop compilation/linking passes on all four CI hosts; this does not replace interactive application/game verification.
-
-## 插件模块
-
-社区插件的声明校验、授权、启停、卸载与持久状态是独立 Node 模块，不依赖 GTK、WebKit、AI SDK 或 Linux 文件事务。轻量 stdio 入口也可在没有 AI 运行时的目录中工作；完整 AI 宿主只在需要时加载。
-
-在项目根目录运行：
-
-```sh
-node --test experimental/extensions/tests/store-lifecycle.test.mjs experimental/extensions/tests/lightweight-host.test.mjs
-```
-
-`.github/workflows/plugins.yml` 为 Linux、Windows、macOS 配置独立插件检查。该检查覆盖插件数据层与协议，不构建桌面窗口、安装器或游戏进程。插件格式见[插件指南](PLUGINS.md)。
+每次发行的来源和结果保存在 Release 附带的 `release-manifest.json` 与原始构建清单中。开发者可继续阅读[原生接口与检查](development/PLATFORM_PORTS.md)或[发行维护](RELEASING.md)。

@@ -13,6 +13,9 @@ const documents = {
   "LICENSES/DEPENDENCIES.txt": () =>
     import("../../../LICENSES/DEPENDENCIES.txt?raw"),
   "LICENSES/CORDIS.txt": () => import("../../../LICENSES/CORDIS.txt?raw"),
+  "LICENSES/PCL-LICENCE.txt": () =>
+    import("../../../LICENSES/PCL-LICENCE.txt?raw"),
+  "LICENSES/PCL-NOTICE.md": () => import("../../../LICENSES/PCL-NOTICE.md?raw"),
   "fonts/LICENSE": () => import("./assets/fonts/LICENSE?raw"),
   "fonts/NOTICE": () => import("./assets/fonts/NOTICE?raw"),
   "game-icons/NOTICE": () => import("./assets/game-icons/NOTICE?raw"),

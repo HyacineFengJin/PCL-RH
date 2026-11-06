@@ -7,7 +7,7 @@
 1. 确认待发行的 `master` 已提交并通过对应检查，应用版本与锁文件保持一致。记录待发行提交，不混用旧候选与新源码。
 2. 在 **Actions → [Official native candidates](https://github.com/HyacineFengJin/PCL-RH/actions/workflows/official-native.yml) → Run workflow** 选择 `master` 和所需平台，通常为 `all`。流程固定使用 Cargo `release` 优化配置，并从仓库 Secret 读取官方 CurseForge 构建凭据；缺少凭据会失败。
 3. 原生流程构建 WebUI、桌面和 CLI，按实际目标依赖生成 `native-attribution.json` 与 `NATIVE-DEPENDENCIES.txt`，验证实际归档、逐文件哈希、桌面 `--build-info`、CLI 版本及声明型插件宿主，并生成 Windows 当前用户安装器。保留每个平台的源提交、运行编号、清单及校验结果。
-4. 用同一次成功官方构建的 `source_run` 运行下表中的独立分发流程。它们复用经核验的原始程序；程序源提交和打包工具提交分别记录。独立安装布局要求程序支持 `split-v1`。
+4. 用同一次已结束、且所需便携包已经通过验证的官方构建 `source_run` 运行下表中的独立分发流程。它们复用经核验的原始程序；程序源提交和打包工具提交分别记录。独立安装布局要求程序支持 `split-v1`。
 
 | 工作流 | 产物与验证 |
 | --- | --- |
@@ -37,4 +37,4 @@
 - Windows/macOS 私有安装的 Java 处理器、RH Code 源码写回与隔离构建、Windows 运行中 EXE 替换等现有限制，详见[平台说明](PLATFORMS.md)。
 - [安装、更新及数据位置](BUILDING.md)；如涉及数据兼容性变化，写清迁移方式。
 
-公开后检查 Release 附件能下载，重新核对摘要，并确认 README 的版本下载链接与实际 Release 一致。更新版本时同步修改文档中的版本入口；预发布版本使用明确的版本链接。
+公开后检查 Release 附件能下载，重新核对摘要，并确认最新正式版入口指向本次发行。README 的日常下载入口使用 `/releases/latest`；说明某一版的能力或验收结果时使用明确版本链接，预发布版本也使用明确版本链接。

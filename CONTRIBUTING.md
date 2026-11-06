@@ -4,7 +4,7 @@
 
 ## 开始开发
 
-当前完整桌面开发环境为 Linux。依赖与首次构建步骤见[构建指南](docs/BUILDING.md)，其他平台的实际支持范围见[平台说明](docs/PLATFORMS.md)。
+桌面程序可在 Linux、Windows 与 macOS 上原生构建。依赖与首次构建步骤见[安装与构建](docs/BUILDING.md)，各平台的功能限制见[平台支持](docs/PLATFORMS.md)。
 
 只预览 WebUI：
 

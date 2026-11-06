@@ -341,6 +341,8 @@ const messages = {
   "about.contributorsUnavailable": "暂时无法获取贡献者列表",
   "about.originalAuthor": "Plain Craft Launcher 原作者；界面设计参考",
   "about.author": "作者主页",
+  "about.sponsorAuthor": "赞助龙猫",
+  "about.pclLicense": "PCL 许可与指南",
   "about.community": "PCL CE 团队；界面设计参考",
   "about.github": "GitHub 主页",
   "about.version": "当前版本: 0.2.0（Linux 原生实验版）",
@@ -363,7 +365,7 @@ const messages = {
     "请求头中的 User Agent 包含启动器版本号。正版登录、资源下载和项目查询会向对应服务发送所需请求。",
   "about.other": "其他信息",
   "about.independent":
-    "PCL RH 是独立的 Linux 原生实现，界面参照 Plain Craft Launcher Community Edition。",
+    "PCL RH 是第三方参考 PCL / PCL CE 设计、以 Rust 与 WebUI 独立实现的项目，非龙腾猫跃或 PCL CE 团队的官方发行。",
   "about.minecraftNotice":
     "非 MINECRAFT 官方产品。未经 MOJANG 或 MICROSOFT 批准，也不与 MOJANG 或 MICROSOFT 关联。",
   "about.linuxSource": "PCL RH 源代码",

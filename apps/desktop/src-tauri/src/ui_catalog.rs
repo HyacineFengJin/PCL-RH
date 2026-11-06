@@ -37,6 +37,7 @@ pub fn ui_open_link(url: String) -> Result<(), String> {
             parsed.host_str(),
             Some(
                 "github.com"
+                    | "meloong.com"
                     | "pi.dev"
                     | "neoforged.net"
                     | "www.mcmod.cn"

@@ -22,7 +22,8 @@ PCL RH 维护者以 [MIT License](LICENSE) 授权本项目的原创代码、文�
 
 ## 设计参考与实际引入
 
-- **PCL / PCL CE**：启动器家族的界面和交互设计参考。PCL RH 的界面以 React / CSS 实现，不把参考项目的自定义许可改为 MIT，也不向使用者授予其名称或标识的使用权。
+- **Plain Craft Launcher（PCL / PCL2）**：原作者为 **[龙腾猫跃（LTCatt）](https://github.com/LTCatt)**，其界面与交互设计是本项目的重要参考。感谢龙猫对 Minecraft 启动器的贡献；[官方仓库](https://github.com/Meloong-Git/PCL)、[官方赞助入口](https://meloong.com/afd/a/LTCat)。上游使用自定义的分发有限许可与合理使用指南，[原文副本](LICENSES/PCL-LICENCE.txt)与[来源及适用边界](LICENSES/PCL-NOTICE.md)独立保留，不标为 MIT 或 CC BY-SA。
+- **PCL CE**：界面和交互设计参考；感谢 [PCL Community](https://github.com/PCL-Community/PCL-CE)。PCL RH 是第三方参考 PCL / PCL CE 设计、以 Rust 与 React / CSS 独立实现的项目，并非龙腾猫跃或 PCL CE 团队的官方发行。自写实现不改变被参考内容的权利，也不授予其名称或标识的使用权。
 - **HMCL**：认证流程、启动器功能和格式兼容的参考。命令方块和用于识别 Forge 的 Minecraft 铁砧渲染图保留其 HMCL 分发来源；共有游戏素材不因此变成 HMCL 原创。其独立贡献的原 GPL 声明保留，底层 Minecraft 素材仍由 Mojang / Microsoft 持有权利。
 - **PCL N / Nex**：平台分层、插件声明及兼容性研究的参考；兼容报告和探针不表示原项目插件代码获得 MIT 再许可。
 - **DeepSeek Harness**：插件生命周期、Agent 组织和上下文机制的参考。当前直接使用的是 **Cordis** 包，不是完整 DSH Agent 的整体移植；Cordis 的原作者为 Shigma，保留其 [MIT 文本](LICENSES/CORDIS.txt)。

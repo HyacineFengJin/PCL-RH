@@ -17,6 +17,16 @@ PCL / PCL CE, HMCL, PCL N / Nex and DeepSeek Harness are credited as design,
 protocol or architecture references where described in COPYRIGHT.md. Such
 references do not relicense their code, artwork, names or trademarks.
 
+Plain Craft Launcher (PCL / PCL2) was created by 龙腾猫跃 (LTCatt).
+Official source: https://github.com/Meloong-Git/PCL
+Author: https://github.com/LTCatt
+Author's official sponsorship link: https://meloong.com/afd/a/LTCat
+The upstream licensing notice and usage guide are preserved verbatim in
+LICENSES/PCL-LICENCE.txt; provenance and scope are in LICENSES/PCL-NOTICE.md.
+PCL RH is a third-party Rust/WebUI implementation drawing on PCL / PCL CE
+design, not an official release by LTCatt or the PCL CE team. Our MIT grant
+does not replace PCL's terms or establish additional upstream permission.
+
 Primary project artwork was made with GPT. Cursors and the example player
 skin are project artwork; game/loader images and fonts retain their own terms.
 

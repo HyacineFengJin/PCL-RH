@@ -8,7 +8,7 @@
 
 PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启动器，延续 PCL 家族的使用习惯，并通过 RH Code 与插件体系扩展创作能力。
 
-[下载 v0.2.0](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0) · [English](README.en.md) · [使用指南](docs/USAGE.md) · [文档](docs/README.md)
+[下载最新版](https://github.com/HyacineFengJin/PCL-RH/releases/latest) · [English](README.en.md) · [使用指南](docs/USAGE.md) · [文档](docs/README.md)
 
 ## 主要功能
 
@@ -17,23 +17,26 @@ PCL RH 是使用 **Rust + Tauri + React** 构建的 Minecraft: Java Edition 启�
 - **RH Code**：面向模组项目的 AI 工作区，支持多个对话、源码编辑、改动审阅、项目构建和像素资产工具。
 - **插件体系**：启动器与 RH Code 共用插件管理，支持可选官方功能和经授权的社区组件扩展。
 
-**主要支持 Linux x64；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** Windows/macOS 已有原生构建与安装检查，实体设备的游戏验收尚未完成，部分安装与 RH Code 功能仍有限制，详见[平台说明](docs/PLATFORMS.md)。发行包未签名，macOS 未经 Apple 公证。
+## 下载与使用
 
-## 开始使用
+从 [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/latest) 下载对应系统的安装包：
 
-从 [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0) 选择对应系统和架构的文件，安装、更新与运行依赖见[构建与运行](docs/BUILDING.md)。以下为 Linux 源码构建示例，先准备[构建依赖](docs/BUILDING.md#依赖)：
+| 系统 | 推荐文件 | 支持状态 |
+| --- | --- | --- |
+| Linux x64 | Ubuntu 24.04 `.deb` 或便携 `.tar.gz` | 主要支持 |
+| Windows x64 | `*-setup.exe` 或便携 `.zip` | 实验性 |
+| macOS Apple Silicon / Intel | 对应架构的 `*-app.dmg` | 实验性 |
 
-```sh
-git clone https://github.com/HyacineFengJin/PCL-RH.git
-cd PCL-RH
-./build-native.sh
-./start-native.sh
-```
+Windows/macOS 的实机游戏验收尚未完成，部分功能仍有限制，详见[平台支持](docs/PLATFORMS.md)。发行包未签名，macOS 未经 Apple 公证。
 
-[游戏与整合包](docs/USAGE.md) · [RH Code](docs/RH_CODE.md) · [插件](docs/PLUGINS.md) · [参与开发](CONTRIBUTING.md)
+[安装与更新](docs/BUILDING.md) · [游戏与整合包](docs/USAGE.md) · [RH Code](docs/RH_CODE.md) · [插件](docs/PLUGINS.md) · [问题反馈](https://github.com/HyacineFengJin/PCL-RH/issues/new/choose)
+
+从源码构建见[构建说明](docs/BUILDING.md#源码构建)；代码结构与参与方式见[贡献指南](CONTRIBUTING.md)。
 
 ## 许可与致谢
 
 原创代码与文档采用 **[MIT License](LICENSE)**。第三方内容保留各自许可，见[版权与来源](COPYRIGHT.md)。
 
-项目图标及主要美术由 **GPT** 制作。感谢 PCL 家族、HMCL 等项目的启发与参考。PCL RH 独立开发，非 PCL CE 或 Minecraft 官方发行。
+特别感谢 **[龙腾猫跃（LTCatt）](https://github.com/LTCatt)** 创作 [Plain Craft Launcher（PCL / PCL2）](https://github.com/Meloong-Git/PCL)，以及 [PCL CE](https://github.com/PCL-Community/PCL-CE)、HMCL 等项目的启发。可通过[官方赞助入口](https://meloong.com/afd/a/LTCat)支持龙猫；PCL 的[原许可与使用指南](LICENSES/PCL-LICENCE.txt)独立保留。
+
+PCL RH 是第三方参考 PCL / PCL CE 设计、以 Rust 与 WebUI 独立实现的项目，非龙腾猫跃或 PCL CE 团队的官方发行，也非 Minecraft 官方产品。项目图标及主要美术由 **GPT** 制作。

@@ -629,9 +629,9 @@ function ExtraSettingsContent({
           <Credit
             name="龙腾猫跃"
             description={tr.t("about.originalAuthor")}
-            action={tr.t("about.author")}
+            action={tr.t("about.sponsorAuthor")}
             api={api}
-            url="https://github.com/LTCatt"
+            url="https://meloong.com/afd/a/LTCat"
           />
           <Credit
             name="PCL Community"
@@ -755,6 +755,15 @@ function ExtraSettingsContent({
             <p>{tr.t("about.noLobby")}</p>
           </div>
           <div className="ce-actions extra-actions">
+            <LinkButton api={api} url="https://github.com/Meloong-Git/PCL">
+              PCL / PCL2
+            </LinkButton>
+            <LinkButton
+              api={api}
+              url="https://github.com/Meloong-Git/PCL/blob/main/LICENCE"
+            >
+              {tr.t("about.pclLicense")}
+            </LinkButton>
             <LinkButton api={api} url="https://github.com/PCL-Community/PCL-CE">
               {tr.t("about.upstream")}
             </LinkButton>

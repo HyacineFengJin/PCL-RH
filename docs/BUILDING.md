@@ -1,10 +1,10 @@
-# 构建与运行 / Build and run
+# 安装与构建 / Installation and builds
 
-发行文件见 [v0.2.0](https://github.com/HyacineFengJin/PCL-RH/releases/tag/v0.2.0)，也可按下文[从源码构建](#源码构建)。**Linux x64 为主要支持平台；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** 发行包未签名，macOS 未经 Apple 公证；功能限制与验收范围见[平台说明](PLATFORMS.md)。
+发行文件见 [GitHub Releases](https://github.com/HyacineFengJin/PCL-RH/releases/latest)，也可按下文[从源码构建](#源码构建)。**Linux x64 为主要支持平台；Windows x64、macOS Intel / Apple Silicon 为实验性支持。** 发行包未签名，macOS 未经 Apple 公证；功能限制与验收范围见[平台说明](PLATFORMS.md)。
 
 ## 安装与更新
 
-以下说明适用于对应类型的发行附件，以实际提供的文件为准。安装后添加已有 `.minecraft` 或空游戏目录，再选择实例、下载游戏或导入整合包。详细操作见[使用指南](USAGE.md)。下载时可用同目录的 `.sha256` 文件核对完整性。
+以下说明适用于对应类型的发行附件，以实际提供的文件为准。安装后添加已有 `.minecraft` 或空游戏目录，再选择实例、下载游戏或导入整合包。详细操作见[使用指南](USAGE.md)。下载时可用同一 Release 的 `SHA256SUMS` 核对完整性。
 
 ### Linux
 
@@ -31,7 +31,7 @@ Windows Java 路径需能由当前系统代码页无损表示；无法表示时�
 
 ### macOS（实验性）
 
-按 CPU 选择 Apple Silicon（`aarch64`）或 Intel（`x86_64`）文件。打开 `*-app.dmg`，把 `PCL RH.app` 拖到 Applications 或复制到个人应用目录，再打开副本；也可从应用归档中解压完整 `.app`。应用和 DMG 均未签名、未经 Apple 公证；最低系统版本以对应构建说明为准，既有分发检查的宿主为 macOS 15。
+按 CPU 选择 Apple Silicon（`aarch64`）或 Intel（`x86_64`）文件。打开 `*-app.dmg`，把 `PCL RH.app` 拖到 Applications 或复制到个人应用目录，再打开副本；也可从应用归档中解压完整 `.app`。应用和 DMG 均未签名、未经 Apple 公证；v0.2.0 的最低构建版本为 macOS 11.0，分发检查使用 macOS 15。
 
 更新前退出启动器并替换完整 `.app`。程序与 CLI 位于 `Contents/MacOS`，生产资源位于 `Contents/Resources/PCL-RH`，用户数据在应用包外保留。
 

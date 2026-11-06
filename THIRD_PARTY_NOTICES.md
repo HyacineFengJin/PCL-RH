@@ -16,6 +16,8 @@
 | 游戏 / 加载器图像 | 用于界面识别 | Minecraft 原权利及 EULA；Fabric 标志 CC0-1.0（unascribed）；NeoForged 网站图像 CC-BY-4.0。详见[素材声明](apps/desktop/src/assets/game-icons/NOTICE)及[固定来源](apps/desktop/src/assets/game-icons/SOURCES.json) |
 | Noto Sans CJK SC 子集 | 随包字体 | OFL-1.1，Adobe；[许可](apps/desktop/src/assets/fonts/LICENSE)及[来源与修改说明](apps/desktop/src/assets/fonts/NOTICE) |
 
+**PCL / PCL2 原作者：龙腾猫跃（LTCatt）**。[官方仓库](https://github.com/Meloong-Git/PCL)的自定义许可与合理使用指南保存在 [PCL-LICENCE.txt](LICENSES/PCL-LICENCE.txt)，[来源记录](LICENSES/PCL-NOTICE.md)说明固定版本、官方分发条款链接及适用边界。
+
 PCL / PCL CE、HMCL、PCL N / Nex 和 DSH 的参考关系另见版权说明。参考项目不是上述自写代码的统一版权人；同样，参考关系不赋予重新授权其源码或标志的权利。
 
 ## 可再生成的依赖清单

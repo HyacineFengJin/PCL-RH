@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用与安装文档 / Documentation
+    url: https://github.com/HyacineFengJin/PCL-RH/blob/master/docs/README.md
+    about: 安装、账号、游戏、RH Code、插件和平台限制。
+  - name: 下载最新版 / Latest release
+    url: https://github.com/HyacineFengJin/PCL-RH/releases/latest
+    about: 按系统与架构选择安装包，查看版本说明和已知问题。

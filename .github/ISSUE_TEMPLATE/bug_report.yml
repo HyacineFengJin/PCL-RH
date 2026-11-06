@@ -1,5 +1,6 @@
 name: 问题反馈 / Bug report
 description: 报告可复现的启动器、RH Code 或插件问题。
+labels: [bug]
 body:
   - type: markdown
     attributes:
@@ -9,14 +10,26 @@ body:
     id: version
     attributes:
       label: PCL RH 版本 / Version
-      placeholder: 应用版本或源码提交号
+      placeholder: 例如 v0.2.0；源码构建请附提交号
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 系统与架构 / Platform
+      options:
+        - Linux x64
+        - Windows x64
+        - macOS Apple Silicon
+        - macOS Intel
+        - 其他 / Other
     validations:
       required: true
   - type: input
     id: environment
     attributes:
       label: 系统与环境 / Environment
-      placeholder: 发行版、桌面环境；游戏问题可补充 Java 和加载器版本
+      placeholder: 系统版本、安装包或源码构建；游戏问题请补充 Minecraft、Java 和加载器版本
     validations:
       required: true
   - type: dropdown
@@ -24,6 +37,7 @@ body:
     attributes:
       label: 相关部分 / Area
       options:
+        - 安装与更新启动器 / Installation and updates
         - 启动与游戏管理 / Launcher
         - 下载与整合包 / Downloads and modpacks
         - RH Code

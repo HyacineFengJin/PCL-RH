@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DOCUMENTS = (
     "LICENSE", "NOTICE", "COPYRIGHT.md", "THIRD_PARTY_NOTICES.md",
     "THIRDPARTY.generated.json", "LICENSES/DEPENDENCIES.txt", "LICENSES/CORDIS.txt",
+    "LICENSES/PCL-LICENCE.txt", "LICENSES/PCL-NOTICE.md",
     "apps/desktop/src/assets/fonts/LICENSE", "apps/desktop/src/assets/fonts/NOTICE",
     "apps/desktop/src/assets/game-icons/NOTICE", "apps/desktop/src/assets/credits/NOTICE",
     "apps/desktop/src/assets/game-icons/SOURCES.json",

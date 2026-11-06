@@ -2,6 +2,19 @@
 
 这份说明面向阅读、修改和排查 PCL RH 代码的开发者，描述当前实现。复杂事务的状态与约束放在对应 Rust 模块的开头，修改实现时应同步更新。
 
+## 仓库目录
+
+| 目录 | 职责 |
+| --- | --- |
+| `apps/desktop/` | React WebUI 与 Tauri 桌面宿主 |
+| `crates/` | Rust 核心、安装、认证、网络、原生接口与 CLI |
+| `code/` | RH Code 工作区、Agent 适配与工具 |
+| `experimental/` | 共享 AI 运行时、社区扩展宿主及旧格式兼容；目录沿用历史名称 |
+| `assets/` | 项目标志、美术源文件与桌面图标 |
+| `tools/` | 构建、发行、许可证采集和验证工具 |
+| `.github/` | CI 工作流与问题、PR 模板 |
+| `docs/` | 使用说明、插件规范与开发文档 |
+
 ## 从哪里开始读
 
 | 职责 | 入口 | 主要内容 |
@@ -38,7 +51,7 @@
 
 表中未写目录的 Rust 文件位于 `apps/desktop/src-tauri/src/`；TSX 文件位于 `apps/desktop/src/`。现有桌面和前端 `main` 仍承担较多协调工作；新增业务应先确定职责归属，避免继续堆入页面或命令函数。
 
-跨平台范围见[平台支持](PLATFORMS.md)。`core::platform` 只描述平台与路径布局，不拥有文件事务权限；桌面的 `platform.rs` 仍负责系统选择器，二者职责不同。`rules::RuleContext` 同时服务安装依赖筛选和启动参数；现代 native classifier 进一步约束系统与架构，旧版 native 表按 Mojang 的 `linux` / `windows` / `osx` 键选择。生产调用始终取当前编译目标，测试可提供显式平台。不要用另一个平台的规则结果驱动本机文件事务。
+跨平台范围见[平台支持](PLATFORMS.md)，原生实现与检查见[平台接口文档](development/PLATFORM_PORTS.md)。`core::platform` 只描述平台与路径布局，不拥有文件事务权限；桌面的 `platform.rs` 仍负责系统选择器，二者职责不同。`rules::RuleContext` 同时服务安装依赖筛选和启动参数；现代 native classifier 进一步约束系统与架构，旧版 native 表按 Mojang 的 `linux` / `windows` / `osx` 键选择。生产调用始终取当前编译目标，测试可提供显式平台。不要用另一个平台的规则结果驱动本机文件事务。
 
 ## 缺失文件补全
 

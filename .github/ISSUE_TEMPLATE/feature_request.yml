@@ -1,5 +1,6 @@
 name: 功能建议 / Feature request
 description: 讨论启动器、工作区或插件能力。
+labels: [enhancement]
 body:
   - type: textarea
     id: need
